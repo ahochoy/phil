@@ -29,6 +29,8 @@ What sets Phil apart is **explicit contracts and managed context between agents*
 | Architecture | Hybrid: conversational orchestrator (chat layer) over a deterministic LangGraph run graph (run layer). |
 | Tester timing | Configurable `tester_mode`: `"run"` (default, once after all tasks) or `"task+run"`. |
 | Sequencing | Engine first. Project planning mode is spec #2; v1 carries a `story_ref` hook. |
+| Language | Python engine. Heavy imports are lazy so lightweight commands start fast. Contracts export to JSON Schema so a native (Go/Rust) frontend can be added later without touching the engine. |
+| Human interface | One choke point per direction: `ingest()` (human → `Goal`/`Feedback` contracts) and `present()` (contracts → `Brief` → `ui/`). Concise display, lossless storage. |
 
 ## 3. User experience
 
@@ -74,8 +76,9 @@ Two layers:
 
 ```
 phil/
-  cli/          typer app: phil (chat), runs, attach, resume, stop, diff, clean, _worker
+  cli/          typer app: phil (chat), runs, attach, resume, stop, diff, clean, show, parked, _worker
   chat/         orchestrator agent and its tools
+  interface/    ingest() and present(): the only paths between the human and the agents
   contracts/    Pydantic models — single source of truth for agent I/O
   agents/       AgentSpec + registry; invoke_agent()
   packets/      per-role context packet builders with token budgets
@@ -112,7 +115,7 @@ Agents are built with `deepagents.create_deep_agent(model=..., system_prompt=...
 
 ```
 ~/.phil/projects/<repo-slug>/
-  phil.db                 SQLite: LangGraph checkpoints, runs table, telemetry table
+  phil.db                 SQLite: LangGraph checkpoints, runs, telemetry, parked (project-wide)
   runs/<run-id>/
     plan.json
     packets/<node>-<task>-<attempt>.json
@@ -152,6 +155,7 @@ class SelfCheck(BaseModel):
     evidence: list[Claim]
     risks: list[str]
     unverified: list[str]
+    out_of_scope: list[str]        # noticed but not this agent's job → parking lot
 
 class TaskResult(BaseModel):       # implementer output
     phase: Literal["red", "green"]
@@ -205,6 +209,43 @@ class PlanCritique(BaseModel):     # plan critic output
 
 The architect's input on a revision round is the original goal, its previous `Plan`, and the `PlanCritique`.
 
+Human-boundary contracts (see section 9a):
+
+```python
+class Goal(BaseModel):             # ingest() output; raw user text stored alongside
+    objective: str
+    constraints: list[str]
+    non_goals: list[str]
+    open_questions: list[str]
+    story_ref: str | None = None
+
+class Ref(BaseModel):              # pointer to full detail
+    label: str
+    path: str                      # artifact path or run node reference
+
+class Decision(BaseModel):
+    question: str
+    options: list[str]
+
+class Brief(BaseModel):            # present() input; the only shape the user sees from agents
+    headline: str = Field(max_length=120)
+    status: str | None = None
+    needs_you: list[Decision] = []
+    points: list[Annotated[str, Field(max_length=200)]] = Field(default=[], max_length=5)
+    details: list[Ref] = []
+    parked: int = 0
+
+class ParkedItem(BaseModel):
+    id: str
+    raised_by: str                 # "user" | "architect" | "tester" | ...
+    note: str
+    why_not_now: str
+    source: Ref
+    status: Literal["open", "promoted", "dropped"]
+```
+
+JSON Schema for every contract is exported by `phil schema` so non-Python clients can consume them.
+
 ## 6. Chat layer
 
 The orchestrator is a deep agent on a strong model with these tools:
@@ -215,6 +256,8 @@ The orchestrator is a deep agent on a strong model with these tools:
 - `run_status(id)`, `list_runs()`: return `RunStatus` only.
 
 The orchestrator never receives diffs, test output, or implementer reasoning unless it explicitly reads an artifact on the user's request.
+
+User messages reach the orchestrator through `ingest()`, and the orchestrator's replies are `Brief` contracts rendered by `present()` (section 9a).
 
 `start_run` spawns a detached worker process `phil _worker <run-id>` and returns immediately.
 
@@ -296,6 +339,16 @@ Rules:
 - **Large tool output is offloaded:** shell and test output over a threshold is trimmed to its beginning and end plus failure lines; the full log goes to `runs/<id>/logs/` and the agent receives the path.
 - Built-in deepagents summarization and large-result offloading are used within a single agent call.
 - Every packet is saved, so "what did this agent see?" always has an exact answer.
+- **Terse register for agent free text:** every role prompt includes a short style block (fragments allowed, no filler, no restating inputs) for free-text contract fields such as summaries and notes. Output tokens cost several times more than input tokens, so this is where terseness pays most. Field `max_length` limits make it enforceable.
+
+## 9a. Human interface: concise display, lossless storage
+
+Verbose agents bury the essential point. Phil separates what is **stored** (everything, in full) from what is **shown** (layered, bounded).
+
+- **`ingest(raw) -> Goal | Feedback`:** user messages are normalized into contracts by the orchestrator. The raw text is stored unchanged next to the contract. The user sees the normalized `Goal` at plan approval, so nuance lost in normalization is caught before any work starts. No token-dropping compression (such as LLMLingua) is applied to user intent.
+- **`present(contract | RunStatus) -> Brief`:** everything shown to the user from agents is a `Brief`. Its field limits are validated like any contract; an over-long reply is rejected and retried, not displayed.
+- **Progressive disclosure:** a `Brief` carries `Ref`s instead of inlined detail. `phil show <ref>` (or `/more <n>` in chat) expands one: full test log, reviewer reasoning, an agent's packet, a diff.
+- **Parking lot:** anything raised that is not the current work becomes a `ParkedItem` instead of being acted on or lost. Sources: `SelfCheck.out_of_scope` from any agent, and the user via `/park <note>`. Items persist per project across runs (`parked` table in `phil.db`), are listed by `phil parked`, and their open count shows in the status line. In spec #2 they can be promoted to roadmap stories.
 
 ## 10. Failure handling
 
@@ -312,14 +365,14 @@ Rules:
 
 ## 11. Observability and eval hooks (hooks only in v1)
 
-- **Telemetry:** `invoke_agent` writes one row per call to the `telemetry` table: `run_id, layer, node, role, model, attempt, packet_tokens, input_tokens, output_tokens, latency_ms, cost_usd, outcome` (`ok | invalid | evidence_fail | error`). `phil runs <id> --usage` renders totals by layer and role. External exporters (OpenTelemetry, Langfuse) are future work.
+- **Telemetry:** `invoke_agent` writes one row per call to the `telemetry` table: `run_id, layer, node, role, model, attempt, packet_tokens, input_tokens, output_tokens, latency_ms, cost_usd, outcome` (`ok | invalid | evidence_fail | error`). `phil runs <id> --usage` renders totals by layer and role. `present()` also records the token size of the source contracts versus the rendered `Brief`, so the interface layer's compression is measurable. External exporters (OpenTelemetry, Langfuse) are future work.
 - **Evals:** v1 guarantees that any `AgentSpec` can be invoked standalone with a packet loaded from disk, and that contract validation and evidence checks are standalone functions. Saved packets and outputs are fixtures. An eval runner (`phil eval <role> --model X`) is future work.
 
 ## 12. Testing Phil
 
 Phil itself is built test-first.
 
-- **Unit:** contracts, packet builders (trimming order and budgets), gate rules (`verify_red`, `verify_green`), `WorktreeManager` against temporary git repos, shell allowlist matching, config loading.
+- **Unit:** contracts (including `Brief` limits), packet builders (trimming order and budgets), parking-lot capture from `out_of_scope`, lazy-import check (lightweight commands do not import LangChain), gate rules (`verify_red`, `verify_green`), `WorktreeManager` against temporary git repos, shell allowlist matching, config loading.
 - **Graph:** a `FakeAgent` returns scripted contract outputs to cover every routing path — retry caps, escalation, review round cap, tester fix tasks, both `tester_mode` values, resume after a simulated crash. No model calls.
 - **Live smoke:** one end-to-end run on a small Python fixture repo with a cheap real model, opt-in via `pytest -m live`.
 
@@ -335,6 +388,8 @@ Phil itself is built test-first.
 | Eval runner | Standalone `AgentSpec` invocation and saved fixtures |
 | Observability dashboards and exporters | `telemetry` table |
 | Branded terminal look and feel | `ui/` theme module |
+| Native (Go/Rust) TUI frontend | JSON Schema contract export; `present()` output as the wire format |
+| Promoting parked items to roadmap stories | `ParkedItem.status = "promoted"`, spec #2 |
 | Parallel task execution | `pick_task` currently sequential |
 
 ## 14. Relationship to existing code
