@@ -84,7 +84,7 @@ phil/
   packets/      per-role context packet builders with token budgets
   run/          LangGraph run graph, nodes, gates, routing
   workspace/    WorktreeManager, Shell tool (allowlist, timeouts, process-group kill)
-  store/        SQLite (checkpoints, runs, telemetry) + on-disk artifacts
+  store/        SQLite (checkpoints, runs, telemetry, parked) + on-disk artifacts
   ui/           Rich theme and all rendering
   config.py     phil.toml loading
 prompts/        one markdown file per role
