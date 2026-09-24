@@ -55,10 +55,11 @@ def test_ledger_trimmed_after_files(tmp_path):
 
 
 def test_paths_must_stay_under_root(tmp_path):
-    with pytest.raises(ValueError):
-        build_packet("implementer", goal(), budget_tokens=1000, root=tmp_path, files=["../secret.txt"])
-    with pytest.raises(ValueError):
-        build_packet("implementer", goal(), budget_tokens=1000, root=tmp_path, files=["/etc/passwd"])
+    packet = build_packet(
+        "implementer", goal(), budget_tokens=1000, root=tmp_path, files=["../secret.txt", "/etc/passwd"]
+    )
+    assert packet.omitted == ["../secret.txt (outside root)", "/etc/passwd (outside root)"]
+    assert packet.files == {}
 
 
 def test_build_is_deterministic(tmp_path):

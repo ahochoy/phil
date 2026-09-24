@@ -90,7 +90,12 @@ def build_packet(
     omitted: list[str] = []
     header_cost = estimate_tokens(_FILES_HEADER)
     for relative in files:
-        path = _resolve_under(root, relative)  # type: ignore[arg-type]  # root checked above
+        assert root is not None  # checked above: files and root is None raises
+        try:
+            path = _resolve_under(root, relative)
+        except ValueError:
+            omitted.append(f"{relative} (outside root)")
+            continue
         if not path.is_file():
             omitted.append(f"{relative} (not found)")
             continue
