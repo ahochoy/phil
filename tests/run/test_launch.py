@@ -30,8 +30,37 @@ def new_run(repo):
 
 def test_worker_command_shape(tmp_path):
     command = worker_command(tmp_path, "r-0001", "resume", {"action": "retry"})
-    assert command[:3] == [sys.executable, "-m", "phil"]
-    assert command[3:] == ["--repo", str(tmp_path), "_worker", "r-0001", "--mode", "resume", "--decision", '{"action": "retry"}']
+    assert command[:4] == [sys.executable, "-P", "-m", "phil"]
+    assert command[4:] == ["--repo", str(tmp_path), "_worker", "r-0001", "--mode", "resume", "--decision", '{"action": "retry"}']
+
+
+def test_spawn_worker_passes_env_through_unchanged(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    real_popen = subprocess.Popen
+    captured = []
+
+    def fake_popen(command, **kwargs):
+        # spawn_worker calls resolve_repo (which shells out to git) before spawning the
+        # worker itself; only intercept the actual worker invocation, let git through.
+        if command[0] != sys.executable:
+            return real_popen(command, **kwargs)
+        captured.append(kwargs)
+
+        class FakeProc:
+            def wait(self, timeout=None):
+                return 0
+
+        return FakeProc()
+
+    monkeypatch.setattr("phil.run.launch.subprocess.Popen", fake_popen)
+
+    spawn_worker(calc_repo, record.run_id, "start", env=None)
+    assert captured[-1]["env"] is None
+
+    explicit_env = {"FOO": "bar"}
+    spawn_worker(calc_repo, record.run_id, "start", env=explicit_env)
+    assert captured[-1]["env"] == explicit_env
+    assert "PYTHONSAFEPATH" not in captured[-1]["env"]
 
 
 def test_detached_worker_completes_a_run(calc_repo):

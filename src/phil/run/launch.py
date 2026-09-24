@@ -33,7 +33,9 @@ def prepare_run(info: RepoInfo, plan: Plan, base_sha: str) -> RunRecord:
 
 
 def worker_command(repo_root: Path, run_id: str, mode: str, decision: dict | None = None) -> list[str]:
-    command = [sys.executable, "-m", "phil", "--repo", str(repo_root), "_worker", run_id, "--mode", mode]
+    # -P: cwd is the target repo, so without it Python would auto-prepend cwd to sys.path for
+    # this -m invocation, letting the repo's own top-level packages shadow phil's modules.
+    command = [sys.executable, "-P", "-m", "phil", "--repo", str(repo_root), "_worker", run_id, "--mode", mode]
     if decision is not None:
         command += ["--decision", json.dumps(decision)]
     return command
@@ -45,12 +47,6 @@ def spawn_worker(
     info = resolve_repo(repo_root)
     log_path = ProjectPaths(info.slug).run_dir(run_id) / "logs" / "worker.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    # cwd is the target repo, whose own top-level files/dirs (e.g. a "tests" package) would
-    # otherwise shadow real modules on sys.path when Python auto-prepends "" (== cwd) for -m
-    # invocations. PYTHONSAFEPATH disables that auto-prepend so only PYTHONPATH/site-packages
-    # resolve imports, keeping the worker's module resolution independent of repo contents.
-    worker_env = dict(env) if env is not None else dict(os.environ)
-    worker_env.setdefault("PYTHONSAFEPATH", "1")
     with log_path.open("ab") as log:
         return subprocess.Popen(
             worker_command(info.root, run_id, mode, decision),
@@ -59,7 +55,7 @@ def spawn_worker(
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
-            env=worker_env,
+            env=env,
         )
 
 
