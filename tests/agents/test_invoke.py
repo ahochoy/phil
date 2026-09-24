@@ -126,6 +126,26 @@ def test_call_discriminator_keeps_artifacts_and_telemetry_distinct(config, conn,
     assert [row["node"] for row in rows] == ["critic", "critic"]
 
 
+def test_shell_role_without_workdir_raises(config, conn, artifacts):
+    task = Task(id="CALC-001", description="Add subtract", acceptance_criteria=["subtract(3, 1) == 2"])
+    packet = build_packet("implementer", ImplementInput(task=task, phase="red", test_cmd="pytest"), budget_tokens=4000)
+    factory = FakeAgentFactory([])
+    ctx = context(config, conn, artifacts, factory, workdir=None)
+    with pytest.raises(ValueError, match="implementer needs a workdir for its shell tool"):
+        invoke_agent(get_spec("implementer"), packet, ctx, node="implement", task_id="CALC-001")
+
+
+def test_packet_contract_type_mismatch_raises(config, conn, artifacts):
+    task = Task(id="CALC-001", description="Add subtract", acceptance_criteria=["subtract(3, 1) == 2"])
+    wrong_packet = build_packet(
+        "implementer", ImplementInput(task=task, phase="red", test_cmd="pytest"), budget_tokens=4000
+    )
+    factory = FakeAgentFactory([])
+    with pytest.raises(ValueError, match="CriticInput") as excinfo:
+        invoke_agent(get_spec("critic"), wrong_packet, context(config, conn, artifacts, factory), node="critic")
+    assert "ImplementInput" in str(excinfo.value)
+
+
 def test_shell_log_prefix_matches_artifact_base_name(conn, artifacts, tmp_path):
     (tmp_path / "hello.py").write_text("print('hi')\n")
     shell_config = ShellConfig(allow=[f"{shlex.quote(sys.executable)} *"])

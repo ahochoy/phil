@@ -118,6 +118,12 @@ def invoke_agent(
     task_id: str | None = None,
     call: int = 1,
 ) -> Contract:
+    if "shell" in spec.tools and ctx.workdir is None:
+        raise ValueError(f"{spec.name} needs a workdir for its shell tool")
+    if packet.contract_type != spec.in_contract.__name__:
+        raise ValueError(
+            f"{spec.name} expects a {spec.in_contract.__name__} packet, got {packet.contract_type}"
+        )
     model = ctx.config.model_for(spec.role)
     log = CommandLog()
     effective_node = node if call == 1 else f"{node}-c{call}"

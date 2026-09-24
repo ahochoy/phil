@@ -19,6 +19,8 @@ class FakeAgent:
         self.calls: list[dict] = []
 
     def invoke(self, payload: dict) -> dict:
+        if not self.outputs:
+            raise AssertionError(f"FakeAgent has no scripted output left (call {len(self.calls)})")
         self.calls.append(payload)
         output = self.outputs.pop(0)
         if isinstance(output, BaseException):

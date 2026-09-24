@@ -21,6 +21,11 @@ def test_claims_must_match_commands_run(tmp_path):
     assert problems == ["claimed command was never run: uv run pytest -q"]
 
 
+def test_claims_match_by_shlex_tokens_ignoring_extra_whitespace():
+    output = result(self_check=self_check(evidence=[Claim(statement="checked status", command="git status")]))
+    assert check_evidence(output, commands=["git  status"], workdir=None) == []
+
+
 def test_claims_without_commands_are_accepted():
     output = result(self_check=self_check(evidence=[Claim(statement="read the code")]))
     assert check_evidence(output, commands=[], workdir=None) == []

@@ -35,6 +35,13 @@ def test_fake_agent_raises_queued_exceptions():
         agent.invoke({"messages": []})
 
 
+def test_fake_agent_with_no_outputs_left_raises_assertion_error():
+    agent = FakeAgentFactory(["only"])(get_spec("critic"), "m", None, [])
+    agent.invoke({"messages": []})
+    with pytest.raises(AssertionError, match=r"FakeAgent has no scripted output left \(call 1\)"):
+        agent.invoke({"messages": []})
+
+
 def test_fake_factory_records_tool_names():
     def run_shell(command: str) -> str:
         return command

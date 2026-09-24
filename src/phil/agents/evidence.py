@@ -1,15 +1,23 @@
+import shlex
 from pathlib import Path, PurePosixPath
 
 from phil.contracts import Contract
 
 
+def _tokens(command: str) -> tuple[str, ...]:
+    try:
+        return tuple(shlex.split(command))
+    except ValueError:
+        return (command.strip(),)
+
+
 def check_evidence(output: Contract, *, commands: list[str], workdir: Path | None) -> list[str]:
     problems: list[str] = []
-    ran = {command.strip() for command in commands}
+    ran = {_tokens(command) for command in commands}
     self_check = getattr(output, "self_check", None)
     if self_check is not None:
         for claim in self_check.evidence:
-            if claim.command and claim.command.strip() not in ran:
+            if claim.command and _tokens(claim.command) not in ran:
                 problems.append(f"claimed command was never run: {claim.command}")
     if workdir is not None:
         resolved_workdir = workdir.resolve()
