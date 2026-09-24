@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from phil.git import branch_for, git
+from phil.git import GitError, branch_for, git
 
 
 @dataclass(frozen=True)
@@ -41,3 +41,18 @@ class WorktreeManager:
 
     def head(self, path: Path) -> str:
         return git(path, "rev-parse", "HEAD").strip()
+
+    def reset_to(self, path: Path, sha: str) -> None:
+        git(path, "reset", "--hard", sha)
+        git(path, "clean", "-fd")
+
+    def restore(self, path: Path, paths: list[str]) -> None:
+        for relative in paths:
+            try:
+                git(path, "cat-file", "-e", f"HEAD:{relative}")
+            except GitError:
+                target = path / relative
+                if target.is_file():
+                    target.unlink()
+                continue
+            git(path, "checkout", "HEAD", "--", relative)

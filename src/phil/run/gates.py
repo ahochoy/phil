@@ -1,4 +1,5 @@
 import fnmatch
+import hashlib
 import os
 import re
 from pathlib import Path, PurePosixPath
@@ -48,3 +49,38 @@ def run_tests(
         log_path=log_path,
         new_failures_vs_baseline=[failure for failure in failures if failure not in known],
     )
+
+
+DELETED = "<deleted>"
+
+
+def snapshot_tests(worktree: Path, changed: list[str], globs: list[str]) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    for path in changed:
+        if not is_test_path(path, globs):
+            continue
+        target = worktree / path
+        snapshot[path] = hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else DELETED
+    return snapshot
+
+
+def verify_red(changed: list[str], report: TestReport, globs: list[str]) -> list[str]:
+    problems: list[str] = []
+    non_test = [path for path in changed if not is_test_path(path, globs)]
+    if non_test:
+        problems.append(f"red phase changed non-test files: {', '.join(non_test)}")
+    if not any(is_test_path(path, globs) for path in changed):
+        problems.append("red phase added or changed no test files")
+    if not report.new_failures_vs_baseline:
+        problems.append("no new failing tests compared with the baseline; red phase needs tests that fail")
+    return problems
+
+
+def verify_green(report: TestReport, red_snapshot: dict[str, str], now_snapshot: dict[str, str]) -> list[str]:
+    problems: list[str] = []
+    if report.new_failures_vs_baseline:
+        problems.append(f"tests still failing: {', '.join(report.new_failures_vs_baseline)}")
+    edited = sorted(path for path in set(red_snapshot) | set(now_snapshot) if red_snapshot.get(path) != now_snapshot.get(path))
+    if edited:
+        problems.append(f"green phase modified test files: {', '.join(edited)}")
+    return problems
