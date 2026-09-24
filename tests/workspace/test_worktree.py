@@ -47,10 +47,9 @@ def test_commit_all_advances_branch(setup, git_repo):
 
 
 def _configure_broken_gpg(git_repo):
-    # gpg.format=openpgp overrides any user-global ssh signing so gpg.program=false actually fails
-    # the sign step, regardless of the machine's own git/gpg setup.
+    # The isolated_git_config autouse fixture keeps the machine's own global/system git
+    # config out of the way, so gpg.program=false alone is enough to make signing fail.
     run_git(git_repo, "config", "commit.gpgsign", "true")
-    run_git(git_repo, "config", "gpg.format", "openpgp")
     run_git(git_repo, "config", "gpg.program", "false")
 
 
