@@ -41,6 +41,22 @@ def test_policy_default_allowlist(command, allowed):
     assert ShellPolicy(ShellConfig().allow).is_allowed(command) is allowed
 
 
+@pytest.mark.parametrize(
+    ("command", "reason"),
+    [
+        ("pytest -q", None),
+        ("git push", "not_allowed"),
+        ("pytest && echo hi", "forbidden"),
+        ("python -c 'print(1)'", "forbidden"),
+        ("pytest 'unterminated", "forbidden"),
+    ],
+)
+def test_denial_reason(command, reason):
+    policy = ShellPolicy(["pytest *", "pytest", "git status", "python *"])
+    assert policy.denial_reason(command) == reason
+    assert policy.is_allowed(command) is (reason is None)
+
+
 def test_run_command_captures_output(tmp_path):
     result = run_command(f"{PY} -c \"print('hi')\"", cwd=tmp_path, timeout_s=10)
     assert result.ok

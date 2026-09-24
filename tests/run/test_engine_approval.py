@@ -2,7 +2,7 @@ import shlex
 import sys
 
 from tests.helpers import run_git
-from tests.run.conftest import review, tester_report, write_green, write_red
+from tests.run.conftest import review, task_result, tester_report, write_green, write_red
 
 BUILD = f"{shlex.quote(sys.executable)} tools/build.py"
 
@@ -56,3 +56,36 @@ def test_deny_continues_to_verify_with_a_hint(make_harness, calc_repo):
     assert final["status"] == "completed"
     green_packet = [p for role, p in harness.factory.calls if role == "implementer"][-1]["messages"][0]["content"]
     assert f"Not approved: {BUILD}. Do not use them." in green_packet
+
+
+REFUSED_CMD = "python -c 'print(1)'"
+
+
+def test_refused_command_does_not_escalate(make_harness):
+    outputs: list[str] = []
+
+    def refuse_then_red(turn):
+        outputs.append(turn.tools["run_shell"](REFUSED_CMD))
+        return write_red(turn)
+
+    harness = make_harness(
+        {"implementer": [refuse_then_red, write_green], "tester": [tester_report()], "reviewer": [review()]}
+    )
+    final = harness.start()
+    assert "__interrupt__" not in final
+    assert final["status"] == "completed"
+    assert outputs[0].startswith("REFUSED:")
+
+
+def test_refused_command_reaches_the_next_attempt_as_feedback(make_harness):
+    def refuse_only(turn):
+        turn.tools["run_shell"](REFUSED_CMD)
+        return task_result("red")
+
+    harness = make_harness(
+        {"implementer": [refuse_only, write_red, write_green], "tester": [tester_report()], "reviewer": [review()]}
+    )
+    final = harness.start()
+    assert final["status"] == "completed"
+    second = [p for role, p in harness.factory.calls if role == "implementer"][1]["messages"][0]["content"]
+    assert "refused command: python -c 'print(1)'" in second

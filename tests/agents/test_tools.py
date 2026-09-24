@@ -30,6 +30,18 @@ def test_denied_command_is_not_run_or_logged(tmp_path):
     assert log.commands == []
 
 
+def test_forbidden_command_is_refused_not_denied(tmp_path):
+    log = CommandLog()
+    run_shell = make_shell_tool(tmp_path, shell_config(), log)
+    command = f"{PY} hello.py && echo hi"
+    output = run_shell(command)
+    assert output == (
+        f"REFUSED: `{command}` uses shell operators or risky flags and can never run here. "
+        "Use a plain allowlisted command instead."
+    )
+    assert (log.commands, log.denied, log.refused) == ([], [], [command])
+
+
 def test_long_output_is_truncated_and_saved(tmp_path):
     (tmp_path / "spam.py").write_text("for i in range(1000):\n    print(i)\n")
     artifacts = ArtifactStore(tmp_path / "run")

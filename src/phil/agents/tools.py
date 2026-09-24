@@ -12,6 +12,7 @@ from phil.workspace.shell import ShellPolicy, child_env, run_command, truncate_o
 class CommandLog:
     commands: list[str] = field(default_factory=list)
     denied: list[str] = field(default_factory=list)
+    refused: list[str] = field(default_factory=list)
 
 
 def make_shell_tool(
@@ -31,7 +32,14 @@ def make_shell_tool(
         Only commands matching the project's allowlist run; others are denied.
         Shell operators such as pipes, redirects, `;` and `&&` are not allowed.
         """
-        if not policy.is_allowed(command):
+        reason = policy.denial_reason(command)
+        if reason == "forbidden":
+            log.refused.append(command)
+            return (
+                f"REFUSED: `{command}` uses shell operators or risky flags and can never run here. "
+                "Use a plain allowlisted command instead."
+            )
+        if reason is not None:
             log.denied.append(command)
             allowed = ", ".join(shell.allow)
             return f"DENIED: `{command}` is not on the allowlist. Allowed patterns: {allowed}"
