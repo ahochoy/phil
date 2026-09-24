@@ -1,6 +1,8 @@
 import os
+import shutil
 import signal
 import sqlite3
+import subprocess
 import time
 
 import pytest
@@ -10,10 +12,10 @@ from phil.agents.fake import ScriptedAgentFactory
 from phil.repo import resolve_repo
 from phil.run.launch import prepare_run
 from phil.run.worker import Heartbeat, StopRequested, WorkerError, run_worker
-from phil.store.db import connect
+from phil.store.db import connect, utcnow
 from phil.store.events import EventLog, run_events
 from phil.store.paths import ProjectPaths
-from phil.store.runs import get_run
+from phil.store.runs import get_run, update_run
 from tests.helpers import run_git
 from tests.run.conftest import bad_green, calc_plan, review, tester_report, write_green, write_red
 
@@ -124,22 +126,99 @@ def test_heartbeat_updates_the_row(calc_repo):
     assert row(info, record.run_id).heartbeat_at is not None
 
 
-def test_continue_while_a_decision_is_pending_is_rejected(calc_repo):
+def escalated_run(calc_repo):
     info, record = new_run(calc_repo)
     escalating = ScriptedAgentFactory({"implementer": [write_red, bad_green, bad_green, bad_green]})
     assert run_worker(calc_repo, record.run_id, "start", factory=escalating).status == "escalated"
-    with pytest.raises(WorkerError, match="resume it with an action"):
-        run_worker(calc_repo, record.run_id, "continue", factory=happy())
-    assert row(info, record.run_id).state == "escalated"
+    return info, record
 
 
-def test_start_on_a_paused_thread_is_rejected(calc_repo):
+def escalation_count(info, run_id):
+    return [e["kind"] for e in run_events(ProjectPaths(info.slug), run_id).read()[0]].count("escalation")
+
+
+def finishing():
+    return ScriptedAgentFactory({"implementer": [write_green], "tester": [tester_report()], "reviewer": [review()]})
+
+
+@pytest.mark.parametrize("mode", ["continue", "start"])
+def test_continue_or_start_on_a_paused_thread_resurfaces_the_pause(calc_repo, mode):
+    info, record = escalated_run(calc_repo)
+    outcome = run_worker(calc_repo, record.run_id, mode, factory=happy())
+    assert outcome.status == "escalated"
+    assert outcome.escalation["options"] == ["retry", "skip", "abort"]
+    paused = row(info, record.run_id)
+    assert (paused.state, paused.pid) == ("escalated", None)
+    assert paused.needs_attention
+    assert run_worker(calc_repo, record.run_id, "resume", {"action": "retry"}, factory=finishing()).status == "completed"
+
+
+def test_a_pause_lost_by_a_failed_escalation_write_is_recovered_by_continue(calc_repo, monkeypatch):
     info, record = new_run(calc_repo)
+    original_append = EventLog.append
+
+    def failing_append(self, kind, **data):
+        if kind == "escalation":
+            raise RuntimeError("disk full")
+        return original_append(self, kind, **data)
+
+    monkeypatch.setattr(EventLog, "append", failing_append)
     escalating = ScriptedAgentFactory({"implementer": [write_red, bad_green, bad_green, bad_green]})
-    assert run_worker(calc_repo, record.run_id, "start", factory=escalating).status == "escalated"
-    with pytest.raises(WorkerError, match="resume it with an action"):
-        run_worker(calc_repo, record.run_id, "start", factory=happy())
+    with pytest.raises(RuntimeError, match="disk full"):
+        run_worker(calc_repo, record.run_id, "start", factory=escalating)
+    assert row(info, record.run_id).state == "failed"
+    monkeypatch.setattr(EventLog, "append", original_append)
+    outcome = run_worker(calc_repo, record.run_id, "continue", factory=happy())
+    assert outcome.status == "escalated"
     assert row(info, record.run_id).state == "escalated"
+    assert escalation_count(info, record.run_id) == 1
+    assert run_worker(calc_repo, record.run_id, "resume", {"action": "retry"}, factory=finishing()).status == "completed"
+
+
+def live_foreign_pid():
+    return os.getppid()
+
+
+def test_a_failed_guard_leaves_another_workers_pid_alone(calc_repo):
+    info, record = new_run(calc_repo)
+    conn = connect(ProjectPaths(info.slug).db_path)
+    other = live_foreign_pid()
+    update_run(conn, record.run_id, state="running", pid=other, heartbeat_at=utcnow())
+    with pytest.raises(WorkerError, match="not waiting for a decision"):
+        run_worker(calc_repo, record.run_id, "resume", {"action": "retry"}, factory=happy())
+    after = row(info, record.run_id)
+    assert (after.state, after.pid) == ("running", other)
+
+
+def test_a_second_worker_does_not_claim_a_run_held_by_a_live_worker(calc_repo):
+    info, record = escalated_run(calc_repo)
+    conn = connect(ProjectPaths(info.slug).db_path)
+    other = live_foreign_pid()
+    update_run(conn, record.run_id, pid=other, heartbeat_at=utcnow())
+    for mode, decision in (("resume", {"action": "retry"}), ("continue", None)):
+        with pytest.raises(WorkerError, match="already being run by another worker"):
+            run_worker(calc_repo, record.run_id, mode, decision, factory=finishing())
+        after = row(info, record.run_id)
+        assert (after.state, after.pid) == ("escalated", other)
+
+
+def test_a_dead_workers_pid_is_taken_over(calc_repo):
+    info, record = new_run(calc_repo)
+    conn = connect(ProjectPaths(info.slug).db_path)
+    child = subprocess.Popen(["true"])
+    child.wait()
+    update_run(conn, record.run_id, state="running", pid=child.pid, heartbeat_at=utcnow())
+    assert run_worker(calc_repo, record.run_id, "continue", factory=happy()).status == "completed"
+    assert row(info, record.run_id).pid is None
+
+
+def test_a_removed_worktree_is_detected_before_resuming(calc_repo):
+    info, record = escalated_run(calc_repo)
+    shutil.rmtree(record.worktree)
+    with pytest.raises(WorkerError, match=f"worktree .* is missing; clean the run with `phil clean {record.run_id}`"):
+        run_worker(calc_repo, record.run_id, "resume", {"action": "retry"}, factory=finishing())
+    after = row(info, record.run_id)
+    assert (after.state, after.pid) == ("escalated", None)
 
 
 def test_continue_on_a_never_started_thread_starts_fresh(calc_repo):

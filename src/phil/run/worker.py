@@ -17,7 +17,8 @@ from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect, utcnow
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
-from phil.store.runs import TRANSITIONS, get_run, update_run
+from phil.run.launch import is_worker_alive
+from phil.store.runs import TRANSITIONS, claim_run, get_run, release_run, update_run
 from phil.workspace.shell import kill_active_groups
 
 _logger = logging.getLogger(__name__)
@@ -45,10 +46,13 @@ def _record_terminal_state(conn: sqlite3.Connection, run_id: str, state: str, ne
     Only writes `state` if the transition table allows it from the row's current state (e.g. the
     finish node may already have set `completed`/`aborted` before the interrupt/exception landed).
     Returns the row's state after the attempt so the caller can tell whether its write took effect.
+    Writes nothing unless this process still holds the row.
     """
     current = get_run(conn, run_id)
     if current is None:
         return state
+    if current.pid != os.getpid():
+        return current.state
     if state == current.state or state in TRANSITIONS.get(current.state, set()):
         return update_run(conn, run_id, state=state, needs_attention=needs_attention).state
     return current.state
@@ -122,17 +126,26 @@ def run_worker(
     heartbeat = Heartbeat(paths.db_path, run_id, heartbeat_s)
     installed = threading.current_thread() is threading.main_thread()
     previous_handler = signal.signal(signal.SIGTERM, _raise_stop) if installed else None
+    claimed = False
     try:
         snapshot = graph.get_state(runner.thread_config(run_id))
-        if snapshot.interrupts:
-            if mode != "resume":
-                raise WorkerError(f"{run_id} is waiting for a decision; resume it with an action")
-        elif mode == "resume":
+        if mode == "resume" and not snapshot.interrupts:
             raise WorkerError(f"{run_id} is not waiting for a decision")
-        update_run(conn, run_id, state="running", pid=os.getpid(), heartbeat_at=utcnow(), needs_attention=None)
+        if snapshot.values and not Path(record.worktree).exists():
+            raise WorkerError(
+                f"{run_id}'s worktree {record.worktree} is missing; clean the run with `phil clean {run_id}`"
+            )
+        stale_pid = record.pid if record.pid is not None and not is_worker_alive(record) else None
+        if not claim_run(conn, run_id, os.getpid(), utcnow(), stale_pid=stale_pid):
+            raise WorkerError(f"{run_id} is already being run by another worker")
+        claimed = True
         events.append("worker", mode=mode, pid=os.getpid())
         heartbeat.start()
-        if not snapshot.values:
+        if snapshot.interrupts and mode != "resume":
+            # The graph paused but the pause never reached the row (e.g. the worker died or was
+            # stopped right after the checkpoint): surface it again instead of refusing to run.
+            outcome = runner.settle(engine, snapshot)
+        elif not snapshot.values:
             plan = deps.artifacts.read_plan()
             test_cmd = plan.test_cmd or config.project.test_cmd or ""
             outcome = runner.start(engine, graph, plan=plan, base_sha=record.base_sha, test_cmd=test_cmd)
@@ -150,6 +163,8 @@ def run_worker(
             kill_active_groups()
         except BaseException:
             _logger.warning("kill_active_groups failed while handling StopRequested", exc_info=True)
+        if not claimed:
+            return runner.RunOutcome(status=status)
         try:
             final_state = _record_terminal_state(conn, run_id, "stopped", "stopped by user")
             if final_state == "stopped":
@@ -165,12 +180,13 @@ def run_worker(
         except BaseException:
             _logger.warning("kill_active_groups failed while handling a worker exception", exc_info=True)
         message = f"worker failed: {type(exc).__name__}: {exc}"[:500]
-        try:
-            final_state = _record_terminal_state(conn, run_id, "failed", message)
-            if final_state == "failed":
-                events.append("state", state="failed", needs_attention=message)
-        except BaseException:
-            _logger.warning("failed to record the failed state for run %s", run_id, exc_info=True)
+        if claimed:
+            try:
+                final_state = _record_terminal_state(conn, run_id, "failed", message)
+                if final_state == "failed":
+                    events.append("state", state="failed", needs_attention=message)
+            except BaseException:
+                _logger.warning("failed to record the failed state for run %s", run_id, exc_info=True)
         raise
     finally:
         if installed:
@@ -183,7 +199,8 @@ def run_worker(
         except BaseException:
             _logger.warning("heartbeat failed to stop cleanly for run %s", run_id, exc_info=True)
         try:
-            update_run(conn, run_id, pid=None)
+            if claimed:
+                release_run(conn, run_id, os.getpid())
         except BaseException:
             _logger.warning("failed to clear pid for run %s", run_id, exc_info=True)
         try:

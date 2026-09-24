@@ -117,3 +117,33 @@ def update_run(conn: sqlite3.Connection, run_id: str, **fields: object) -> RunRe
     run = get_run(conn, run_id)
     assert run is not None
     return run
+
+
+# States a worker may claim a run from: every state whose transitions allow `running`, plus
+# `running` itself (a worker taking over a row whose previous worker died).
+CLAIMABLE: tuple[str, ...] = tuple(
+    sorted({state for state, targets in TRANSITIONS.items() if "running" in targets} | {"running"})
+)
+
+
+def claim_run(
+    conn: sqlite3.Connection, run_id: str, pid: int, heartbeat_at: str, *, stale_pid: int | None = None
+) -> bool:
+    """Atomically make `pid` the run's worker and set the row to `running`.
+
+    Succeeds only when no other worker holds the row: its pid is NULL, already `pid`, or
+    `stale_pid` (a pid the caller has checked is no longer a live worker). Returns whether the
+    claim took effect.
+    """
+    placeholders = ", ".join("?" for _ in CLAIMABLE)
+    cursor = conn.execute(
+        "UPDATE runs SET state = 'running', pid = ?, heartbeat_at = ?, needs_attention = NULL, updated_at = ?"
+        f" WHERE run_id = ? AND (pid IS NULL OR pid = ? OR pid = ?) AND state IN ({placeholders})",
+        (pid, heartbeat_at, utcnow(), run_id, pid, stale_pid, *CLAIMABLE),
+    )
+    return cursor.rowcount == 1
+
+
+def release_run(conn: sqlite3.Connection, run_id: str, pid: int) -> None:
+    """Clear the run's pid, but only if `pid` is still the worker holding it."""
+    conn.execute("UPDATE runs SET pid = NULL, updated_at = ? WHERE run_id = ? AND pid = ?", (utcnow(), run_id, pid))

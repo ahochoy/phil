@@ -22,7 +22,11 @@ def thread_config(run_id: str) -> dict:
 def _drive(engine: RunEngine, graph: Any, payload: Any) -> RunOutcome:
     config = thread_config(engine.deps.run_id)
     graph.invoke(payload, config)
-    snapshot = graph.get_state(config)
+    return settle(engine, graph.get_state(config))
+
+
+def settle(engine: RunEngine, snapshot: Any) -> RunOutcome:
+    """Turn a graph snapshot into an outcome, recording a pending pause on the run row and events."""
     if snapshot.interrupts:
         escalation = snapshot.interrupts[0].value
         update_run(
