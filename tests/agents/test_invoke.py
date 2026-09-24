@@ -82,6 +82,16 @@ def test_second_attempt_saves_the_retry_payload(config, conn, artifacts, critic_
     assert "verdict" in retry["messages"][1]["content"]
 
 
+def test_structured_output_parse_error_is_treated_as_invalid_and_retried(config, conn, artifacts, critic_packet):
+    class StructuredOutputValidationError(Exception):
+        pass
+
+    factory = FakeAgentFactory([StructuredOutputValidationError("could not parse"), critique()])
+    result = invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic")
+    assert isinstance(result, PlanCritique)
+    assert [row["outcome"] for row in telemetry(conn)] == ["invalid", "ok"]
+
+
 def test_contract_violation_carries_last_rejected_path(config, conn, artifacts, critic_packet):
     factory = FakeAgentFactory([None, {"verdict": "maybe"}])
     with pytest.raises(ContractViolation) as excinfo:

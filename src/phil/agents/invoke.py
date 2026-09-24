@@ -66,6 +66,10 @@ def _validate(spec: AgentSpec, raw: object) -> tuple[Contract | None, list[str]]
         return None, problems
 
 
+def _is_structured_output_parse_error(exc: BaseException) -> bool:
+    return any(cls.__name__ == "StructuredOutputValidationError" for cls in type(exc).__mro__)
+
+
 def _retry_message(problems: list[str]) -> dict[str, str]:
     listed = "\n".join(f"- {problem}" for problem in problems)
     return {
@@ -134,15 +138,22 @@ def invoke_agent(
             if attempt == 2:
                 ctx.artifacts.write_json("packets", f"{name}.retry", {"messages": payload_messages})
         started = time.monotonic()
+        parse_problems: list[str] | None = None
         try:
             result = call_with_retry(agent, {"messages": payload_messages}, sleep=ctx.sleep)
-        except Exception:
-            _record_error(
-                ctx, spec=spec, model=model, node=node, attempt=attempt, call=call, packet=packet, started=started
-            )
-            raise
+        except Exception as exc:
+            if not _is_structured_output_parse_error(exc):
+                _record_error(
+                    ctx, spec=spec, model=model, node=node, attempt=attempt, call=call, packet=packet, started=started
+                )
+                raise
+            result = {}
+            parse_problems = [f"structured output failed to parse: {exc}"]
         latency_ms = int((time.monotonic() - started) * 1000)
-        output, problems = _validate(spec, result.get("structured_response"))
+        if parse_problems is not None:
+            output, problems = None, parse_problems
+        else:
+            output, problems = _validate(spec, result.get("structured_response"))
         outcome = "ok" if not problems else "invalid"
         if output is not None:
             problems = check_evidence(output, commands=log.commands, workdir=ctx.workdir)
