@@ -232,7 +232,9 @@ def resume(
             console.print(f"[phil.error]choose --action: {escape(', '.join(options))}[/]")
             raise typer.Exit(2)
         if action not in options:
-            console.print(f"[phil.error]unknown action {escape(action)!r}; choose one of: {escape(', '.join(options))}[/]")
+            console.print(
+                f"[phil.error]unknown action {escape(repr(action))}; choose one of: {escape(', '.join(options))}[/]"
+            )
             raise typer.Exit(2)
         decision = {"action": action} | ({"hint": hint} if hint else {})
         spawn_worker(info.root, run_id, "resume", decision)

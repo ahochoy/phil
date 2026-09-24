@@ -91,3 +91,31 @@ def test_stale_pending_run_continues(run):
     assert result.exit_code == 0, result.output
     assert spawned == [("continue", None)]
     assert invoke(repo, run_id, "--action", "retry").exit_code == 2
+
+
+def test_unknown_action_markup_is_escaped_not_rendered(run):
+    repo, run_id, conn, events, spawned = run
+    escalate(conn, events, run_id)
+    result = invoke(repo, run_id, "--action", "[bold]nope[/bold]")
+    assert result.exit_code == 2
+    assert "[bold]nope[/bold]" in result.output
+    assert spawned == []
+
+
+def test_finished_run_is_not_resumed(run):
+    repo, run_id, conn, events, spawned = run
+    update_run(conn, run_id, state="running")
+    update_run(conn, run_id, state="completed")
+    result = invoke(repo, run_id)
+    assert result.exit_code == 1
+    assert "nothing to resume" in result.output
+    assert spawned == []
+
+
+def test_escalated_run_without_an_escalation_event_rejects_any_action(run):
+    repo, run_id, conn, events, spawned = run
+    update_run(conn, run_id, state="running")
+    update_run(conn, run_id, state="escalated", needs_attention="CALC-001 failed 3 attempts in the green phase")
+    result = invoke(repo, run_id, "--action", "retry")
+    assert result.exit_code == 2
+    assert spawned == []
