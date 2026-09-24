@@ -39,6 +39,34 @@ def test_budget_limit_escalates_and_can_continue(make_harness):
     assert paused.escalation["reason"] == "budget"
     assert paused.escalation["resume_to"] == "implement"
     assert paused.escalation["summary"] == "run used 120 tokens ($0.00); limit 100 tokens / $2.00"
+    harness.factory.usage = (0, 0, 0.0)
+    assert runner.resume(harness.engine, harness.graph, {"action": "continue"}).status == "completed"
+
+
+def test_continue_raises_the_limit_so_growing_usage_escalates_again(make_harness):
+    config = PhilConfig.model_validate({"run": {"max_tokens": 100}})
+    harness = make_harness(
+        {"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]},
+        config=config, usage=(100, 20, 0.0),
+    )
+    outcome_start(harness)
+    again = runner.resume(harness.engine, harness.graph, {"action": "continue"})
+    assert again.status == "escalated"
+    assert again.escalation["reason"] == "budget"
+    assert again.escalation["resume_to"] == "tester"
+    assert again.escalation["summary"] == "run used 240 tokens ($0.00); limit 220 tokens / $2.00"
+
+
+@pytest.mark.parametrize(("node", "max_tokens"), [("tester", 240), ("review", 360)])
+def test_budget_guard_runs_before_tester_and_review(make_harness, node, max_tokens):
+    config = PhilConfig.model_validate({"run": {"max_tokens": max_tokens}})
+    harness = make_harness(
+        {"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]},
+        config=config, usage=(100, 20, 0.0),
+    )
+    paused = outcome_start(harness)
+    assert paused.escalation["reason"] == "budget"
+    assert paused.escalation["resume_to"] == node
     assert runner.resume(harness.engine, harness.graph, {"action": "continue"}).status == "completed"
 
 

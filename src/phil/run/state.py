@@ -30,7 +30,8 @@ class RunState(TypedDict, total=False):
     next: str
     tester_done: bool
     review_rounds: int
-    budget_override: bool
+    budget_limit_tokens: int | None
+    budget_limit_cost: float | None
     original_task_ids: list[str]
     open_issues: list[dict[str, Any]]
 
@@ -63,7 +64,8 @@ def initial_state(run_id: str, plan: Plan, base_sha: str, test_cmd: str) -> RunS
         next="",
         tester_done=False,
         review_rounds=0,
-        budget_override=False,
+        budget_limit_tokens=None,
+        budget_limit_cost=None,
         original_task_ids=[task.id for task in plan.tasks],
         open_issues=[],
     )
