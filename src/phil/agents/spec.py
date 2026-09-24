@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from importlib.resources import files
+from typing import Literal
 
 from phil.contracts import Contract
 
@@ -12,6 +13,9 @@ class AgentSpec:
     out_contract: type[Contract]
     tools: tuple[str, ...] = ()
     writes_files: bool = False
+    # "deep": deepagents with file tools, planning, and subagents, for roles that explore a repo.
+    # "lean": a plain LangChain agent for roles that only judge their input; no unused tools or prompts.
+    harness: Literal["deep", "lean"] = "deep"
 
 
 def _read_prompt(filename: str) -> str:

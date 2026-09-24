@@ -41,3 +41,9 @@ def test_prompts_load_with_shared_block(name):
 def test_unknown_spec_raises():
     with pytest.raises(KeyError):
         get_spec("wizard")
+
+
+def test_only_judging_roles_use_the_lean_harness():
+    lean = {name for name, spec in SPECS.items() if spec.harness == "lean"}
+    assert lean == {"critic", "reviewer"}
+    assert all(not SPECS[name].tools and not SPECS[name].writes_files for name in lean)

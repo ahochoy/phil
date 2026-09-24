@@ -48,9 +48,9 @@ class ContractViolation(Exception):
 def _resolve_factory(ctx: AgentContext) -> AgentFactory:
     if ctx.factory is not None:
         return ctx.factory
-    from phil.agents.factory import build_deep_agent
+    from phil.agents.factory import build_agent
 
-    return build_deep_agent
+    return build_agent
 
 
 def _validate(spec: AgentSpec, raw: object) -> tuple[Contract | None, list[str]]:

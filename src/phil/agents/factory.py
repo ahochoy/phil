@@ -16,9 +16,21 @@ def filesystem_permissions(spec: AgentSpec) -> list[Any]:
     return rules
 
 
-def build_deep_agent(
-    spec: AgentSpec, model: str, workdir: Path | None, tools: list[Callable[..., str]]
-) -> Any:
+def build_agent(spec: AgentSpec, model: str, workdir: Path | None, tools: list[Callable[..., str]]) -> Any:
+    if spec.harness == "lean":
+        return _build_lean_agent(spec, model, tools)
+    return _build_deep_agent(spec, model, workdir, tools)
+
+
+def _build_lean_agent(spec: AgentSpec, model: str, tools: list[Callable[..., str]]) -> Any:
+    if spec.tools or tools:
+        raise ValueError(f"{spec.name} uses the lean harness, which does not support tools")
+    from langchain.agents import create_agent
+
+    return create_agent(model, tools=[], system_prompt=load_prompt(spec), response_format=spec.out_contract)
+
+
+def _build_deep_agent(spec: AgentSpec, model: str, workdir: Path | None, tools: list[Callable[..., str]]) -> Any:
     from deepagents import create_deep_agent
     from deepagents.backends.filesystem import FilesystemBackend
 
