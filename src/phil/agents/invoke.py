@@ -74,7 +74,15 @@ def _retry_message(problems: list[str]) -> dict[str, str]:
 
 
 def _record_error(
-    ctx: AgentContext, *, spec: AgentSpec, model: str, node: str, attempt: int, packet: Packet, started: float
+    ctx: AgentContext,
+    *,
+    spec: AgentSpec,
+    model: str,
+    node: str,
+    attempt: int,
+    call: int,
+    packet: Packet,
+    started: float,
 ) -> None:
     record(
         ctx.conn,
@@ -91,6 +99,7 @@ def _record_error(
             latency_ms=int((time.monotonic() - started) * 1000),
             cost_usd=0.0,
             outcome="error",
+            call=call,
         ),
     )
 
@@ -102,10 +111,12 @@ def invoke_agent(
     *,
     node: str,
     task_id: str | None = None,
+    call: int = 1,
 ) -> Contract:
     model = ctx.config.model_for(spec.role)
     log = CommandLog()
-    log_prefix = artifact_name(node, task_id, 1)
+    effective_node = node if call == 1 else f"{node}-c{call}"
+    log_prefix = artifact_name(effective_node, task_id, 1)
     tools: list[Callable[..., str]] = []
     if "shell" in spec.tools and ctx.workdir is not None:
         tools.append(make_shell_tool(ctx.workdir, ctx.config.shell, log, ctx.artifacts, log_prefix=log_prefix))
@@ -114,7 +125,7 @@ def invoke_agent(
     messages: list[dict[str, str]] = [{"role": "user", "content": packet.render()}]
     problems: list[str] = []
     for attempt in (1, 2):
-        name = artifact_name(node, task_id, attempt)
+        name = artifact_name(effective_node, task_id, attempt)
         if ctx.artifacts is not None:
             ctx.artifacts.write("packets", name, packet)
         payload_messages = messages if attempt == 1 else [*messages, _retry_message(problems)]
@@ -122,7 +133,9 @@ def invoke_agent(
         try:
             result = call_with_retry(agent, {"messages": payload_messages}, sleep=ctx.sleep)
         except Exception:
-            _record_error(ctx, spec=spec, model=model, node=node, attempt=attempt, packet=packet, started=started)
+            _record_error(
+                ctx, spec=spec, model=model, node=node, attempt=attempt, call=call, packet=packet, started=started
+            )
             raise
         latency_ms = int((time.monotonic() - started) * 1000)
         output, problems = _validate(spec, result.get("structured_response"))
@@ -147,6 +160,7 @@ def invoke_agent(
                 latency_ms=latency_ms,
                 cost_usd=usage.cost_usd,
                 outcome=outcome,
+                call=call,
             ),
         )
         if output is not None and not problems:

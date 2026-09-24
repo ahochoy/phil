@@ -78,6 +78,19 @@ def test_shell_tool_given_only_to_shell_roles_with_workdir(config, conn, artifac
     assert factory.tools_seen == [[]]
 
 
+def test_call_discriminator_keeps_artifacts_and_telemetry_distinct(config, conn, artifacts, critic_packet):
+    factory = FakeAgentFactory([critique(), critique()])
+    invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic", call=1)
+    invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic", call=2)
+    assert (artifacts.run_dir / "packets" / "critic-run-1.json").exists()
+    assert (artifacts.run_dir / "packets" / "critic-c2-run-1.json").exists()
+    assert (artifacts.run_dir / "outputs" / "critic-run-1.json").exists()
+    assert (artifacts.run_dir / "outputs" / "critic-c2-run-1.json").exists()
+    rows = telemetry(conn)
+    assert [row["call"] for row in rows] == [1, 2]
+    assert [row["node"] for row in rows] == ["critic", "critic"]
+
+
 def test_shell_log_prefix_matches_artifact_base_name(conn, artifacts, tmp_path):
     (tmp_path / "hello.py").write_text("print('hi')\n")
     shell_config = ShellConfig(allow=[f"{shlex.quote(sys.executable)} *"])

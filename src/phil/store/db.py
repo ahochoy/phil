@@ -49,7 +49,10 @@ CREATE TABLE IF NOT EXISTS parked (
 );
 """
 
-MIGRATIONS: list[str] = [SCHEMA]
+MIGRATIONS: list[str] = [
+    SCHEMA,
+    "ALTER TABLE telemetry ADD COLUMN call INTEGER NOT NULL DEFAULT 1",
+]
 
 
 def _statements(script: str) -> list[str]:
