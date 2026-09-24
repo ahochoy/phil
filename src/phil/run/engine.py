@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, invoke_agent
 from phil.agents.registry import get_spec
@@ -51,8 +52,10 @@ class RunEngine:
         graph.add_edge(START, "setup")
         graph.add_edge("setup", "pick_task")
         graph.add_conditional_edges("pick_task", self.route_after_pick, ["implement", "finish"])
+        graph.add_node("escalate", self.escalate)
         graph.add_edge("implement", "verify")
-        graph.add_conditional_edges("verify", self.route_after_verify, ["implement", "commit"])
+        graph.add_conditional_edges("verify", self.route_after_verify, ["implement", "commit", "escalate"])
+        graph.add_conditional_edges("escalate", self.route_after_escalate, ["implement", "pick_task", "finish"])
         graph.add_edge("commit", "pick_task")
         graph.add_edge("finish", END)
         return graph.compile(checkpointer=checkpointer)
@@ -61,7 +64,9 @@ class RunEngine:
         return "implement" if state["task_index"] >= 0 else "finish"
 
     def route_after_verify(self, state: RunState) -> str:
-        return {"red_ok": "implement", "green_ok": "commit", "retry": "implement"}[state["verdict"]]
+        return {"red_ok": "implement", "green_ok": "commit", "retry": "implement", "escalate": "escalate"}[
+            state["verdict"]
+        ]
 
     # --- helpers -----------------------------------------------------------
 
@@ -193,12 +198,40 @@ class RunEngine:
         return self._failed_attempt(state, problems, report.model_dump())
 
     def _failed_attempt(self, state: RunState, problems: list[str], report: dict | None) -> dict:
-        return {
-            "attempts": state.get("attempts", 0) + 1,
-            "last_problems": problems,
-            "last_report": report,
-            "verdict": "retry",
-        }
+        attempts = state.get("attempts", 0) + 1
+        update = {"attempts": attempts, "last_problems": problems, "last_report": report, "verdict": "retry"}
+        if attempts >= self.deps.config.run.max_attempts_per_phase:
+            task = load_plan(state).tasks[state["task_index"]]
+            update["verdict"] = "escalate"
+            update["escalation"] = {
+                "reason": "attempts",
+                "task_id": task.id,
+                "phase": state["phase"],
+                "problems": problems,
+                "options": ["retry", "skip", "abort"],
+                "summary": f"{task.id} failed {attempts} attempts in the {state['phase']} phase",
+            }
+        return update
+
+    def escalate(self, state: RunState) -> dict:
+        escalation = state["escalation"]
+        self._update_run(state="escalated", current_node="escalate", needs_attention=escalation["summary"])
+        decision = interrupt(escalation)
+        action = decision.get("action")
+        if action not in escalation["options"]:
+            raise ValueError(f"unknown escalation action {action!r}; expected one of {escalation['options']}")
+        self._update_run(state="running", needs_attention=None)
+        cleared = {"escalation": None}
+        if action == "retry":
+            return {**cleared, "attempts": 0, "hint": decision.get("hint"), "next": "implement"}
+        if action == "skip":
+            self.worktrees.reset_to(self.deps.worktree, state["task_base_sha"])
+            plan = with_task_status(load_plan(state), state["task_index"], "SKIPPED")
+            return {**cleared, "plan": plan.model_dump(), "next": "pick_task"}
+        return {**cleared, "status": "aborted", "next": "finish"}
+
+    def route_after_escalate(self, state: RunState) -> str:
+        return state["next"]
 
     def commit(self, state: RunState) -> dict:
         plan = load_plan(state)
