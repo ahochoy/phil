@@ -7,13 +7,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
+from phil.agents.evidence import check_evidence
 from phil.agents.spec import AgentSpec
 from phil.agents.tools import CommandLog, make_shell_tool
 from phil.agents.usage import extract_usage
 from phil.config import PhilConfig
-from phil.contracts import Contract
+from phil.contracts import Contract, Ref
 from phil.packets import Packet
 from phil.store.artifacts import ArtifactStore, artifact_name
+from phil.store.parked import park
 from phil.store.telemetry import TelemetryRow, record
 
 AgentFactory = Callable[[AgentSpec, str, Path | None, list[Callable[..., str]]], Any]
@@ -97,7 +99,10 @@ def invoke_agent(
         latency_ms = int((time.monotonic() - started) * 1000)
         output, problems = _validate(spec, result.get("structured_response"))
         outcome = "ok" if not problems else "invalid"
-        # Task 10: evidence checks run here when output is not None.
+        if output is not None:
+            problems = check_evidence(output, commands=log.commands, workdir=ctx.workdir)
+            if problems:
+                outcome = "evidence_fail"
         usage = extract_usage(result.get("messages", []))
         record(
             ctx.conn,
@@ -117,8 +122,28 @@ def invoke_agent(
             ),
         )
         if output is not None and not problems:
+            output_path = ""
             if ctx.artifacts is not None:
-                ctx.artifacts.write("outputs", name, output)
-            # Task 10: ledger and parking-lot side effects run here.
+                output_path = str(ctx.artifacts.write("outputs", name, output))
+            _record_self_check(output, ctx, spec=spec, node=node, task_id=task_id, output_path=output_path)
             return output
     raise ContractViolation(spec.name, problems)
+
+
+def _record_self_check(
+    output: Contract, ctx: AgentContext, *, spec: AgentSpec, node: str, task_id: str | None, output_path: str
+) -> None:
+    self_check = getattr(output, "self_check", None)
+    if self_check is None:
+        return
+    if ctx.artifacts is not None and self_check.assumptions:
+        ctx.artifacts.append_assumptions(node=node, task_id=task_id, assumptions=self_check.assumptions)
+    for note in self_check.out_of_scope:
+        park(
+            ctx.conn,
+            raised_by=spec.name,
+            note=note,
+            why_not_now=f"out of scope for {node}",
+            source=Ref(label=f"{node} output", path=output_path),
+            run_id=ctx.run_id,
+        )
