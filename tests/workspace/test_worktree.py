@@ -45,6 +45,19 @@ def test_commit_all_advances_branch(setup, git_repo):
     assert manager.changed_files(worktree.path, since=sha) == []
 
 
+def test_commit_all_skips_hooks_and_signing(setup, git_repo):
+    manager, worktree, base = setup
+    run_git(git_repo, "config", "commit.gpgsign", "true")
+    run_git(git_repo, "config", "gpg.program", "false")
+    hook = git_repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    (worktree.path / "new.py").write_text("x = 1\n")
+    sha = manager.commit_all(worktree.path, "MAPS-001: add new")
+    assert sha != base
+    assert run_git(git_repo, "rev-parse", "phil/r-0001").strip() == sha
+
+
 def test_remove_deletes_worktree_and_branch(setup, git_repo):
     manager, worktree, _ = setup
     manager.remove(worktree)
