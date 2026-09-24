@@ -1,4 +1,4 @@
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from phil.contracts import Contract
 
@@ -12,7 +12,17 @@ def check_evidence(output: Contract, *, commands: list[str], workdir: Path | Non
             if claim.command and claim.command.strip() not in ran:
                 problems.append(f"claimed command was never run: {claim.command}")
     if workdir is not None:
+        resolved_workdir = workdir.resolve()
         for path in getattr(output, "tests_added", []):
-            if not (workdir / path).exists():
+            pure_path = PurePosixPath(path)
+            resolved_path = (workdir / path).resolve()
+            outside = (
+                pure_path.is_absolute()
+                or ".." in pure_path.parts
+                or not resolved_path.is_relative_to(resolved_workdir)
+            )
+            if outside:
+                problems.append(f"tests_added path is outside the worktree: {path}")
+            elif not resolved_path.exists():
                 problems.append(f"tests_added file does not exist: {path}")
     return problems
