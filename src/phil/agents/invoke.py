@@ -105,9 +105,10 @@ def invoke_agent(
 ) -> Contract:
     model = ctx.config.model_for(spec.role)
     log = CommandLog()
+    log_prefix = artifact_name(node, task_id, 1)
     tools: list[Callable[..., str]] = []
     if "shell" in spec.tools and ctx.workdir is not None:
-        tools.append(make_shell_tool(ctx.workdir, ctx.config.shell, log, ctx.artifacts))
+        tools.append(make_shell_tool(ctx.workdir, ctx.config.shell, log, ctx.artifacts, log_prefix=log_prefix))
     agent = _resolve_factory(ctx)(spec, model, ctx.workdir, tools)
 
     messages: list[dict[str, str]] = [{"role": "user", "content": packet.render()}]

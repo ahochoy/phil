@@ -18,6 +18,7 @@ def make_shell_tool(
     shell: ShellConfig,
     log: CommandLog,
     artifacts: ArtifactStore | None = None,
+    log_prefix: str = "",
 ) -> Callable[[str], str]:
     policy = ShellPolicy(shell.allow)
     env = child_env(os.environ, shell.pass_env)
@@ -38,7 +39,8 @@ def make_shell_tool(
         status = f"exit_code: {result.exit_code}" + (" (timed out)" if result.timed_out else "")
         lines = [status]
         if artifacts is not None:
-            path = artifacts.write_log(f"shell-{len(log.commands)}", full_output)
+            log_name = f"{log_prefix}-shell-{len(log.commands)}" if log_prefix else f"shell-{len(log.commands)}"
+            path = artifacts.write_log(log_name, full_output)
             lines.append(f"full log: {path}")
         lines.append(truncate_output(full_output, shell.max_output_lines))
         return "\n".join(lines)

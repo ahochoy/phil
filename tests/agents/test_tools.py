@@ -59,3 +59,23 @@ def test_tool_is_named_and_documented(tmp_path):
     run_shell = make_shell_tool(tmp_path, shell_config(), CommandLog())
     assert run_shell.__name__ == "run_shell"
     assert run_shell.__doc__
+
+
+def test_log_prefix_keeps_two_runs_from_overwriting_each_other(tmp_path):
+    (tmp_path / "a.py").write_text("print('a')\n")
+    (tmp_path / "b.py").write_text("print('b')\n")
+    artifacts = ArtifactStore(tmp_path / "run")
+    run_a = make_shell_tool(tmp_path, shell_config(), CommandLog(), artifacts, log_prefix="implement-T1-1")
+    run_b = make_shell_tool(tmp_path, shell_config(), CommandLog(), artifacts, log_prefix="implement-T2-1")
+    run_a(f"{PY} a.py")
+    run_b(f"{PY} b.py")
+    assert (tmp_path / "run" / "logs" / "implement-T1-1-shell-1.log").read_text().strip() == "a"
+    assert (tmp_path / "run" / "logs" / "implement-T2-1-shell-1.log").read_text().strip() == "b"
+
+
+def test_default_log_prefix_is_unchanged(tmp_path):
+    (tmp_path / "hello.py").write_text("print('hi')\n")
+    artifacts = ArtifactStore(tmp_path / "run")
+    run_shell = make_shell_tool(tmp_path, shell_config(), CommandLog(), artifacts)
+    run_shell(f"{PY} hello.py")
+    assert (tmp_path / "run" / "logs" / "shell-1.log").exists()

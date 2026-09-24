@@ -1,11 +1,15 @@
+import shlex
+import sys
+
 import pytest
 
-from phil.agents.fake import FakeAgentFactory
+from phil.agents.fake import FakeAgent, FakeAgentFactory
 from phil.agents.invoke import AgentContext, ContractViolation, invoke_agent
 from phil.agents.registry import get_spec
-from phil.config import DEFAULT_MODEL
-from phil.contracts import PlanCritique
-from tests.agents.conftest import critique
+from phil.config import DEFAULT_MODEL, PhilConfig, ShellConfig
+from phil.contracts import ImplementInput, PlanCritique, Task, TaskResult
+from phil.packets import build_packet
+from tests.agents.conftest import critique, self_check
 
 
 def telemetry(conn):
@@ -72,3 +76,24 @@ def test_shell_tool_given_only_to_shell_roles_with_workdir(config, conn, artifac
     factory = FakeAgentFactory([critique(), critique()])
     invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory, workdir=tmp_path), node="critic")
     assert factory.tools_seen == [[]]
+
+
+def test_shell_log_prefix_matches_artifact_base_name(conn, artifacts, tmp_path):
+    (tmp_path / "hello.py").write_text("print('hi')\n")
+    shell_config = ShellConfig(allow=[f"{shlex.quote(sys.executable)} *"])
+    config = PhilConfig(shell=shell_config)
+    captured: dict = {}
+
+    def factory(spec, model, workdir, tools):
+        captured["tools"] = tools
+        return FakeAgent([TaskResult(phase="red", summary="s", files_changed=[], tests_added=[], self_check=self_check())])
+
+    task = Task(id="CALC-001", description="Add subtract", acceptance_criteria=["subtract(3, 1) == 2"])
+    packet = build_packet("implementer", ImplementInput(task=task, phase="red", test_cmd="pytest"), budget_tokens=4000)
+    ctx = AgentContext(
+        config=config, conn=conn, layer="run", run_id="r-0001", artifacts=artifacts, factory=factory, workdir=tmp_path
+    )
+    invoke_agent(get_spec("implementer"), packet, ctx, node="implement", task_id="CALC-001")
+    [run_shell] = captured["tools"]
+    run_shell(f"{shlex.quote(sys.executable)} hello.py")
+    assert (artifacts.run_dir / "logs" / "implement-CALC-001-1-shell-1.log").exists()
