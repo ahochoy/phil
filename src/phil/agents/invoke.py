@@ -35,10 +35,11 @@ class AgentContext:
 
 
 class ContractViolation(Exception):
-    def __init__(self, agent: str, problems: list[str]) -> None:
+    def __init__(self, agent: str, problems: list[str], rejected_path: str | None = None) -> None:
         super().__init__(agent, problems)
         self.agent = agent
         self.problems = problems
+        self.rejected_path = rejected_path
 
     def __str__(self) -> str:
         return f"{self.agent} returned invalid output: {'; '.join(self.problems)}"
@@ -124,11 +125,14 @@ def invoke_agent(
 
     messages: list[dict[str, str]] = [{"role": "user", "content": packet.render()}]
     problems: list[str] = []
+    last_rejected_path: str | None = None
     for attempt in (1, 2):
         name = artifact_name(effective_node, task_id, attempt)
+        payload_messages = messages if attempt == 1 else [*messages, _retry_message(problems)]
         if ctx.artifacts is not None:
             ctx.artifacts.write("packets", name, packet)
-        payload_messages = messages if attempt == 1 else [*messages, _retry_message(problems)]
+            if attempt == 2:
+                ctx.artifacts.write_json("packets", f"{name}.retry", {"messages": payload_messages})
         started = time.monotonic()
         try:
             result = call_with_retry(agent, {"messages": payload_messages}, sleep=ctx.sleep)
@@ -163,13 +167,19 @@ def invoke_agent(
                 call=call,
             ),
         )
+        if problems and ctx.artifacts is not None:
+            raw = result.get("structured_response")
+            raw_data = raw.model_dump() if isinstance(raw, BaseModel) else raw
+            last_rejected_path = str(
+                ctx.artifacts.write_json("outputs", f"{name}.rejected", {"raw": raw_data, "problems": problems})
+            )
         if output is not None and not problems:
             output_path = ""
             if ctx.artifacts is not None:
                 output_path = str(ctx.artifacts.write("outputs", name, output))
             _record_self_check(output, ctx, spec=spec, node=node, task_id=task_id, output_path=output_path)
             return output
-    raise ContractViolation(spec.name, problems)
+    raise ContractViolation(spec.name, problems, last_rejected_path)
 
 
 def _record_self_check(

@@ -1,3 +1,4 @@
+import json
 import shlex
 import sys
 
@@ -63,6 +64,30 @@ def test_two_invalid_attempts_raise(config, conn, artifacts, critic_packet):
     assert excinfo.value.agent == "critic"
     assert excinfo.value.problems
     assert [row["outcome"] for row in telemetry(conn)] == ["invalid", "invalid"]
+
+
+def test_rejected_attempt_saves_raw_output_and_problems(config, conn, artifacts, critic_packet):
+    factory = FakeAgentFactory([{"verdict": "maybe"}, critique()])
+    invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic")
+    rejected = json.loads((artifacts.run_dir / "outputs" / "critic-run-1.rejected.json").read_text())
+    assert rejected["raw"] == {"verdict": "maybe"}
+    assert rejected["problems"]
+
+
+def test_second_attempt_saves_the_retry_payload(config, conn, artifacts, critic_packet):
+    factory = FakeAgentFactory([{"verdict": "maybe"}, critique()])
+    invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic")
+    retry = json.loads((artifacts.run_dir / "packets" / "critic-run-2.retry.json").read_text())
+    assert len(retry["messages"]) == 2
+    assert "verdict" in retry["messages"][1]["content"]
+
+
+def test_contract_violation_carries_last_rejected_path(config, conn, artifacts, critic_packet):
+    factory = FakeAgentFactory([None, {"verdict": "maybe"}])
+    with pytest.raises(ContractViolation) as excinfo:
+        invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic")
+    assert excinfo.value.rejected_path is not None
+    assert excinfo.value.rejected_path.endswith("critic-run-2.rejected.json")
 
 
 def test_works_without_artifacts_or_run(config, conn, critic_packet):
