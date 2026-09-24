@@ -2,10 +2,14 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 ROLES = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer")
 DEFAULT_MODEL = "openrouter:poolside/laguna-m.1:free"
+
+
+class ConfigError(Exception):
+    pass
 
 
 class _Section(BaseModel):
@@ -59,6 +63,31 @@ class PhilConfig(_Section):
     shell: ShellConfig = ShellConfig()
     project: ProjectConfig = ProjectConfig()
 
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_default_models(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        data["models"] = {role: DEFAULT_MODEL for role in ROLES} | (data.get("models") or {})
+        return data
+
+    @field_validator("models")
+    @classmethod
+    def _validate_model_roles(cls, value: dict[str, str]) -> dict[str, str]:
+        unknown = sorted(set(value) - set(ROLES))
+        if unknown:
+            raise ValueError(f"Unknown role(s) in [models]: {unknown}. Valid roles: {list(ROLES)}")
+        return value
+
+    @field_validator("budget")
+    @classmethod
+    def _validate_budget_roles(cls, value: dict[str, RoleBudget]) -> dict[str, RoleBudget]:
+        unknown = sorted(set(value) - set(ROLES))
+        if unknown:
+            raise ValueError(f"Unknown role(s) in [budget]: {unknown}. Valid roles: {list(ROLES)}")
+        return value
+
     def model_for(self, role: str) -> str:
         return self.models[role]
 
@@ -70,6 +99,11 @@ def load_config(repo_root: Path) -> PhilConfig:
     path = repo_root / "phil.toml"
     if not path.exists():
         return PhilConfig()
-    data = tomllib.loads(path.read_text())
-    models = {role: DEFAULT_MODEL for role in ROLES} | data.pop("models", {})
-    return PhilConfig(models=models, **data)
+    try:
+        data = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"Invalid phil.toml: {exc}") from exc
+    try:
+        return PhilConfig(**data)
+    except ValidationError as exc:
+        raise ConfigError(f"Invalid phil.toml: {exc}") from exc

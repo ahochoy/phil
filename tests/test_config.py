@@ -1,7 +1,6 @@
 import pytest
-from pydantic import ValidationError
 
-from phil.config import DEFAULT_MODEL, ROLES, load_config
+from phil.config import DEFAULT_MODEL, ROLES, ConfigError, load_config
 
 
 def test_missing_file_gives_defaults(tmp_path):
@@ -35,10 +34,28 @@ def test_sections_are_loaded(tmp_path):
 
 def test_invalid_tester_mode_is_rejected(tmp_path):
     (tmp_path / "phil.toml").write_text('[run]\ntester_mode = "sometimes"\n')
-    with pytest.raises(ValidationError):
+    with pytest.raises(ConfigError):
         load_config(tmp_path)
 
 
 def test_unknown_role_raises(tmp_path):
     with pytest.raises(KeyError):
         load_config(tmp_path).model_for("wizard")
+
+
+def test_typo_model_role_raises_config_error(tmp_path):
+    (tmp_path / "phil.toml").write_text('[models]\nimplmenter = "openrouter:cheap/model"\n')
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
+
+
+def test_typo_budget_role_raises_config_error(tmp_path):
+    (tmp_path / "phil.toml").write_text("[budget.implmenter]\nmax_input_tokens = 8000\n")
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
+
+
+def test_malformed_toml_raises_config_error(tmp_path):
+    (tmp_path / "phil.toml").write_text("[run\ntester_mode = run\n")
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
