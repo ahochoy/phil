@@ -4,7 +4,7 @@ from phil.config import PhilConfig
 from phil.contracts import Issue, Task, TesterReport
 from phil.run.state import load_plan
 from tests.helpers import run_git
-from tests.run.conftest import calc_plan, self_check, task_result, tester_report, write_green, write_red
+from tests.run.conftest import calc_plan, review, self_check, task_result, tester_report, write_green, write_red
 
 
 def write_edge_test(turn):
@@ -54,7 +54,9 @@ def write_green_fix(turn):
 
 
 def test_tester_tests_are_committed(make_harness, calc_repo):
-    harness = make_harness({"implementer": [write_red, write_green], "tester": [write_edge_test]})
+    harness = make_harness(
+        {"implementer": [write_red, write_green], "tester": [write_edge_test], "reviewer": [review()]}
+    )
     final = harness.start()
     assert final["status"] == "completed"
     assert final["tester_done"] is True
@@ -68,6 +70,7 @@ def test_major_issue_becomes_a_fix_task(make_harness):
     harness = make_harness({
         "implementer": [write_red, write_green, red_multiply, green_multiply],
         "tester": [tester_report([issue])],
+        "reviewer": [review()],
     })
     final = harness.start()
     tasks = load_plan(final).tasks
@@ -80,7 +83,7 @@ def test_tester_product_changes_are_reverted(make_harness):
         (turn.workdir / "calc.py").write_text("broken = True\n")
         return tester_report([Issue(severity="minor", note="naming")])
 
-    harness = make_harness({"implementer": [write_red, write_green], "tester": [meddle]})
+    harness = make_harness({"implementer": [write_red, write_green], "tester": [meddle], "reviewer": [review()]})
     final = harness.start()
     assert "def subtract" in (harness.deps.worktree / "calc.py").read_text()
     notes = [issue["note"] for issue in final["open_issues"]]
@@ -91,7 +94,12 @@ def test_tester_product_changes_are_reverted(make_harness):
 def test_task_plus_run_mode_audits_each_original_task(make_harness):
     config = PhilConfig.model_validate({"run": {"tester_mode": "task+run"}})
     harness = make_harness(
-        {"implementer": [write_red, write_green], "tester": [tester_report(), tester_report()]}, config=config
+        {
+            "implementer": [write_red, write_green],
+            "tester": [tester_report(), tester_report()],
+            "reviewer": [review()],
+        },
+        config=config,
     )
     final = harness.start()
     assert final["status"] == "completed"
@@ -105,6 +113,7 @@ def test_tester_failures_do_not_fail_later_tasks(make_harness):
         {
             "implementer": [write_red, write_green, red_multiply, green_multiply, write_red_fix, write_green_fix],
             "tester": [failing_edge_test, tester_report(), tester_report()],
+            "reviewer": [review()],
         },
         plan=calc_plan(multiply),
         config=config,
@@ -120,7 +129,13 @@ def test_tester_resumes_cleanly_after_a_crash(make_harness):
         (turn.workdir / "tests" / "test_edge.py").write_text("x = 1\n")
         raise RuntimeError("process died")
 
-    harness = make_harness({"implementer": [write_red, write_green], "tester": [crash_after_writing, tester_report()]})
+    harness = make_harness(
+        {
+            "implementer": [write_red, write_green],
+            "tester": [crash_after_writing, tester_report()],
+            "reviewer": [review()],
+        }
+    )
     with pytest.raises(RuntimeError, match="process died"):
         harness.start()
     final = harness.graph.invoke(None, harness.thread)

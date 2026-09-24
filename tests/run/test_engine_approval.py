@@ -2,7 +2,7 @@ import shlex
 import sys
 
 from tests.helpers import run_git
-from tests.run.conftest import tester_report, write_green, write_red
+from tests.run.conftest import review, tester_report, write_green, write_red
 
 BUILD = f"{shlex.quote(sys.executable)} tools/build.py"
 
@@ -26,7 +26,11 @@ def test_denied_command_escalates_then_approval_allows_it(make_harness, calc_rep
     add_build_script(calc_repo)
     outputs: list[str] = []
     harness = make_harness(
-        {"implementer": [red_with_build(outputs), red_with_build(outputs), write_green], "tester": [tester_report()]}
+        {
+            "implementer": [red_with_build(outputs), red_with_build(outputs), write_green],
+            "tester": [tester_report()],
+            "reviewer": [review()],
+        }
     )
     escalation = harness.start()["__interrupt__"][0].value
     assert escalation["reason"] == "approval"
@@ -44,7 +48,9 @@ def test_denied_command_escalates_then_approval_allows_it(make_harness, calc_rep
 def test_deny_continues_to_verify_with_a_hint(make_harness, calc_repo):
     add_build_script(calc_repo)
     outputs: list[str] = []
-    harness = make_harness({"implementer": [red_with_build(outputs), write_green], "tester": [tester_report()]})
+    harness = make_harness(
+        {"implementer": [red_with_build(outputs), write_green], "tester": [tester_report()], "reviewer": [review()]}
+    )
     harness.start()
     final = harness.resume({"action": "deny"})
     assert final["status"] == "completed"
