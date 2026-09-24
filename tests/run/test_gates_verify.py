@@ -1,7 +1,9 @@
+from phil.config import ProjectConfig
 from phil.contracts import TestReport
-from phil.run.gates import snapshot_tests, verify_green, verify_red
+from phil.run.gates import is_test_path, snapshot_tests, verify_green, verify_red
 
 GLOBS = ["tests/*", "test_*.py"]
+DEFAULT_GLOBS = ProjectConfig().test_globs
 
 
 def report(new=(), failures=()) -> TestReport:
@@ -47,3 +49,22 @@ def test_snapshot_hashes_test_files_and_marks_deletions(tmp_path):
     assert set(snap) == {"tests/test_a.py", "tests/test_gone.py"}
     assert len(snap["tests/test_a.py"]) == 64
     assert snap["tests/test_gone.py"] == "<deleted>"
+
+
+def test_test_config_files_count_as_test_paths():
+    for path in ["conftest.py", "tests/conftest.py", "pkg/conftest.py", "pytest.ini", "tox.ini", "jest.config.js"]:
+        assert is_test_path(path, DEFAULT_GLOBS), path
+    for path in ["pyproject.toml", "setup.cfg", "calc.py"]:
+        assert not is_test_path(path, DEFAULT_GLOBS), path
+
+
+def test_green_rejects_a_new_collection_hook(tmp_path):
+    (tmp_path / "conftest.py").write_text("def pytest_collection_modifyitems(items):\n    items.clear()\n")
+    red = {"tests/test_sub.py": "abc"}
+    now = {**red, **snapshot_tests(tmp_path, ["conftest.py"], DEFAULT_GLOBS)}
+    assert verify_green(report(), red, now) == ["green phase modified test files: conftest.py"]
+
+
+def test_red_may_add_a_conftest_fixture():
+    changed = ["conftest.py", "tests/test_sub.py"]
+    assert verify_red(changed, report(new=["tests/test_sub.py"], failures=["tests/test_sub.py"]), DEFAULT_GLOBS) == []

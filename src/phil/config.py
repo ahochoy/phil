@@ -54,6 +54,11 @@ class ProjectConfig(_Section):
         "*.test.ts",
         "*.spec.ts",
         "*_test.go",
+        "conftest.py",
+        "pytest.ini",
+        "tox.ini",
+        "jest.config.*",
+        "vitest.config.*",
     ]
 
 
