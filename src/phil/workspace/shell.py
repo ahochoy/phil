@@ -41,19 +41,30 @@ def run_command(command: str, cwd: Path, timeout_s: float) -> ShellResult:
     def elapsed() -> int:
         return int((time.monotonic() - started) * 1000)
 
+    if not cwd.is_dir():
+        return ShellResult(command, 2, "", f"working directory does not exist: {cwd}", False, elapsed())
+
+    try:
+        args = shlex.split(command)
+    except ValueError as exc:
+        return ShellResult(command, 2, "", str(exc), False, elapsed())
+
     try:
         proc = subprocess.Popen(
-            shlex.split(command),
+            args,
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             start_new_session=True,
         )
     except FileNotFoundError as exc:
         return ShellResult(command, 127, "", str(exc), False, elapsed())
-    except ValueError as exc:
-        return ShellResult(command, 2, "", str(exc), False, elapsed())
+    except PermissionError as exc:
+        return ShellResult(command, 126, "", str(exc), False, elapsed())
+    except OSError as exc:
+        return ShellResult(command, 126, "", str(exc), False, elapsed())
     try:
         stdout, stderr = proc.communicate(timeout=timeout_s)
         return ShellResult(command, proc.returncode, stdout, stderr, False, elapsed())

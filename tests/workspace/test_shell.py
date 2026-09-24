@@ -71,3 +71,32 @@ def test_run_command_malformed_quoting(tmp_path):
     assert result.exit_code == 2
     assert not result.ok
     assert "quotation" in result.stderr
+
+
+def test_run_command_replaces_invalid_utf8(tmp_path):
+    result = run_command(
+        f"{PY} -c \"import sys; sys.stdout.buffer.write(b'\\xff\\xfe')\"",
+        cwd=tmp_path,
+        timeout_s=10,
+    )
+    assert result.ok
+    assert result.exit_code == 0
+    assert "�" in result.stdout
+
+
+def test_run_command_missing_cwd(tmp_path):
+    missing = tmp_path / "does-not-exist"
+    result = run_command(f"{PY} -c \"print('hi')\"", cwd=missing, timeout_s=10)
+    assert result.exit_code == 2
+    assert not result.ok
+    assert "working directory does not exist" in result.stderr
+    assert str(missing) in result.stderr
+
+
+def test_run_command_non_executable_file(tmp_path):
+    script = tmp_path / "not-executable.sh"
+    script.write_text("#!/bin/sh\necho hi\n")
+    script.chmod(0o644)
+    result = run_command(str(script), cwd=tmp_path, timeout_s=10)
+    assert result.exit_code == 126
+    assert not result.ok
