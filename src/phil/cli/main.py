@@ -1,3 +1,6 @@
+import importlib
+import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -96,3 +99,30 @@ def schema(out: Path = typer.Option(Path("phil-schemas"), "--out", help="Output 
     """Export JSON Schema for every contract."""
     paths = export_schemas(out)
     console.print(f"Wrote [phil.id]{len(paths)}[/] schemas to {escape(str(out))}")
+
+
+def _factory_from_env():
+    target = os.environ.get("PHIL_AGENT_FACTORY")
+    if not target:
+        return None
+    module_name, _, attr = target.partition(":")
+    return getattr(importlib.import_module(module_name), attr)()
+
+
+@app.command("_worker", hidden=True)
+def worker(
+    ctx: typer.Context,
+    run_id: str,
+    mode: str = typer.Option(..., "--mode"),
+    decision: str | None = typer.Option(None, "--decision"),
+) -> None:
+    """Drive a run until it pauses, finishes, stops, or fails (internal)."""
+    from phil.run.worker import WorkerError, run_worker
+
+    start = ctx.obj.get("repo") or Path.cwd()
+    try:
+        outcome = run_worker(start, run_id, mode, json.loads(decision) if decision else None, factory=_factory_from_env())
+    except WorkerError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(2) from exc
+    console.print(f"{escape(run_id)}: {escape(outcome.status)}")
