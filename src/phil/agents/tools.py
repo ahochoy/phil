@@ -22,7 +22,7 @@ def make_shell_tool(
     log_prefix: str = "",
 ) -> Callable[[str], str]:
     policy = ShellPolicy(shell.allow)
-    env = child_env(os.environ, shell.pass_env)
+    env = child_env(os.environ, shell.pass_env) | {"PYTHONDONTWRITEBYTECODE": "1"}
 
     def run_shell(command: str) -> str:
         """Run one allowlisted command in the task worktree.
