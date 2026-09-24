@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from phil.repo import resolve_repo
-from phil.run.launch import is_worker_alive, prepare_run, spawn_worker, worker_command
+from phil.run.launch import is_worker_alive, prepare_run, spawn_worker, worker_command, worker_starting
 from phil.store.db import connect, utcnow
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
@@ -47,6 +47,8 @@ def test_spawn_worker_passes_env_through_unchanged(calc_repo, monkeypatch):
         captured.append(kwargs)
 
         class FakeProc:
+            pid = 999999
+
             def wait(self, timeout=None):
                 return 0
 
@@ -98,3 +100,37 @@ def test_is_worker_alive(calc_repo):
     done = subprocess.Popen([sys.executable, "-c", "pass"])
     done.wait()
     assert not is_worker_alive(replace(me, pid=done.pid))
+
+
+def test_worker_starting_with_no_spawn_event(calc_repo):
+    info, record = new_run(calc_repo)
+    assert not worker_starting(run_events(ProjectPaths(info.slug), record.run_id))
+
+
+def test_worker_starting_with_a_live_pid(calc_repo):
+    info, record = new_run(calc_repo)
+    events = run_events(ProjectPaths(info.slug), record.run_id)
+    events.append("spawn", pid=os.getpid(), mode="start")
+    assert worker_starting(events)
+
+
+def test_worker_starting_with_a_reaped_pid(calc_repo):
+    info, record = new_run(calc_repo)
+    events = run_events(ProjectPaths(info.slug), record.run_id)
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait()
+    events.append("spawn", pid=done.pid, mode="start")
+    assert not worker_starting(events)
+
+
+def test_spawn_worker_appends_a_spawn_event(calc_repo):
+    info, record = new_run(calc_repo)
+    proc = spawn_worker(calc_repo, record.run_id, "start", env=worker_env("happy"))
+    try:
+        events = run_events(ProjectPaths(info.slug), record.run_id)
+        event = events.latest("spawn")
+        assert event is not None
+        assert event["pid"] == proc.pid
+        assert event["mode"] == "start"
+    finally:
+        proc.wait(timeout=180)

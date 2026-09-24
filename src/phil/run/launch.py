@@ -9,6 +9,7 @@ from phil.contracts import Plan
 from phil.repo import RepoInfo, resolve_repo
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
+from phil.store.events import EventLog, run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, create_run, new_run_id
 
@@ -45,10 +46,11 @@ def spawn_worker(
     repo_root: Path, run_id: str, mode: str, decision: dict | None = None, *, env: dict | None = None
 ) -> subprocess.Popen:
     info = resolve_repo(repo_root)
-    log_path = ProjectPaths(info.slug).run_dir(run_id) / "logs" / "worker.log"
+    paths = ProjectPaths(info.slug)
+    log_path = paths.run_dir(run_id) / "logs" / "worker.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("ab") as log:
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             worker_command(info.root, run_id, mode, decision),
             cwd=info.root,
             stdin=subprocess.DEVNULL,
@@ -57,6 +59,8 @@ def spawn_worker(
             start_new_session=True,
             env=env,
         )
+    run_events(paths, run_id).append("spawn", pid=proc.pid, mode=mode)
+    return proc
 
 
 def is_worker_alive(record: RunRecord, *, stale_after_s: float = 30.0) -> bool:
@@ -72,3 +76,23 @@ def is_worker_alive(record: RunRecord, *, stale_after_s: float = 30.0) -> bool:
         return True
     age = (datetime.now(UTC) - datetime.fromisoformat(record.heartbeat_at)).total_seconds()
     return age <= stale_after_s
+
+
+def worker_starting(events: EventLog) -> bool:
+    """True while a just-spawned worker hasn't yet taken the run row to `running`.
+
+    `spawn_worker` records a `spawn` event with its child's pid immediately after Popen
+    succeeds, before the worker process itself has had a chance to update the run row. This
+    closes that race window: a run row that still reads `stopped`/`failed` can, in fact,
+    already have a live worker on the way to `running`.
+    """
+    event = events.latest("spawn")
+    if event is None:
+        return False
+    try:
+        os.kill(event["pid"], 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True

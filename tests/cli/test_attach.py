@@ -2,7 +2,7 @@ from typer.testing import CliRunner
 
 from phil.agents.fake import ScriptedAgentFactory
 from phil.cli import main as cli
-from phil.cli.attach import AttachIO, attach
+from phil.cli.attach import AttachIO, attach, render_event
 from phil.repo import resolve_repo
 from phil.run.launch import prepare_run
 from phil.run.worker import run_worker
@@ -67,3 +67,11 @@ def test_attach_command_prompts_for_a_decision(calc_repo, monkeypatch):
     result = CliRunner().invoke(cli.app, ["--repo", str(calc_repo), "attach", record.run_id], input="retry\nuse a minus sign\n")
     assert result.exit_code == 0, result.output
     assert get_run(connect(ProjectPaths(info.slug).db_path), record.run_id).state == "completed"
+
+
+def test_render_event_handles_the_spawn_kind_without_raising():
+    console = make_console(record=True, width=120)
+    render_event(console, {"kind": "spawn", "pid": 4242, "mode": "resume"})
+    text = console.export_text()
+    assert "4242" in text
+    assert "resume" in text

@@ -36,6 +36,8 @@ def render_event(console: Console, event: dict) -> None:
             console.print(f"[phil.error]{escape(escalation['error'])}[/]")
     elif kind == "worker":
         console.print(f"[phil.muted]worker {event.get('pid')} ({escape(str(event.get('mode')))})[/]")
+    elif kind == "spawn":
+        console.print(f"[phil.muted]spawning worker {event.get('pid')} ({escape(str(event.get('mode')))})[/]")
     elif kind == "outcome":
         console.print(f"[phil.muted]worker finished: {escape(str(event.get('status')))}[/]")
 

@@ -19,7 +19,7 @@ from phil.contracts import Plan
 from phil.contracts.schema import export_schemas
 from phil.git import GitError, git
 from phil.repo import RepoError, RepoInfo, resolve_repo
-from phil.run.launch import is_worker_alive, prepare_run, spawn_worker
+from phil.run.launch import is_worker_alive, prepare_run, spawn_worker, worker_starting
 from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.parked import list_parked
@@ -377,14 +377,26 @@ def clean(
         )
         raise typer.Exit(1)
     paths = ProjectPaths(info.slug)
+    if is_worker_alive(record) or worker_starting(run_events(paths, run_id)):
+        console.print(f"[phil.error]{escape(run_id)} has a worker running; stop it first[/]")
+        raise typer.Exit(1)
     manager = WorktreeManager(info.root)
     worktree = Path(record.worktree)
     if worktree.exists():
         manager.remove(Worktree(worktree, record.branch, record.base_sha), delete_branch=False)
+    else:
+        git(info.root, "worktree", "prune")
     try:
-        git(info.root, "branch", "-D", record.branch)
+        git(info.root, "show-ref", "--verify", "--quiet", f"refs/heads/{record.branch}")
+        branch_exists = True
     except GitError:
-        pass
+        branch_exists = False
+    if branch_exists:
+        try:
+            git(info.root, "branch", "-D", record.branch)
+        except GitError as exc:
+            console.print(f"[phil.error]{escape(str(exc))}[/]")
+            raise typer.Exit(1) from exc
     manager.delete_refs(f"refs/phil/{run_id}/")
     saver = open_checkpointer(paths.db_path)
     try:
