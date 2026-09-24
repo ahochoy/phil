@@ -334,9 +334,12 @@ Rules:
   [shell]
   allow = ["pytest", "pytest *", "uv run pytest", "uv run pytest *", "npm test", "git status", "git diff", "git diff *"]
   timeout_s = 300
+  pass_env = []                  # secret-looking variables to pass through anyway
   ```
 
   Allow patterns match on argv: the program name must match exactly, remaining arguments are glob-matched per token, and a final `*` matches any remaining arguments; risky flags (`--output`, `--no-index`, `--ext-diff`, `--prefix`, `-c`, `-e`) are always denied.
+
+  **Child-process environment:** commands inherit Phil's environment minus secret-looking variables: any name containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, or `AUTH` (case-insensitive) is removed. Names listed in `[shell] pass_env` are passed through even if they match. This keeps provider API keys out of reach of agent-written test code.
 
 - **Large tool output is offloaded:** shell and test output over a threshold is trimmed to its beginning and end plus failure lines; the full log goes to `runs/<id>/logs/` and the agent receives the path.
 - Built-in deepagents summarization and large-result offloading are used within a single agent call.
