@@ -13,7 +13,7 @@ from phil.agents.registry import get_spec
 from phil.agents.tools import CommandLog
 from phil.config import PhilConfig
 from phil.contracts import ImplementInput, Issue, ReviewInput, TesterInput, TestReport
-from phil.git import branch_for
+from phil.git import GitError, branch_for
 from phil.packets import PacketTooLarge, build_packet
 from phil.run.gates import is_test_path, run_tests, snapshot_tests, verify_green, verify_red
 from phil.run.state import RunState, issues_to_tasks, load_plan, next_todo, render_summary, with_task_status
@@ -63,9 +63,9 @@ class RunEngine:
         graph.add_conditional_edges(
             "escalate",
             self.route_after_escalate,
-            ["implement", "verify", "pick_task", "finish", "tester", "tester_task", "review"],
+            ["implement", "verify", "pick_task", "finish", "tester", "tester_task", "review", "commit"],
         )
-        graph.add_conditional_edges("commit", self.route_after_commit, ["tester_task", "pick_task"])
+        graph.add_conditional_edges("commit", self.route_after_commit, ["tester_task", "pick_task", "escalate"])
         graph.add_conditional_edges("tester", self.route_after_tester, ["pick_task", "escalate"])
         graph.add_conditional_edges("tester_task", self.route_after_tester, ["pick_task", "escalate"])
         graph.add_edge("finish", END)
@@ -112,6 +112,22 @@ class RunEngine:
 
     def _budget(self, role: str) -> int:
         return self.deps.config.budget_for(role).max_input_tokens
+
+    def _sign(self) -> bool | None:
+        value = self.deps.config.git.sign_commits
+        return None if value == "auto" else value
+
+    def _commit(self, message: str, bypass: bool) -> None:
+        self.worktrees.commit_all(
+            self.deps.worktree,
+            message,
+            sign=False if bypass else self._sign(),
+            run_hooks=False if bypass else self.deps.config.git.run_hooks,
+        )
+
+    @staticmethod
+    def _first_stderr_line(exc: GitError) -> str:
+        return next((line.strip() for line in exc.stderr.splitlines() if line.strip()), "") or str(exc)
 
     def _budget_escalation(self, state: RunState, node: str) -> dict | None:
         tokens, cost = run_totals(self.deps.conn, self.deps.run_id)
@@ -284,6 +300,8 @@ class RunEngine:
         cleared = {"escalation": None}
         if action == "retry":
             return {**cleared, "attempts": 0, "hint": decision.get("hint"), "next": escalation.get("resume_to", "implement")}
+        if action == "bypass":
+            return {**cleared, "commit_bypass": True, "next": escalation["resume_to"]}
         if action == "finish":
             note = Issue(severity="major", note="review not completed")
             return {**cleared, "open_issues": [*state.get("open_issues", []), note.model_dump()], "next": "finish"}
@@ -318,12 +336,34 @@ class RunEngine:
         task = plan.tasks[index]
         worktree = self.deps.worktree
         if self.worktrees.changed_files(worktree, since=self.worktrees.head(worktree)):
-            self.worktrees.commit_all(worktree, f"{task.id}: {task.description}")
+            try:
+                self._commit(f"{task.id}: {task.description}", bypass=state.get("commit_bypass", False))
+            except GitError as exc:
+                config = self.deps.config.git
+                detail = self._first_stderr_line(exc)
+                return {
+                    "escalation": {
+                        "reason": "commit_failed",
+                        "task_id": task.id,
+                        "options": ["retry", "bypass", "abort"],
+                        "resume_to": "commit",
+                        "problems": [exc.stderr.strip() or str(exc)],
+                        "summary": (
+                            f"commit for {task.id} failed: {detail} "
+                            f"(sign_commits={config.sign_commits}, run_hooks={config.run_hooks})"
+                        ),
+                    }
+                }
         plan = with_task_status(plan, index, "DONE")
         done = sum(1 for item in plan.tasks if item.status == "DONE")
         self._update_run(current_node="commit", tasks_done=done, tasks_total=len(plan.tasks))
         passed = TestReport.model_validate(state["last_report"])
-        return {"plan": plan.model_dump(), "base_passed": passed.passed_count, "base_skipped": passed.skipped_count}
+        return {
+            "plan": plan.model_dump(),
+            "base_passed": passed.passed_count,
+            "base_skipped": passed.skipped_count,
+            "commit_bypass": False,
+        }
 
     def _run_tester(self, state: RunState, diff_base: str, node: str) -> dict:
         plan = load_plan(state)
@@ -353,7 +393,11 @@ class RunEngine:
             self.worktrees.restore(worktree, product)
             notes.append(Issue(severity="minor", note=f"tester changed product files; reverted: {', '.join(product)}"))
         if self.worktrees.changed_files(worktree, since=head_before):
-            self.worktrees.commit_all(worktree, f"{plan.keyword}: tests from tester")
+            try:
+                self._commit(f"{plan.keyword}: tests from tester", bypass=False)
+            except GitError as exc:
+                self.worktrees.reset_to(worktree, head_before)
+                notes.append(Issue(severity="major", note=f"tester tests not committed: {self._first_stderr_line(exc)}"))
         after = self._test(state, artifact_name(f"{node}-after", None, seq))
         notes += [Issue(severity="minor", note=f"tester command not approved: {cmd}") for cmd in log.denied]
         blocking = [issue for issue in issues if issue.severity in ("blocker", "major")]
@@ -383,6 +427,8 @@ class RunEngine:
         return "escalate" if state.get("escalation") else "pick_task"
 
     def route_after_commit(self, state: RunState) -> str:
+        if state.get("escalation"):
+            return "escalate"
         task = load_plan(state).tasks[state["task_index"]]
         audit = self.deps.config.run.tester_mode == "task+run" and task.id in state.get("original_task_ids", [])
         return "tester_task" if audit else "pick_task"

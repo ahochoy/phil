@@ -35,6 +35,7 @@ class RunState(TypedDict, total=False):
     budget_limit_cost: float | None
     original_task_ids: list[str]
     open_issues: list[dict[str, Any]]
+    commit_bypass: bool
 
 
 def initial_state(run_id: str, plan: Plan, base_sha: str, test_cmd: str) -> RunState:
@@ -70,6 +71,7 @@ def initial_state(run_id: str, plan: Plan, base_sha: str, test_cmd: str) -> RunS
         budget_limit_cost=None,
         original_task_ids=[task.id for task in plan.tasks],
         open_issues=[],
+        commit_bypass=False,
     )
 
 
