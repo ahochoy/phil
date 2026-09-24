@@ -19,6 +19,7 @@ from phil.run.gates import is_test_path, run_tests, snapshot_tests, verify_green
 from phil.run.state import RunState, issues_to_tasks, load_plan, next_todo, render_summary, with_task_status
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.runs import update_run
+from phil.store.telemetry import run_totals
 from phil.workspace.worktree import WorktreeManager
 
 
@@ -55,16 +56,18 @@ class RunEngine:
         graph.add_edge(START, "setup")
         graph.add_edge("setup", "pick_task")
         graph.add_conditional_edges("pick_task", self.route_after_pick, ["implement", "tester", "review"])
-        graph.add_conditional_edges("review", self.route_after_review, ["pick_task", "finish"])
+        graph.add_conditional_edges("review", self.route_after_review, ["pick_task", "finish", "escalate"])
         graph.add_node("escalate", self.escalate)
         graph.add_conditional_edges("implement", self.route_after_implement, ["verify", "escalate"])
         graph.add_conditional_edges("verify", self.route_after_verify, ["implement", "commit", "escalate"])
         graph.add_conditional_edges(
-            "escalate", self.route_after_escalate, ["implement", "verify", "pick_task", "finish"]
+            "escalate",
+            self.route_after_escalate,
+            ["implement", "verify", "pick_task", "finish", "tester", "tester_task", "review"],
         )
         graph.add_conditional_edges("commit", self.route_after_commit, ["tester_task", "pick_task"])
-        graph.add_edge("tester", "pick_task")
-        graph.add_edge("tester_task", "pick_task")
+        graph.add_conditional_edges("tester", self.route_after_tester, ["pick_task", "escalate"])
+        graph.add_conditional_edges("tester_task", self.route_after_tester, ["pick_task", "escalate"])
         graph.add_edge("finish", END)
         return graph.compile(checkpointer=checkpointer)
 
@@ -110,6 +113,23 @@ class RunEngine:
     def _budget(self, role: str) -> int:
         return self.deps.config.budget_for(role).max_input_tokens
 
+    def _budget_escalation(self, state: RunState, node: str) -> dict | None:
+        if state.get("budget_override"):
+            return None
+        tokens, cost = run_totals(self.deps.conn, self.deps.run_id)
+        limits = self.deps.config.run
+        if tokens < limits.max_tokens and cost < limits.max_cost_usd:
+            return None
+        return {
+            "reason": "budget",
+            "options": ["continue", "abort"],
+            "resume_to": node,
+            "summary": (
+                f"run used {tokens} tokens (${cost:.2f}); "
+                f"limit {limits.max_tokens} tokens / ${limits.max_cost_usd:.2f}"
+            ),
+        }
+
     # --- nodes -------------------------------------------------------------
 
     def setup(self, state: RunState) -> dict:
@@ -142,6 +162,8 @@ class RunEngine:
         }
 
     def implement(self, state: RunState) -> dict:
+        if (escalation := self._budget_escalation(state, "implement")) is not None:
+            return {"escalation": escalation}
         if state["phase"] == "red":
             self.worktrees.reset_to(self.deps.worktree, state["task_base_sha"])
         else:
@@ -262,6 +284,8 @@ class RunEngine:
         if action == "deny":
             hint = f"Not approved: {', '.join(escalation['commands'])}. Do not use them."
             return {**cleared, "denied": [], "hint": hint, "next": "verify"}
+        if action == "continue":
+            return {**cleared, "budget_override": True, "next": escalation["resume_to"]}
         return {**cleared, "status": "aborted", "next": "finish"}
 
     def route_after_escalate(self, state: RunState) -> str:
@@ -322,10 +346,17 @@ class RunEngine:
         }
 
     def tester(self, state: RunState) -> dict:
+        if (escalation := self._budget_escalation(state, "tester")) is not None:
+            return {"escalation": escalation}
         return {**self._run_tester(state, state["base_sha"], "tester"), "tester_done": True}
 
     def tester_task(self, state: RunState) -> dict:
+        if (escalation := self._budget_escalation(state, "tester_task")) is not None:
+            return {"escalation": escalation}
         return self._run_tester(state, state["task_base_sha"], "tester_task")
+
+    def route_after_tester(self, state: RunState) -> str:
+        return "escalate" if state.get("escalation") else "pick_task"
 
     def route_after_commit(self, state: RunState) -> str:
         task = load_plan(state).tasks[state["task_index"]]
@@ -333,6 +364,8 @@ class RunEngine:
         return "tester_task" if audit else "pick_task"
 
     def review(self, state: RunState) -> dict:
+        if (escalation := self._budget_escalation(state, "review")) is not None:
+            return {"escalation": escalation}
         plan = load_plan(state)
         worktree = self.deps.worktree
         seq = state.get("call_seq", 0) + 1
@@ -365,7 +398,7 @@ class RunEngine:
         }
 
     def route_after_review(self, state: RunState) -> str:
-        return state["next"]
+        return "escalate" if state.get("escalation") else state["next"]
 
     def finish(self, state: RunState) -> dict:
         plan = load_plan(state)
