@@ -139,7 +139,12 @@ class RunEngine:
         self.deps.artifacts.write_plan(plan)
         baseline = self._test({**state, "baseline_failures": []}, "baseline")
         self._update_run(state="running", current_node="setup", tasks_total=len(plan.tasks))
-        return {"baseline_failures": baseline.failures, "status": "running"}
+        return {
+            "baseline_failures": baseline.failures,
+            "base_passed": baseline.passed_count,
+            "base_skipped": baseline.skipped_count,
+            "status": "running",
+        }
 
     def pick_task(self, state: RunState) -> dict:
         index = next_todo(load_plan(state))
@@ -224,7 +229,7 @@ class RunEngine:
         changed = self.worktrees.changed_files(worktree, since=state["task_base_sha"])
         report = self._test(state, artifact_name("verify", task.id, state["call_seq"]))
         if state["phase"] == "red":
-            problems = verify_red(changed, report, globs)
+            problems = verify_red(changed, report, globs, state.get("base_passed"), state.get("base_skipped"))
             if not problems:
                 return {
                     "phase": "green",
@@ -236,7 +241,13 @@ class RunEngine:
                     "verdict": "red_ok",
                 }
         else:
-            problems = verify_green(report, state.get("red_snapshot", {}), snapshot_tests(worktree, changed, globs))
+            problems = verify_green(
+                report,
+                state.get("red_snapshot", {}),
+                snapshot_tests(worktree, changed, globs),
+                state.get("base_passed"),
+                state.get("base_skipped"),
+            )
             if not problems:
                 return {"last_report": report.model_dump(), "last_problems": [], "verdict": "green_ok"}
         return self._failed_attempt(state, problems, report.model_dump())
@@ -301,7 +312,8 @@ class RunEngine:
         plan = with_task_status(plan, index, "DONE")
         done = sum(1 for item in plan.tasks if item.status == "DONE")
         self._update_run(current_node="commit", tasks_done=done, tasks_total=len(plan.tasks))
-        return {"plan": plan.model_dump()}
+        passed = TestReport.model_validate(state["last_report"])
+        return {"plan": plan.model_dump(), "base_passed": passed.passed_count, "base_skipped": passed.skipped_count}
 
     def _run_tester(self, state: RunState, diff_base: str, node: str) -> dict:
         plan = load_plan(state)
@@ -343,6 +355,8 @@ class RunEngine:
             "call_seq": seq,
             "open_issues": open_issues,
             "baseline_failures": sorted(set(state.get("baseline_failures", [])) | set(after.failures)),
+            "base_passed": after.passed_count,
+            "base_skipped": after.skipped_count,
         }
 
     def tester(self, state: RunState) -> dict:

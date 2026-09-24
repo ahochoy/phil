@@ -22,6 +22,8 @@ class TestReport(Contract):
     failures: list[str]
     log_path: str
     new_failures_vs_baseline: list[str] = []
+    passed_count: int | None = None
+    skipped_count: int | None = None
 
 
 class TesterReport(Contract):
