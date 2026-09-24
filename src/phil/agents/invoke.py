@@ -18,6 +18,7 @@ from phil.packets import Packet
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.parked import park
 from phil.store.telemetry import TelemetryRow, record
+from phil.workspace.shell import literal_pattern
 
 AgentFactory = Callable[[AgentSpec, str, Path | None, list[Callable[..., str]]], Any]
 
@@ -130,7 +131,7 @@ def invoke_agent(
     log = ctx.command_log if ctx.command_log is not None else CommandLog()
     shell = ctx.config.shell
     if ctx.extra_allow:
-        shell = shell.model_copy(update={"allow": [*shell.allow, *ctx.extra_allow]})
+        shell = shell.model_copy(update={"allow": [*shell.allow, *(literal_pattern(cmd) for cmd in ctx.extra_allow)]})
     effective_node = node if call == 1 else f"{node}-c{call}"
     log_prefix = artifact_name(effective_node, task_id, 1)
     tools: list[Callable[..., str]] = []
