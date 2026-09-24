@@ -65,3 +65,38 @@ def test_run_in_the_foreground(calc_repo, tmp_path, monkeypatch):
     [record] = runs_for(calc_repo)
     assert record.state == "completed"
     assert "completed" in result.output
+
+
+def test_run_foreground_reports_a_crash(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setenv("PHIL_AGENT_FACTORY", "tests.run.worker_scenarios:factory")
+    monkeypatch.setenv("PHIL_TEST_SCENARIO", "crash")
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "run", "--foreground", str(plan_file(tmp_path))])
+    assert result.exit_code == 1
+    assert "boom" in result.output
+    assert "phil resume" in result.output
+    assert "Traceback" not in result.output
+    [record] = runs_for(calc_repo)
+    assert record.state == "failed"
+
+
+def test_run_with_a_base_ref(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    first_sha = run_git(calc_repo, "rev-parse", "HEAD").strip()
+    (calc_repo / "extra.txt").write_text("more\n")
+    run_git(calc_repo, "add", "-A")
+    run_git(calc_repo, "commit", "-m", "extra")
+    result = runner.invoke(
+        cli.app, ["--repo", str(calc_repo), "run", "--base", first_sha, str(plan_file(tmp_path))]
+    )
+    assert result.exit_code == 0, result.output
+    [record] = runs_for(calc_repo)
+    assert record.base_sha == first_sha
+
+
+def test_run_rejects_a_bad_base_ref(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    result = runner.invoke(
+        cli.app, ["--repo", str(calc_repo), "run", "--base", "no-such-ref", str(plan_file(tmp_path))]
+    )
+    assert result.exit_code == 1
+    assert runs_for(calc_repo) == []

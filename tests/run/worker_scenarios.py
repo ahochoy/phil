@@ -10,11 +10,16 @@ def _slow(turn):
     return write_red(turn)
 
 
+def _crash(turn):
+    raise RuntimeError("boom")
+
+
 SCENARIOS = {
     "happy": lambda: {"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]},
     "escalate": lambda: {"implementer": [write_red, bad_green, bad_green, bad_green]},
     "finish_after_retry": lambda: {"implementer": [write_green], "tester": [tester_report()], "reviewer": [review()]},
     "slow": lambda: {"implementer": [_slow]},
+    "crash": lambda: {"implementer": [_crash]},
 }
 
 

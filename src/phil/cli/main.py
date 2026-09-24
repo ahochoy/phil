@@ -154,9 +154,20 @@ def run_plan(
         console.print("[phil.muted]Commit signing or hooks are on; a failing signature or hook will pause the run.[/]")
     record = prepare_run(info, plan, base_sha)
     if foreground:
-        from phil.run.worker import run_worker
+        from phil.run.worker import WorkerError, run_worker
 
-        outcome = run_worker(info.root, record.run_id, "start", factory=_factory_from_env())
+        try:
+            outcome = run_worker(info.root, record.run_id, "start", factory=_factory_from_env())
+        except WorkerError as exc:
+            console.print(f"[phil.error]{escape(str(exc))}[/]")
+            raise typer.Exit(2) from exc
+        except Exception as exc:
+            console.print(
+                f"[phil.error]Run {escape(record.run_id)} failed: "
+                f"{escape(type(exc).__name__)}: {escape(str(exc))}[/]"
+            )
+            console.print(f"Continue with `phil resume {escape(record.run_id)}`.")
+            raise typer.Exit(1) from exc
         console.print(f"Run [phil.id]{escape(record.run_id)}[/]: {escape(outcome.status)}")
         return
     spawn_worker(info.root, record.run_id, "start")
