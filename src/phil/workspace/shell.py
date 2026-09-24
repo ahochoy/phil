@@ -1,9 +1,11 @@
 import fnmatch
 import os
+import re
 import shlex
 import signal
 import subprocess
 import time
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +14,19 @@ _FORBIDDEN = set(";&|$`<>\n")
 _RISKY_PROGRAMS = {"git", "npm", "uv", "python", "python3"}
 _RISKY_PREFIXES = ("--output", "--no-index", "--ext-diff", "--prefix")
 _RISKY_EXACT = {"-c", "-e"}
+
+_SECRET_TOKENS = {"AUTH", "KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "CREDENTIALS"}
+_SECRET_SUFFIXES = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD")
+
+
+def is_secret_name(name: str) -> bool:
+    tokens = [token for token in re.split(r"[^A-Z0-9]+", name.upper()) if token]
+    return any(token in _SECRET_TOKENS or token.endswith(_SECRET_SUFFIXES) for token in tokens)
+
+
+def child_env(environ: Mapping[str, str], pass_env: Iterable[str] = ()) -> dict[str, str]:
+    allowed = set(pass_env)
+    return {name: value for name, value in environ.items() if name in allowed or not is_secret_name(name)}
 
 
 def _matches_pattern(argv: list[str], pattern_tokens: list[str]) -> bool:
@@ -77,7 +92,9 @@ class ShellResult:
         return self.exit_code == 0 and not self.timed_out
 
 
-def run_command(command: str, cwd: Path, timeout_s: float) -> ShellResult:
+def run_command(
+    command: str, cwd: Path, timeout_s: float, env: Mapping[str, str] | None = None
+) -> ShellResult:
     started = time.monotonic()
 
     def elapsed() -> int:
@@ -100,6 +117,7 @@ def run_command(command: str, cwd: Path, timeout_s: float) -> ShellResult:
             encoding="utf-8",
             errors="replace",
             start_new_session=True,
+            env=dict(env) if env is not None else child_env(os.environ),
         )
     except FileNotFoundError as exc:
         return ShellResult(command, 127, "", str(exc), False, elapsed())

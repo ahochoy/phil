@@ -4,7 +4,7 @@ import sys
 import pytest
 
 from phil.config import ShellConfig
-from phil.workspace.shell import ShellPolicy, run_command, truncate_output
+from phil.workspace.shell import ShellPolicy, child_env, is_secret_name, run_command, truncate_output
 
 PY = shlex.quote(sys.executable)
 
@@ -116,3 +116,37 @@ def test_run_command_non_executable_file(tmp_path):
     result = run_command(str(script), cwd=tmp_path, timeout_s=10)
     assert result.exit_code == 126
     assert not result.ok
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["OPENROUTER_API_KEY", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "DB_PASSWORD", "MY_APIKEY", "NPM_AUTH", "gh_token"],
+)
+def test_secret_names_are_detected(name):
+    assert is_secret_name(name)
+
+
+@pytest.mark.parametrize("name", ["PATH", "HOME", "GIT_AUTHOR_NAME", "KEYBOARD_LAYOUT", "LANG", "VIRTUAL_ENV"])
+def test_ordinary_names_are_kept(name):
+    assert not is_secret_name(name)
+
+
+def test_child_env_strips_secrets_but_honours_pass_env():
+    environ = {"PATH": "/bin", "OPENROUTER_API_KEY": "sk-1", "DATABASE_TOKEN": "t"}
+    assert child_env(environ) == {"PATH": "/bin"}
+    assert child_env(environ, pass_env=["DATABASE_TOKEN"]) == {"PATH": "/bin", "DATABASE_TOKEN": "t"}
+
+
+def test_run_command_hides_secrets_by_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_API_KEY", "sk-should-not-leak")
+    script = tmp_path / "show_env.py"
+    script.write_text("import os\nprint(os.environ.get('FAKE_API_KEY', 'absent'))\n")
+    result = run_command(f"{PY} {shlex.quote(str(script))}", cwd=tmp_path, timeout_s=10)
+    assert result.stdout.strip() == "absent"
+
+
+def test_run_command_uses_explicit_env(tmp_path):
+    script = tmp_path / "show_env.py"
+    script.write_text("import os\nprint(os.environ.get('ONLY_THIS', 'absent'))\n")
+    result = run_command(f"{PY} {shlex.quote(str(script))}", cwd=tmp_path, timeout_s=10, env={"ONLY_THIS": "yes"})
+    assert result.stdout.strip() == "yes"

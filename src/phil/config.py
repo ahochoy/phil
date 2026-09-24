@@ -41,6 +41,7 @@ class ShellConfig(_Section):
     ]
     timeout_s: int = 300
     max_output_lines: int = 200
+    pass_env: list[str] = []
 
 
 class ProjectConfig(_Section):
