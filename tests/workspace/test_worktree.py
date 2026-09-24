@@ -1,5 +1,6 @@
 import pytest
 
+from phil.git import GitError
 from phil.workspace.worktree import WorktreeManager
 from tests.helpers import run_git
 
@@ -45,17 +46,50 @@ def test_commit_all_advances_branch(setup, git_repo):
     assert manager.changed_files(worktree.path, since=sha) == []
 
 
-def test_commit_all_skips_hooks_and_signing(setup, git_repo):
-    manager, worktree, base = setup
+def _configure_broken_gpg(git_repo):
+    # gpg.format=openpgp overrides any user-global ssh signing so gpg.program=false actually fails
+    # the sign step, regardless of the machine's own git/gpg setup.
     run_git(git_repo, "config", "commit.gpgsign", "true")
+    run_git(git_repo, "config", "gpg.format", "openpgp")
     run_git(git_repo, "config", "gpg.program", "false")
-    hook = git_repo / ".git" / "hooks" / "pre-commit"
-    hook.write_text("#!/bin/sh\nexit 1\n")
-    hook.chmod(0o755)
+
+
+def test_commit_all_sign_false_succeeds_despite_repo_gpgsign(setup, git_repo):
+    manager, worktree, base = setup
+    _configure_broken_gpg(git_repo)
     (worktree.path / "new.py").write_text("x = 1\n")
-    sha = manager.commit_all(worktree.path, "MAPS-001: add new")
+    sha = manager.commit_all(worktree.path, "MAPS-001: add new", sign=False)
     assert sha != base
     assert run_git(git_repo, "rev-parse", "phil/r-0001").strip() == sha
+
+
+def test_commit_all_sign_none_honours_repo_gpgsign(setup, git_repo):
+    manager, worktree, _ = setup
+    _configure_broken_gpg(git_repo)
+    (worktree.path / "new.py").write_text("x = 1\n")
+    with pytest.raises(GitError):
+        manager.commit_all(worktree.path, "MAPS-001: add new", sign=None)
+
+
+def test_commit_all_run_hooks_true_raises_with_hook_stderr(setup, git_repo):
+    manager, worktree, _ = setup
+    hook = git_repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text('#!/bin/sh\necho "hook says no" >&2\nexit 1\n')
+    hook.chmod(0o755)
+    (worktree.path / "new.py").write_text("x = 1\n")
+    with pytest.raises(GitError) as exc_info:
+        manager.commit_all(worktree.path, "MAPS-001: add new", run_hooks=True)
+    assert "hook says no" in str(exc_info.value)
+
+
+def test_commit_all_run_hooks_false_skips_failing_hook(setup, git_repo):
+    manager, worktree, base = setup
+    hook = git_repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text('#!/bin/sh\necho "hook says no" >&2\nexit 1\n')
+    hook.chmod(0o755)
+    (worktree.path / "new.py").write_text("x = 1\n")
+    sha = manager.commit_all(worktree.path, "MAPS-001: add new", run_hooks=False)
+    assert sha != base
 
 
 def test_remove_deletes_worktree_and_branch(setup, git_repo):

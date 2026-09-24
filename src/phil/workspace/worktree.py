@@ -31,10 +31,21 @@ class WorktreeManager:
         untracked = git(path, "ls-files", "--others", "--exclude-standard").splitlines()
         return sorted(set(tracked) | set(untracked))
 
-    def commit_all(self, path: Path, message: str) -> str:
+    def commit_all(self, path: Path, message: str, *, sign: bool | None = None, run_hooks: bool = False) -> str:
         git(path, "add", "-A")
-        # Unattended workers must never block on a hook or a signing prompt (spec §7).
-        git(path, "-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", message)
+        # Signing and hooks follow [git] in phil.toml (spec §7); callers pass bypass values after a failure.
+        args: list[str] = []
+        if sign is False:
+            args += ["-c", "commit.gpgsign=false"]
+        args += ["commit"]
+        if sign is True:
+            args += ["-S"]
+        elif sign is False:
+            args += ["--no-gpg-sign"]
+        if not run_hooks:
+            args += ["--no-verify"]
+        args += ["-m", message]
+        git(path, *args)
         return self.head(path)
 
     def diff(self, path: Path, base: str) -> str:
