@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ValidationError
 
 from phil.agents.evidence import check_evidence
+from phil.agents.retry import call_with_retry
 from phil.agents.spec import AgentSpec
 from phil.agents.tools import CommandLog, make_shell_tool
 from phil.agents.usage import extract_usage
@@ -72,6 +73,28 @@ def _retry_message(problems: list[str]) -> dict[str, str]:
     }
 
 
+def _record_error(
+    ctx: AgentContext, *, spec: AgentSpec, model: str, node: str, attempt: int, packet: Packet, started: float
+) -> None:
+    record(
+        ctx.conn,
+        TelemetryRow(
+            run_id=ctx.run_id,
+            layer=ctx.layer,
+            node=node,
+            role=spec.role,
+            model=model,
+            attempt=attempt,
+            packet_tokens=packet.tokens,
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            cost_usd=0.0,
+            outcome="error",
+        ),
+    )
+
+
 def invoke_agent(
     spec: AgentSpec,
     packet: Packet,
@@ -95,7 +118,11 @@ def invoke_agent(
             ctx.artifacts.write("packets", name, packet)
         payload_messages = messages if attempt == 1 else [*messages, _retry_message(problems)]
         started = time.monotonic()
-        result = agent.invoke({"messages": payload_messages})  # Task 11: provider retries
+        try:
+            result = call_with_retry(agent, {"messages": payload_messages}, sleep=ctx.sleep)
+        except Exception:
+            _record_error(ctx, spec=spec, model=model, node=node, attempt=attempt, packet=packet, started=started)
+            raise
         latency_ms = int((time.monotonic() - started) * 1000)
         output, problems = _validate(spec, result.get("structured_response"))
         outcome = "ok" if not problems else "invalid"
