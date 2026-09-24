@@ -69,6 +69,12 @@ def test_update_missing_run_raises(conn):
         update_run(conn, "r-ffff", state="running")
 
 
+def test_update_run_with_no_fields_raises(conn):
+    create_run(conn, run_id="r-0001", keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=3)
+    with pytest.raises(ValueError):
+        update_run(conn, "r-0001")
+
+
 def test_create_run_rejects_invalid_run_id(conn):
     with pytest.raises(ValueError):
         create_run(

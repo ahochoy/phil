@@ -77,3 +77,11 @@ def test_list_and_count_open_items(conn):
 def test_set_status_on_missing_item_raises(conn):
     with pytest.raises(KeyError):
         set_parked_status(conn, "P-999", "dropped")
+
+
+def test_set_status_rejects_invalid_status(conn):
+    source = Ref(label="x", path="y")
+    item = park(conn, raised_by="user", note="a", why_not_now="b", source=source)
+    with pytest.raises(ValueError):
+        set_parked_status(conn, item.id, "bogus")
+    assert list_parked(conn, status=None) == [item]

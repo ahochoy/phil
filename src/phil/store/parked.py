@@ -56,7 +56,12 @@ def list_parked(conn: sqlite3.Connection, status: str | None = "open") -> list[P
     return [_to_item(row) for row in rows]
 
 
+_STATUSES = ("open", "promoted", "dropped")
+
+
 def set_parked_status(conn: sqlite3.Connection, item_id: str, status: str) -> ParkedItem:
+    if status not in _STATUSES:
+        raise ValueError(f"invalid parked status: {status!r}; must be one of {_STATUSES}")
     cursor = conn.execute("UPDATE parked SET status = ? WHERE id = ?", (status, item_id))
     if cursor.rowcount == 0:
         raise KeyError(item_id)

@@ -79,6 +79,8 @@ def list_runs(conn: sqlite3.Connection) -> list[RunRecord]:
 
 
 def update_run(conn: sqlite3.Connection, run_id: str, **fields: object) -> RunRecord:
+    if not fields:
+        raise ValueError("no fields to update")
     unknown = set(fields) - _UPDATABLE
     if unknown:
         raise ValueError(f"cannot update run fields: {sorted(unknown)}")

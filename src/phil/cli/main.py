@@ -69,7 +69,7 @@ def runs(ctx: typer.Context) -> None:
             f"[phil.id]{escape(run.run_id)}[/]",
             escape(run.keyword),
             f"{run.tasks_done}/{run.tasks_total}",
-            run.state,
+            escape(run.state),
             _format_tokens(tokens),
             f"[phil.cost]${cost:.2f}[/]",
         )
