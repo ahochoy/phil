@@ -256,3 +256,26 @@ def resume(
         return
     console.print(f"[phil.error]{escape(run_id)} is {escape(record.state)}; nothing to resume[/]")
     raise typer.Exit(1)
+
+
+@app.command("attach")
+def attach_command(ctx: typer.Context, run_id: str) -> None:
+    """Follow a run and answer it when it pauses."""
+    from phil.cli.attach import AttachIO, attach
+
+    info, conn = _open_project(ctx)
+    _require_run(conn, run_id)
+
+    def choose(prompt: str, options: list[str]) -> str:
+        choices = ", ".join(options)
+        while True:
+            answer = typer.prompt(f"{prompt} ({choices})")
+            if answer in options:
+                return answer
+            console.print(f"[phil.error]choose one of: {escape(choices)}[/]")
+
+    def ask_hint() -> str | None:
+        return typer.prompt("Hint for the next attempt (optional)", default="", show_default=False) or None
+
+    io = AttachIO(choose=choose, ask_hint=ask_hint, spawn=lambda mode, decision: spawn_worker(info.root, run_id, mode, decision))
+    attach(conn, run_id, run_events(ProjectPaths(info.slug), run_id), console, io)
