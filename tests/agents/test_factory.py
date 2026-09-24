@@ -6,6 +6,7 @@ from deepagents.middleware.filesystem import _check_fs_permission
 
 from phil.agents.factory import build_deep_agent, filesystem_permissions
 from phil.agents.registry import get_spec
+from phil.config import DEFAULT_MODEL
 
 
 def test_importing_invoke_does_not_load_llm_stack():
@@ -60,5 +61,5 @@ def test_writer_roles_allow_project_and_dotfile_writes(name, path):
 
 def test_build_returns_invokable_agent(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-used")
-    agent = build_deep_agent(get_spec("critic"), "openrouter:poolside/laguna-m.1:free", tmp_path, [])
+    agent = build_deep_agent(get_spec("critic"), DEFAULT_MODEL, tmp_path, [])
     assert hasattr(agent, "invoke")
