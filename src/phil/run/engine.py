@@ -137,6 +137,7 @@ class RunEngine:
         self._update_run(state="running", current_node="setup", tasks_total=len(plan.tasks))
         return {
             "baseline_failures": baseline.failures,
+            "initial_baseline": baseline.failures,
             "base_passed": baseline.passed_count,
             "base_skipped": baseline.skipped_count,
             "status": "running",
@@ -432,6 +433,14 @@ class RunEngine:
     def finish(self, state: RunState) -> dict:
         plan = load_plan(state)
         status = "aborted" if state.get("status") == "aborted" else "completed"
+        open_issues = list(state.get("open_issues", []))
+        if status == "completed":
+            name = artifact_name("finish", None, state.get("call_seq", 0))
+            final = self._test({**state, "baseline_failures": state.get("initial_baseline", [])}, name)
+            open_issues += [
+                Issue(severity="major", note=f"still failing: {failure}").model_dump()
+                for failure in final.new_failures_vs_baseline
+            ]
         summary = render_summary(
             run_id=self.deps.run_id,
             plan=plan,
@@ -439,8 +448,8 @@ class RunEngine:
             branch=branch_for(self.deps.run_id),
             base_sha=state["base_sha"],
             head_sha=self.worktrees.head(self.deps.worktree),
-            open_issues=state.get("open_issues", []),
+            open_issues=open_issues,
         )
         self.deps.artifacts.write_text("summary.md", summary)
         self._update_run(state=status, current_node="finish", needs_attention=None)
-        return {"status": status}
+        return {"status": status, "open_issues": open_issues}
