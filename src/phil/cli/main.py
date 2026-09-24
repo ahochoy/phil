@@ -238,23 +238,17 @@ def resume(
         spawn_worker(info.root, run_id, "resume", decision)
         console.print(f"Resuming [phil.id]{escape(run_id)}[/] with {escape(action)}.")
         return
-    if record.state == "pending":
+    if record.state in ("pending", "failed", "stopped", "running"):
         if action is not None:
             console.print("[phil.error]nothing to answer; the run continues from its last checkpoint[/]")
             raise typer.Exit(2)
-        age = (datetime.now(UTC) - datetime.fromisoformat(record.updated_at)).total_seconds()
-        if age <= PENDING_STALE_AFTER_S:
-            console.print(
-                f"[phil.error]{escape(run_id)} is still starting; follow it with `phil attach {escape(run_id)}`[/]"
-            )
-            raise typer.Exit(1)
-        spawn_worker(info.root, run_id, "continue")
-        console.print(f"Continuing [phil.id]{escape(run_id)}[/] from its last checkpoint.")
-        return
-    if record.state in ("failed", "stopped", "running"):
-        if action is not None:
-            console.print("[phil.error]nothing to answer; the run continues from its last checkpoint[/]")
-            raise typer.Exit(2)
+        if record.state == "pending":
+            age = (datetime.now(UTC) - datetime.fromisoformat(record.updated_at)).total_seconds()
+            if age <= PENDING_STALE_AFTER_S:
+                console.print(
+                    f"[phil.error]{escape(run_id)} is still starting; follow it with `phil attach {escape(run_id)}`[/]"
+                )
+                raise typer.Exit(1)
         spawn_worker(info.root, run_id, "continue")
         console.print(f"Continuing [phil.id]{escape(run_id)}[/] from its last checkpoint.")
         return
