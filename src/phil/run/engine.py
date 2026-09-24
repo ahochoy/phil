@@ -12,7 +12,7 @@ from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, in
 from phil.agents.registry import get_spec
 from phil.agents.tools import CommandLog
 from phil.config import PhilConfig
-from phil.contracts import ImplementInput, Issue, TesterInput, TestReport
+from phil.contracts import ImplementInput, Issue, ReviewInput, TesterInput, TestReport
 from phil.git import branch_for
 from phil.packets import PacketTooLarge, build_packet
 from phil.run.gates import is_test_path, run_tests, snapshot_tests, verify_green, verify_red
@@ -51,9 +51,11 @@ class RunEngine:
         graph.add_node("finish", self.finish)
         graph.add_node("tester", self.tester)
         graph.add_node("tester_task", self.tester_task)
+        graph.add_node("review", self.review)
         graph.add_edge(START, "setup")
         graph.add_edge("setup", "pick_task")
-        graph.add_conditional_edges("pick_task", self.route_after_pick, ["implement", "tester", "finish"])
+        graph.add_conditional_edges("pick_task", self.route_after_pick, ["implement", "tester", "review"])
+        graph.add_conditional_edges("review", self.route_after_review, ["pick_task", "finish"])
         graph.add_node("escalate", self.escalate)
         graph.add_conditional_edges("implement", self.route_after_implement, ["verify", "escalate"])
         graph.add_conditional_edges("verify", self.route_after_verify, ["implement", "commit", "escalate"])
@@ -69,7 +71,7 @@ class RunEngine:
     def route_after_pick(self, state: RunState) -> str:
         if state["task_index"] >= 0:
             return "implement"
-        return "finish" if state.get("tester_done") else "tester"
+        return "review" if state.get("tester_done") else "tester"
 
     def route_after_verify(self, state: RunState) -> str:
         return {"red_ok": "implement", "green_ok": "commit", "retry": "implement", "escalate": "escalate"}[
@@ -329,6 +331,41 @@ class RunEngine:
         task = load_plan(state).tasks[state["task_index"]]
         audit = self.deps.config.run.tester_mode == "task+run" and task.id in state.get("original_task_ids", [])
         return "tester_task" if audit else "pick_task"
+
+    def review(self, state: RunState) -> dict:
+        plan = load_plan(state)
+        worktree = self.deps.worktree
+        seq = state.get("call_seq", 0) + 1
+        rounds = state.get("review_rounds", 0) + 1
+        self._update_run(current_node="review")
+        final = self._test(state, artifact_name("review", None, seq))
+        assumptions = [e["assumption"] for e in self.deps.artifacts.read_assumptions() if e.get("status") == "open"]
+        contract = ReviewInput(
+            plan=plan, diff=self.worktrees.diff(worktree, state["base_sha"]), final_report=final,
+            open_assumptions=assumptions,
+        )
+        carried = list(state.get("open_issues", []))
+        try:
+            packet = build_packet("reviewer", contract, budget_tokens=self._budget("reviewer"))
+            verdict = invoke_agent(get_spec("reviewer"), packet, self._context(state, CommandLog()), node="review", call=seq)
+        except (PacketTooLarge, ContractViolation) as exc:
+            note = Issue(severity="minor", note=f"review not completed: {exc}")
+            return {"call_seq": seq, "review_rounds": rounds, "open_issues": [*carried, note.model_dump()], "next": "finish"}
+        blocking = [issue for issue in verdict.issues if issue.severity in ("blocker", "major")]
+        minor = [issue for issue in verdict.issues if issue.severity == "minor"]
+        if verdict.verdict == "changes" and blocking and rounds < self.deps.config.run.max_review_rounds:
+            plan = issues_to_tasks(plan, blocking, "review")
+            return {
+                "plan": plan.model_dump(), "call_seq": seq, "review_rounds": rounds,
+                "open_issues": [*carried, *(issue.model_dump() for issue in minor)], "next": "pick_task",
+            }
+        return {
+            "call_seq": seq, "review_rounds": rounds,
+            "open_issues": [*carried, *(issue.model_dump() for issue in verdict.issues)], "next": "finish",
+        }
+
+    def route_after_review(self, state: RunState) -> str:
+        return state["next"]
 
     def finish(self, state: RunState) -> dict:
         plan = load_plan(state)
