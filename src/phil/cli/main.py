@@ -163,12 +163,21 @@ def run_plan(
             )
     if config.git.sign_commits is not False or config.git.run_hooks:
         console.print("[phil.muted]Commit signing or hooks are on; a failing signature or hook will pause the run.[/]")
+    factory = None
+    if foreground:
+        try:
+            factory = _factory_from_env()
+        except Exception as exc:
+            console.print(
+                f"[phil.error]cannot load PHIL_AGENT_FACTORY: {escape(type(exc).__name__)}: {escape(str(exc))}[/]"
+            )
+            raise typer.Exit(1) from exc
     record = prepare_run(info, plan, base_sha)
     if foreground:
         from phil.run.worker import WorkerError, run_worker
 
         try:
-            outcome = run_worker(info.root, record.run_id, "start", factory=_factory_from_env())
+            outcome = run_worker(info.root, record.run_id, "start", factory=factory)
         except WorkerError as exc:
             console.print(f"[phil.error]{escape(str(exc))}[/]")
             raise typer.Exit(2) from exc
@@ -203,6 +212,11 @@ def worker(
     except WorkerError as exc:
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(2) from exc
+    if outcome.status == "stopped":
+        from phil.workspace import shell
+
+        # A tool thread may have started a command after the stop handler's own kill.
+        shell.kill_active_groups()
     console.print(f"{escape(run_id)}: {escape(outcome.status)}")
 
 
@@ -353,7 +367,7 @@ def diff(ctx: typer.Context, run_id: str) -> None:
     info, conn = _open_project(ctx)
     record = _require_run(conn, run_id)
     try:
-        typer.echo(git(info.root, "diff", record.base_sha, record.branch), nl=False)
+        typer.echo(git(info.root, "diff", record.base_sha, record.branch, "--"), nl=False)
     except GitError as exc:
         console.print("[phil.error]the run's branch no longer exists[/]")
         raise typer.Exit(1) from exc
@@ -382,10 +396,14 @@ def clean(
         raise typer.Exit(1)
     manager = WorktreeManager(info.root)
     worktree = Path(record.worktree)
-    if worktree.exists():
-        manager.remove(Worktree(worktree, record.branch, record.base_sha), delete_branch=False)
-    else:
-        git(info.root, "worktree", "prune")
+    try:
+        if worktree.exists():
+            manager.remove(Worktree(worktree, record.branch, record.base_sha), delete_branch=False)
+        else:
+            git(info.root, "worktree", "prune")
+    except GitError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
     try:
         git(info.root, "show-ref", "--verify", "--quiet", f"refs/heads/{record.branch}")
         branch_exists = True

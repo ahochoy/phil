@@ -115,3 +115,49 @@ def test_clean_prunes_a_missing_worktree(calc_repo):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "clean", record.run_id])
     assert result.exit_code == 0, result.output
     assert str(paths.worktree_dir(record.run_id)) not in run_git(calc_repo, "worktree", "list")
+
+
+def test_diff_is_not_confused_by_a_path_named_like_the_branch(calc_repo):
+    info, record, paths = finished_run(calc_repo)
+    decoy = calc_repo / record.branch
+    decoy.parent.mkdir(parents=True, exist_ok=True)
+    decoy.write_text("not a branch\n")
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "diff", record.run_id])
+    assert result.exit_code == 0, result.output
+    assert "def subtract" in result.output
+
+
+def test_clean_reports_a_worktree_removal_failure(calc_repo, monkeypatch):
+    from phil.git import GitError
+    from phil.workspace.worktree import WorktreeManager
+
+    info, record, paths = finished_run(calc_repo)
+
+    def refuse(self, worktree, *, delete_branch=True):
+        raise GitError(["git", "worktree", "remove"], 128, "fatal: [locked] worktree")
+
+    monkeypatch.setattr(WorktreeManager, "remove", refuse)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "clean", record.run_id])
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "[locked]" in result.output
+    assert get_run(connect(paths.db_path), record.run_id).state == "completed"
+
+
+def test_clean_reports_a_worktree_prune_failure(calc_repo, monkeypatch):
+    from phil.git import GitError
+
+    info, record, paths = finished_run(calc_repo)
+    shutil.rmtree(paths.worktree_dir(record.run_id))
+    real_git = cli.git
+
+    def git(root, *args):
+        if args[:2] == ("worktree", "prune"):
+            raise GitError(["git", *args], 1, "fatal: prune failed")
+        return real_git(root, *args)
+
+    monkeypatch.setattr(cli, "git", git)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "clean", record.run_id])
+    assert result.exit_code == 1
+    assert "prune failed" in result.output
+    assert get_run(connect(paths.db_path), record.run_id).state == "completed"

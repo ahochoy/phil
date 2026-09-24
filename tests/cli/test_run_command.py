@@ -100,3 +100,26 @@ def test_run_rejects_a_bad_base_ref(calc_repo, tmp_path, monkeypatch):
     )
     assert result.exit_code == 1
     assert runs_for(calc_repo) == []
+
+
+def test_run_foreground_reports_a_bad_agent_factory(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setenv("PHIL_AGENT_FACTORY", "nope:missing")
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "run", "--foreground", str(plan_file(tmp_path))])
+    assert result.exit_code == 1
+    assert "nope" in result.output
+    assert "Traceback" not in result.output
+    assert runs_for(calc_repo) == []
+
+
+def test_worker_command_kills_process_groups_again_after_a_stop(calc_repo, monkeypatch):
+    import phil.run.worker as worker_module
+    import phil.workspace.shell as shell
+    from phil.run.runner import RunOutcome
+
+    kills = []
+    monkeypatch.setattr(worker_module, "run_worker", lambda *a, **k: RunOutcome(status="stopped"))
+    monkeypatch.setattr(shell, "kill_active_groups", lambda *a, **k: kills.append(1) or [])
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "_worker", "r-0000", "--mode", "continue"])
+    assert result.exit_code == 0, result.output
+    assert "stopped" in result.output
+    assert kills == [1]
