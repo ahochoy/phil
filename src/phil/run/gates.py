@@ -11,6 +11,8 @@ from phil.workspace.shell import child_env, run_command
 
 _FAILURE_LINE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
 MAX_FAILURES = 50
+# pytest aborts the whole session on a collection error unless told to continue; other runners ignore this.
+_CONTINUE = "--continue-on-collection-errors"
 
 
 def is_test_path(path: str, globs: list[str]) -> bool:
@@ -37,17 +39,19 @@ def run_tests(
     baseline: list[str] = (),
 ) -> TestReport:
     env = child_env(os.environ, shell.pass_env) | {"PYTHONDONTWRITEBYTECODE": "1"}
+    addopts = env.get("PYTEST_ADDOPTS")
+    env["PYTEST_ADDOPTS"] = f"{addopts} {_CONTINUE}" if addopts else _CONTINUE
     result = run_command(test_cmd, worktree, shell.timeout_s, env=env)
     output = result.stdout + (f"\n{result.stderr}" if result.stderr else "")
-    failures = parse_failures(output, result.exit_code, result.timed_out)[:MAX_FAILURES]
+    all_failures = parse_failures(output, result.exit_code, result.timed_out)
     log_path = str(artifacts.write_log(name, output)) if artifacts is not None else ""
     known = set(baseline)
     return TestReport(
         command=test_cmd,
         passed=result.ok,
-        failures=failures,
+        failures=all_failures[:MAX_FAILURES],
         log_path=log_path,
-        new_failures_vs_baseline=[failure for failure in failures if failure not in known],
+        new_failures_vs_baseline=[failure for failure in all_failures if failure not in known],
     )
 
 
