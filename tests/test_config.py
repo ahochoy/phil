@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from phil.config import DEFAULT_MODEL, ROLES, ConfigError, load_config
@@ -27,7 +29,7 @@ def test_sections_are_loaded(tmp_path):
     config = load_config(tmp_path)
     assert config.run.tester_mode == "task+run"
     assert config.budget_for("implementer").max_input_tokens == 8000
-    assert config.budget_for("reviewer").max_input_tokens == 12000
+    assert config.budget_for("reviewer").max_input_tokens == 48000
     assert config.project.test_cmd == "uv run pytest -q"
     assert config.shell.allow == ["pytest*"]
 
@@ -65,3 +67,10 @@ def test_pass_env_defaults_empty_and_loads(tmp_path):
     assert load_config(tmp_path).shell.pass_env == []
     (tmp_path / "phil.toml").write_text('[shell]\npass_env = ["DATABASE_TOKEN"]\n')
     assert load_config(tmp_path).shell.pass_env == ["DATABASE_TOKEN"]
+
+
+def test_role_budget_defaults():
+    config = load_config(Path("/nonexistent"))
+    assert config.budget_for("implementer").max_input_tokens == 12000
+    assert config.budget_for("architect").max_input_tokens == 24000
+    assert config.budget_for("tester").max_input_tokens == 48000

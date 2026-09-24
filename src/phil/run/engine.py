@@ -12,11 +12,11 @@ from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, in
 from phil.agents.registry import get_spec
 from phil.agents.tools import CommandLog
 from phil.config import PhilConfig
-from phil.contracts import ImplementInput, TestReport
+from phil.contracts import ImplementInput, Issue, TesterInput, TestReport
 from phil.git import branch_for
-from phil.packets import build_packet
-from phil.run.gates import run_tests, snapshot_tests, verify_green, verify_red
-from phil.run.state import RunState, load_plan, next_todo, render_summary, with_task_status
+from phil.packets import PacketTooLarge, build_packet
+from phil.run.gates import is_test_path, run_tests, snapshot_tests, verify_green, verify_red
+from phil.run.state import RunState, issues_to_tasks, load_plan, next_todo, render_summary, with_task_status
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.runs import update_run
 from phil.workspace.worktree import WorktreeManager
@@ -49,21 +49,27 @@ class RunEngine:
         graph.add_node("verify", self.verify)
         graph.add_node("commit", self.commit)
         graph.add_node("finish", self.finish)
+        graph.add_node("tester", self.tester)
+        graph.add_node("tester_task", self.tester_task)
         graph.add_edge(START, "setup")
         graph.add_edge("setup", "pick_task")
-        graph.add_conditional_edges("pick_task", self.route_after_pick, ["implement", "finish"])
+        graph.add_conditional_edges("pick_task", self.route_after_pick, ["implement", "tester", "finish"])
         graph.add_node("escalate", self.escalate)
         graph.add_conditional_edges("implement", self.route_after_implement, ["verify", "escalate"])
         graph.add_conditional_edges("verify", self.route_after_verify, ["implement", "commit", "escalate"])
         graph.add_conditional_edges(
             "escalate", self.route_after_escalate, ["implement", "verify", "pick_task", "finish"]
         )
-        graph.add_edge("commit", "pick_task")
+        graph.add_conditional_edges("commit", self.route_after_commit, ["tester_task", "pick_task"])
+        graph.add_edge("tester", "pick_task")
+        graph.add_edge("tester_task", "pick_task")
         graph.add_edge("finish", END)
         return graph.compile(checkpointer=checkpointer)
 
     def route_after_pick(self, state: RunState) -> str:
-        return "implement" if state["task_index"] >= 0 else "finish"
+        if state["task_index"] >= 0:
+            return "implement"
+        return "finish" if state.get("tester_done") else "tester"
 
     def route_after_verify(self, state: RunState) -> str:
         return {"red_ok": "implement", "green_ok": "commit", "retry": "implement", "escalate": "escalate"}[
@@ -270,6 +276,52 @@ class RunEngine:
         done = sum(1 for item in plan.tasks if item.status == "DONE")
         self._update_run(current_node="commit", tasks_done=done, tasks_total=len(plan.tasks))
         return {"plan": plan.model_dump()}
+
+    def _run_tester(self, state: RunState, diff_base: str, node: str) -> dict:
+        plan = load_plan(state)
+        worktree = self.deps.worktree
+        globs = self.deps.config.project.test_globs
+        seq = state.get("call_seq", 0) + 1
+        self._update_run(current_node=node)
+        head_before = self.worktrees.head(worktree)
+        before = self._test(state, artifact_name(node, None, seq))
+        notes: list[Issue] = []
+        issues: list[Issue] = []
+        log = CommandLog()
+        contract = TesterInput(
+            plan=plan, diff=self.worktrees.diff(worktree, diff_base), final_report=before, test_cmd=state["test_cmd"]
+        )
+        try:
+            packet = build_packet("tester", contract, budget_tokens=self._budget("tester"))
+            report = invoke_agent(get_spec("tester"), packet, self._context(state, log), node=node, call=seq)
+            issues = list(report.issues)
+        except PacketTooLarge as exc:
+            notes.append(Issue(severity="minor", note=f"tester skipped: {exc}"))
+        except ContractViolation as exc:
+            notes.append(Issue(severity="minor", note=f"tester output rejected: {'; '.join(exc.problems)}"))
+        product = [p for p in self.worktrees.changed_files(worktree, since=head_before) if not is_test_path(p, globs)]
+        if product:
+            self.worktrees.restore(worktree, product)
+            notes.append(Issue(severity="minor", note=f"tester changed product files; reverted: {', '.join(product)}"))
+        if self.worktrees.changed_files(worktree, since=head_before):
+            self.worktrees.commit_all(worktree, f"{plan.keyword}: tests from tester")
+        notes += [Issue(severity="minor", note=f"tester command not approved: {cmd}") for cmd in log.denied]
+        blocking = [issue for issue in issues if issue.severity in ("blocker", "major")]
+        minor = [issue for issue in issues if issue.severity == "minor"]
+        plan = issues_to_tasks(plan, blocking, "tester") if blocking else plan
+        open_issues = [*state.get("open_issues", []), *(issue.model_dump() for issue in [*minor, *notes])]
+        return {"plan": plan.model_dump(), "call_seq": seq, "open_issues": open_issues}
+
+    def tester(self, state: RunState) -> dict:
+        return {**self._run_tester(state, state["base_sha"], "tester"), "tester_done": True}
+
+    def tester_task(self, state: RunState) -> dict:
+        return self._run_tester(state, state["task_base_sha"], "tester_task")
+
+    def route_after_commit(self, state: RunState) -> str:
+        task = load_plan(state).tasks[state["task_index"]]
+        audit = self.deps.config.run.tester_mode == "task+run" and task.id in state.get("original_task_ids", [])
+        return "tester_task" if audit else "pick_task"
 
     def finish(self, state: RunState) -> dict:
         plan = load_plan(state)
