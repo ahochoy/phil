@@ -3,9 +3,20 @@ from typing import Any
 
 TRANSIENT_STATUS = {408, 409, 429, 500, 502, 503, 504}
 
+_TRANSIENT_HTTPX = {"TimeoutException", "NetworkError", "RemoteProtocolError"}
+
+
+def _is_httpx_transient(exc: BaseException) -> bool:
+    return any(
+        cls.__module__.split(".")[0] == "httpx" and cls.__name__ in _TRANSIENT_HTTPX
+        for cls in type(exc).__mro__
+    )
+
 
 def is_transient(exc: BaseException) -> bool:
     if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    if _is_httpx_transient(exc):
         return True
     status = getattr(exc, "status_code", None)
     if status is None:

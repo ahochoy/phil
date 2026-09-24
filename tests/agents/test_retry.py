@@ -1,3 +1,4 @@
+import httpx
 import pytest
 
 from phil.agents.fake import FakeAgent, FakeAgentFactory
@@ -57,3 +58,15 @@ def test_invoke_agent_retries_and_records_errors(config, conn, artifacts, critic
         invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
     outcomes = [row["outcome"] for row in conn.execute("SELECT outcome FROM telemetry ORDER BY id")]
     assert outcomes == ["ok", "error"]
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [httpx.ConnectError("refused"), httpx.ReadTimeout("slow"), httpx.ConnectTimeout("slow"), httpx.RemoteProtocolError("reset")],
+)
+def test_real_httpx_transport_errors_are_transient(exc):
+    assert is_transient(exc)
+
+
+def test_permanent_httpx_errors_are_not_transient():
+    assert not is_transient(httpx.UnsupportedProtocol("ftp"))
