@@ -53,9 +53,11 @@ class RunEngine:
         graph.add_edge("setup", "pick_task")
         graph.add_conditional_edges("pick_task", self.route_after_pick, ["implement", "finish"])
         graph.add_node("escalate", self.escalate)
-        graph.add_edge("implement", "verify")
+        graph.add_conditional_edges("implement", self.route_after_implement, ["verify", "escalate"])
         graph.add_conditional_edges("verify", self.route_after_verify, ["implement", "commit", "escalate"])
-        graph.add_conditional_edges("escalate", self.route_after_escalate, ["implement", "pick_task", "finish"])
+        graph.add_conditional_edges(
+            "escalate", self.route_after_escalate, ["implement", "verify", "pick_task", "finish"]
+        )
         graph.add_edge("commit", "pick_task")
         graph.add_edge("finish", END)
         return graph.compile(checkpointer=checkpointer)
@@ -168,7 +170,19 @@ class RunEngine:
             failed, problems = False, []
         except ContractViolation as exc:
             failed, problems = True, [f"implementer output rejected: {problem}" for problem in exc.problems]
-        return {"call_seq": seq, "implement_failed": failed, "last_problems": problems, "denied": list(log.denied)}
+        update = {"call_seq": seq, "implement_failed": failed, "last_problems": problems, "denied": list(log.denied)}
+        if log.denied:
+            update["escalation"] = {
+                "reason": "approval",
+                "task_id": task.id,
+                "commands": list(log.denied),
+                "options": ["approve", "deny", "abort"],
+                "summary": f"{task.id} needs approval for: {', '.join(log.denied)}",
+            }
+        return update
+
+    def route_after_implement(self, state: RunState) -> str:
+        return "escalate" if state.get("escalation") else "verify"
 
     def verify(self, state: RunState) -> dict:
         task = load_plan(state).tasks[state["task_index"]]
@@ -234,6 +248,12 @@ class RunEngine:
             self.worktrees.reset_to(self.deps.worktree, state["task_base_sha"])
             plan = with_task_status(load_plan(state), state["task_index"], "SKIPPED")
             return {**cleared, "plan": plan.model_dump(), "next": "pick_task"}
+        if action == "approve":
+            approved = [*state.get("approved", []), *escalation["commands"]]
+            return {**cleared, "approved": approved, "denied": [], "next": "implement"}
+        if action == "deny":
+            hint = f"Not approved: {', '.join(escalation['commands'])}. Do not use them."
+            return {**cleared, "denied": [], "hint": hint, "next": "verify"}
         return {**cleared, "status": "aborted", "next": "finish"}
 
     def route_after_escalate(self, state: RunState) -> str:
