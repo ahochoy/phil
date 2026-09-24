@@ -1,9 +1,14 @@
+import os
 import shlex
+import signal
 import sys
+import threading
+import time
 
 import pytest
 
 from phil.config import ShellConfig
+from phil.workspace import shell as shell_module
 from phil.workspace.shell import ShellPolicy, child_env, is_secret_name, literal_pattern, run_command, truncate_output
 
 PY = shlex.quote(sys.executable)
@@ -175,3 +180,65 @@ def test_literal_pattern_matches_only_the_exact_command():
     assert not policy.is_allowed("pytest tests/test_foo.py::test_bar[XYZ9]")
     assert policy.is_allowed("pytest tests/*")
     assert not policy.is_allowed("pytest tests/anything.py")
+
+
+def test_kill_active_groups_stops_running_commands(tmp_path):
+    results = []
+    thread = threading.Thread(
+        target=lambda: results.append(
+            run_command(f'{PY} -c "import time; time.sleep(30)"', cwd=tmp_path, timeout_s=60)
+        )
+    )
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not shell_module._ACTIVE_GROUPS and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert shell_module._ACTIVE_GROUPS
+    killed = shell_module.kill_active_groups()
+    thread.join(timeout=10)
+    assert killed
+    assert results and not results[0].ok
+    assert not shell_module._ACTIVE_GROUPS
+
+
+class SignalReceived(BaseException):
+    """Custom exception raised by signal handler."""
+    pass
+
+
+def test_run_command_kills_child_on_sigalrm(tmp_path):
+    """Test that child processes are killed even if a BaseException interrupts run_command."""
+    pid_file = tmp_path / "child_pid.txt"
+
+    class SignalTestException(BaseException):
+        pass
+
+    def handler(signum, frame):
+        raise SignalTestException("Signal received")
+
+    # Install handler and set timer
+    old_handler = signal.signal(signal.SIGALRM, handler)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, 0.5)
+
+        # Python script that writes its pid and sleeps
+        script = f'{PY} -c "import os; open({str(pid_file)!r}, \'w\').write(str(os.getpid())); import time; time.sleep(30)"'
+
+        # Expect the exception to be raised
+        with pytest.raises(SignalTestException):
+            run_command(script, cwd=tmp_path, timeout_s=60)
+
+        # Read child pid and verify it's dead
+        child_pid = int(pid_file.read_text())
+        try:
+            os.kill(child_pid, 0)
+            pytest.fail(f"Child process {child_pid} should be dead")
+        except ProcessLookupError:
+            pass  # Expected: child is gone
+
+        # Verify registry is empty
+        assert not shell_module._ACTIVE_GROUPS
+    finally:
+        # Clean up: cancel timer and restore old handler
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old_handler)

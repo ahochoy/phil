@@ -9,6 +9,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+_ACTIVE_GROUPS: set[int] = set()
+
 _FORBIDDEN = set(";&|$`<>\n")
 
 _GLOB_CHARS = set("*?[")
@@ -100,6 +102,18 @@ class ShellResult:
         return self.exit_code == 0 and not self.timed_out
 
 
+def kill_active_groups(sig: int = signal.SIGKILL) -> list[int]:
+    killed: list[int] = []
+    for group in list(_ACTIVE_GROUPS):
+        try:
+            os.killpg(group, sig)
+            killed.append(group)
+        except ProcessLookupError:
+            pass
+        _ACTIVE_GROUPS.discard(group)
+    return killed
+
+
 def run_command(
     command: str, cwd: Path, timeout_s: float, env: Mapping[str, str] | None = None
 ) -> ShellResult:
@@ -133,16 +147,28 @@ def run_command(
         return ShellResult(command, 126, "", str(exc), False, elapsed())
     except OSError as exc:
         return ShellResult(command, 126, "", str(exc), False, elapsed())
+
+    _ACTIVE_GROUPS.add(proc.pid)
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_s)
-        return ShellResult(command, proc.returncode, stdout, stderr, False, elapsed())
-    except subprocess.TimeoutExpired:
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        stdout, stderr = proc.communicate()
-        return ShellResult(command, -9, stdout, stderr, True, elapsed())
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+            return ShellResult(command, proc.returncode, stdout, stderr, False, elapsed())
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = proc.communicate()
+            return ShellResult(command, -9, stdout, stderr, True, elapsed())
+        except BaseException:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+            raise
+    finally:
+        _ACTIVE_GROUPS.discard(proc.pid)
 
 
 def truncate_output(
