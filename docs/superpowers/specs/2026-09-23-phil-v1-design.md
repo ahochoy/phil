@@ -323,6 +323,7 @@ Rules:
 ## 9. Context management
 
 - **Packet builders** (`packets/`) assemble each agent's input: contract first, then acceptance criteria, then `files_hint` file contents, then ledger entries, trimmed deterministically in that priority order to the role's budget.
+- **Models have no default.** Each role's model must be set under `[models]` in `phil.toml`; `phil run` refuses to start until the run roles (implementer, tester, reviewer) have one, and an agent call for an unset role fails with a message naming the missing key.
 - **Per-role budgets** in `phil.toml`, for example:
 
   ```toml

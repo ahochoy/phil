@@ -14,7 +14,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from phil import __version__
-from phil.config import ConfigError, load_config
+from phil.config import RUN_ROLES, ConfigError, load_config
 from phil.contracts import Plan
 from phil.contracts.schema import export_schemas
 from phil.git import GitError, git
@@ -146,6 +146,13 @@ def run_plan(
         raise typer.Exit(1) from exc
     if not (plan.test_cmd or config.project.test_cmd):
         console.print("[phil.error]plan has no test_cmd and phil.toml sets no [project] test_cmd[/]")
+        raise typer.Exit(1)
+    missing = config.missing_models(RUN_ROLES)
+    if missing:
+        console.print(
+            f"[phil.error]phil.toml sets no model for: {escape(', '.join(missing))}. "
+            'Add them under [models], e.g. implementer = "openrouter:openai/gpt-6-sol".[/]'
+        )
         raise typer.Exit(1)
     if base is not None:
         try:

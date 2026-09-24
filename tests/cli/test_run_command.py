@@ -42,6 +42,15 @@ def test_run_requires_a_test_command(calc_repo, tmp_path, monkeypatch):
     assert runs_for(calc_repo) == []
 
 
+def test_run_requires_models_for_the_run_roles(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    (calc_repo / "phil.toml").write_text('[models]\nimplementer = "test:model"\n')
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path))])
+    assert result.exit_code == 1
+    assert "tester, reviewer" in result.output
+    assert runs_for(calc_repo) == []
+
+
 def test_run_rejects_an_invalid_plan(calc_repo, tmp_path):
     bad = tmp_path / "plan.json"
     bad.write_text(json.dumps({"keyword": "calc"}))

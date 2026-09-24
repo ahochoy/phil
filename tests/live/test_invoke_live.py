@@ -19,7 +19,8 @@ def test_critic_returns_a_valid_critique(tmp_path):
     plan = Plan(keyword="CALC", description="Add a subtract function", tasks=[task], test_cmd="uv run pytest")
     packet = build_packet("critic", CriticInput(goal=Goal(objective="Add subtraction"), plan=plan), budget_tokens=4000)
     conn = connect(tmp_path / "phil.db")
-    ctx = AgentContext(config=PhilConfig(), conn=conn, layer="chat")
+    model = os.environ.get("PHIL_LIVE_MODEL", "openrouter:openai/gpt-6-luna")
+    ctx = AgentContext(config=PhilConfig(models={"critic": model}), conn=conn, layer="chat")
     result = invoke_agent(get_spec("critic"), packet, ctx, node="critic")
     assert isinstance(result, PlanCritique)
     [row] = [dict(r) for r in conn.execute("SELECT * FROM telemetry WHERE outcome = 'ok'")]

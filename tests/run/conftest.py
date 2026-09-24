@@ -16,7 +16,7 @@ from phil.store.db import connect
 from phil.store.events import EventLog
 from phil.store.paths import ProjectPaths
 from phil.store.runs import create_run, get_run
-from tests.helpers import run_git
+from tests.helpers import MODELS_TOML, TEST_MODELS, run_git
 
 TEST_CMD = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider"
 RUN_ID = "r-0001"
@@ -36,9 +36,14 @@ def calc_repo(tmp_path: Path) -> Path:
     (repo / "tests").mkdir()
     (repo / "tests" / "__init__.py").write_text("")
     (repo / "tests" / "test_calc.py").write_text("from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n")
+    (repo / "phil.toml").write_text(MODELS_TOML)
     run_git(repo, "add", "-A")
     run_git(repo, "commit", "-m", "init")
     return repo
+
+
+def _with_test_models(config: PhilConfig) -> PhilConfig:
+    return config.model_copy(update={"models": TEST_MODELS | config.models})
 
 
 def self_check() -> SelfCheck:
@@ -127,7 +132,7 @@ def make_harness(calc_repo: Path):
             )
         factory = ScriptedAgentFactory(scripts, usage=usage)
         deps = RunDeps(
-            config=config or PhilConfig(), conn=conn, repo_root=calc_repo, run_id=RUN_ID,
+            config=_with_test_models(config or PhilConfig()), conn=conn, repo_root=calc_repo, run_id=RUN_ID,
             worktree=paths.worktree_dir(RUN_ID), artifacts=ArtifactStore(paths.run_dir(RUN_ID)),
             factory=factory, sleep=lambda _: None,
             events=EventLog(paths.run_dir(RUN_ID) / "events.jsonl"),
