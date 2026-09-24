@@ -45,6 +45,12 @@ class ShellConfig(_Section):
     pass_env: list[str] = []
 
 
+class GitConfig(_Section):
+    # Signing or hooks can make an unattended run pause for a human when a commit fails.
+    sign_commits: bool | Literal["auto"] = "auto"  # "auto" follows the repo's commit.gpgsign
+    run_hooks: bool = False  # run the repo's pre-commit / commit-msg hooks on Phil's commits
+
+
 class ProjectConfig(_Section):
     test_cmd: str | None = None
     test_globs: list[str] = [
@@ -69,6 +75,7 @@ class PhilConfig(_Section):
     run: RunConfig = RunConfig()
     shell: ShellConfig = ShellConfig()
     project: ProjectConfig = ProjectConfig()
+    git: GitConfig = GitConfig()
 
     @model_validator(mode="before")
     @classmethod
