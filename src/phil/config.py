@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 ROLES = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer")
 DEFAULT_MODEL = "openrouter:nex-agi/nex-n2.5-pro:free"
+DEFAULT_BUDGETS = {"architect": 24_000, "tester": 48_000, "reviewer": 48_000}
 
 
 class ConfigError(Exception):
@@ -98,7 +99,8 @@ class PhilConfig(_Section):
         return self.models[role]
 
     def budget_for(self, role: str) -> RoleBudget:
-        return self.budget.get(role, RoleBudget())
+        default = RoleBudget(max_input_tokens=DEFAULT_BUDGETS.get(role, 12_000))
+        return self.budget.get(role, default)
 
 
 def load_config(repo_root: Path) -> PhilConfig:
