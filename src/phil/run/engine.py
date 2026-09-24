@@ -254,13 +254,16 @@ class RunEngine:
         if state["phase"] == "red":
             problems = verify_red(changed, report, globs, state.get("base_passed"), state.get("base_skipped"))
             if not problems:
+                tree = self.worktrees.snapshot(worktree)
+                # An unreferenced tree can be garbage-collected while the run sits paused.
+                self.worktrees.pin_ref(f"refs/phil/{self.deps.run_id}/red", tree)
                 return {
                     "phase": "green",
                     "attempts": 0,
                     "last_report": report.model_dump(),
                     "last_problems": [],
                     "red_snapshot": snapshot_tests(worktree, changed, globs),
-                    "red_tree": self.worktrees.snapshot(worktree),
+                    "red_tree": tree,
                     "verdict": "red_ok",
                 }
         else:
@@ -289,6 +292,7 @@ class RunEngine:
                 "problems": problems,
                 "options": ["retry", "skip", "abort"],
                 "summary": f"{task.id} failed {attempts} attempts in the {state['phase']} phase",
+                "log": (report or {}).get("log_path") or None,
             }
         return update
 
@@ -409,6 +413,7 @@ class RunEngine:
                 notes.append(Issue(severity="major", note=f"tester tests not committed: {self._first_stderr_line(exc)}"))
         after = self._test(state, artifact_name(f"{node}-after", None, seq))
         notes += [Issue(severity="minor", note=f"tester command not approved: {cmd}") for cmd in log.denied]
+        notes += [Issue(severity="minor", note=f"tester command refused: {cmd}") for cmd in log.refused]
         blocking = [issue for issue in issues if issue.severity in ("blocker", "major")]
         minor = [issue for issue in issues if issue.severity == "minor"]
         plan = issues_to_tasks(plan, blocking, "tester") if blocking else plan

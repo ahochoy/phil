@@ -159,3 +159,14 @@ def test_snapshot_round_trips_tracked_and_untracked_changes(setup):
     assert (worktree.path / "new.py").read_text() == "x = 1\n"
     assert not (worktree.path / "junk.py").exists()
     assert manager.changed_files(worktree.path, since=manager.head(worktree.path)) == ["app.py", "new.py"]
+
+
+def test_pin_and_delete_refs(setup, git_repo):
+    manager, worktree, base = setup
+    tree = manager.snapshot(worktree.path)
+    manager.pin_ref("refs/phil/r-0001/red", tree)
+    manager.pin_ref("refs/phil/r-0001/other", base)
+    assert run_git(git_repo, "cat-file", "-t", "refs/phil/r-0001/red").strip() == "tree"
+    removed = manager.delete_refs("refs/phil/r-0001/")
+    assert sorted(removed) == ["refs/phil/r-0001/other", "refs/phil/r-0001/red"]
+    assert run_git(git_repo, "for-each-ref", "refs/phil/").strip() == ""

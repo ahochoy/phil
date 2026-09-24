@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from phil.config import PhilConfig
 from phil.run.state import load_plan
 from tests.helpers import run_git
@@ -71,6 +73,13 @@ def test_attempt_cap_comes_from_config(make_harness):
     harness = make_harness({"implementer": [write_red, bad_green]}, config=config)
     result = harness.start()
     assert result["__interrupt__"][0].value["summary"] == "CALC-001 failed 1 attempts in the green phase"
+
+
+def test_attempts_escalation_points_at_the_last_test_log(make_harness):
+    harness = make_harness({"implementer": [write_red, bad_green, bad_green, bad_green]})
+    escalation = harness.start()["__interrupt__"][0].value
+    assert escalation["log"].endswith(".log")
+    assert Path(escalation["log"]).exists()
 
 
 def test_invalid_action_asks_again_and_a_valid_one_still_works(make_harness):

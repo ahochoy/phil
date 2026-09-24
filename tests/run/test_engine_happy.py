@@ -71,3 +71,9 @@ def test_nodes_and_states_are_logged(make_harness):
     assert nodes[:4] == ["setup", "pick_task", "implement", "verify"]
     assert nodes[-1] == "finish"
     assert [e["state"] for e in events if e["kind"] == "state"] == ["running", "completed"]
+
+
+def test_red_snapshot_is_pinned(make_harness, calc_repo):
+    harness = make_harness({"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]})
+    harness.start()
+    assert run_git(calc_repo, "cat-file", "-t", "refs/phil/r-0001/red").strip() == "tree"

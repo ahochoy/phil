@@ -151,6 +151,16 @@ def test_rejected_tester_output_is_a_major_open_issue(make_harness):
     assert [issue["severity"] for issue in rejected] == ["major"]
 
 
+def test_refused_tester_commands_are_reported(make_harness):
+    def forbidden(turn):
+        turn.tools["run_shell"]("ls | cat")
+        return tester_report()
+
+    harness = make_harness({"implementer": [write_red, write_green], "tester": [forbidden], "reviewer": [review()]})
+    final = harness.start()
+    assert "tester command refused: ls | cat" in [issue["note"] for issue in final["open_issues"]]
+
+
 def test_new_failures_at_finish_become_major_open_issues(make_harness):
     def failing_edge_test_minor(turn):
         (turn.workdir / "tests" / "test_edge.py").write_text(
