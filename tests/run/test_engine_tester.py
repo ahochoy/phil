@@ -141,3 +141,11 @@ def test_tester_resumes_cleanly_after_a_crash(make_harness):
     final = harness.graph.invoke(None, harness.thread)
     assert final["status"] == "completed"
     assert not (harness.deps.worktree / "tests" / "test_edge.py").exists()
+
+
+def test_rejected_tester_output_is_a_major_open_issue(make_harness):
+    harness = make_harness({"implementer": [write_red, write_green], "tester": [{}, {}], "reviewer": [review()]})
+    final = harness.start()
+    assert final["status"] == "completed"
+    rejected = [issue for issue in final["open_issues"] if issue["note"].startswith("tester output rejected")]
+    assert [issue["severity"] for issue in rejected] == ["major"]

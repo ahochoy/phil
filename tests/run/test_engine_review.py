@@ -48,3 +48,33 @@ def test_reviewer_sees_open_assumptions(make_harness):
     harness.start()
     review_packet = [p for role, p in harness.factory.calls if role == "reviewer"][0]["messages"][0]["content"]
     assert "ints only" in review_packet
+
+
+def failed_review_harness(make_harness, reviewers):
+    return make_harness({"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": reviewers})
+
+
+def test_failed_review_escalates(make_harness):
+    harness = failed_review_harness(make_harness, [{}, {}])
+    escalation = harness.start()["__interrupt__"][0].value
+    assert escalation["reason"] == "review_failed"
+    assert escalation["options"] == ["retry", "finish", "abort"]
+    assert escalation["resume_to"] == "review"
+    assert escalation["summary"] == "reviewer did not return a valid review"
+    assert escalation["problems"]
+
+
+def test_failed_review_retry_then_completes(make_harness):
+    harness = failed_review_harness(make_harness, [{}, {}, review()])
+    harness.start()
+    final = harness.resume({"action": "retry"})
+    assert (final["status"], final["review_rounds"]) == ("completed", 1)
+
+
+def test_failed_review_finish_leaves_a_major_issue(make_harness):
+    harness = failed_review_harness(make_harness, [{}, {}])
+    harness.start()
+    final = harness.resume({"action": "finish"})
+    assert final["status"] == "completed"
+    assert {"severity": "major", "note": "review not completed"}.items() <= final["open_issues"][-1].items()
+    assert "- (major) review not completed" in (harness.deps.artifacts.run_dir / "summary.md").read_text()
