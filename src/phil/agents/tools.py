@@ -11,6 +11,7 @@ from phil.workspace.shell import ShellPolicy, child_env, run_command, truncate_o
 @dataclass
 class CommandLog:
     commands: list[str] = field(default_factory=list)
+    denied: list[str] = field(default_factory=list)
 
 
 def make_shell_tool(
@@ -31,6 +32,7 @@ def make_shell_tool(
         Shell operators such as pipes, redirects, `;` and `&&` are not allowed.
         """
         if not policy.is_allowed(command):
+            log.denied.append(command)
             allowed = ", ".join(shell.allow)
             return f"DENIED: `{command}` is not on the allowlist. Allowed patterns: {allowed}"
         log.commands.append(command)

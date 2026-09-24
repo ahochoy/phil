@@ -25,6 +25,7 @@ class ImplementInput(Contract):
     phase: Literal["red", "green"]
     test_cmd: str
     last_report: TestReport | None = None
+    feedback: list[str] = Field(default_factory=list)
 
 
 class TesterInput(Contract):
