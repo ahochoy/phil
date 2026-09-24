@@ -279,16 +279,46 @@ def stop(
     if record.state not in ("running", "pending"):
         console.print(f"[phil.error]{escape(run_id)} is {escape(record.state)}; nothing to stop[/]")
         raise typer.Exit(1)
-    if is_worker_alive(record):
-        os.kill(record.pid, signal.SIGTERM)
-        deadline = time.monotonic() + timeout
-        while get_run(conn, run_id).state != "stopped":
-            if time.monotonic() > deadline:
-                console.print("[phil.error]the worker did not stop in time[/]")
-                raise typer.Exit(1)
-            time.sleep(0.2)
-    else:
-        update_run(conn, run_id, state="stopped", needs_attention="stopped by user (worker was not running)")
+    alive = is_worker_alive(record)
+    if not alive and record.state == "pending":
+        age = (datetime.now(UTC) - datetime.fromisoformat(record.updated_at)).total_seconds()
+        if age <= PENDING_STALE_AFTER_S:
+            console.print(f"[phil.error]{escape(run_id)} is still starting; try again in a few seconds[/]")
+            raise typer.Exit(1)
+    if alive:
+        try:
+            os.kill(record.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            alive = False
+        except PermissionError as exc:
+            console.print(f"[phil.error]{escape(str(exc))}[/]")
+            raise typer.Exit(1) from exc
+        else:
+            deadline = time.monotonic() + timeout
+            current = get_run(conn, run_id)
+            while current is not None and current.state in ("running", "pending"):
+                if time.monotonic() > deadline:
+                    console.print("[phil.error]the worker did not stop in time[/]")
+                    raise typer.Exit(1)
+                time.sleep(0.2)
+                current = get_run(conn, run_id)
+            _finish_stop(run_id, current)
+            return
+    # No live worker (or it exited between the liveness check and the kill): mark the row
+    # stopped ourselves, unless it's already settled into some other terminal state on its own.
+    current = get_run(conn, run_id)
+    if current is not None and current.state in ("running", "pending"):
+        current = update_run(conn, run_id, state="stopped", needs_attention="stopped by user (worker was not running)")
+    _finish_stop(run_id, current)
+
+
+def _finish_stop(run_id: str, current) -> None:
+    if current is None:
+        console.print(f"[phil.error]unknown run {escape(run_id)}[/]")
+        raise typer.Exit(1)
+    if current.state != "stopped":
+        console.print(f"[phil.error]{escape(run_id)} ended as {escape(current.state)}[/]")
+        raise typer.Exit(1)
     console.print(f"Stopped [phil.id]{escape(run_id)}[/]. Continue with `phil resume {escape(run_id)}`.")
 
 
