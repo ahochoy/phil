@@ -6,7 +6,18 @@ from pydantic import BaseModel
 from phil.contracts import Plan
 
 
+_UNSAFE_NAME_CHARS = ("/", "\\")
+
+
+def _check_safe_name_component(value: str) -> None:
+    if any(char in value for char in _UNSAFE_NAME_CHARS) or value == ".." or ".." in Path(value).parts:
+        raise ValueError(f"unsafe path component: {value!r}")
+
+
 def artifact_name(node: str, task_id: str | None, attempt: int) -> str:
+    _check_safe_name_component(node)
+    if task_id is not None:
+        _check_safe_name_component(task_id)
     return f"{node}-{task_id or 'run'}-{attempt}"
 
 
@@ -15,7 +26,13 @@ class ArtifactStore:
         self.run_dir = run_dir
 
     def _file(self, relative: str) -> Path:
-        path = self.run_dir / relative
+        rel_path = Path(relative)
+        if rel_path.is_absolute() or ".." in rel_path.parts:
+            raise ValueError(f"unsafe artifact path: {relative!r}")
+        run_dir = self.run_dir.resolve()
+        path = (run_dir / rel_path).resolve()
+        if path != run_dir and run_dir not in path.parents:
+            raise ValueError(f"unsafe artifact path: {relative!r}")
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 

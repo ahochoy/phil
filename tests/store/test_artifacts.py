@@ -1,3 +1,5 @@
+import pytest
+
 from phil.contracts import Brief, Plan, Task
 from phil.store.artifacts import ArtifactStore, artifact_name
 
@@ -49,3 +51,26 @@ def test_write_log(tmp_path):
     path = store.write_log("verify-MAPS-001-1", "FAILED test_x\n")
     assert path == tmp_path / "r-0001" / "logs" / "verify-MAPS-001-1.log"
     assert path.read_text() == "FAILED test_x\n"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "/etc/passwd",
+        "../outside.json",
+        "outputs/../../outside.json",
+        "outputs/../../../outside.json",
+    ],
+)
+def test_file_rejects_escaping_paths(tmp_path, relative):
+    store = ArtifactStore(tmp_path / "r-0001")
+    with pytest.raises(ValueError):
+        store._file(relative)
+
+
+@pytest.mark.parametrize("bad", ["../implement", "a/b", "a\\b", "..", "sub/../../x"])
+def test_artifact_name_rejects_path_like_components(bad):
+    with pytest.raises(ValueError):
+        artifact_name(bad, "MAPS-001", 1)
+    with pytest.raises(ValueError):
+        artifact_name("implement", bad, 1)
