@@ -64,3 +64,23 @@ def test_create_rejects_invalid_run_id(git_repo, tmp_path):
     base = run_git(git_repo, "rev-parse", "HEAD").strip()
     with pytest.raises(ValueError):
         manager.create(run_id="bad", base_sha=base, path=tmp_path / "wt" / "bad")
+
+
+def test_reset_to_discards_changes_and_untracked_files(setup):
+    manager, worktree, base = setup
+    (worktree.path / "app.py").write_text("changed\n")
+    (worktree.path / "new.py").write_text("x = 1\n")
+    manager.reset_to(worktree.path, base)
+    assert (worktree.path / "app.py").read_text() == "def add(a, b):\n    return a + b\n"
+    assert not (worktree.path / "new.py").exists()
+
+
+def test_restore_reverts_tracked_and_removes_untracked(setup):
+    manager, worktree, _ = setup
+    (worktree.path / "app.py").write_text("changed\n")
+    (worktree.path / "extra.py").write_text("x = 1\n")
+    (worktree.path / "keep.py").write_text("y = 2\n")
+    manager.restore(worktree.path, ["app.py", "extra.py"])
+    assert (worktree.path / "app.py").read_text() == "def add(a, b):\n    return a + b\n"
+    assert not (worktree.path / "extra.py").exists()
+    assert (worktree.path / "keep.py").exists()
