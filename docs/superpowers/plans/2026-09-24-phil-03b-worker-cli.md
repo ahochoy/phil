@@ -1941,6 +1941,7 @@ git commit -m "$(printf 'Run the test suite in parallel\n\nCo-Authored-By: Claud
 | Follow-up: stop kills child process groups | Tasks 3, 4, 9 | — |
 | Follow-up: connection lifetimes; heartbeat connection; delete checkpoints on clean | Tasks 4, 10 | — |
 | Follow-up: pin the red snapshot | Task 2 | — |
+| Follow-up: resume inputs from the run row; detect a removed worktree before resuming | Task 4; final review fix A3 | — |
 | Follow-up: escalation payload links to logs | Task 2 | Multiple reports per escalation: later |
 | Follow-up: tester refused commands reported | Task 2 | — |
 | Follow-up: suite speed | Task 11 | — |
