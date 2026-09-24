@@ -25,6 +25,8 @@ class TestReport(Contract):
 
 
 class TesterReport(Contract):
+    __test__ = False  # not a pytest test class
+
     tests_added: list[str] = Field(description="Repo-relative test files you added (integration, E2E, edge cases).")
     issues: list[Issue] = Field(description="Defects found, including weak or misleading unit tests.")
     self_check: SelfCheck = Field(description="Your self-check of this testing pass.")

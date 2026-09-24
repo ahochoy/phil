@@ -28,6 +28,8 @@ class ImplementInput(Contract):
 
 
 class TesterInput(Contract):
+    __test__ = False  # not a pytest test class
+
     plan: Plan
     diff: str
     final_report: TestReport
