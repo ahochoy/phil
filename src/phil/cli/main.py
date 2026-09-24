@@ -1,7 +1,9 @@
 import importlib
 import json
 import os
+import signal
 import sqlite3
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,7 +23,7 @@ from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
-from phil.store.runs import get_run, list_runs
+from phil.store.runs import get_run, list_runs, update_run
 from phil.store.telemetry import run_totals
 from phil.ui.theme import make_console
 
@@ -256,6 +258,38 @@ def resume(
         return
     console.print(f"[phil.error]{escape(run_id)} is {escape(record.state)}; nothing to resume[/]")
     raise typer.Exit(1)
+
+
+@app.command()
+def stop(
+    ctx: typer.Context,
+    run_id: str,
+    timeout: float = typer.Option(15.0, "--timeout", help="Seconds to wait for the worker to stop."),
+) -> None:
+    """Stop a running run; continue it later with `phil resume`."""
+    _, conn = _open_project(ctx)
+    record = _require_run(conn, run_id)
+    if record.state == "escalated":
+        console.print(
+            f"[phil.error]{escape(run_id)} is waiting for your decision; "
+            f"stop it with `phil resume {escape(run_id)} --action abort`[/]",
+            soft_wrap=True,
+        )
+        raise typer.Exit(1)
+    if record.state not in ("running", "pending"):
+        console.print(f"[phil.error]{escape(run_id)} is {escape(record.state)}; nothing to stop[/]")
+        raise typer.Exit(1)
+    if is_worker_alive(record):
+        os.kill(record.pid, signal.SIGTERM)
+        deadline = time.monotonic() + timeout
+        while get_run(conn, run_id).state != "stopped":
+            if time.monotonic() > deadline:
+                console.print("[phil.error]the worker did not stop in time[/]")
+                raise typer.Exit(1)
+            time.sleep(0.2)
+    else:
+        update_run(conn, run_id, state="stopped", needs_attention="stopped by user (worker was not running)")
+    console.print(f"Stopped [phil.id]{escape(run_id)}[/]. Continue with `phil resume {escape(run_id)}`.")
 
 
 @app.command("attach")
