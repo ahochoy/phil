@@ -65,6 +65,26 @@ def test_parked_lists_open_items(git_repo):
     assert "N+1 query" in result.output
 
 
+def test_parked_preserves_square_brackets(git_repo):
+    park(
+        _conn_for(git_repo),
+        raised_by="reviewer",
+        note="fix list[str] typing",
+        why_not_now="see [MAPS-002]",
+        source=Ref(label="review", path="x"),
+    )
+    result = runner.invoke(app, ["--repo", str(git_repo), "parked"])
+    assert result.exit_code == 0
+    assert "list[str]" in result.output
+    assert "[MAPS-002]" in result.output
+
+
+def test_parked_empty(git_repo):
+    result = runner.invoke(app, ["--repo", str(git_repo), "parked"])
+    assert result.exit_code == 0
+    assert "Parking lot is empty" in result.output
+
+
 def test_schema_command_exports_all(tmp_path):
     out = tmp_path / "schemas"
     result = runner.invoke(app, ["schema", "--out", str(out)])

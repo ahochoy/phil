@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from phil import __version__
@@ -42,7 +43,7 @@ def _open_project(ctx: typer.Context) -> tuple[RepoInfo, sqlite3.Connection]:
     try:
         info = resolve_repo(start)
     except RepoError as exc:
-        console.print(f"[phil.error]{exc}[/]")
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
     return info, connect(ProjectPaths(info.slug).db_path)
 
@@ -65,8 +66,8 @@ def runs(ctx: typer.Context) -> None:
     for run in records:
         tokens, cost = run_totals(conn, run.run_id)
         table.add_row(
-            f"[phil.id]{run.run_id}[/]",
-            run.keyword,
+            f"[phil.id]{escape(run.run_id)}[/]",
+            escape(run.keyword),
             f"{run.tasks_done}/{run.tasks_total}",
             run.state,
             _format_tokens(tokens),
@@ -84,11 +85,14 @@ def parked(ctx: typer.Context) -> None:
         console.print("[phil.muted]Parking lot is empty.[/]")
         return
     for item in items:
-        console.print(f"[phil.id]{item.id}[/] {item.note} [phil.muted]({item.raised_by}: {item.why_not_now})[/]")
+        console.print(
+            f"[phil.id]{escape(item.id)}[/] {escape(item.note)} "
+            f"[phil.muted]({escape(item.raised_by)}: {escape(item.why_not_now)})[/]"
+        )
 
 
 @app.command()
 def schema(out: Path = typer.Option(Path("phil-schemas"), "--out", help="Output directory.")) -> None:
     """Export JSON Schema for every contract."""
     paths = export_schemas(out)
-    console.print(f"Wrote [phil.id]{len(paths)}[/] schemas to {out}")
+    console.print(f"Wrote [phil.id]{len(paths)}[/] schemas to {escape(str(out))}")
