@@ -282,7 +282,10 @@ class RunEngine:
         self._update_run(state="running", needs_attention=None)
         cleared = {"escalation": None}
         if action == "retry":
-            return {**cleared, "attempts": 0, "hint": decision.get("hint"), "next": "implement"}
+            return {**cleared, "attempts": 0, "hint": decision.get("hint"), "next": escalation.get("resume_to", "implement")}
+        if action == "finish":
+            note = Issue(severity="major", note="review not completed")
+            return {**cleared, "open_issues": [*state.get("open_issues", []), note.model_dump()], "next": "finish"}
         if action == "skip":
             self.worktrees.reset_to(self.deps.worktree, state["task_base_sha"])
             plan = with_task_status(load_plan(state), state["task_index"], "SKIPPED")
@@ -340,9 +343,9 @@ class RunEngine:
             report = invoke_agent(get_spec("tester"), packet, self._context(state, log), node=node, call=seq)
             issues = list(report.issues)
         except PacketTooLarge as exc:
-            notes.append(Issue(severity="minor", note=f"tester skipped: {exc}"))
+            notes.append(Issue(severity="major", note=f"tester skipped: {exc}"))
         except ContractViolation as exc:
-            notes.append(Issue(severity="minor", note=f"tester output rejected: {'; '.join(exc.problems)}"))
+            notes.append(Issue(severity="major", note=f"tester output rejected: {'; '.join(exc.problems)}"))
         product = [p for p in self.worktrees.changed_files(worktree, since=head_before) if not is_test_path(p, globs)]
         if product:
             self.worktrees.restore(worktree, product)
@@ -401,8 +404,15 @@ class RunEngine:
             packet = build_packet("reviewer", contract, budget_tokens=self._budget("reviewer"))
             verdict = invoke_agent(get_spec("reviewer"), packet, self._context(state, CommandLog()), node="review", call=seq)
         except (PacketTooLarge, ContractViolation) as exc:
-            note = Issue(severity="minor", note=f"review not completed: {exc}")
-            return {"call_seq": seq, "review_rounds": rounds, "open_issues": [*carried, note.model_dump()], "next": "finish"}
+            problems = exc.problems if isinstance(exc, ContractViolation) else [str(exc)]
+            escalation = {
+                "reason": "review_failed",
+                "options": ["retry", "finish", "abort"],
+                "resume_to": "review",
+                "problems": problems,
+                "summary": "reviewer did not return a valid review",
+            }
+            return {"call_seq": seq, "escalation": escalation}
         blocking = [issue for issue in verdict.issues if issue.severity in ("blocker", "major")]
         minor = [issue for issue in verdict.issues if issue.severity == "minor"]
         if verdict.verdict == "changes" and blocking and rounds < self.deps.config.run.max_review_rounds:
