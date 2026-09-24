@@ -2,6 +2,7 @@ import importlib
 import json
 import os
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -17,14 +18,20 @@ from phil.git import GitError, git
 from phil.repo import RepoError, RepoInfo, resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, spawn_worker
 from phil.store.db import connect
+from phil.store.events import run_events
 from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
-from phil.store.runs import list_runs
+from phil.store.runs import get_run, list_runs
 from phil.store.telemetry import run_totals
 from phil.ui.theme import make_console
 
 app = typer.Typer(add_completion=False, help="Phil: a contract-driven coding agent.")
 console = make_console()
+
+# A pending run whose row was updated more recently than this is assumed to still be starting
+# (its worker process hasn't written a pid/heartbeat yet); older than this, treat it as a worker
+# that never started and let `phil resume` continue it from scratch.
+PENDING_STALE_AFTER_S = 30.0
 
 
 def _print_version(value: bool) -> None:
@@ -193,3 +200,63 @@ def worker(
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(2) from exc
     console.print(f"{escape(run_id)}: {escape(outcome.status)}")
+
+
+def _require_run(conn: sqlite3.Connection, run_id: str):
+    record = get_run(conn, run_id)
+    if record is None:
+        console.print(f"[phil.error]unknown run {escape(run_id)}[/]")
+        raise typer.Exit(1)
+    return record
+
+
+@app.command()
+def resume(
+    ctx: typer.Context,
+    run_id: str,
+    action: str | None = typer.Option(None, "--action", help="Answer a paused run (e.g. retry, skip, approve)."),
+    hint: str | None = typer.Option(None, "--hint", help="Hint for the next attempt (with --action retry)."),
+) -> None:
+    """Answer a paused run, or continue a failed or stopped one."""
+    info, conn = _open_project(ctx)
+    record = _require_run(conn, run_id)
+    if is_worker_alive(record):
+        console.print(f"[phil.error]{escape(run_id)} already has a running worker[/]")
+        raise typer.Exit(1)
+    if record.state == "escalated":
+        latest = run_events(ProjectPaths(info.slug), run_id).latest("escalation")
+        escalation = latest["escalation"] if latest else {"summary": record.needs_attention or "", "options": []}
+        options = escalation["options"]
+        if action is None:
+            console.print(escape(escalation["summary"]))
+            console.print(f"[phil.error]choose --action: {escape(', '.join(options))}[/]")
+            raise typer.Exit(2)
+        if action not in options:
+            console.print(f"[phil.error]unknown action {escape(action)!r}; choose one of: {escape(', '.join(options))}[/]")
+            raise typer.Exit(2)
+        decision = {"action": action} | ({"hint": hint} if hint else {})
+        spawn_worker(info.root, run_id, "resume", decision)
+        console.print(f"Resuming [phil.id]{escape(run_id)}[/] with {escape(action)}.")
+        return
+    if record.state == "pending":
+        if action is not None:
+            console.print("[phil.error]nothing to answer; the run continues from its last checkpoint[/]")
+            raise typer.Exit(2)
+        age = (datetime.now(UTC) - datetime.fromisoformat(record.updated_at)).total_seconds()
+        if age <= PENDING_STALE_AFTER_S:
+            console.print(
+                f"[phil.error]{escape(run_id)} is still starting; follow it with `phil attach {escape(run_id)}`[/]"
+            )
+            raise typer.Exit(1)
+        spawn_worker(info.root, run_id, "continue")
+        console.print(f"Continuing [phil.id]{escape(run_id)}[/] from its last checkpoint.")
+        return
+    if record.state in ("failed", "stopped", "running"):
+        if action is not None:
+            console.print("[phil.error]nothing to answer; the run continues from its last checkpoint[/]")
+            raise typer.Exit(2)
+        spawn_worker(info.root, run_id, "continue")
+        console.print(f"Continuing [phil.id]{escape(run_id)}[/] from its last checkpoint.")
+        return
+    console.print(f"[phil.error]{escape(run_id)} is {escape(record.state)}; nothing to resume[/]")
+    raise typer.Exit(1)
