@@ -10,6 +10,7 @@ class RunState(TypedDict, total=False):
     test_cmd: str
     status: str
     baseline_failures: list[str]
+    initial_baseline: list[str]
     base_passed: int | None
     base_skipped: int | None
     task_index: int
@@ -44,6 +45,7 @@ def initial_state(run_id: str, plan: Plan, base_sha: str, test_cmd: str) -> RunS
         test_cmd=test_cmd,
         status="pending",
         baseline_failures=[],
+        initial_baseline=[],
         base_passed=None,
         base_skipped=None,
         task_index=-1,

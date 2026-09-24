@@ -15,6 +15,7 @@ def test_initial_state_round_trips_the_plan():
     assert load_plan(state) == plan()
     assert state["original_task_ids"] == ["CALC-001", "CALC-002"]
     assert (state["call_seq"], state["approved"], state["open_issues"], state["status"]) == (0, [], [], "pending")
+    assert state["initial_baseline"] == []
 
 
 def test_next_todo_and_status_updates():

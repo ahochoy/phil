@@ -149,3 +149,20 @@ def test_rejected_tester_output_is_a_major_open_issue(make_harness):
     assert final["status"] == "completed"
     rejected = [issue for issue in final["open_issues"] if issue["note"].startswith("tester output rejected")]
     assert [issue["severity"] for issue in rejected] == ["major"]
+
+
+def test_new_failures_at_finish_become_major_open_issues(make_harness):
+    def failing_edge_test_minor(turn):
+        (turn.workdir / "tests" / "test_edge.py").write_text(
+            "from calc import add\n\n\ndef test_add_strings():\n    assert add('a', 1) == 'a1'\n"
+        )
+        return tester_report([Issue(severity="minor", note="add() rejects mixed types")])
+
+    harness = make_harness(
+        {"implementer": [write_red, write_green], "tester": [failing_edge_test_minor], "reviewer": [review()]}
+    )
+    final = harness.start()
+    assert final["status"] == "completed"
+    summary = (harness.deps.artifacts.run_dir / "summary.md").read_text()
+    assert "- (major) still failing: tests/test_edge.py::test_add_strings" in summary
+    assert "- (minor) add() rejects mixed types" in summary
