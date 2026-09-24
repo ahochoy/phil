@@ -49,6 +49,29 @@ CREATE TABLE IF NOT EXISTS parked (
 );
 """
 
+MIGRATIONS: list[str] = [SCHEMA]
+
+
+def _statements(script: str) -> list[str]:
+    return [statement.strip() for statement in script.split(";") if statement.strip()]
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    while True:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version >= len(MIGRATIONS):
+                conn.execute("COMMIT")
+                return
+            for statement in _statements(MIGRATIONS[version]):
+                conn.execute(statement)
+            conn.execute(f"PRAGMA user_version = {version + 1}")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
 
 def utcnow() -> str:
     return datetime.now(UTC).isoformat()
@@ -59,5 +82,5 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=10, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
