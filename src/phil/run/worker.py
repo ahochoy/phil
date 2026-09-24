@@ -13,11 +13,11 @@ from phil.repo import resolve_repo
 from phil.run import runner
 from phil.run.checkpoint import open_checkpointer
 from phil.run.engine import RunDeps, RunEngine
+from phil.run.launch import is_worker_alive
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect, utcnow
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
-from phil.run.launch import is_worker_alive
 from phil.store.runs import TRANSITIONS, claim_run, get_run, release_run, update_run
 from phil.workspace.shell import kill_active_groups
 
