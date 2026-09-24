@@ -1,6 +1,7 @@
 import importlib
 import json
 import os
+import shutil
 import signal
 import sqlite3
 import time
@@ -26,6 +27,7 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, list_runs, update_run
 from phil.store.telemetry import run_totals
 from phil.ui.theme import make_console
+from phil.workspace.worktree import Worktree, WorktreeManager
 
 app = typer.Typer(add_completion=False, help="Phil: a contract-driven coding agent.")
 console = make_console()
@@ -343,3 +345,64 @@ def attach_command(ctx: typer.Context, run_id: str) -> None:
 
     io = AttachIO(choose=choose, ask_hint=ask_hint, spawn=lambda mode, decision: spawn_worker(info.root, run_id, mode, decision))
     attach(conn, run_id, run_events(ProjectPaths(info.slug), run_id), console, io)
+
+
+@app.command()
+def diff(ctx: typer.Context, run_id: str) -> None:
+    """Show the changes a run made, compared with its base."""
+    info, conn = _open_project(ctx)
+    record = _require_run(conn, run_id)
+    try:
+        typer.echo(git(info.root, "diff", record.base_sha, record.branch), nl=False)
+    except GitError as exc:
+        console.print("[phil.error]the run's branch no longer exists[/]")
+        raise typer.Exit(1) from exc
+
+
+@app.command()
+def clean(
+    ctx: typer.Context,
+    run_id: str,
+    purge: bool = typer.Option(False, "--purge", help="Also delete the run summary."),
+) -> None:
+    """Remove a finished run's worktree, branch, checkpoints, and scratch files."""
+    from phil.run.checkpoint import open_checkpointer
+
+    info, conn = _open_project(ctx)
+    record = _require_run(conn, run_id)
+    if record.state in ("pending", "running", "escalated"):
+        console.print(
+            f"[phil.error]{escape(run_id)} is {escape(record.state)}; finish or stop it first "
+            f"(`phil stop {escape(run_id)}` or `phil resume {escape(run_id)} --action abort`)[/]"
+        )
+        raise typer.Exit(1)
+    paths = ProjectPaths(info.slug)
+    manager = WorktreeManager(info.root)
+    worktree = Path(record.worktree)
+    if worktree.exists():
+        manager.remove(Worktree(worktree, record.branch, record.base_sha), delete_branch=False)
+    try:
+        git(info.root, "branch", "-D", record.branch)
+    except GitError:
+        pass
+    manager.delete_refs(f"refs/phil/{run_id}/")
+    saver = open_checkpointer(paths.db_path)
+    try:
+        saver.delete_thread(run_id)
+    finally:
+        saver.conn.close()
+    run_dir = paths.run_dir(run_id)
+    if run_dir.exists():
+        if purge:
+            shutil.rmtree(run_dir)
+        else:
+            for child in run_dir.iterdir():
+                if child.name == "summary.md":
+                    continue
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+    update_run(conn, run_id, state="cleaned", needs_attention=None)
+    kept = "" if purge else " (kept summary.md)"
+    console.print(f"Cleaned [phil.id]{escape(run_id)}[/]{kept}.")
