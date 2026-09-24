@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from phil.contracts import Brief, Plan, Task
@@ -44,6 +46,24 @@ def test_assumption_ledger_appends(tmp_path):
 
 def test_read_assumptions_when_none(tmp_path):
     assert ArtifactStore(tmp_path / "r-0001").read_assumptions() == []
+
+
+def test_write_json_writes_arbitrary_data(tmp_path):
+    store = ArtifactStore(tmp_path / "r-0001")
+    path = store.write_json("outputs", "critic-run-1.rejected", {"raw": {"verdict": "maybe"}, "problems": ["x"]})
+    assert path == tmp_path / "r-0001" / "outputs" / "critic-run-1.rejected.json"
+    assert json.loads(path.read_text()) == {"raw": {"verdict": "maybe"}, "problems": ["x"]}
+
+
+def test_write_json_falls_back_to_repr_for_unserializable_values(tmp_path):
+    store = ArtifactStore(tmp_path / "r-0001")
+
+    class Weird:
+        def __repr__(self) -> str:
+            return "Weird()"
+
+    path = store.write_json("outputs", "weird", {"raw": Weird()})
+    assert json.loads(path.read_text()) == {"raw": "Weird()"}
 
 
 def test_write_log(tmp_path):

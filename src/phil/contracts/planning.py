@@ -10,20 +10,24 @@ KEYWORD_PATTERN = r"^[A-Z]{3,6}$"
 
 
 class Task(Part):
-    id: str = Field(pattern=TASK_ID_PATTERN)
-    description: str
-    acceptance_criteria: list[str] = Field(min_length=1)
-    files_hint: list[str] = []
-    status: Literal["TODO", "DONE", "SKIPPED", "FAILED"] = "TODO"
+    id: str = Field(pattern=TASK_ID_PATTERN, description="KEYWORD-### id, e.g. MAPS-001.")
+    description: str = Field(description="One atomic change a developer can test-drive in isolation.")
+    acceptance_criteria: list[str] = Field(
+        min_length=1, description="Observable behaviours a failing test can check. At least one."
+    )
+    files_hint: list[str] = Field(default=[], description="Repo-relative files this task most likely touches.")
+    status: Literal["TODO", "DONE", "SKIPPED", "FAILED"] = Field(
+        default="TODO", description="Always TODO in a new plan."
+    )
 
 
 class Plan(Contract):
-    keyword: str = Field(pattern=KEYWORD_PATTERN)
-    description: str
-    tasks: list[Task] = Field(min_length=1)
-    test_cmd: str | None = None
-    story_ref: str | None = None
-    critic_notes: list[str] = []
+    keyword: str = Field(pattern=KEYWORD_PATTERN, description="3-6 uppercase letters naming the objective.")
+    description: str = Field(description="One or two sentences on the approach.")
+    tasks: list[Task] = Field(min_length=1, description="Ordered atomic tasks; each leaves the app green.")
+    test_cmd: str | None = Field(default=None, description="Command that runs the project's tests, e.g. 'uv run pytest'.")
+    story_ref: str | None = Field(default=None, description="Roadmap story reference, if given in the goal.")
+    critic_notes: list[str] = Field(default=[], description="Leave empty; filled from the plan critique.")
 
     @model_validator(mode="after")
     def _check_task_ids(self) -> "Plan":
@@ -37,7 +41,7 @@ class Plan(Contract):
 
 
 class PlanCritique(Contract):
-    verdict: Literal["ok", "revise"]
-    issues: list[Issue]
-    notes: list[str]
-    self_check: SelfCheck
+    verdict: Literal["ok", "revise"] = Field(description="revise only for problems worth another planning round.")
+    issues: list[Issue] = Field(description="Concrete problems, each tied to a task_id where possible.")
+    notes: list[str] = Field(description="Short notes for the user about the plan's risks.")
+    self_check: SelfCheck = Field(description="Your self-check of this critique.")

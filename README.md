@@ -11,3 +11,8 @@ Design: `docs/superpowers/specs/2026-09-23-phil-v1-design.md`
     uv run phil --version
 
 The original LangGraph prototype is kept in `prototype/` for reference and is not part of the package.
+
+Live tests call a real model through OpenRouter and are skipped by default:
+
+    set -a; source .env; set +a
+    uv run pytest -m live

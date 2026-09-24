@@ -20,6 +20,7 @@ class TelemetryRow(BaseModel):
     latency_ms: int
     cost_usd: float
     outcome: Literal["ok", "invalid", "evidence_fail", "error"]
+    call: int = 1
 
 
 @dataclass(frozen=True)

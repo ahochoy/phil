@@ -59,3 +59,9 @@ def test_malformed_toml_raises_config_error(tmp_path):
     (tmp_path / "phil.toml").write_text("[run\ntester_mode = run\n")
     with pytest.raises(ConfigError):
         load_config(tmp_path)
+
+
+def test_pass_env_defaults_empty_and_loads(tmp_path):
+    assert load_config(tmp_path).shell.pass_env == []
+    (tmp_path / "phil.toml").write_text('[shell]\npass_env = ["DATABASE_TOKEN"]\n')
+    assert load_config(tmp_path).shell.pass_env == ["DATABASE_TOKEN"]

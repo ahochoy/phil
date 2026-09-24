@@ -49,6 +49,11 @@ class ArtifactStore:
         path.write_text(contract.model_dump_json(indent=2))
         return path
 
+    def write_json(self, subdir: str, name: str, data: dict) -> Path:
+        path = self._file(f"{subdir}/{name}.json")
+        path.write_text(json.dumps(data, default=repr, indent=2))
+        return path
+
     def read[T: BaseModel](self, path: Path, model: type[T]) -> T:
         return model.model_validate_json(path.read_text())
 
