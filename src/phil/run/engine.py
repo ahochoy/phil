@@ -283,6 +283,7 @@ class RunEngine:
         globs = self.deps.config.project.test_globs
         seq = state.get("call_seq", 0) + 1
         self._update_run(current_node=node)
+        self.worktrees.reset_to(worktree, self.worktrees.head(worktree))
         head_before = self.worktrees.head(worktree)
         before = self._test(state, artifact_name(node, None, seq))
         notes: list[Issue] = []
@@ -305,12 +306,18 @@ class RunEngine:
             notes.append(Issue(severity="minor", note=f"tester changed product files; reverted: {', '.join(product)}"))
         if self.worktrees.changed_files(worktree, since=head_before):
             self.worktrees.commit_all(worktree, f"{plan.keyword}: tests from tester")
+        after = self._test(state, artifact_name(f"{node}-after", None, seq))
         notes += [Issue(severity="minor", note=f"tester command not approved: {cmd}") for cmd in log.denied]
         blocking = [issue for issue in issues if issue.severity in ("blocker", "major")]
         minor = [issue for issue in issues if issue.severity == "minor"]
         plan = issues_to_tasks(plan, blocking, "tester") if blocking else plan
         open_issues = [*state.get("open_issues", []), *(issue.model_dump() for issue in [*minor, *notes])]
-        return {"plan": plan.model_dump(), "call_seq": seq, "open_issues": open_issues}
+        return {
+            "plan": plan.model_dump(),
+            "call_seq": seq,
+            "open_issues": open_issues,
+            "baseline_failures": sorted(set(state.get("baseline_failures", [])) | set(after.failures)),
+        }
 
     def tester(self, state: RunState) -> dict:
         return {**self._run_tester(state, state["base_sha"], "tester"), "tester_done": True}
