@@ -72,6 +72,20 @@ def test_remove_can_keep_branch(setup, git_repo):
     assert "phil/r-0001" in run_git(git_repo, "branch", "--list", "phil/r-0001")
 
 
+def test_reset_to_keeps_gitignored_files(git_repo, tmp_path):
+    (git_repo / ".gitignore").write_text("ignored.txt\n")
+    run_git(git_repo, "add", "-A")
+    run_git(git_repo, "commit", "-m", "ignore")
+    manager = WorktreeManager(git_repo)
+    base = run_git(git_repo, "rev-parse", "HEAD").strip()
+    worktree = manager.create(run_id="r-0001", base_sha=base, path=tmp_path / "wt" / "r-0001")
+    (worktree.path / "ignored.txt").write_text("keep me\n")
+    (worktree.path / "stray.txt").write_text("drop me\n")
+    manager.reset_to(worktree.path, base)
+    assert (worktree.path / "ignored.txt").read_text() == "keep me\n"
+    assert not (worktree.path / "stray.txt").exists()
+
+
 def test_create_rejects_invalid_run_id(git_repo, tmp_path):
     manager = WorktreeManager(git_repo)
     base = run_git(git_repo, "rev-parse", "HEAD").strip()

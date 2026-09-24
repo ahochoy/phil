@@ -2,6 +2,7 @@ import fnmatch
 import hashlib
 import os
 import re
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
 from phil.config import ShellConfig
@@ -47,7 +48,7 @@ def run_tests(
     shell: ShellConfig,
     artifacts: ArtifactStore | None,
     name: str,
-    baseline: list[str] = (),
+    baseline: Sequence[str] = (),
 ) -> TestReport:
     env = child_env(os.environ, shell.pass_env) | {"PYTHONDONTWRITEBYTECODE": "1"}
     addopts = env.get("PYTEST_ADDOPTS")
