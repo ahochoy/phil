@@ -114,20 +114,16 @@ class RunEngine:
         return self.deps.config.budget_for(role).max_input_tokens
 
     def _budget_escalation(self, state: RunState, node: str) -> dict | None:
-        if state.get("budget_override"):
-            return None
         tokens, cost = run_totals(self.deps.conn, self.deps.run_id)
-        limits = self.deps.config.run
-        if tokens < limits.max_tokens and cost < limits.max_cost_usd:
+        max_tokens = state.get("budget_limit_tokens") or self.deps.config.run.max_tokens
+        max_cost = state.get("budget_limit_cost") or self.deps.config.run.max_cost_usd
+        if tokens < max_tokens and cost < max_cost:
             return None
         return {
             "reason": "budget",
             "options": ["continue", "abort"],
             "resume_to": node,
-            "summary": (
-                f"run used {tokens} tokens (${cost:.2f}); "
-                f"limit {limits.max_tokens} tokens / ${limits.max_cost_usd:.2f}"
-            ),
+            "summary": f"run used {tokens} tokens (${cost:.2f}); limit {max_tokens} tokens / ${max_cost:.2f}",
         }
 
     # --- nodes -------------------------------------------------------------
@@ -298,7 +294,14 @@ class RunEngine:
             hint = f"Not approved: {', '.join(escalation['commands'])}. Do not use them."
             return {**cleared, "denied": [], "hint": hint, "next": "verify"}
         if action == "continue":
-            return {**cleared, "budget_override": True, "next": escalation["resume_to"]}
+            tokens, cost = run_totals(self.deps.conn, self.deps.run_id)
+            limits = self.deps.config.run
+            return {
+                **cleared,
+                "budget_limit_tokens": tokens + limits.max_tokens,
+                "budget_limit_cost": cost + limits.max_cost_usd,
+                "next": escalation["resume_to"],
+            }
         return {**cleared, "status": "aborted", "next": "finish"}
 
     def route_after_escalate(self, state: RunState) -> str:
