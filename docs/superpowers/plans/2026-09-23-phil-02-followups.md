@@ -9,6 +9,15 @@ Findings from plan 2's task reviews and final review that were deliberately defe
       set -a; source .env; set +a
       uv run pytest -m live -v
 
+## Findings from the first live runs (2026-09-23)
+
+- **Free model IDs disappear.** `poolside/laguna-m.1:free` was removed from OpenRouter (404 "No endpoints found"). The default is now `nex-agi/nex-n2.5-pro:free`, the only free model that passed both the lean critic and the deep architect probe. `poolside/laguna-s-2.1:free` passed the architect in 15 s but its critic was never verified because of rate limits; it is a good per-role override candidate.
+- **Provider tool-schema limits.** ModelRun (host of `qwen/qwen3.8-27b:free`) rejects deepagents' `grep` tool because its `path: str | None` schema is ambiguous to ModelRun's grammar compiler. Judging roles now use the lean harness, which avoids it; deep roles still depend on the provider.
+- **The deep harness is expensive.** Planning one function in a two-file repo cost the architect 35k–54k input tokens under deepagents, versus about 1.5k for the lean critic. Plan 3 should give the architect a lean, read-only harness (read/ls/glob tools only, no planning or subagent middleware) and measure the difference with telemetry.
+- **The OpenRouter SDK retries 5xx for up to an hour** by default (`BackoffStrategy(500, 60000, 1.5, 3600000)`), so one call can hang silently. Set an explicit timeout and retry policy when building the model in the factory.
+- **"Overloaded" can arrive as HTTP 200.** nemotron returned a 200 whose body carried a `provider_overloaded` error, which the SDK raised as `ResponseValidationError`. `is_transient` does not recognize it; classify it as transient.
+- **Rate limits dominate free-tier runs.** Four of twelve probe runs failed on 429s alone. The probe script used for model selection is worth keeping as a `phil doctor`-style command later.
+
 ## Plan 3 (run graph): design inputs
 
 - **Shell approval.** deepagents 0.5.6 has no `"interrupt"` permission mode (only `"allow"`/`"deny"`), and `run_shell` is a plain closure. Calling LangGraph `interrupt()` inside the tool would re-run the whole run-graph node, including the agent call and its worktree changes, on resume. Simpler v1: `run_shell` records denied commands in `CommandLog`, the agent finishes, and the node escalates afterwards to request approval and a re-run. Decide explicitly.

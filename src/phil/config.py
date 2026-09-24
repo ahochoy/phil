@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 ROLES = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer")
-DEFAULT_MODEL = "openrouter:qwen/qwen3.8-27b:free"
+DEFAULT_MODEL = "openrouter:nex-agi/nex-n2.5-pro:free"
 
 
 class ConfigError(Exception):
