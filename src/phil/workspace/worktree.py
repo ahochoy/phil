@@ -33,7 +33,8 @@ class WorktreeManager:
 
     def commit_all(self, path: Path, message: str) -> str:
         git(path, "add", "-A")
-        git(path, "commit", "-m", message)
+        # Unattended workers must never block on a hook or a signing prompt (spec §7).
+        git(path, "-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", message)
         return self.head(path)
 
     def diff(self, path: Path, base: str) -> str:
