@@ -2,7 +2,7 @@ import shlex
 import sys
 
 from phil.config import ShellConfig
-from phil.run.gates import MAX_FAILURES, is_test_path, parse_failures, run_tests
+from phil.run.gates import MAX_FAILURES, is_test_path, parse_counts, parse_failures, run_tests
 from phil.store.artifacts import ArtifactStore
 
 TEST_CMD = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider"
@@ -29,6 +29,15 @@ def test_parse_failures():
     assert parse_failures("", -9, timed_out=True) == ["timed out"]
 
 
+def test_parse_counts():
+    assert parse_counts("....\n3 passed, 1 failed, 2 skipped in 0.12s\n") == (3, 2)
+    assert parse_counts("E   ImportError\n1 error in 0.1s\n") == (0, 0)
+    assert parse_counts("\nno tests ran in 0.01s\n") == (0, 0)
+    assert parse_counts("==== 1 failed, 4 passed, 1 warning in 2.50s ====") == (4, 0)
+    assert parse_counts("npm ERR! missing script: test") == (None, None)
+    assert parse_counts("") == (None, None)
+
+
 def make_project(root, test_body):
     (root / "tests").mkdir()
     (root / "tests" / "__init__.py").write_text("")
@@ -42,6 +51,7 @@ def test_run_tests_passing(tmp_path):
     report = run_tests(TEST_CMD, tmp_path, shell=ShellConfig(), artifacts=artifacts, name="baseline")
     assert report.passed
     assert report.failures == []
+    assert (report.passed_count, report.skipped_count) == (1, 0)
     assert (tmp_path / "run" / "logs" / "baseline.log").exists()
     assert not list(tmp_path.rglob("__pycache__"))
 
