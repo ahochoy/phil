@@ -74,3 +74,22 @@ def test_role_budget_defaults():
     assert config.budget_for("implementer").max_input_tokens == 12000
     assert config.budget_for("architect").max_input_tokens == 24000
     assert config.budget_for("tester").max_input_tokens == 48000
+
+
+def test_git_defaults():
+    config = load_config(Path("/nonexistent"))
+    assert config.git.sign_commits == "auto"
+    assert config.git.run_hooks is False
+
+
+def test_git_section_is_loaded(tmp_path):
+    (tmp_path / "phil.toml").write_text("[git]\nsign_commits = true\nrun_hooks = true\n")
+    config = load_config(tmp_path)
+    assert config.git.sign_commits is True
+    assert config.git.run_hooks is True
+
+
+def test_invalid_sign_commits_is_rejected(tmp_path):
+    (tmp_path / "phil.toml").write_text('[git]\nsign_commits = "sometimes"\n')
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
