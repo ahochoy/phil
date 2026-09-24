@@ -55,6 +55,15 @@ def test_pass_env_lets_named_variables_through(tmp_path, monkeypatch):
     assert "needed" in output
 
 
+def test_commands_write_no_bytecode(tmp_path, monkeypatch):
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+    (tmp_path / "helper.py").write_text("VALUE = 1\n")
+    (tmp_path / "main.py").write_text("import helper\nprint(helper.VALUE)\n")
+    output = make_shell_tool(tmp_path, shell_config(), CommandLog())(f"{PY} main.py")
+    assert output.startswith("exit_code: 0")
+    assert not list(tmp_path.rglob("__pycache__"))
+
+
 def test_tool_is_named_and_documented(tmp_path):
     run_shell = make_shell_tool(tmp_path, shell_config(), CommandLog())
     assert run_shell.__name__ == "run_shell"
