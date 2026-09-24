@@ -50,6 +50,13 @@ class Packet(BaseModel):
         return "".join(parts)
 
 
+def _with_ledger_summary(omitted: list[str], count: int) -> list[str]:
+    kept = [item for item in omitted if not item.endswith(" ledger entries")]
+    if count:
+        kept.append(f"{count} ledger entries")
+    return kept
+
+
 def _resolve_under(root: Path, relative: str) -> Path:
     pure = PurePosixPath(relative)
     if pure.is_absolute() or ".." in pure.parts:
@@ -74,6 +81,8 @@ def build_packet(
     used = estimate_tokens(_contract_section(contract_type, contract_json))
     if used > budget_tokens:
         raise PacketTooLarge(f"{contract_type} alone needs {used} tokens; budget is {budget_tokens}")
+    if files and root is None:
+        raise ValueError("root is required when files are given")
     # Reserve room for the omitted section so the rendered packet stays within budget.
     reserve = estimate_tokens(_OMITTED_HEADER) + sum(estimate_tokens(f"- {path} (not found)\n") for path in files) + 10
 
@@ -81,16 +90,15 @@ def build_packet(
     omitted: list[str] = []
     header_cost = estimate_tokens(_FILES_HEADER)
     for relative in files:
-        if root is None:
-            raise ValueError("root is required when files are given")
-        path = _resolve_under(root, relative)
+        path = _resolve_under(root, relative)  # type: ignore[arg-type]  # root checked above
         if not path.is_file():
             omitted.append(f"{relative} (not found)")
             continue
-        cost = estimate_tokens(_file_section(relative, path.read_text(errors="replace")))
+        content = path.read_text(errors="replace")
+        cost = estimate_tokens(_file_section(relative, content))
         extra = cost + (header_cost if not kept_files else 0)
         if used + extra + reserve <= budget_tokens:
-            kept_files[relative] = path.read_text(errors="replace")
+            kept_files[relative] = content
             used += extra
         else:
             omitted.append(relative)
@@ -104,15 +112,37 @@ def build_packet(
         kept_ledger.append(entry)
         used += extra
     if len(kept_ledger) < len(ledger):
-        omitted.append(f"{len(ledger) - len(kept_ledger)} ledger entries")
+        omitted = _with_ledger_summary(omitted, len(ledger) - len(kept_ledger))
 
-    packet = Packet(
-        role=role,
-        contract_type=contract_type,
-        contract_json=contract_json,
-        files=kept_files,
-        ledger=kept_ledger,
-        omitted=omitted,
-    )
-    packet.tokens = estimate_tokens(packet.render())
+    def _build() -> Packet:
+        packet = Packet(
+            role=role,
+            contract_type=contract_type,
+            contract_json=contract_json,
+            files=kept_files,
+            ledger=kept_ledger,
+            omitted=omitted,
+        )
+        packet.tokens = estimate_tokens(packet.render())
+        return packet
+
+    packet = _build()
+    # The reserve above only accounts for files omitted for "not found"; it does not
+    # account for the ledger summary line added after the ledger loop. Enforce the
+    # actual budget on the rendered text, trimming ledger entries first (lowest
+    # priority), then files, in the same deterministic order they were added.
+    while packet.tokens > budget_tokens:
+        if kept_ledger:
+            kept_ledger.pop()
+            omitted = _with_ledger_summary(omitted, len(ledger) - len(kept_ledger))
+        elif kept_files:
+            last_path = next(reversed(kept_files))
+            del kept_files[last_path]
+            omitted.append(last_path)
+        else:
+            raise PacketTooLarge(
+                f"packet cannot fit within budget_tokens={budget_tokens} even after "
+                "trimming all files and ledger entries"
+            )
+        packet = _build()
     return packet

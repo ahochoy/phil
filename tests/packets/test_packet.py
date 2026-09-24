@@ -66,3 +66,17 @@ def test_build_is_deterministic(tmp_path):
     first = build_packet("implementer", goal(), budget_tokens=500, root=tmp_path, files=["a.py"], ledger=["x"])
     second = build_packet("implementer", goal(), budget_tokens=500, root=tmp_path, files=["a.py"], ledger=["x"])
     assert first.render() == second.render()
+
+
+@pytest.mark.parametrize("budget", range(40, 90, 3))
+@pytest.mark.parametrize("entries", [5, 50, 500])
+def test_rendered_packet_never_exceeds_budget(budget, entries):
+    ledger = [f"assumption {i}" for i in range(entries)]
+    try:
+        packet = build_packet("reviewer", goal(), budget_tokens=budget, ledger=ledger)
+    except PacketTooLarge:
+        return
+    assert packet.tokens <= budget
+    assert estimate_tokens(packet.render()) <= budget
+    if len(packet.ledger) < entries:
+        assert f"{entries - len(packet.ledger)} ledger entries" in packet.omitted
