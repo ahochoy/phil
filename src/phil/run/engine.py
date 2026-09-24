@@ -292,6 +292,7 @@ class RunEngine:
             plan = with_task_status(load_plan(state), state["task_index"], "SKIPPED")
             return {**cleared, "plan": plan.model_dump(), "next": "pick_task"}
         if action == "approve":
+            # The approved call's own problems are dropped because implement re-runs the phase from its starting state.
             approved = [*state.get("approved", []), *escalation["commands"]]
             return {**cleared, "approved": approved, "denied": [], "next": "implement"}
         if action == "deny":
