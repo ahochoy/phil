@@ -54,6 +54,9 @@ def tester_report(issues=()) -> TesterReport:
     return TesterReport(tests_added=[], issues=list(issues), self_check=self_check())
 
 
+tester_report.__test__ = False  # name starts with "test"; not a pytest test
+
+
 def review(verdict: str = "approve", issues=()) -> Review:
     return Review(verdict=verdict, issues=list(issues), assumption_resolutions=[], self_check=self_check())
 
