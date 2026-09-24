@@ -18,6 +18,18 @@ What sets Phil apart is **explicit contracts and managed context between agents*
 - Runs survive terminal exit and worker crashes (resume from checkpoint).
 - Token usage is recorded per agent call and viewable per run.
 
+### Teammate principles
+
+Phil should behave like a conscientious teammate. These principles apply to every plan, not just one feature:
+
+- **Cleans up after itself.** Anything Phil creates (worktrees, branches, temp files, run scratch) has a defined end of life, and Phil removes it without the user running manual commands. What is worth keeping moves to project memory first. Phil owns its own state under `~/.phil` and its `phil/<run-id>` branches, so cleanup never depends on permissions a worktree-bound agent lacks.
+- **Respects the codebase.** Follows the target repo's code standards, conventions, and commit style.
+- **Communicates clearly.** Output to humans (chat, summaries, PR descriptions) is concise, well organized, and puts any action the reader must take up front and unmistakable (see §9a).
+
+### MVP beyond v1
+
+v1 ends at a reviewed branch the user merges. The MVP is the full lifecycle: goal → plan → tasks → implementation → **Phil raises the PR** → after merge, **Phil cleans up**: records learnings to project memory, removes the worktree, run branch, and temp files, and keeps only what is worth keeping. This is scheduled after plan 4 (see the follow-ups file) and builds on `WorktreeManager.remove`, the run artifacts, and the parking lot.
+
 ## 2. Decisions
 
 | Topic | Decision |
@@ -396,6 +408,7 @@ Phil itself is built test-first.
 | Native (Go/Rust) TUI frontend | JSON Schema contract export; `present()` output as the wire format |
 | Promoting parked items to roadmap stories | `ParkedItem.status = "promoted"`, spec #2 |
 | Parallel task execution | `pick_task` currently sequential |
+| Raise the PR and clean up after merge (MVP lifecycle, §1) | `finish` node → publisher step; `WorktreeManager.remove`; run artifacts → project memory; `phil clean` |
 
 ## 14. Relationship to existing code
 
