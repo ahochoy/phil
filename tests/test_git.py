@@ -1,4 +1,5 @@
 import pickle
+import subprocess
 
 import pytest
 
@@ -45,3 +46,11 @@ def test_git_error_round_trips_through_pickle():
 
 def test_git_error_repr_keeps_details():
     assert "128" in repr(GitError(["status"], 128, "boom"))
+
+
+def test_global_git_config_is_isolated_from_the_machine(tmp_path):
+    proc = subprocess.run(
+        ["git", "config", "--global", "--get", "user.name"], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert proc.returncode != 0
+    assert proc.stdout == ""
