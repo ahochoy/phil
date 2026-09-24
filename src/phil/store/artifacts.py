@@ -74,3 +74,8 @@ class ArtifactStore:
         path = self._file(f"logs/{name}.log")
         path.write_text(text)
         return path
+
+    def write_text(self, relative: str, text: str) -> Path:
+        path = self._file(relative)
+        path.write_text(text)
+        return path
