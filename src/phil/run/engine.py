@@ -216,10 +216,16 @@ class RunEngine:
     def escalate(self, state: RunState) -> dict:
         escalation = state["escalation"]
         self._update_run(state="escalated", current_node="escalate", needs_attention=escalation["summary"])
-        decision = interrupt(escalation)
-        action = decision.get("action")
-        if action not in escalation["options"]:
-            raise ValueError(f"unknown escalation action {action!r}; expected one of {escalation['options']}")
+        payload = escalation
+        while True:
+            decision = interrupt(payload)
+            action = decision.get("action") if isinstance(decision, dict) else None
+            if action in escalation["options"]:
+                break
+            payload = {
+                **escalation,
+                "error": f"unknown escalation action {action!r}; expected one of {escalation['options']}",
+            }
         self._update_run(state="running", needs_attention=None)
         cleared = {"escalation": None}
         if action == "retry":

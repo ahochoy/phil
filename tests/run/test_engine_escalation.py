@@ -1,5 +1,3 @@
-import pytest
-
 from phil.config import PhilConfig
 from phil.run.state import load_plan
 from tests.helpers import run_git
@@ -63,8 +61,14 @@ def test_attempt_cap_comes_from_config(make_harness):
     assert result["__interrupt__"][0].value["summary"] == "CALC-001 failed 1 attempts in the green phase"
 
 
-def test_unknown_action_is_rejected(make_harness):
-    harness = make_harness({"implementer": [write_red, bad_green, bad_green, bad_green]})
+def test_invalid_action_asks_again_and_a_valid_one_still_works(make_harness):
+    harness = make_harness({"implementer": [write_red, bad_green, bad_green, bad_green, write_green]})
     harness.start()
-    with pytest.raises(ValueError, match="unknown escalation action"):
-        harness.resume({"action": "approve"})
+    again = harness.resume({"action": "approve"})["__interrupt__"][0].value
+    assert "unknown escalation action 'approve'" in again["error"]
+    assert again["options"] == ["retry", "skip", "abort"]
+    assert harness.run_record().state == "escalated"
+    again = harness.resume("not a dict")["__interrupt__"][0].value
+    assert "unknown escalation action None" in again["error"]
+    final = harness.resume({"action": "retry"})
+    assert final["status"] == "completed"
