@@ -4,7 +4,7 @@ import sys
 import pytest
 
 from phil.config import ShellConfig
-from phil.workspace.shell import ShellPolicy, child_env, is_secret_name, run_command, truncate_output
+from phil.workspace.shell import ShellPolicy, child_env, is_secret_name, literal_pattern, run_command, truncate_output
 
 PY = shlex.quote(sys.executable)
 
@@ -150,3 +150,12 @@ def test_run_command_uses_explicit_env(tmp_path):
     script.write_text("import os\nprint(os.environ.get('ONLY_THIS', 'absent'))\n")
     result = run_command(f"{PY} {shlex.quote(str(script))}", cwd=tmp_path, timeout_s=10, env={"ONLY_THIS": "yes"})
     assert result.stdout.strip() == "yes"
+
+
+def test_literal_pattern_matches_only_the_exact_command():
+    exact = "pytest tests/test_foo.py::test_bar[case1]"
+    policy = ShellPolicy([literal_pattern(exact), literal_pattern("pytest tests/*")])
+    assert policy.is_allowed(exact)
+    assert not policy.is_allowed("pytest tests/test_foo.py::test_bar[XYZ9]")
+    assert policy.is_allowed("pytest tests/*")
+    assert not policy.is_allowed("pytest tests/anything.py")

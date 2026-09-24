@@ -11,6 +11,14 @@ from pathlib import Path
 
 _FORBIDDEN = set(";&|$`<>\n")
 
+_GLOB_CHARS = set("*?[")
+
+
+def literal_pattern(command: str) -> str:
+    """Allowlist pattern that matches exactly this command (glob characters escaped)."""
+    return "".join(f"[{char}]" if char in _GLOB_CHARS else char for char in command)
+
+
 _RISKY_PROGRAMS = {"git", "npm", "uv", "python", "python3"}
 _RISKY_PREFIXES = ("--output", "--no-index", "--ext-diff", "--prefix")
 _RISKY_EXACT = {"-c", "-e"}

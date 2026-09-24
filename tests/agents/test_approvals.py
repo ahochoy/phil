@@ -50,6 +50,7 @@ def test_extra_allow_permits_an_approved_command(config, conn, tmp_path):
         return result()
 
     log = CommandLog()
+    original_allow = list(config.shell.allow)
     ctx = AgentContext(
         config=config, conn=conn, layer="run", workdir=tmp_path,
         factory=ScriptedAgentFactory({"implementer": [script]}), command_log=log, extra_allow=(command,),
@@ -59,6 +60,7 @@ def test_extra_allow_permits_an_approved_command(config, conn, tmp_path):
     assert "built" in outputs[0]
     assert log.commands == [command]
     assert log.denied == []
+    assert config.shell.allow == original_allow
 
 
 def test_feedback_reaches_the_packet():
