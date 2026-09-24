@@ -311,7 +311,7 @@ Rules:
 - **Tester mode `"task+run"`** adds a lightweight tester audit after each `commit` in addition to the run-level pass.
 - **Future gates** (security guard, pre-deployer) slot between `review` and `finish` with the same approve/changes shape.
 - The test command comes from `phil.toml` (`[project] test_cmd`) or is proposed by the architect in the plan and confirmed at approval.
-- Commits in run worktrees skip the repository's git hooks and commit signing (`--no-verify`, `commit.gpgsign=false`) so an unattended worker never blocks on a prompt or a hook; the user's own commits and merges are unaffected.
+- Commit signing and hooks are configurable in `[git]` of `phil.toml`: `sign_commits = "auto"` (default; follow the repo's `commit.gpgsign`), `true`, or `false`; `run_hooks = false` (default) skips pre-commit and commit-msg hooks. Phil runs git with the user's full environment, so gpg and ssh agents work. If a commit fails because of signing or a hook, the run escalates with retry / bypass (commit this once without signing or hooks) / abort.
 
 ## 8. Self-critique and cross-checking
 
