@@ -32,6 +32,8 @@ class AgentContext:
     workdir: Path | None = None
     factory: AgentFactory | None = None
     sleep: Callable[[float], None] = time.sleep
+    command_log: CommandLog | None = None
+    extra_allow: tuple[str, ...] = ()
 
 
 class ContractViolation(Exception):
@@ -125,12 +127,15 @@ def invoke_agent(
             f"{spec.name} expects a {spec.in_contract.__name__} packet, got {packet.contract_type}"
         )
     model = ctx.config.model_for(spec.role)
-    log = CommandLog()
+    log = ctx.command_log if ctx.command_log is not None else CommandLog()
+    shell = ctx.config.shell
+    if ctx.extra_allow:
+        shell = shell.model_copy(update={"allow": [*shell.allow, *ctx.extra_allow]})
     effective_node = node if call == 1 else f"{node}-c{call}"
     log_prefix = artifact_name(effective_node, task_id, 1)
     tools: list[Callable[..., str]] = []
     if "shell" in spec.tools and ctx.workdir is not None:
-        tools.append(make_shell_tool(ctx.workdir, ctx.config.shell, log, ctx.artifacts, log_prefix=log_prefix))
+        tools.append(make_shell_tool(ctx.workdir, shell, log, ctx.artifacts, log_prefix=log_prefix))
     agent = _resolve_factory(ctx)(spec, model, ctx.workdir, tools)
 
     messages: list[dict[str, str]] = [{"role": "user", "content": packet.render()}]

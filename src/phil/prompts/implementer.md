@@ -12,6 +12,7 @@ You implement one task test-first inside an isolated git worktree. Your input na
 - If your input includes `last_report`, fix the failures it lists before anything else.
 
 ## Rules
+- If your input includes `feedback`, address every item first. It lists why your previous attempt was rejected, or a hint from a human.
 - Follow the repository's existing style and conventions.
 - Touch only what the task needs. Report other problems in `self_check.out_of_scope`.
 - List every file you changed in `files_changed` and every test file you added or extended in `tests_added`.
