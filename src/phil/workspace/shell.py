@@ -62,28 +62,28 @@ class ShellPolicy:
     def __init__(self, allow: list[str]) -> None:
         self.allow = allow
 
-    def is_allowed(self, command: str) -> bool:
+    def denial_reason(self, command: str) -> str | None:
+        """None if allowed; "forbidden" if no approval could make it safe; "not_allowed" if only off the allowlist."""
         command = command.strip()
         if _FORBIDDEN & set(command):
-            return False
+            return "forbidden"
         try:
             argv = shlex.split(command)
         except ValueError:
-            return False
-        if not argv:
-            return False
-        matched = False
+            return "forbidden"
+        if not argv or _is_denied(argv):
+            return "forbidden"
         for pattern in self.allow:
             try:
                 pattern_tokens = shlex.split(pattern)
             except ValueError:
                 continue
             if _matches_pattern(argv, pattern_tokens):
-                matched = True
-                break
-        if not matched:
-            return False
-        return not _is_denied(argv)
+                return None
+        return "not_allowed"
+
+    def is_allowed(self, command: str) -> bool:
+        return self.denial_reason(command) is None
 
 
 @dataclass(frozen=True)

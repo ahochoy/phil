@@ -16,3 +16,4 @@ You implement one task test-first inside an isolated git worktree. Your input na
 - Follow the repository's existing style and conventions.
 - Touch only what the task needs. Report other problems in `self_check.out_of_scope`.
 - List every file you changed in `files_changed` and every test file you added or extended in `tests_added`.
+- If a command is DENIED or REFUSED, do not try variations of it. Continue without it and record what you could not verify in `self_check.unverified`.

@@ -205,6 +205,7 @@ class RunEngine:
             failed, problems = False, []
         except ContractViolation as exc:
             failed, problems = True, [f"implementer output rejected: {problem}" for problem in exc.problems]
+        problems += [f"refused command: {cmd}" for cmd in log.refused]
         update = {"call_seq": seq, "implement_failed": failed, "last_problems": problems, "denied": list(log.denied)}
         if log.denied:
             update["escalation"] = {
@@ -250,7 +251,8 @@ class RunEngine:
             )
             if not problems:
                 return {"last_report": report.model_dump(), "last_problems": [], "verdict": "green_ok"}
-        return self._failed_attempt(state, problems, report.model_dump())
+        refused = [p for p in state.get("last_problems", []) if p.startswith("refused command: ")]
+        return self._failed_attempt(state, [*problems, *refused], report.model_dump())
 
     def _failed_attempt(self, state: RunState, problems: list[str], report: dict | None) -> dict:
         attempts = state.get("attempts", 0) + 1
