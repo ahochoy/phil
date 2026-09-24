@@ -29,9 +29,10 @@ packages = ["src/phil"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["live: calls real LLM APIs (opt-in with -m live)"]
-addopts = "-m 'not live'"
+addopts = "-m 'not live' -n auto"
 
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-xdist>=3.8.0",
 ]
