@@ -119,6 +119,7 @@ class RunEngine:
             "last_problems": [],
             "last_report": None,
             "red_snapshot": {},
+            "red_tree": "",
             "hint": None,
             "implement_failed": False,
             "denied": [],
@@ -126,6 +127,10 @@ class RunEngine:
         }
 
     def implement(self, state: RunState) -> dict:
+        if state["phase"] == "red":
+            self.worktrees.reset_to(self.deps.worktree, state["task_base_sha"])
+        else:
+            self.worktrees.restore_snapshot(self.deps.worktree, state["red_tree"])
         plan = load_plan(state)
         task = plan.tasks[state["task_index"]]
         seq = state.get("call_seq", 0) + 1
@@ -178,6 +183,7 @@ class RunEngine:
                     "last_report": report.model_dump(),
                     "last_problems": [],
                     "red_snapshot": snapshot_tests(worktree, changed, globs),
+                    "red_tree": self.worktrees.snapshot(worktree),
                     "verdict": "red_ok",
                 }
         else:

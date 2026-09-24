@@ -56,3 +56,15 @@ class WorktreeManager:
                     target.unlink()
                 continue
             git(path, "checkout", "HEAD", "--", relative)
+
+    def snapshot(self, path: Path) -> str:
+        """Record the whole working tree (tracked and untracked) as a git tree object; returns its sha."""
+        git(path, "add", "-A")
+        tree = git(path, "write-tree").strip()
+        git(path, "reset", "-q")
+        return tree
+
+    def restore_snapshot(self, path: Path, tree: str) -> None:
+        git(path, "read-tree", "-u", "--reset", tree)
+        git(path, "clean", "-fd")
+        git(path, "reset", "-q")

@@ -13,6 +13,7 @@ class RunState(TypedDict, total=False):
     task_index: int
     task_base_sha: str
     phase: str
+    red_tree: str
     attempts: int
     call_seq: int
     last_problems: list[str]
@@ -43,6 +44,7 @@ def initial_state(run_id: str, plan: Plan, base_sha: str, test_cmd: str) -> RunS
         task_index=-1,
         task_base_sha=base_sha,
         phase="red",
+        red_tree="",
         attempts=0,
         call_seq=0,
         last_problems=[],
