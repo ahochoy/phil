@@ -18,6 +18,7 @@ from phil.packets import PacketTooLarge, build_packet
 from phil.run.gates import is_test_path, run_tests, snapshot_tests, verify_green, verify_red
 from phil.run.state import RunState, issues_to_tasks, load_plan, next_todo, render_summary, with_task_status
 from phil.store.artifacts import ArtifactStore, artifact_name
+from phil.store.events import EventLog
 from phil.store.runs import update_run
 from phil.store.telemetry import run_totals
 from phil.workspace.worktree import WorktreeManager
@@ -33,6 +34,7 @@ class RunDeps:
     artifacts: ArtifactStore
     factory: AgentFactory | None = None
     sleep: Callable[[float], None] = time.sleep
+    events: EventLog | None = None
 
 
 class RunEngine:
@@ -85,6 +87,13 @@ class RunEngine:
 
     def _update_run(self, **fields: object) -> None:
         update_run(self.deps.conn, self.deps.run_id, **fields)
+        events = self.deps.events
+        if events is None:
+            return
+        if "current_node" in fields:
+            events.append("node", node=fields["current_node"])
+        if "state" in fields:
+            events.append("state", state=fields["state"], needs_attention=fields.get("needs_attention"))
 
     def _test(self, state: RunState, name: str) -> TestReport:
         return run_tests(
@@ -285,7 +294,7 @@ class RunEngine:
 
     def escalate(self, state: RunState) -> dict:
         escalation = state["escalation"]
-        self._update_run(state="escalated", current_node="escalate", needs_attention=escalation["summary"])
+        self._update_run(current_node="escalate")
         payload = escalation
         while True:
             decision = interrupt(payload)

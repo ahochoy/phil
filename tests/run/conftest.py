@@ -13,6 +13,7 @@ from phil.run.engine import RunDeps, RunEngine
 from phil.run.state import initial_state
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
+from phil.store.events import EventLog
 from phil.store.paths import ProjectPaths
 from phil.store.runs import create_run, get_run
 from tests.helpers import run_git
@@ -129,6 +130,7 @@ def make_harness(calc_repo: Path):
             config=config or PhilConfig(), conn=conn, repo_root=calc_repo, run_id=RUN_ID,
             worktree=paths.worktree_dir(RUN_ID), artifacts=ArtifactStore(paths.run_dir(RUN_ID)),
             factory=factory, sleep=lambda _: None,
+            events=EventLog(paths.run_dir(RUN_ID) / "events.jsonl"),
         )
         engine = RunEngine(deps)
         return Harness(engine, engine.build(open_checkpointer(paths.db_path)), deps, factory, plan, base_sha)

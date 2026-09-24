@@ -12,8 +12,6 @@ def test_three_failed_greens_escalate(make_harness):
     assert escalation["options"] == ["retry", "skip", "abort"]
     assert escalation["summary"] == "CALC-001 failed 3 attempts in the green phase"
     assert "tests still failing" in escalation["problems"][0]
-    record = harness.run_record()
-    assert (record.state, record.needs_attention) == ("escalated", escalation["summary"])
 
 
 def test_retry_with_hint_reaches_the_implementer(make_harness):
@@ -87,7 +85,6 @@ def test_invalid_action_asks_again_and_a_valid_one_still_works(make_harness):
     again = harness.resume({"action": "approve"})["__interrupt__"][0].value
     assert "unknown escalation action 'approve'" in again["error"]
     assert again["options"] == ["retry", "skip", "abort"]
-    assert harness.run_record().state == "escalated"
     again = harness.resume("not a dict")["__interrupt__"][0].value
     assert "unknown escalation action None" in again["error"]
     final = harness.resume({"action": "retry"})

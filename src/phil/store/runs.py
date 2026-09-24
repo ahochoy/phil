@@ -7,7 +7,23 @@ from typing import Literal
 from phil.git import branch_for
 from phil.store.db import utcnow
 
-RunState = Literal["pending", "running", "paused", "escalated", "completed", "failed", "aborted"]
+RunState = Literal["pending", "running", "escalated", "completed", "failed", "aborted", "stopped", "cleaned"]
+
+TRANSITIONS: dict[str, set[str]] = {
+    "pending": {"running", "failed", "aborted", "stopped"},
+    "running": {"escalated", "completed", "failed", "aborted", "stopped"},
+    "escalated": {"running", "failed", "aborted", "stopped"},
+    "stopped": {"running", "aborted", "cleaned"},
+    "failed": {"running", "aborted", "cleaned"},
+    "completed": {"cleaned"},
+    "aborted": {"cleaned"},
+    "cleaned": set(),
+}
+
+
+class InvalidTransition(ValueError):
+    pass
+
 
 _UPDATABLE = {
     "state",
@@ -84,6 +100,13 @@ def update_run(conn: sqlite3.Connection, run_id: str, **fields: object) -> RunRe
     unknown = set(fields) - _UPDATABLE
     if unknown:
         raise ValueError(f"cannot update run fields: {sorted(unknown)}")
+    if "state" in fields:
+        current = get_run(conn, run_id)
+        if current is None:
+            raise KeyError(run_id)
+        new_state = fields["state"]
+        if new_state != current.state and new_state not in TRANSITIONS.get(current.state, set()):
+            raise InvalidTransition(f"run {run_id} cannot go from {current.state} to {new_state}")
     assignments = ", ".join(f"{name} = ?" for name in fields)
     cursor = conn.execute(
         f"UPDATE runs SET {assignments}, updated_at = ? WHERE run_id = ?",

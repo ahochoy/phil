@@ -5,7 +5,7 @@ import pytest
 
 from phil.store.db import connect
 from phil.store.paths import ProjectPaths
-from phil.store.runs import create_run, get_run, list_runs, new_run_id, update_run
+from phil.store.runs import InvalidTransition, create_run, get_run, list_runs, new_run_id, update_run
 
 
 @pytest.fixture
@@ -80,3 +80,26 @@ def test_create_run_rejects_invalid_run_id(conn):
         create_run(
             conn, run_id="bad", keyword="MAPS", base_sha="abc123", worktree=Path("/tmp/wt"), tasks_total=5
         )
+
+
+def test_valid_transitions(conn):
+    create_run(conn, run_id="r-0001", keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=1)
+    for state in ["running", "escalated", "running", "stopped", "running", "completed", "cleaned"]:
+        assert update_run(conn, "r-0001", state=state).state == state
+
+
+def test_same_state_is_allowed(conn):
+    create_run(conn, run_id="r-0001", keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=1)
+    update_run(conn, "r-0001", state="running")
+    update_run(conn, "r-0001", state="completed")
+    assert update_run(conn, "r-0001", state="completed").state == "completed"
+
+
+def test_invalid_transitions_are_rejected(conn):
+    create_run(conn, run_id="r-0001", keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=1)
+    with pytest.raises(InvalidTransition, match="pending to completed"):
+        update_run(conn, "r-0001", state="completed")
+    update_run(conn, "r-0001", state="running")
+    update_run(conn, "r-0001", state="completed")
+    with pytest.raises(InvalidTransition):
+        update_run(conn, "r-0001", state="running")
