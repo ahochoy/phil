@@ -24,6 +24,7 @@ Findings from plan 3a's task reviews and final review that were deliberately def
 
 - Validate the architect's `Plan.test_cmd` and show it at approval.
 - `open_issues` are not deduplicated across tester and review rounds; `render_summary` prints raw newlines and markdown from notes. Clean both up when the summary becomes a `Brief`.
+- When approving a plan, show a one-line note if `[git] sign_commits` is not false or `run_hooks` is true: signing or hooks can pause an unattended run.
 
 ## Later
 
