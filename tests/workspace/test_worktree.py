@@ -84,3 +84,18 @@ def test_restore_reverts_tracked_and_removes_untracked(setup):
     assert (worktree.path / "app.py").read_text() == "def add(a, b):\n    return a + b\n"
     assert not (worktree.path / "extra.py").exists()
     assert (worktree.path / "keep.py").exists()
+
+
+def test_snapshot_round_trips_tracked_and_untracked_changes(setup):
+    manager, worktree, _ = setup
+    (worktree.path / "app.py").write_text("changed\n")
+    (worktree.path / "new.py").write_text("x = 1\n")
+    tree = manager.snapshot(worktree.path)
+    (worktree.path / "app.py").write_text("later\n")
+    (worktree.path / "new.py").unlink()
+    (worktree.path / "junk.py").write_text("junk\n")
+    manager.restore_snapshot(worktree.path, tree)
+    assert (worktree.path / "app.py").read_text() == "changed\n"
+    assert (worktree.path / "new.py").read_text() == "x = 1\n"
+    assert not (worktree.path / "junk.py").exists()
+    assert manager.changed_files(worktree.path, since=manager.head(worktree.path)) == ["app.py", "new.py"]

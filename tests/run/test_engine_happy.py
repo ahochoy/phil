@@ -1,6 +1,8 @@
+import pytest
+
 from phil.run.state import load_plan
 from tests.helpers import run_git
-from tests.run.conftest import write_green, write_red
+from tests.run.conftest import bad_green, write_green, write_red
 
 
 def test_one_task_runs_red_green_and_commits(make_harness, calc_repo):
@@ -27,3 +29,23 @@ def test_green_phase_receives_the_red_test_report(make_harness):
     packet_text = green_payload["messages"][0]["content"]
     assert '"phase": "green"' in packet_text
     assert "tests/test_sub.py" in packet_text
+
+
+def test_implement_resumes_cleanly_after_a_crash_mid_call(make_harness):
+    def crash_after_writing(turn):
+        write_green(turn)
+        raise RuntimeError("process died")
+
+    harness = make_harness({"implementer": [write_red, crash_after_writing, write_green]})
+    with pytest.raises(RuntimeError, match="process died"):
+        harness.start()
+    final = harness.graph.invoke(None, harness.thread)
+    assert final["status"] == "completed"
+    assert (harness.deps.worktree / "calc.py").read_text().count("def subtract") == 1
+
+
+def test_green_retry_starts_from_the_red_snapshot(make_harness):
+    harness = make_harness({"implementer": [write_red, bad_green, write_green]})
+    final = harness.start()
+    assert final["status"] == "completed"
+    assert (harness.deps.worktree / "calc.py").read_text().count("def subtract") == 1
