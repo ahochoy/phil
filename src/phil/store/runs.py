@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from phil.git import branch_for
 from phil.store.db import utcnow
 
 RunState = Literal["pending", "running", "paused", "escalated", "completed", "failed", "aborted"]
@@ -55,11 +56,12 @@ def create_run(
     tasks_total: int,
     story_ref: str | None = None,
 ) -> RunRecord:
+    branch = branch_for(run_id)
     now = utcnow()
     conn.execute(
         "INSERT INTO runs (run_id, keyword, base_sha, branch, worktree, state, tasks_total,"
         " story_ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
-        (run_id, keyword, base_sha, f"phil/{run_id}", str(worktree), tasks_total, story_ref, now, now),
+        (run_id, keyword, base_sha, branch, str(worktree), tasks_total, story_ref, now, now),
     )
     run = get_run(conn, run_id)
     assert run is not None

@@ -57,3 +57,10 @@ def test_remove_can_keep_branch(setup, git_repo):
     manager.remove(worktree, delete_branch=False)
     assert not worktree.path.exists()
     assert "phil/r-0001" in run_git(git_repo, "branch", "--list", "phil/r-0001")
+
+
+def test_create_rejects_invalid_run_id(git_repo, tmp_path):
+    manager = WorktreeManager(git_repo)
+    base = run_git(git_repo, "rev-parse", "HEAD").strip()
+    with pytest.raises(ValueError):
+        manager.create(run_id="bad", base_sha=base, path=tmp_path / "wt" / "bad")

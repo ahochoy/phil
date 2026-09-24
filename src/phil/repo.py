@@ -1,7 +1,8 @@
 import hashlib
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from phil.git import GitError, GitNotFound, git
 
 
 class RepoError(Exception):
@@ -16,6 +17,10 @@ class NoCommits(RepoError):
     pass
 
 
+class GitMissing(RepoError):
+    pass
+
+
 @dataclass(frozen=True)
 class RepoInfo:
     root: Path
@@ -25,23 +30,19 @@ class RepoInfo:
     dirty_files: list[str]
 
 
-def _git(args: list[str], cwd: Path) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
-    ).stdout
-
-
 def resolve_repo(start: Path) -> RepoInfo:
     try:
-        root = Path(_git(["rev-parse", "--show-toplevel"], start).strip()).resolve()
-    except (subprocess.CalledProcessError, FileNotFoundError, NotADirectoryError) as exc:
+        root = Path(git(start, "rev-parse", "--show-toplevel").strip()).resolve()
+    except GitNotFound as exc:
+        raise GitMissing("git executable not found") from exc
+    except (GitError, NotADirectoryError, FileNotFoundError) as exc:
         raise NotAGitRepo(f"Not inside a git repository: {start}") from exc
     try:
-        head_sha = _git(["rev-parse", "HEAD"], root).strip()
-    except subprocess.CalledProcessError as exc:
+        head_sha = git(root, "rev-parse", "HEAD").strip()
+    except GitError as exc:
         raise NoCommits(f"Repository has no commits yet: {root}") from exc
-    branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], root).strip()
-    status = _git(["status", "--porcelain", "--untracked-files=all"], root)
+    branch = git(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    status = git(root, "status", "--porcelain", "--untracked-files=all")
     dirty = sorted(line[3:] for line in status.splitlines() if line)
     digest = hashlib.sha1(str(root).encode()).hexdigest()[:8]
     return RepoInfo(

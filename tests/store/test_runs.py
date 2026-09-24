@@ -67,3 +67,10 @@ def test_update_run_rejects_unknown_fields(conn):
 def test_update_missing_run_raises(conn):
     with pytest.raises(KeyError):
         update_run(conn, "r-ffff", state="running")
+
+
+def test_create_run_rejects_invalid_run_id(conn):
+    with pytest.raises(ValueError):
+        create_run(
+            conn, run_id="bad", keyword="MAPS", base_sha="abc123", worktree=Path("/tmp/wt"), tasks_total=5
+        )
