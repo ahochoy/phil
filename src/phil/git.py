@@ -6,13 +6,14 @@ RUN_ID_PATTERN = r"^r-[0-9a-f]{4}$"
 
 
 class GitError(Exception):
-    def __init__(self, args: list[str], returncode: int, stderr: str) -> None:
-        self.args = list(args)
+    def __init__(self, command: list[str], returncode: int, stderr: str) -> None:
+        super().__init__(command, returncode, stderr)
+        self.command = list(command)
         self.returncode = returncode
         self.stderr = stderr
 
     def __str__(self) -> str:
-        return f"git {' '.join(self.args)} failed (exit {self.returncode}): {self.stderr}"
+        return f"git {' '.join(self.command)} failed (exit {self.returncode}): {self.stderr}"
 
 
 class GitNotFound(GitError):
