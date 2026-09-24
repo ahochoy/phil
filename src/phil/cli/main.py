@@ -224,7 +224,7 @@ def resume(
     """Answer a paused run, or continue a failed or stopped one."""
     info, conn = _open_project(ctx)
     record = _require_run(conn, run_id)
-    if is_worker_alive(record):
+    if is_worker_alive(record) or worker_starting(run_events(ProjectPaths(info.slug), run_id)):
         console.print(f"[phil.error]{escape(run_id)} already has a running worker[/]")
         raise typer.Exit(1)
     if record.state == "escalated":

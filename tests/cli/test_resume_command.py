@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from typer.testing import CliRunner
 
@@ -118,4 +120,15 @@ def test_escalated_run_without_an_escalation_event_rejects_any_action(run):
     update_run(conn, run_id, state="escalated", needs_attention="CALC-001 failed 3 attempts in the green phase")
     result = invoke(repo, run_id, "--action", "retry")
     assert result.exit_code == 2
+    assert spawned == []
+
+
+def test_resume_refuses_while_a_spawned_worker_is_starting(run):
+    repo, run_id, conn, events, spawned = run
+    update_run(conn, run_id, state="running")
+    update_run(conn, run_id, state="failed", needs_attention="worker failed: RuntimeError: x")
+    events.append("spawn", pid=os.getpid(), mode="continue")
+    result = invoke(repo, run_id)
+    assert result.exit_code == 1
+    assert "already has a running worker" in result.output
     assert spawned == []

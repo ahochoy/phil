@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from rich.console import Console
 from rich.markup import escape
 
-from phil.run.launch import is_worker_alive
+from phil.run.launch import is_worker_alive, worker_starting
 from phil.store.events import EventLog
 from phil.store.runs import RunRecord, get_run
 
@@ -20,6 +20,7 @@ class AttachIO:
     spawn: Callable[[str, dict | None], object]
     sleep: Callable[[float], None] = time.sleep
     alive: Callable[[RunRecord], bool] = field(default=is_worker_alive)
+    starting: Callable[[EventLog], bool] = field(default=worker_starting)
 
 
 def render_event(console: Console, event: dict) -> None:
@@ -46,6 +47,20 @@ def _prompt(escalation: dict) -> str:
     return f"{escalation['summary']} — what next"
 
 
+def _exited(proc: object) -> bool:
+    """True if `proc` (what `io.spawn` returned) is a process that has already exited.
+
+    Polling also reaps our own finished child, so its pid stops reading as a live `spawn`.
+    """
+    poll = getattr(proc, "poll", None)
+    return callable(poll) and poll() is not None
+
+
+def _worker_ran(events: EventLog, proc: object) -> bool:
+    pid = getattr(proc, "pid", None)
+    return pid is not None and any(e["kind"] == "worker" and e.get("pid") == pid for e in events.read()[0])
+
+
 def attach(
     conn: sqlite3.Connection,
     run_id: str,
@@ -58,6 +73,13 @@ def attach(
 ) -> str:
     offset = 0
     idle_since = time.monotonic()
+    proc: object = None
+
+    def active(record: RunRecord) -> bool:
+        if proc is not None:
+            _exited(proc)
+        return io.alive(record) or io.starting(events)
+
     while True:
         new, offset = events.read(offset)
         for event in new:
@@ -67,7 +89,7 @@ def attach(
         if record.state in TERMINAL:
             console.print(f"[phil.muted]Summary: {escape(str(events.path.parent / 'summary.md'))}[/]")
             return record.state
-        alive = io.alive(record)
+        alive = active(record)
         if record.state == "escalated" and not alive:
             latest = events.latest("escalation")
             escalation = latest["escalation"] if latest else {"summary": record.needs_attention or "", "options": ["abort"]}
@@ -77,11 +99,22 @@ def attach(
                 hint = io.ask_hint()
                 if hint:
                     decision["hint"] = hint
-            io.spawn("resume", decision)
+            current = get_run(conn, run_id)
+            assert current is not None
+            if current.state != "escalated" or active(current):
+                console.print("[phil.muted]the run moved on; not resuming[/]")
+                continue
+            proc = io.spawn("resume", decision)
             deadline = time.monotonic() + start_timeout_s
+            log_path = escape(str(events.path.parent / "logs" / "worker.log"))
             while get_run(conn, run_id).state == "escalated":
+                if _exited(proc):
+                    if _worker_ran(events, proc):
+                        break  # it resumed and paused again before we sampled the row
+                    console.print(f"[phil.warn]The worker exited without resuming the run; see {log_path}[/]")
+                    return "escalated"
                 if time.monotonic() > deadline:
-                    console.print(f"[phil.warn]The worker did not start; see {escape(str(events.path.parent / 'logs' / 'worker.log'))}[/]")
+                    console.print(f"[phil.warn]The worker did not start; see {log_path}[/]")
                     return "escalated"
                 io.sleep(poll_s)
             idle_since = time.monotonic()
