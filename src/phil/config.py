@@ -25,7 +25,16 @@ class RunConfig(_Section):
 
 
 class ShellConfig(_Section):
-    allow: list[str] = ["pytest*", "uv run *", "npm test*", "git status", "git diff*"]
+    allow: list[str] = [
+        "pytest",
+        "pytest *",
+        "uv run pytest",
+        "uv run pytest *",
+        "npm test",
+        "git status",
+        "git diff",
+        "git diff *",
+    ]
     timeout_s: int = 300
     max_output_lines: int = 200
 

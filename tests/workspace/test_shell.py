@@ -3,6 +3,7 @@ import sys
 
 import pytest
 
+from phil.config import ShellConfig
 from phil.workspace.shell import ShellPolicy, run_command, truncate_output
 
 PY = shlex.quote(sys.executable)
@@ -19,10 +20,25 @@ PY = shlex.quote(sys.executable)
         ("pytest | tee out", False),
         ("echo $(whoami)", False),
         ("pytest > out.txt", False),
+        ("pytestevil", False),
     ],
 )
 def test_policy(command, allowed):
-    assert ShellPolicy(["pytest*", "git status"]).is_allowed(command) is allowed
+    assert ShellPolicy(["pytest *", "pytest", "git status"]).is_allowed(command) is allowed
+
+
+@pytest.mark.parametrize(
+    ("command", "allowed"),
+    [
+        ("uv run bash -c 'rm -rf /'", False),
+        ("git diff --output=/tmp/x", False),
+        ("git diff --no-index a b", False),
+        ("uv run pytest -q", True),
+        ("git diff HEAD~1", True),
+    ],
+)
+def test_policy_default_allowlist(command, allowed):
+    assert ShellPolicy(ShellConfig().allow).is_allowed(command) is allowed
 
 
 def test_run_command_captures_output(tmp_path):

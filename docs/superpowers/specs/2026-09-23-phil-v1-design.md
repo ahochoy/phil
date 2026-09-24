@@ -332,9 +332,11 @@ Rules:
   max_cost_usd = 2.00
 
   [shell]
-  allow = ["pytest*", "uv run *", "npm test*", "git status", "git diff*"]
+  allow = ["pytest", "pytest *", "uv run pytest", "uv run pytest *", "npm test", "git status", "git diff", "git diff *"]
   timeout_s = 300
   ```
+
+  Allow patterns match on argv: the program name must match exactly, remaining arguments are glob-matched per token, and a final `*` matches any remaining arguments; risky flags (`--output`, `--no-index`, `--ext-diff`, `--prefix`, `-c`, `-e`) are always denied.
 
 - **Large tool output is offloaded:** shell and test output over a threshold is trimmed to its beginning and end plus failure lines; the full log goes to `runs/<id>/logs/` and the agent receives the path.
 - Built-in deepagents summarization and large-result offloading are used within a single agent call.

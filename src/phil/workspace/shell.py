@@ -9,6 +9,31 @@ from pathlib import Path
 
 _FORBIDDEN = set(";&|$`<>\n")
 
+_RISKY_PROGRAMS = {"git", "npm", "uv", "python", "python3"}
+_RISKY_PREFIXES = ("--output", "--no-index", "--ext-diff", "--prefix")
+_RISKY_EXACT = {"-c", "-e"}
+
+
+def _matches_pattern(argv: list[str], pattern_tokens: list[str]) -> bool:
+    if not pattern_tokens or argv[0] != pattern_tokens[0]:
+        return False
+    rest = argv[1:]
+    pattern_rest = pattern_tokens[1:]
+    if pattern_rest and pattern_rest[-1] == "*":
+        fixed = pattern_rest[:-1]
+        if len(rest) < len(fixed):
+            return False
+        return all(fnmatch.fnmatchcase(a, p) for a, p in zip(rest, fixed))
+    if len(rest) != len(pattern_rest):
+        return False
+    return all(fnmatch.fnmatchcase(a, p) for a, p in zip(rest, pattern_rest))
+
+
+def _is_denied(argv: list[str]) -> bool:
+    if argv[0] not in _RISKY_PROGRAMS:
+        return False
+    return any(arg.startswith(_RISKY_PREFIXES) or arg in _RISKY_EXACT for arg in argv[1:])
+
 
 class ShellPolicy:
     def __init__(self, allow: list[str]) -> None:
@@ -18,7 +43,24 @@ class ShellPolicy:
         command = command.strip()
         if _FORBIDDEN & set(command):
             return False
-        return any(fnmatch.fnmatchcase(command, pattern) for pattern in self.allow)
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            return False
+        if not argv:
+            return False
+        matched = False
+        for pattern in self.allow:
+            try:
+                pattern_tokens = shlex.split(pattern)
+            except ValueError:
+                continue
+            if _matches_pattern(argv, pattern_tokens):
+                matched = True
+                break
+        if not matched:
+            return False
+        return not _is_denied(argv)
 
 
 @dataclass(frozen=True)
