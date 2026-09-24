@@ -1,6 +1,9 @@
 import subprocess
 import sys
 
+import pytest
+from deepagents.middleware.filesystem import _check_fs_permission
+
 from phil.agents.factory import build_deep_agent, filesystem_permissions
 from phil.agents.registry import get_spec
 
@@ -15,19 +18,44 @@ def test_importing_invoke_does_not_load_llm_stack():
     assert out.stdout.strip() == ""
 
 
-def rules(name):
-    return [(rule.operations, rule.paths, rule.mode) for rule in filesystem_permissions(get_spec(name))]
+READ_ONLY_ROLES = ["reviewer", "architect", "critic"]
+WRITER_ROLES = ["implementer", "tester"]
+
+DOTFILE_AND_PROJECT_PATHS = [
+    "/src/app.py",
+    "/app.py",
+    "/.env",
+    "/.gitignore",
+    "/.github/workflows/ci.yml",
+    "/src/.hidden",
+    "/.git",
+    "/.git/config",
+    "/phil.toml",
+]
+
+ALWAYS_DENIED_PATHS = ["/.git", "/.git/config", "/phil.toml"]
+WRITER_ALLOWED_PATHS = ["/src/app.py", "/tests/test_app.py", "/.gitignore", "/src/.hidden"]
 
 
-def test_read_only_roles_cannot_write():
-    assert (["write"], ["/**"], "deny") in rules("reviewer")
-    assert (["write"], ["/**"], "deny") in rules("architect")
+@pytest.mark.parametrize("name", READ_ONLY_ROLES)
+@pytest.mark.parametrize("path", DOTFILE_AND_PROJECT_PATHS)
+def test_read_only_roles_deny_write_everywhere_including_dotfiles(name, path):
+    rules = filesystem_permissions(get_spec(name))
+    assert _check_fs_permission(rules, "write", path) == "deny"
 
 
-def test_writers_are_kept_out_of_git_and_config():
-    implementer = rules("implementer")
-    assert (["write"], ["/.git/**", "/phil.toml"], "deny") in implementer
-    assert (["write"], ["/**"], "deny") not in implementer
+@pytest.mark.parametrize("name", WRITER_ROLES)
+@pytest.mark.parametrize("path", ALWAYS_DENIED_PATHS)
+def test_writer_roles_still_deny_git_and_config(name, path):
+    rules = filesystem_permissions(get_spec(name))
+    assert _check_fs_permission(rules, "write", path) == "deny"
+
+
+@pytest.mark.parametrize("name", WRITER_ROLES)
+@pytest.mark.parametrize("path", WRITER_ALLOWED_PATHS)
+def test_writer_roles_allow_project_and_dotfile_writes(name, path):
+    rules = filesystem_permissions(get_spec(name))
+    assert _check_fs_permission(rules, "write", path) == "allow"
 
 
 def test_build_returns_invokable_agent(tmp_path, monkeypatch):

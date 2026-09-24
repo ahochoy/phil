@@ -8,9 +8,11 @@ from phil.agents.spec import AgentSpec, load_prompt
 def filesystem_permissions(spec: AgentSpec) -> list[Any]:
     from deepagents import FilesystemPermission
 
-    rules = [FilesystemPermission(operations=["write"], paths=["/.git/**", "/phil.toml"], mode="deny")]
+    rules = [FilesystemPermission(operations=["write"], paths=["/.git", "/.git/**", "/phil.toml"], mode="deny")]
     if not spec.writes_files:
-        rules.append(FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"))
+        rules.append(
+            FilesystemPermission(operations=["write"], paths=["/**", "/**/.*", "/**/.*/**"], mode="deny")
+        )
     return rules
 
 
