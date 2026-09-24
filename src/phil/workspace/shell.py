@@ -52,11 +52,16 @@ def run_command(command: str, cwd: Path, timeout_s: float) -> ShellResult:
         )
     except FileNotFoundError as exc:
         return ShellResult(command, 127, "", str(exc), False, elapsed())
+    except ValueError as exc:
+        return ShellResult(command, 2, "", str(exc), False, elapsed())
     try:
         stdout, stderr = proc.communicate(timeout=timeout_s)
         return ShellResult(command, proc.returncode, stdout, stderr, False, elapsed())
     except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         stdout, stderr = proc.communicate()
         return ShellResult(command, -9, stdout, stderr, True, elapsed())
 

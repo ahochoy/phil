@@ -64,3 +64,10 @@ def test_truncate_keeps_head_tail_and_failures():
     assert "FAILED tests/test_map.py::test_markers" in out
     assert any("lines omitted" in line for line in out)
     assert len(out) <= 41
+
+
+def test_run_command_malformed_quoting(tmp_path):
+    result = run_command('pytest "unterminated', cwd=tmp_path, timeout_s=10)
+    assert result.exit_code == 2
+    assert not result.ok
+    assert "quotation" in result.stderr
