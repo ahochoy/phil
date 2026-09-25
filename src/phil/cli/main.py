@@ -14,7 +14,7 @@ from rich.markup import escape
 
 from phil import __version__
 from phil.chat.approval import git_policy_note
-from phil.config import RUN_ROLES, ConfigError, load_config
+from phil.config import CHAT_ROLES, RUN_ROLES, ConfigError, load_config
 from phil.contracts import Plan
 from phil.contracts.schema import export_schemas
 from phil.git import GitError, git
@@ -51,10 +51,13 @@ def root(
         False, "--version", callback=_print_version, is_eager=True, help="Show version and exit."
     ),
     repo: Path | None = typer.Option(None, "--repo", help="Target repository (default: current directory)."),
+    base: str | None = typer.Option(
+        None, "--base", help="Start runs from this ref instead of HEAD (chat)."
+    ),
 ) -> None:
-    ctx.obj = {"repo": repo}
+    ctx.obj = {"repo": repo, "base": base}
     if ctx.invoked_subcommand is None:
-        console.print("[phil.muted]Chat mode is not implemented yet. Try `phil runs`.[/]")
+        _chat(ctx)
 
 
 def _open_project(ctx: typer.Context) -> tuple[RepoInfo, sqlite3.Connection]:
@@ -65,6 +68,58 @@ def _open_project(ctx: typer.Context) -> tuple[RepoInfo, sqlite3.Connection]:
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
     return info, connect(ProjectPaths(info.slug).db_path)
+
+
+def _chat(ctx: typer.Context) -> None:
+    from phil.chat.controller import HELP, ChatController, ChatIO
+
+    info, conn = _open_project(ctx)
+    try:
+        config = load_config(info.root)
+    except ConfigError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    missing = config.missing_models(CHAT_ROLES)
+    if missing:
+        console.print(
+            f"[phil.error]phil.toml sets no model for: {escape(', '.join(missing))}. "
+            'Add them under [models], e.g. orchestrator = "openrouter:openai/gpt-6-luna".[/]'
+        )
+        raise typer.Exit(1)
+    base = ctx.obj.get("base")
+    base_sha: str | None
+    if base is not None:
+        try:
+            base_sha = git(info.root, "rev-parse", f"{base}^{{commit}}").strip()
+        except GitError as exc:
+            console.print(f"[phil.error]{escape(str(exc))}[/]")
+            raise typer.Exit(1) from exc
+        base_label = base
+        header_sha = base_sha
+    else:
+        base_sha, base_label = None, info.branch or "detached"
+        header_sha = info.head_sha
+    console.print(
+        f"[phil.brand]Phil[/] · {escape(info.root.name)} · base: {escape(base_label)} @ {escape(header_sha[:7])}"
+    )
+    if base is None and info.dirty_files:
+        count = len(info.dirty_files)
+        console.print(
+            f"[phil.warn]⚠ {count} uncommitted file{'s' if count != 1 else ''} — not included in runs[/]"
+        )
+    parked_count = len(list_parked(conn))
+    if parked_count:
+        console.print(f"[phil.muted]{parked_count} parked[/]")
+    console.print(f"[phil.muted]{escape(HELP)}[/]")
+
+    def ask(prompt: str) -> str | None:
+        try:
+            return console.input(f"[phil.user]{escape(prompt)}[/]")
+        except EOFError:
+            return None
+
+    io = ChatIO(ask=ask, spawn=lambda root, run_id, mode: spawn_worker(root, run_id, mode))
+    ChatController(info, config, conn, console, io, factory=_factory_from_env(), base_sha=base_sha).run()
 
 
 @app.command()
