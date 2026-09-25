@@ -6,6 +6,7 @@ from phil.contracts import Goal, Issue, Plan, PlanCritique, SelfCheck, Task
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
 from tests.helpers import TEST_MODELS
+from tests.run.conftest import calc_repo  # noqa: F401
 
 
 def empty_check() -> SelfCheck:

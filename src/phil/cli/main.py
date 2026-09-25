@@ -11,7 +11,6 @@ from pathlib import Path
 import typer
 from pydantic import ValidationError
 from rich.markup import escape
-from rich.table import Table
 
 from phil import __version__
 from phil.chat.approval import git_policy_note
@@ -25,8 +24,8 @@ from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
-from phil.store.runs import get_run, list_runs, update_run
-from phil.store.telemetry import run_totals
+from phil.store.runs import get_run, update_run
+from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
 from phil.workspace.worktree import Worktree, WorktreeManager
 
@@ -68,32 +67,11 @@ def _open_project(ctx: typer.Context) -> tuple[RepoInfo, sqlite3.Connection]:
     return info, connect(ProjectPaths(info.slug).db_path)
 
 
-def _format_tokens(tokens: int) -> str:
-    return f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
-
-
 @app.command()
 def runs(ctx: typer.Context) -> None:
     """List runs for the current repository."""
     _, conn = _open_project(ctx)
-    records = list_runs(conn)
-    if not records:
-        console.print("[phil.muted]No runs yet.[/]")
-        return
-    table = Table(box=None, pad_edge=False)
-    for column in ("run", "plan", "done", "state", "tokens", "cost"):
-        table.add_column(column, style="phil.muted", no_wrap=True)
-    for run in records:
-        tokens, cost = run_totals(conn, run.run_id)
-        table.add_row(
-            f"[phil.id]{escape(run.run_id)}[/]",
-            escape(run.keyword),
-            f"{run.tasks_done}/{run.tasks_total}",
-            escape(run.state),
-            _format_tokens(tokens),
-            f"[phil.cost]${cost:.2f}[/]",
-        )
-    console.print(table)
+    render_runs(console, conn)
 
 
 @app.command()
