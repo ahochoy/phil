@@ -14,6 +14,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from phil import __version__
+from phil.chat.approval import git_policy_note
 from phil.config import RUN_ROLES, ConfigError, load_config
 from phil.contracts import Plan
 from phil.contracts.schema import export_schemas
@@ -168,8 +169,9 @@ def run_plan(
                 f"[phil.warn]⚠ {count} uncommitted file{'s' if count != 1 else ''} not included "
                 f"(the run starts from {base_sha[:8]})[/]"
             )
-    if config.git.sign_commits is not False or config.git.run_hooks:
-        console.print("[phil.muted]Commit signing or hooks are on; a failing signature or hook will pause the run.[/]")
+    note = git_policy_note(config)
+    if note:
+        console.print(f"[phil.muted]{escape(note)}[/]")
     factory = None
     if foreground:
         try:
