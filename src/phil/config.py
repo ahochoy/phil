@@ -5,6 +5,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 ROLES = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer")
+# Roles the chat calls; `phil` checks these have models before the conversation starts.
+CHAT_ROLES = ("orchestrator", "architect", "critic")
 # Roles the run graph calls; `phil run` checks these have models before starting.
 RUN_ROLES = ("implementer", "tester", "reviewer")
 DEFAULT_BUDGETS = {"architect": 24_000, "tester": 48_000, "reviewer": 48_000}

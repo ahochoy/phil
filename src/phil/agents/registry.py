@@ -2,7 +2,9 @@ from phil.agents.spec import AgentSpec
 from phil.contracts import (
     ArchitectInput,
     CriticInput,
+    Goal,
     ImplementInput,
+    IntakeInput,
     Plan,
     PlanCritique,
     Review,
@@ -13,6 +15,7 @@ from phil.contracts import (
 )
 
 SPECS: dict[str, AgentSpec] = {
+    "intake": AgentSpec("intake", "orchestrator", IntakeInput, Goal, harness="lean"),
     "architect": AgentSpec("architect", "architect", ArchitectInput, Plan),
     "critic": AgentSpec("critic", "critic", CriticInput, PlanCritique, harness="lean"),
     "implementer": AgentSpec(
