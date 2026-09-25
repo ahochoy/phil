@@ -39,6 +39,7 @@ def test_run_requires_a_test_command(calc_repo, tmp_path, monkeypatch):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path, test_cmd=None))])
     assert result.exit_code == 1
     assert "no test_cmd" in result.output
+    assert "[project] test_cmd" in result.output
     assert runs_for(calc_repo) == []
 
 
@@ -48,6 +49,7 @@ def test_run_requires_models_for_the_run_roles(calc_repo, tmp_path, monkeypatch)
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path))])
     assert result.exit_code == 1
     assert "tester, reviewer" in result.output
+    assert "[models]" in result.output
     assert runs_for(calc_repo) == []
 
 

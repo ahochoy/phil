@@ -164,7 +164,7 @@ class ChatController:
                 if missing:
                     self.console.print(
                         f"[phil.error]phil.toml sets no model for: {escape(', '.join(missing))}. "
-                        "Add them under [models] before starting a run.[/]"
+                        f"Add them under {escape('[models]')} before starting a run.[/]"
                     )
                     continue
                 if problem:

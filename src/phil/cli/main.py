@@ -83,7 +83,7 @@ def _chat(ctx: typer.Context) -> None:
     if missing:
         console.print(
             f"[phil.error]phil.toml sets no model for: {escape(', '.join(missing))}. "
-            'Add them under [models], e.g. orchestrator = "openrouter:openai/gpt-6-luna".[/]'
+            f'Add them under {escape("[models]")}, e.g. orchestrator = "openrouter:openai/gpt-6-luna".[/]'
         )
         raise typer.Exit(1)
     base = ctx.obj.get("base")
@@ -179,13 +179,13 @@ def run_plan(
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
     if not (plan.test_cmd or config.project.test_cmd):
-        console.print("[phil.error]plan has no test_cmd and phil.toml sets no [project] test_cmd[/]")
+        console.print(f"[phil.error]plan has no test_cmd and phil.toml sets no {escape('[project]')} test_cmd[/]")
         raise typer.Exit(1)
     missing = config.missing_models(RUN_ROLES)
     if missing:
         console.print(
             f"[phil.error]phil.toml sets no model for: {escape(', '.join(missing))}. "
-            'Add them under [models], e.g. implementer = "openrouter:openai/gpt-6-sol".[/]'
+            f'Add them under {escape("[models]")}, e.g. implementer = "openrouter:openai/gpt-6-sol".[/]'
         )
         raise typer.Exit(1)
     if base is not None:

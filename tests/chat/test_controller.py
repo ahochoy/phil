@@ -65,6 +65,7 @@ def test_missing_run_models_block_approval(calc_repo):
         {"intake": [goal()], "architect": [plan()], "critic": [critique()]}, config=config,
     )
     assert "implementer, tester, reviewer" in text
+    assert "[models]" in text
     assert spawned == [] and runs == []
 
 
