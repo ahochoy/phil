@@ -9,20 +9,26 @@ Findings from plan 3b's task reviews and final review that were deliberately def
 
 ## Plan 4 (chat layer)
 
-Carried from plan 3a:
+Carried from plan 3a (done in 4a):
+
+- ✓ Validate the architect's `Plan.test_cmd` and show it at plan approval, with the one-line note when `[git] sign_commits` is not false or `run_hooks` is true.
+
+Carried from plan 3a (deferred to 4b):
 
 - Usage callback (subagent tokens are not counted, so the budget guard is lenient).
 - OpenRouter SDK timeout.
 - 200-with-error responses treated as transient.
 - Lean read-only architect harness.
-- Validate the architect's `Plan.test_cmd` and show it at plan approval, with the one-line note when `[git] sign_commits` is not false or `run_hooks` is true.
 - `open_issues` deduplication across tester and review rounds; clean up raw newlines and markdown in `render_summary` when the summary becomes a `Brief`.
 
-From the first live run (2026-09-24):
+From the first live run (2026-09-24, done in 4a):
+
+- ✓ Models now have no default (`[models]` must be set per role; `phil run` checks the run roles). The chat layer checks the chat roles (orchestrator, architect, critic) the same way before a conversation starts.
+
+From the first live run (deferred to 4b):
 
 - **Record tool calls per agent call.** The free `nex-agi/nex-n2.5-pro:free` model answered every implementer call by submitting its structured result on the first turn without using any tool (it claimed `uv run pytest -q` ran when the command log was empty). The evidence check and red gate caught it, but nothing showed *why*. Count tool calls per agent call (by tool name) in `telemetry`, show them in `phil runs`/the run summary, and when the implementer or tester returns having made zero tool calls, send targeted retry feedback ("you made no tool calls; edit the files and run the test command") instead of the generic evidence problem. Fits the usage-callback work above.
 - **Recorded cost is a lower bound.** Run `r-a0be` on GPT-6 Sol recorded 203.8k tokens and $0.14, below what the listed prices imply; reconcile `telemetry.cost_usd` with OpenRouter's reported cost once the usage callback lands.
-- Models now have no default (`[models]` must be set per role; `phil run` checks the run roles). The chat layer must check the chat roles (orchestrator, architect, critic) the same way before a conversation starts.
 
 ## Before a public release
 
