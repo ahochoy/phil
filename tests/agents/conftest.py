@@ -1,6 +1,7 @@
 import pytest
 
 from phil.config import PhilConfig
+from tests.helpers import TEST_MODELS
 from phil.contracts import CriticInput, Goal, Plan, PlanCritique, SelfCheck, Task
 from phil.packets import build_packet
 from phil.store.artifacts import ArtifactStore
@@ -37,4 +38,4 @@ def critic_packet():
 
 @pytest.fixture
 def config():
-    return PhilConfig()
+    return PhilConfig(models=TEST_MODELS)

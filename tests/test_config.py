@@ -2,21 +2,28 @@ from pathlib import Path
 
 import pytest
 
-from phil.config import DEFAULT_MODEL, ROLES, ConfigError, load_config
+from phil.config import ConfigError, load_config
 
 
 def test_missing_file_gives_defaults(tmp_path):
     config = load_config(tmp_path)
     assert config.run.tester_mode == "run"
     assert config.run.max_attempts_per_phase == 3
-    assert all(config.model_for(role) == DEFAULT_MODEL for role in ROLES)
+    assert config.models == {}
 
 
-def test_partial_models_override_keeps_other_defaults(tmp_path):
+def test_models_must_be_set_per_role(tmp_path):
     (tmp_path / "phil.toml").write_text('[models]\nimplementer = "openrouter:cheap/model"\n')
     config = load_config(tmp_path)
     assert config.model_for("implementer") == "openrouter:cheap/model"
-    assert config.model_for("reviewer") == DEFAULT_MODEL
+    with pytest.raises(ConfigError, match=r'reviewer = "provider:model"'):
+        config.model_for("reviewer")
+
+
+def test_missing_models_lists_unset_roles(tmp_path):
+    (tmp_path / "phil.toml").write_text('[models]\nimplementer = "openrouter:cheap/model"\n')
+    config = load_config(tmp_path)
+    assert config.missing_models(("implementer", "tester", "reviewer")) == ["tester", "reviewer"]
 
 
 def test_sections_are_loaded(tmp_path):
@@ -41,7 +48,7 @@ def test_invalid_tester_mode_is_rejected(tmp_path):
 
 
 def test_unknown_role_raises(tmp_path):
-    with pytest.raises(KeyError):
+    with pytest.raises(ConfigError, match="wizard"):
         load_config(tmp_path).model_for("wizard")
 
 

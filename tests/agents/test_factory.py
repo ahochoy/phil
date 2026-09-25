@@ -8,7 +8,6 @@ from deepagents.middleware.filesystem import _check_fs_permission
 from phil.agents.factory import build_agent, filesystem_permissions
 from phil.agents.registry import get_spec
 from phil.agents.spec import load_prompt
-from phil.config import DEFAULT_MODEL
 
 
 def test_importing_invoke_does_not_load_llm_stack():
@@ -64,7 +63,7 @@ def test_writer_roles_allow_project_and_dotfile_writes(name, path):
 @pytest.mark.parametrize("name", ["critic", "architect"])
 def test_build_returns_invokable_agent(name, tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-used")
-    agent = build_agent(get_spec(name), DEFAULT_MODEL, tmp_path, [])
+    agent = build_agent(get_spec(name), "openrouter:openai/gpt-6-luna", tmp_path, [])
     assert hasattr(agent, "invoke")
 
 

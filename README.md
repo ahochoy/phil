@@ -16,3 +16,10 @@ Live tests call a real model through OpenRouter and are skipped by default:
 
     set -a; source .env; set +a
     uv run pytest -m live
+
+Tests run in parallel with pytest-xdist; use `uv run pytest -n 0` to run serially when debugging.
+
+Start a run from a plan file and follow it:
+
+    uv run phil run plan.json
+    uv run phil attach <run-id>

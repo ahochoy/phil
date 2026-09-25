@@ -6,6 +6,7 @@ from langgraph.types import Command
 from phil.contracts import Plan
 from phil.run.engine import RunEngine
 from phil.run.state import initial_state
+from phil.store.runs import update_run
 
 
 @dataclass(frozen=True)
@@ -21,9 +22,22 @@ def thread_config(run_id: str) -> dict:
 def _drive(engine: RunEngine, graph: Any, payload: Any) -> RunOutcome:
     config = thread_config(engine.deps.run_id)
     graph.invoke(payload, config)
-    snapshot = graph.get_state(config)
+    return settle(engine, graph.get_state(config))
+
+
+def settle(engine: RunEngine, snapshot: Any) -> RunOutcome:
+    """Turn a graph snapshot into an outcome, recording a pending pause on the run row and events."""
     if snapshot.interrupts:
-        return RunOutcome(status="escalated", escalation=snapshot.interrupts[0].value)
+        escalation = snapshot.interrupts[0].value
+        update_run(
+            engine.deps.conn,
+            engine.deps.run_id,
+            state="escalated",
+            needs_attention=escalation.get("error") or escalation["summary"],
+        )
+        if engine.deps.events is not None:
+            engine.deps.events.append("escalation", escalation=escalation)
+        return RunOutcome(status="escalated", escalation=escalation)
     return RunOutcome(status=snapshot.values.get("status", "completed"))
 
 

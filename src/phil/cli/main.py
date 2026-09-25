@@ -1,22 +1,41 @@
+import importlib
+import json
+import os
+import shutil
+import signal
 import sqlite3
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
+from pydantic import ValidationError
 from rich.markup import escape
 from rich.table import Table
 
 from phil import __version__
+from phil.config import RUN_ROLES, ConfigError, load_config
+from phil.contracts import Plan
 from phil.contracts.schema import export_schemas
+from phil.git import GitError, git
 from phil.repo import RepoError, RepoInfo, resolve_repo
+from phil.run.launch import is_worker_alive, prepare_run, spawn_worker, worker_starting
 from phil.store.db import connect
+from phil.store.events import run_events
 from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
-from phil.store.runs import list_runs
+from phil.store.runs import get_run, list_runs, update_run
 from phil.store.telemetry import run_totals
 from phil.ui.theme import make_console
+from phil.workspace.worktree import Worktree, WorktreeManager
 
 app = typer.Typer(add_completion=False, help="Phil: a contract-driven coding agent.")
 console = make_console()
+
+# A pending run whose row was updated more recently than this is assumed to still be starting
+# (its worker process hasn't written a pid/heartbeat yet); older than this, treat it as a worker
+# that never started and let `phil resume` continue it from scratch.
+PENDING_STALE_AFTER_S = 30.0
 
 
 def _print_version(value: bool) -> None:
@@ -96,3 +115,331 @@ def schema(out: Path = typer.Option(Path("phil-schemas"), "--out", help="Output 
     """Export JSON Schema for every contract."""
     paths = export_schemas(out)
     console.print(f"Wrote [phil.id]{len(paths)}[/] schemas to {escape(str(out))}")
+
+
+def _factory_from_env():
+    target = os.environ.get("PHIL_AGENT_FACTORY")
+    if not target:
+        return None
+    module_name, _, attr = target.partition(":")
+    return getattr(importlib.import_module(module_name), attr)()
+
+
+@app.command("run")
+def run_plan(
+    ctx: typer.Context,
+    plan_file: Path = typer.Argument(..., exists=True, dir_okay=False, help="Plan JSON file."),
+    base: str | None = typer.Option(None, "--base", help="Start from this ref instead of HEAD."),
+    foreground: bool = typer.Option(False, "--foreground", help="Run in this process instead of a background worker."),
+) -> None:
+    """Start a run from a plan file."""
+    info, _ = _open_project(ctx)
+    try:
+        plan = Plan.model_validate_json(plan_file.read_text())
+    except ValidationError as exc:
+        console.print(f"[phil.error]invalid plan: {escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    try:
+        config = load_config(info.root)
+    except ConfigError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    if not (plan.test_cmd or config.project.test_cmd):
+        console.print("[phil.error]plan has no test_cmd and phil.toml sets no [project] test_cmd[/]")
+        raise typer.Exit(1)
+    missing = config.missing_models(RUN_ROLES)
+    if missing:
+        console.print(
+            f"[phil.error]phil.toml sets no model for: {escape(', '.join(missing))}. "
+            'Add them under [models], e.g. implementer = "openrouter:openai/gpt-6-sol".[/]'
+        )
+        raise typer.Exit(1)
+    if base is not None:
+        try:
+            base_sha = git(info.root, "rev-parse", f"{base}^{{commit}}").strip()
+        except GitError as exc:
+            console.print(f"[phil.error]{escape(str(exc))}[/]")
+            raise typer.Exit(1) from exc
+    else:
+        base_sha = info.head_sha
+        if info.dirty_files:
+            count = len(info.dirty_files)
+            console.print(
+                f"[phil.warn]⚠ {count} uncommitted file{'s' if count != 1 else ''} not included "
+                f"(the run starts from {base_sha[:8]})[/]"
+            )
+    if config.git.sign_commits is not False or config.git.run_hooks:
+        console.print("[phil.muted]Commit signing or hooks are on; a failing signature or hook will pause the run.[/]")
+    factory = None
+    if foreground:
+        try:
+            factory = _factory_from_env()
+        except Exception as exc:
+            console.print(
+                f"[phil.error]cannot load PHIL_AGENT_FACTORY: {escape(type(exc).__name__)}: {escape(str(exc))}[/]"
+            )
+            raise typer.Exit(1) from exc
+    record = prepare_run(info, plan, base_sha)
+    if foreground:
+        from phil.run.worker import WorkerError, run_worker
+
+        try:
+            outcome = run_worker(info.root, record.run_id, "start", factory=factory)
+        except WorkerError as exc:
+            console.print(f"[phil.error]{escape(str(exc))}[/]")
+            raise typer.Exit(2) from exc
+        except Exception as exc:
+            console.print(
+                f"[phil.error]Run {escape(record.run_id)} failed: "
+                f"{escape(type(exc).__name__)}: {escape(str(exc))}[/]"
+            )
+            console.print(f"Continue with `phil resume {escape(record.run_id)}`.")
+            raise typer.Exit(1) from exc
+        console.print(f"Run [phil.id]{escape(record.run_id)}[/]: {escape(outcome.status)}")
+        return
+    spawn_worker(info.root, record.run_id, "start")
+    console.print(
+        f"Run [phil.id]{escape(record.run_id)}[/] started. Follow it with `phil attach {escape(record.run_id)}`."
+    )
+
+
+@app.command("_worker", hidden=True)
+def worker(
+    ctx: typer.Context,
+    run_id: str,
+    mode: str = typer.Option(..., "--mode"),
+    decision: str | None = typer.Option(None, "--decision"),
+) -> None:
+    """Drive a run until it pauses, finishes, stops, or fails (internal)."""
+    from phil.run.worker import WorkerError, run_worker
+
+    start = ctx.obj.get("repo") or Path.cwd()
+    try:
+        outcome = run_worker(start, run_id, mode, json.loads(decision) if decision else None, factory=_factory_from_env())
+    except WorkerError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(2) from exc
+    if outcome.status == "stopped":
+        from phil.workspace import shell
+
+        # A tool thread may have started a command after the stop handler's own kill.
+        shell.kill_active_groups()
+    console.print(f"{escape(run_id)}: {escape(outcome.status)}")
+
+
+def _require_run(conn: sqlite3.Connection, run_id: str):
+    record = get_run(conn, run_id)
+    if record is None:
+        console.print(f"[phil.error]unknown run {escape(run_id)}[/]")
+        raise typer.Exit(1)
+    return record
+
+
+@app.command()
+def resume(
+    ctx: typer.Context,
+    run_id: str,
+    action: str | None = typer.Option(None, "--action", help="Answer a paused run (e.g. retry, skip, approve)."),
+    hint: str | None = typer.Option(None, "--hint", help="Hint for the next attempt (with --action retry)."),
+) -> None:
+    """Answer a paused run, or continue a failed or stopped one."""
+    info, conn = _open_project(ctx)
+    record = _require_run(conn, run_id)
+    if is_worker_alive(record) or worker_starting(run_events(ProjectPaths(info.slug), run_id)):
+        console.print(f"[phil.error]{escape(run_id)} already has a running worker[/]")
+        raise typer.Exit(1)
+    if record.state == "escalated":
+        latest = run_events(ProjectPaths(info.slug), run_id).latest("escalation")
+        escalation = latest["escalation"] if latest else {"summary": record.needs_attention or "", "options": []}
+        options = escalation["options"]
+        if action is None:
+            console.print(escape(escalation["summary"]))
+            console.print(f"[phil.error]choose --action: {escape(', '.join(options))}[/]")
+            raise typer.Exit(2)
+        if action not in options:
+            console.print(
+                f"[phil.error]unknown action {escape(repr(action))}; choose one of: {escape(', '.join(options))}[/]"
+            )
+            raise typer.Exit(2)
+        decision = {"action": action} | ({"hint": hint} if hint else {})
+        spawn_worker(info.root, run_id, "resume", decision)
+        console.print(f"Resuming [phil.id]{escape(run_id)}[/] with {escape(action)}.")
+        return
+    if record.state in ("pending", "failed", "stopped", "running"):
+        if action is not None:
+            console.print("[phil.error]nothing to answer; the run continues from its last checkpoint[/]")
+            raise typer.Exit(2)
+        if record.state == "pending":
+            age = (datetime.now(UTC) - datetime.fromisoformat(record.updated_at)).total_seconds()
+            if age <= PENDING_STALE_AFTER_S:
+                console.print(
+                    f"[phil.error]{escape(run_id)} is still starting; follow it with `phil attach {escape(run_id)}`[/]"
+                )
+                raise typer.Exit(1)
+        spawn_worker(info.root, run_id, "continue")
+        console.print(f"Continuing [phil.id]{escape(run_id)}[/] from its last checkpoint.")
+        return
+    console.print(f"[phil.error]{escape(run_id)} is {escape(record.state)}; nothing to resume[/]")
+    raise typer.Exit(1)
+
+
+@app.command()
+def stop(
+    ctx: typer.Context,
+    run_id: str,
+    timeout: float = typer.Option(15.0, "--timeout", help="Seconds to wait for the worker to stop."),
+) -> None:
+    """Stop a running run; continue it later with `phil resume`."""
+    _, conn = _open_project(ctx)
+    record = _require_run(conn, run_id)
+    if record.state == "escalated":
+        console.print(
+            f"[phil.error]{escape(run_id)} is waiting for your decision; "
+            f"stop it with `phil resume {escape(run_id)} --action abort`[/]",
+            soft_wrap=True,
+        )
+        raise typer.Exit(1)
+    if record.state not in ("running", "pending"):
+        console.print(f"[phil.error]{escape(run_id)} is {escape(record.state)}; nothing to stop[/]")
+        raise typer.Exit(1)
+    alive = is_worker_alive(record)
+    if not alive and record.state == "pending":
+        age = (datetime.now(UTC) - datetime.fromisoformat(record.updated_at)).total_seconds()
+        if age <= PENDING_STALE_AFTER_S:
+            console.print(f"[phil.error]{escape(run_id)} is still starting; try again in a few seconds[/]")
+            raise typer.Exit(1)
+    if alive:
+        try:
+            os.kill(record.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            alive = False
+        except PermissionError as exc:
+            console.print(f"[phil.error]{escape(str(exc))}[/]")
+            raise typer.Exit(1) from exc
+        else:
+            deadline = time.monotonic() + timeout
+            current = get_run(conn, run_id)
+            while current is not None and current.state in ("running", "pending"):
+                if time.monotonic() > deadline:
+                    console.print("[phil.error]the worker did not stop in time[/]")
+                    raise typer.Exit(1)
+                time.sleep(0.2)
+                current = get_run(conn, run_id)
+            _finish_stop(run_id, current)
+            return
+    # No live worker (or it exited between the liveness check and the kill): mark the row
+    # stopped ourselves, unless it's already settled into some other terminal state on its own.
+    current = get_run(conn, run_id)
+    if current is not None and current.state in ("running", "pending"):
+        current = update_run(conn, run_id, state="stopped", needs_attention="stopped by user (worker was not running)")
+    _finish_stop(run_id, current)
+
+
+def _finish_stop(run_id: str, current) -> None:
+    if current is None:
+        console.print(f"[phil.error]unknown run {escape(run_id)}[/]")
+        raise typer.Exit(1)
+    if current.state != "stopped":
+        console.print(f"[phil.error]{escape(run_id)} ended as {escape(current.state)}[/]")
+        raise typer.Exit(1)
+    console.print(f"Stopped [phil.id]{escape(run_id)}[/]. Continue with `phil resume {escape(run_id)}`.")
+
+
+@app.command("attach")
+def attach_command(ctx: typer.Context, run_id: str) -> None:
+    """Follow a run and answer it when it pauses."""
+    from phil.cli.attach import AttachIO, attach
+
+    info, conn = _open_project(ctx)
+    _require_run(conn, run_id)
+
+    def choose(prompt: str, options: list[str]) -> str:
+        choices = ", ".join(options)
+        while True:
+            answer = typer.prompt(f"{prompt} ({choices})")
+            if answer in options:
+                return answer
+            console.print(f"[phil.error]choose one of: {escape(choices)}[/]")
+
+    def ask_hint() -> str | None:
+        return typer.prompt("Hint for the next attempt (optional)", default="", show_default=False) or None
+
+    io = AttachIO(choose=choose, ask_hint=ask_hint, spawn=lambda mode, decision: spawn_worker(info.root, run_id, mode, decision))
+    attach(conn, run_id, run_events(ProjectPaths(info.slug), run_id), console, io)
+
+
+@app.command()
+def diff(ctx: typer.Context, run_id: str) -> None:
+    """Show the changes a run made, compared with its base."""
+    info, conn = _open_project(ctx)
+    record = _require_run(conn, run_id)
+    try:
+        typer.echo(git(info.root, "diff", record.base_sha, record.branch, "--"), nl=False)
+    except GitError as exc:
+        console.print("[phil.error]the run's branch no longer exists[/]")
+        raise typer.Exit(1) from exc
+
+
+@app.command()
+def clean(
+    ctx: typer.Context,
+    run_id: str,
+    purge: bool = typer.Option(False, "--purge", help="Also delete the run summary."),
+) -> None:
+    """Remove a finished run's worktree, branch, checkpoints, and scratch files."""
+    from phil.run.checkpoint import open_checkpointer
+
+    info, conn = _open_project(ctx)
+    record = _require_run(conn, run_id)
+    if record.state in ("pending", "running", "escalated"):
+        console.print(
+            f"[phil.error]{escape(run_id)} is {escape(record.state)}; finish or stop it first "
+            f"(`phil stop {escape(run_id)}` or `phil resume {escape(run_id)} --action abort`)[/]"
+        )
+        raise typer.Exit(1)
+    paths = ProjectPaths(info.slug)
+    if is_worker_alive(record) or worker_starting(run_events(paths, run_id)):
+        console.print(f"[phil.error]{escape(run_id)} has a worker running; stop it first[/]")
+        raise typer.Exit(1)
+    manager = WorktreeManager(info.root)
+    worktree = Path(record.worktree)
+    try:
+        if worktree.exists():
+            manager.remove(Worktree(worktree, record.branch, record.base_sha), delete_branch=False)
+        else:
+            git(info.root, "worktree", "prune")
+    except GitError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    try:
+        git(info.root, "show-ref", "--verify", "--quiet", f"refs/heads/{record.branch}")
+        branch_exists = True
+    except GitError:
+        branch_exists = False
+    if branch_exists:
+        try:
+            git(info.root, "branch", "-D", record.branch)
+        except GitError as exc:
+            console.print(f"[phil.error]{escape(str(exc))}[/]")
+            raise typer.Exit(1) from exc
+    manager.delete_refs(f"refs/phil/{run_id}/")
+    saver = open_checkpointer(paths.db_path)
+    try:
+        saver.delete_thread(run_id)
+    finally:
+        saver.conn.close()
+    run_dir = paths.run_dir(run_id)
+    if run_dir.exists():
+        if purge:
+            shutil.rmtree(run_dir)
+        else:
+            for child in run_dir.iterdir():
+                if child.name == "summary.md":
+                    continue
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+    update_run(conn, run_id, state="cleaned", needs_attention=None)
+    kept = "" if purge else " (kept summary.md)"
+    console.print(f"Cleaned [phil.id]{escape(run_id)}[/]{kept}.")

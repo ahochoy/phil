@@ -11,7 +11,7 @@ from phil.repo import resolve_repo
 from phil.store.db import connect
 from phil.store.parked import park
 from phil.store.paths import ProjectPaths
-from phil.store.runs import create_run, update_run
+from phil.store.runs import create_run
 
 runner = CliRunner()
 
@@ -44,10 +44,11 @@ def test_runs_lists_runs(git_repo):
 
 
 def test_runs_escapes_state_markup(git_repo):
-    create_run(
-        _conn_for(git_repo), run_id="r-7f3a", keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=5
-    )
-    update_run(_conn_for(git_repo), "r-7f3a", state="[bold]running[/]")
+    conn = _conn_for(git_repo)
+    create_run(conn, run_id="r-7f3a", keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=5)
+    # Bypass update_run's transition validation: this test targets the CLI's display escaping,
+    # not state-machine semantics, so the row is seeded directly with markup-laced text.
+    conn.execute("UPDATE runs SET state = ? WHERE run_id = ?", ("[bold]running[/]", "r-7f3a"))
     result = runner.invoke(app, ["--repo", str(git_repo), "runs"])
     assert result.exit_code == 0
     assert "[bold]running[/]" in result.output

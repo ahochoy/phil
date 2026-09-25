@@ -2,10 +2,11 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 ROLES = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer")
-DEFAULT_MODEL = "openrouter:nex-agi/nex-n2.5-pro:free"
+# Roles the run graph calls; `phil run` checks these have models before starting.
+RUN_ROLES = ("implementer", "tester", "reviewer")
 DEFAULT_BUDGETS = {"architect": 24_000, "tester": 48_000, "reviewer": 48_000}
 
 
@@ -70,21 +71,13 @@ class ProjectConfig(_Section):
 
 
 class PhilConfig(_Section):
-    models: dict[str, str] = Field(default_factory=lambda: {role: DEFAULT_MODEL for role in ROLES})
+    # No default model: each role's model is chosen explicitly in phil.toml.
+    models: dict[str, str] = {}
     budget: dict[str, RoleBudget] = {}
     run: RunConfig = RunConfig()
     shell: ShellConfig = ShellConfig()
     project: ProjectConfig = ProjectConfig()
     git: GitConfig = GitConfig()
-
-    @model_validator(mode="before")
-    @classmethod
-    def _fill_default_models(cls, data: object) -> object:
-        if not isinstance(data, dict):
-            return data
-        data = dict(data)
-        data["models"] = {role: DEFAULT_MODEL for role in ROLES} | (data.get("models") or {})
-        return data
 
     @field_validator("models")
     @classmethod
@@ -103,7 +96,14 @@ class PhilConfig(_Section):
         return value
 
     def model_for(self, role: str) -> str:
+        if role not in ROLES:
+            raise ConfigError(f"Unknown role {role!r}. Valid roles: {list(ROLES)}")
+        if role not in self.models:
+            raise ConfigError(f'No model set for {role}. Add {role} = "provider:model" under [models] in phil.toml.')
         return self.models[role]
+
+    def missing_models(self, roles: tuple[str, ...]) -> list[str]:
+        return [role for role in roles if role not in self.models]
 
     def budget_for(self, role: str) -> RoleBudget:
         default = RoleBudget(max_input_tokens=DEFAULT_BUDGETS.get(role, 12_000))

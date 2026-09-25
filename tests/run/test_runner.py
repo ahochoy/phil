@@ -75,3 +75,12 @@ def test_budget_abort(make_harness):
     harness = make_harness({"implementer": [write_red]}, config=config, usage=(100, 20, 0.0))
     outcome_start(harness)
     assert runner.resume(harness.engine, harness.graph, {"action": "abort"}).status == "aborted"
+
+
+def test_pause_is_recorded_once_by_the_runner(make_harness):
+    harness = make_harness({"implementer": [write_red, bad_green, bad_green, bad_green]})
+    paused = outcome_start(harness)
+    record = harness.run_record()
+    assert (record.state, record.needs_attention) == ("escalated", paused.escalation["summary"])
+    escalations = [e for e in harness.deps.events.read()[0] if e["kind"] == "escalation"]
+    assert [e["escalation"]["reason"] for e in escalations] == ["attempts"]

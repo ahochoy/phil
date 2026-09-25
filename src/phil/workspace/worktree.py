@@ -80,3 +80,12 @@ class WorktreeManager:
         git(path, "read-tree", "-u", "--reset", tree)
         git(path, "clean", "-fd")
         git(path, "reset", "-q")
+
+    def pin_ref(self, ref: str, sha: str) -> None:
+        git(self.repo_root, "update-ref", ref, sha)
+
+    def delete_refs(self, prefix: str) -> list[str]:
+        refs = git(self.repo_root, "for-each-ref", "--format=%(refname)", prefix).split()
+        for ref in refs:
+            git(self.repo_root, "update-ref", "-d", ref)
+        return refs

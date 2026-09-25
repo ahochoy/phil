@@ -7,9 +7,10 @@ import pytest
 from phil.agents.fake import FakeAgent, FakeAgentFactory
 from phil.agents.invoke import AgentContext, ContractViolation, invoke_agent
 from phil.agents.registry import get_spec
-from phil.config import DEFAULT_MODEL, PhilConfig, ShellConfig
+from phil.config import PhilConfig, ShellConfig
 from phil.contracts import ImplementInput, PlanCritique, Task, TaskResult
 from phil.packets import build_packet
+from tests.helpers import TEST_MODEL, TEST_MODELS
 from tests.agents.conftest import critique, self_check
 
 
@@ -26,7 +27,7 @@ def test_valid_output_is_returned_recorded_and_saved(config, conn, artifacts, cr
     factory = FakeAgentFactory([critique()], usage=(120, 30, 0.002))
     result = invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic")
     assert isinstance(result, PlanCritique)
-    assert factory.built == [("critic", DEFAULT_MODEL)]
+    assert factory.built == [("critic", TEST_MODEL)]
     [row] = telemetry(conn)
     assert (row["role"], row["outcome"], row["attempt"]) == ("critic", "ok", 1)
     assert (row["input_tokens"], row["output_tokens"], row["packet_tokens"]) == (120, 30, critic_packet.tokens)
@@ -149,7 +150,7 @@ def test_packet_contract_type_mismatch_raises(config, conn, artifacts):
 def test_shell_log_prefix_matches_artifact_base_name(conn, artifacts, tmp_path):
     (tmp_path / "hello.py").write_text("print('hi')\n")
     shell_config = ShellConfig(allow=[f"{shlex.quote(sys.executable)} *"])
-    config = PhilConfig(shell=shell_config)
+    config = PhilConfig(shell=shell_config, models=TEST_MODELS)
     captured: dict = {}
 
     def factory(spec, model, workdir, tools):

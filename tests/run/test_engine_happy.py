@@ -61,3 +61,19 @@ def test_green_retry_starts_from_the_red_snapshot(make_harness):
     final = harness.start()
     assert final["status"] == "completed"
     assert (harness.deps.worktree / "calc.py").read_text().count("def subtract") == 1
+
+
+def test_nodes_and_states_are_logged(make_harness):
+    harness = make_harness({"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]})
+    harness.start()
+    events, _ = harness.deps.events.read()
+    nodes = [e["node"] for e in events if e["kind"] == "node"]
+    assert nodes[:4] == ["setup", "pick_task", "implement", "verify"]
+    assert nodes[-1] == "finish"
+    assert [e["state"] for e in events if e["kind"] == "state"] == ["running", "completed"]
+
+
+def test_red_snapshot_is_pinned(make_harness, calc_repo):
+    harness = make_harness({"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]})
+    harness.start()
+    assert run_git(calc_repo, "cat-file", "-t", "refs/phil/r-0001/red").strip() == "tree"

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from phil.config import PhilConfig
 from phil.run.state import load_plan
 from tests.helpers import run_git
@@ -12,8 +14,6 @@ def test_three_failed_greens_escalate(make_harness):
     assert escalation["options"] == ["retry", "skip", "abort"]
     assert escalation["summary"] == "CALC-001 failed 3 attempts in the green phase"
     assert "tests still failing" in escalation["problems"][0]
-    record = harness.run_record()
-    assert (record.state, record.needs_attention) == ("escalated", escalation["summary"])
 
 
 def test_retry_with_hint_reaches_the_implementer(make_harness):
@@ -75,6 +75,13 @@ def test_attempt_cap_comes_from_config(make_harness):
     assert result["__interrupt__"][0].value["summary"] == "CALC-001 failed 1 attempts in the green phase"
 
 
+def test_attempts_escalation_points_at_the_last_test_log(make_harness):
+    harness = make_harness({"implementer": [write_red, bad_green, bad_green, bad_green]})
+    escalation = harness.start()["__interrupt__"][0].value
+    assert escalation["log"].endswith(".log")
+    assert Path(escalation["log"]).exists()
+
+
 def test_invalid_action_asks_again_and_a_valid_one_still_works(make_harness):
     harness = make_harness(
         {
@@ -87,7 +94,6 @@ def test_invalid_action_asks_again_and_a_valid_one_still_works(make_harness):
     again = harness.resume({"action": "approve"})["__interrupt__"][0].value
     assert "unknown escalation action 'approve'" in again["error"]
     assert again["options"] == ["retry", "skip", "abort"]
-    assert harness.run_record().state == "escalated"
     again = harness.resume("not a dict")["__interrupt__"][0].value
     assert "unknown escalation action None" in again["error"]
     final = harness.resume({"action": "retry"})

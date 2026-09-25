@@ -18,6 +18,7 @@ from phil.packets import PacketTooLarge, build_packet
 from phil.run.gates import is_test_path, run_tests, snapshot_tests, verify_green, verify_red
 from phil.run.state import RunState, issues_to_tasks, load_plan, next_todo, render_summary, with_task_status
 from phil.store.artifacts import ArtifactStore, artifact_name
+from phil.store.events import EventLog
 from phil.store.runs import update_run
 from phil.store.telemetry import run_totals
 from phil.workspace.worktree import WorktreeManager
@@ -33,6 +34,7 @@ class RunDeps:
     artifacts: ArtifactStore
     factory: AgentFactory | None = None
     sleep: Callable[[float], None] = time.sleep
+    events: EventLog | None = None
 
 
 class RunEngine:
@@ -85,6 +87,13 @@ class RunEngine:
 
     def _update_run(self, **fields: object) -> None:
         update_run(self.deps.conn, self.deps.run_id, **fields)
+        events = self.deps.events
+        if events is None:
+            return
+        if "current_node" in fields:
+            events.append("node", node=fields["current_node"])
+        if "state" in fields:
+            events.append("state", state=fields["state"], needs_attention=fields.get("needs_attention"))
 
     def _test(self, state: RunState, name: str) -> TestReport:
         return run_tests(
@@ -245,13 +254,16 @@ class RunEngine:
         if state["phase"] == "red":
             problems = verify_red(changed, report, globs, state.get("base_passed"), state.get("base_skipped"))
             if not problems:
+                tree = self.worktrees.snapshot(worktree)
+                # An unreferenced tree can be garbage-collected while the run sits paused.
+                self.worktrees.pin_ref(f"refs/phil/{self.deps.run_id}/red", tree)
                 return {
                     "phase": "green",
                     "attempts": 0,
                     "last_report": report.model_dump(),
                     "last_problems": [],
                     "red_snapshot": snapshot_tests(worktree, changed, globs),
-                    "red_tree": self.worktrees.snapshot(worktree),
+                    "red_tree": tree,
                     "verdict": "red_ok",
                 }
         else:
@@ -280,12 +292,13 @@ class RunEngine:
                 "problems": problems,
                 "options": ["retry", "skip", "abort"],
                 "summary": f"{task.id} failed {attempts} attempts in the {state['phase']} phase",
+                "log": (report or {}).get("log_path") or None,
             }
         return update
 
     def escalate(self, state: RunState) -> dict:
         escalation = state["escalation"]
-        self._update_run(state="escalated", current_node="escalate", needs_attention=escalation["summary"])
+        self._update_run(current_node="escalate")
         payload = escalation
         while True:
             decision = interrupt(payload)
@@ -400,6 +413,7 @@ class RunEngine:
                 notes.append(Issue(severity="major", note=f"tester tests not committed: {self._first_stderr_line(exc)}"))
         after = self._test(state, artifact_name(f"{node}-after", None, seq))
         notes += [Issue(severity="minor", note=f"tester command not approved: {cmd}") for cmd in log.denied]
+        notes += [Issue(severity="minor", note=f"tester command refused: {cmd}") for cmd in log.refused]
         blocking = [issue for issue in issues if issue.severity in ("blocker", "major")]
         minor = [issue for issue in issues if issue.severity == "minor"]
         plan = issues_to_tasks(plan, blocking, "tester") if blocking else plan
