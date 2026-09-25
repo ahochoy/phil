@@ -1,4 +1,4 @@
-from phil.config import PhilConfig
+from phil.config import RUN_ROLES, PhilConfig
 from phil.contracts import Plan
 from phil.workspace.shell import ShellPolicy
 
@@ -35,3 +35,15 @@ def git_policy_note(config: PhilConfig) -> str | None:
     if config.git.sign_commits is not False or config.git.run_hooks:
         return GIT_POLICY_NOTE
     return None
+
+
+def launch_problems(plan: Plan, config: PhilConfig) -> list[str]:
+    """Why a run of `plan` can't start under `config` (empty when it can). Callers escape before printing."""
+    problems = []
+    missing = config.missing_models(RUN_ROLES)
+    if missing:
+        problems.append(f"phil.toml sets no model for: {', '.join(missing)}. Add them under [models]")
+    problem = test_cmd_problem(plan, config)
+    if problem:
+        problems.append(problem)
+    return problems

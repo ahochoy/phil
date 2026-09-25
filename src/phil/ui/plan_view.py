@@ -6,6 +6,7 @@ from phil.contracts import Goal
 
 MAX_CRITERIA = 3
 MAX_NOTES = 5
+MAX_QUESTIONS = 3
 MAX_LINE = 160
 
 
@@ -14,12 +15,19 @@ def _clip(text: str) -> str:
 
 
 def render_goal(console: Console, goal: Goal) -> None:
-    console.print(f"[phil.brand]Goal:[/] {escape(goal.objective)}")
+    console.print(f"[phil.brand]Goal:[/] {escape(_clip(goal.objective))}")
     for label, items in (("Constraints", goal.constraints), ("Not doing", goal.non_goals)):
         if items:
             console.print(f"[phil.muted]{label}:[/]")
             for item in items:
                 console.print(f"  • {escape(_clip(item))}")
+    if goal.open_questions:
+        console.print("[phil.muted]Open questions:[/]")
+        for question in goal.open_questions[:MAX_QUESTIONS]:
+            console.print(f"  ? {escape(_clip(question))}")
+        extra = len(goal.open_questions) - MAX_QUESTIONS
+        if extra > 0:
+            console.print(f"  [phil.muted](+{extra} more)[/]")
 
 
 def render_plan(
@@ -45,7 +53,7 @@ def render_plan(
     if extra > 0:
         console.print(f"  [phil.muted](+{extra} more)[/]")
     if test_cmd:
-        console.print(f"Tests: {escape(_clip(test_cmd))}")
+        console.print(f"Tests: {escape(test_cmd)}")  # shown in full: it's what the user approves
     else:
         console.print("[phil.warn]Tests: none — set test_cmd in the plan or phil.toml[/]")
     if test_cmd_note:

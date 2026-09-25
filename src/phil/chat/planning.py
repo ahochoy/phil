@@ -45,43 +45,44 @@ class PlanDraft:
 
 
 class Planner:
-    def __init__(self, ctx: AgentContext, repo_root: Path, overview: str) -> None:
+    """Architect → critic cycles. The architect reads `tree`, a read-only snapshot of the base commit."""
+
+    def __init__(self, ctx: AgentContext, overview: str) -> None:
         self.ctx = ctx
-        self.repo_root = repo_root
         self.overview = overview
         self.version = 0
         self._calls = 0
 
-    def _architect(self, goal: Goal, previous: Plan | None, critique: PlanCritique | None) -> Plan:
+    def _architect(self, goal: Goal, previous: Plan | None, critique: PlanCritique | None, tree: Path) -> Plan:
         self._calls += 1
         contract = ArchitectInput(goal=goal, repo_overview=self.overview, previous_plan=previous, critique=critique)
         packet = build_packet("architect", contract, budget_tokens=_budget(self.ctx, "architect"))
-        ctx = replace(self.ctx, workdir=self.repo_root)
+        ctx = replace(self.ctx, workdir=tree)
         return invoke_agent(get_spec("architect"), packet, ctx, node="architect", call=self._calls)
 
     def _critic(self, goal: Goal, plan: Plan) -> PlanCritique:
         packet = build_packet("critic", CriticInput(goal=goal, plan=plan), budget_tokens=_budget(self.ctx, "critic"))
         return invoke_agent(get_spec("critic"), packet, self.ctx, node="critic", call=self._calls)
 
-    def _cycle(self, goal: Goal, previous: Plan | None, critique: PlanCritique | None) -> PlanDraft:
-        plan = self._architect(goal, previous, critique)
+    def _cycle(self, goal: Goal, previous: Plan | None, critique: PlanCritique | None, tree: Path) -> PlanDraft:
+        plan = self._architect(goal, previous, critique, tree)
         review = self._critic(goal, plan)
         for _ in range(MAX_CRITIC_REVISIONS):
             if review.verdict != "revise":
                 break
-            plan = self._architect(goal, plan, review)
+            plan = self._architect(goal, plan, review, tree)
             review = self._critic(goal, plan)
         self.version += 1
         return PlanDraft(_with_notes(plan, review), review, self.version)
 
-    def draft(self, goal: Goal) -> PlanDraft:
-        return self._cycle(goal, None, None)
+    def draft(self, goal: Goal, tree: Path) -> PlanDraft:
+        return self._cycle(goal, None, None, tree)
 
-    def revise(self, goal: Goal, draft: PlanDraft, feedback: str) -> PlanDraft:
+    def revise(self, goal: Goal, draft: PlanDraft, feedback: str, tree: Path) -> PlanDraft:
         request = PlanCritique(
             verdict="revise",
             issues=[Issue(severity="major", note=f"User feedback: {feedback}")],
             notes=[],
             self_check=_empty_check(),
         )
-        return self._cycle(goal, draft.plan, request)
+        return self._cycle(goal, draft.plan, request, tree)

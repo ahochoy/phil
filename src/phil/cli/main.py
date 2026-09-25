@@ -13,8 +13,8 @@ from pydantic import ValidationError
 from rich.markup import escape
 
 from phil import __version__
-from phil.chat.approval import git_policy_note
-from phil.config import CHAT_ROLES, RUN_ROLES, ConfigError, load_config
+from phil.chat.approval import git_policy_note, launch_problems
+from phil.config import CHAT_ROLES, ConfigError, load_config
 from phil.contracts import Plan
 from phil.contracts.schema import export_schemas
 from phil.git import GitError, git
@@ -52,7 +52,7 @@ def root(
     ),
     repo: Path | None = typer.Option(None, "--repo", help="Target repository (default: current directory)."),
     base: str | None = typer.Option(
-        None, "--base", help="Start runs from this ref instead of HEAD (chat)."
+        None, "--base", help="Chat only: start the chat's runs from this ref instead of HEAD."
     ),
 ) -> None:
     ctx.obj = {"repo": repo, "base": base}
@@ -119,7 +119,19 @@ def _chat(ctx: typer.Context) -> None:
             return None
 
     io = ChatIO(ask=ask, spawn=lambda root, run_id, mode: spawn_worker(root, run_id, mode))
-    ChatController(info, config, conn, console, io, factory=_factory_from_env(), base_sha=base_sha).run()
+    try:
+        factory = _factory_from_env()
+    except Exception as exc:
+        console.print(
+            f"[phil.error]cannot load PHIL_AGENT_FACTORY: {escape(type(exc).__name__)}: {escape(str(exc))}[/]"
+        )
+        raise typer.Exit(1) from exc
+    try:
+        controller = ChatController(info, config, conn, console, io, factory=factory, base_sha=base_sha)
+    except GitError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    controller.run()
 
 
 @app.command()
@@ -178,15 +190,10 @@ def run_plan(
     except ConfigError as exc:
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
-    if not (plan.test_cmd or config.project.test_cmd):
-        console.print(f"[phil.error]plan has no test_cmd and phil.toml sets no {escape('[project]')} test_cmd[/]")
-        raise typer.Exit(1)
-    missing = config.missing_models(RUN_ROLES)
-    if missing:
-        console.print(
-            f"[phil.error]phil.toml sets no model for: {escape(', '.join(missing))}. "
-            f'Add them under {escape("[models]")}, e.g. implementer = "openrouter:openai/gpt-6-sol".[/]'
-        )
+    problems = launch_problems(plan, config)
+    if problems:
+        for problem in problems:
+            console.print(f"[phil.error]{escape(problem)}.[/]")
         raise typer.Exit(1)
     if base is not None:
         try:

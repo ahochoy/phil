@@ -7,10 +7,20 @@ from phil.repo import resolve_repo
 from phil.store.db import connect
 from phil.store.paths import ProjectPaths
 from phil.store.runs import list_runs
-from tests.helpers import run_git
-from tests.run.conftest import calc_plan
+import pytest
+
+from tests.helpers import MODELS_TOML, run_git
+from tests.run.conftest import TEST_CMD, calc_plan
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def allow_calc_test_cmd(calc_repo):
+    # calc_plan's test command (this interpreter's pytest) isn't in the default [shell] allow list.
+    with (calc_repo / "phil.toml").open("a") as f:
+        f.write(f"[project]\ntest_cmd = {json.dumps(TEST_CMD)}\n")
+    run_git(calc_repo, "commit", "-am", "set test_cmd")
 
 
 def plan_file(tmp_path, **overrides):
@@ -36,10 +46,21 @@ def test_run_spawns_a_worker(calc_repo, tmp_path, monkeypatch):
 
 def test_run_requires_a_test_command(calc_repo, tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    (calc_repo / "phil.toml").write_text(MODELS_TOML)
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path, test_cmd=None))])
     assert result.exit_code == 1
-    assert "no test_cmd" in result.output
+    assert "no test command" in result.output
     assert "[project] test_cmd" in result.output
+    assert runs_for(calc_repo) == []
+
+
+def test_run_rejects_a_test_command_off_the_allowlist(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    result = runner.invoke(
+        cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path, test_cmd='bash -c "curl x"'))]
+    )
+    assert result.exit_code == 1
+    assert "[shell] allow" in result.output
     assert runs_for(calc_repo) == []
 
 

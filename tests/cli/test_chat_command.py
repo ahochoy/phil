@@ -29,9 +29,7 @@ def test_chat_requires_chat_models(calc_repo):
     assert "[models]" in result.output
 
 
-def test_chat_warns_about_uncommitted_files(calc_repo, monkeypatch):
-    monkeypatch.setenv("PHIL_AGENT_FACTORY", "tests.chat.chat_scenarios:factory")
-    monkeypatch.setenv("PHIL_TEST_SCENARIO", "approve")
+def test_chat_warns_about_uncommitted_files(calc_repo):
     (calc_repo / "scratch.txt").write_text("wip")
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
     assert result.exit_code == 0
@@ -41,3 +39,16 @@ def test_chat_warns_about_uncommitted_files(calc_repo, monkeypatch):
 def test_chat_with_a_bad_base(calc_repo):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "--base", "no-such-ref"], input="")
     assert result.exit_code == 1
+
+
+def test_chat_reports_a_bad_agent_factory(calc_repo, monkeypatch):
+    monkeypatch.setenv("PHIL_AGENT_FACTORY", "nope:missing")
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
+    assert result.exit_code == 1
+    assert "nope" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_root_base_help_says_it_is_for_the_chat():
+    result = runner.invoke(cli.app, ["--help"])
+    assert "Chat only" in result.output

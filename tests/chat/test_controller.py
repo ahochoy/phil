@@ -1,3 +1,5 @@
+import json
+
 from phil.agents.fake import ScriptedAgentFactory
 from phil.chat.controller import ChatController, ChatIO
 from phil.config import PhilConfig
@@ -8,7 +10,7 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import list_runs
 from phil.ui.theme import make_console
 from tests.chat.conftest import critique, goal, plan
-from tests.helpers import TEST_MODELS, run_git
+from tests.helpers import MODELS_TOML, TEST_MODELS, run_git
 
 
 def run_chat(repo, answers, scripts, config=None):
@@ -58,15 +60,61 @@ def test_edit_revises_the_plan(calc_repo):
     assert runs[0].tasks_total == 2
 
 
+CHAT_ONLY_TOML = "[models]\n" + "".join(f'{r} = "test:model"\n' for r in ("orchestrator", "architect", "critic"))
+
+
 def test_missing_run_models_block_approval(calc_repo):
-    config = PhilConfig(models={r: m for r, m in TEST_MODELS.items() if r in ("orchestrator", "architect", "critic")})
+    (calc_repo / "phil.toml").write_text(CHAT_ONLY_TOML)
     text, spawned, runs, _ = run_chat(
         calc_repo, ["add subtract", "y", "n"],
-        {"intake": [goal()], "architect": [plan()], "critic": [critique()]}, config=config,
+        {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
     )
     assert "implementer, tester, reviewer" in text
     assert "[models]" in text
     assert spawned == [] and runs == []
+
+
+def test_approval_rereads_phil_toml(calc_repo):
+    (calc_repo / "phil.toml").write_text(CHAT_ONLY_TOML)
+    info = resolve_repo(calc_repo)
+    conn = connect(ProjectPaths(info.slug).db_path)
+    console = make_console(record=True, width=120)
+    queue = ["add subtract", "y", "y"]
+    seen = {"approval": 0}
+
+    def ask(prompt):
+        if prompt == "Approve? [y / edit / n] › ":
+            seen["approval"] += 1
+            if seen["approval"] == 2:
+                (calc_repo / "phil.toml").write_text(MODELS_TOML)
+        return queue.pop(0) if queue else None
+
+    spawned = []
+    io = ChatIO(ask=ask, spawn=lambda root, run_id, mode: spawned.append(run_id))
+    factory = ScriptedAgentFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
+    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory).run()
+    text = console.export_text()
+    assert "implementer, tester, reviewer" in text  # first y refused
+    runs = list_runs(conn)
+    assert [r.run_id for r in runs] == spawned and len(runs) == 1
+
+
+def test_approval_reports_a_broken_phil_toml(calc_repo):
+    info = resolve_repo(calc_repo)
+    conn = connect(ProjectPaths(info.slug).db_path)
+    console = make_console(record=True, width=120)
+    queue = ["add subtract", "y", "n"]
+
+    def ask(prompt):
+        if prompt == "Approve? [y / edit / n] › ":
+            (calc_repo / "phil.toml").write_text("[models\n")
+        return queue.pop(0) if queue else None
+
+    io = ChatIO(ask=ask, spawn=lambda *a: None)
+    factory = ScriptedAgentFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
+    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory).run()
+    assert "phil.toml" in console.export_text()
+    assert list_runs(conn) == []
 
 
 def test_bad_test_command_blocks_approval(calc_repo):
@@ -208,12 +256,101 @@ def test_base_sha_stays_fixed_when_explicit(calc_repo):
 
 def test_run_plan_json_uses_effective_test_cmd(calc_repo):
     info = resolve_repo(calc_repo)
-    config = PhilConfig.model_validate({"models": TEST_MODELS, "project": {"test_cmd": "uv run pytest -q"}})
+    (calc_repo / "phil.toml").write_text(MODELS_TOML + '[project]\ntest_cmd = "uv run pytest -q"\n')
     text, spawned, runs, _ = run_chat(
         calc_repo,
         ["add subtract", "y"],
         {"intake": [goal()], "architect": [plan(test_cmd=None)], "critic": [critique()]},
-        config=config,
     )
     stored = ArtifactStore(ProjectPaths(info.slug).run_dir(runs[0].run_id)).read_plan()
     assert stored.test_cmd == "uv run pytest -q"
+
+
+def session_dir(repo):
+    [directory] = (ProjectPaths(resolve_repo(repo).slug).project_dir / "chats").iterdir()
+    return directory
+
+
+def transcript(repo):
+    return [json.loads(line) for line in (session_dir(repo) / "transcript.jsonl").read_text().splitlines()]
+
+
+def test_architect_reads_a_snapshot_of_the_base_commit(calc_repo):
+    (calc_repo / "secret.env").write_text("TOKEN=x\n")
+    seen = []
+
+    def architect(turn):
+        seen.append(turn.workdir)
+        assert (turn.workdir / "calc.py").exists()
+        assert not (turn.workdir / "secret.env").exists()
+        return plan()
+
+    run_chat(calc_repo, ["add subtract", "n"], {"intake": [goal()], "architect": [architect], "critic": [critique()]})
+    [workdir] = seen
+    assert workdir.is_relative_to(session_dir(calc_repo))
+    assert workdir != calc_repo
+
+
+def test_snapshot_is_removed_when_the_chat_ends(calc_repo):
+    for ending in (["add subtract", "n"], ["add subtract", "n", "/quit"]):
+        run_chat(calc_repo, ending, {"intake": [goal()], "architect": [plan()], "critic": [critique()]})
+    chats = ProjectPaths(resolve_repo(calc_repo).slug).project_dir / "chats"
+    dirs = list(chats.iterdir())
+    assert len(dirs) == 2
+    assert all(not (d / "tree").exists() for d in dirs)
+
+
+def test_snapshot_is_removed_after_eof_mid_conversation(calc_repo):
+    run_chat(calc_repo, ["add subtract"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]})
+    assert not (session_dir(calc_repo) / "tree").exists()
+
+
+def test_transcript_records_raw_text_before_stripping(calc_repo):
+    text, spawned, runs, _ = run_chat(
+        calc_repo, ["/runs", "  add subtract \n", " edit ", "  ", " yes "],
+        {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
+    )
+    users = [(e["stage"], e["text"]) for e in transcript(calc_repo) if e["kind"] == "user"]
+    assert users == [
+        ("command", "/runs"),
+        ("goal", "  add subtract \n"),
+        ("approval", " edit "),
+        ("edit", "  "),
+        ("approval", " yes "),
+    ]
+    assert len(runs) == 1
+
+
+def test_approved_is_noted_after_the_run_is_prepared(calc_repo):
+    text, spawned, runs, _ = run_chat(
+        calc_repo, ["add subtract", "y"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}
+    )
+    kinds = [e["kind"] for e in transcript(calc_repo)]
+    assert kinds.index("approved") < kinds.index("run_started")
+    [approved] = [e for e in transcript(calc_repo) if e["kind"] == "approved"]
+    assert approved["run_id"] == runs[0].run_id and approved["answer"] == "y"
+
+
+def test_prepare_failure_is_noted_and_reported(calc_repo, monkeypatch):
+    import phil.chat.controller as controller_mod
+
+    def boom(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(controller_mod, "prepare_run", boom)
+    text, spawned, runs, _ = run_chat(
+        calc_repo, ["add subtract", "y", "/help"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}
+    )
+    assert "disk full" in text
+    assert "Commands: /runs" in text
+    kinds = [e["kind"] for e in transcript(calc_repo)]
+    assert "start_failed" in kinds and "approved" not in kinds
+    assert spawned == [] and runs == []
+
+
+def test_start_message_names_the_base_commit(calc_repo):
+    text, spawned, runs, _ = run_chat(
+        calc_repo, ["add subtract", "y"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}
+    )
+    sha7 = runs[0].base_sha[:7]
+    assert f"Run {runs[0].run_id} started in the background from {sha7}." in text

@@ -1,4 +1,10 @@
-from phil.chat.approval import effective_test_cmd, git_policy_note, test_cmd_differs, test_cmd_problem
+from phil.chat.approval import (
+    effective_test_cmd,
+    git_policy_note,
+    launch_problems,
+    test_cmd_differs,
+    test_cmd_problem,
+)
 from phil.config import PhilConfig
 from tests.chat.conftest import plan
 from tests.helpers import TEST_MODELS
@@ -39,3 +45,12 @@ def test_git_policy_note():
     assert git_policy_note(config(git={"sign_commits": False})) is None
     assert "signing or hooks" in git_policy_note(config())
     assert "signing or hooks" in git_policy_note(config(git={"sign_commits": False, "run_hooks": True}))
+
+
+def test_launch_problems():
+    assert launch_problems(plan(), config()) == []
+    missing_models = PhilConfig.model_validate({"models": {"orchestrator": "test:model"}})
+    problems = launch_problems(plan(test_cmd='bash -c "curl x"'), missing_models)
+    assert len(problems) == 2
+    assert "implementer, tester, reviewer" in problems[0] and "[models]" in problems[0]
+    assert "[shell] allow" in problems[1]

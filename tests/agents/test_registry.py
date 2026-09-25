@@ -2,7 +2,7 @@ import pytest
 
 from phil.agents.registry import SPECS, get_spec
 from phil.agents.spec import load_prompt
-from phil.config import CHAT_ROLES, ROLES, RUN_ROLES
+from phil.config import CHAT_ROLES, RUN_ROLES
 from phil.contracts import Plan, PlanCritique, Review, TaskResult, TesterReport
 
 
