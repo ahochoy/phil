@@ -37,3 +37,15 @@ def test_render_plan_without_a_test_command():
     text = text_of(render_plan, draft, test_cmd=None, test_cmd_note="no test command", git_note=None)
     assert "Tests: none" in text
     assert "no test command" in text
+
+
+def test_render_plan_clips_the_test_cmd_and_its_note():
+    draft = PlanDraft(plan(test_cmd=None), critique("ok"), 1)
+    long_cmd = "x" * 200
+    long_note = "y" * 200
+    console = make_console(record=True, width=1000)
+    render_plan(console, draft, test_cmd=long_cmd, test_cmd_note=long_note, git_note=None)
+    text = console.export_text()
+    assert long_cmd not in text
+    assert long_note not in text
+    assert "…" in text

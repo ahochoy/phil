@@ -45,10 +45,10 @@ def render_plan(
     if extra > 0:
         console.print(f"  [phil.muted](+{extra} more)[/]")
     if test_cmd:
-        console.print(f"Tests: {escape(test_cmd)}")
+        console.print(f"Tests: {escape(_clip(test_cmd))}")
     else:
         console.print("[phil.warn]Tests: none — set test_cmd in the plan or phil.toml[/]")
     if test_cmd_note:
-        console.print(f"[phil.warn]⚠ {escape(test_cmd_note)}[/]")
+        console.print(f"[phil.warn]⚠ {escape(_clip(test_cmd_note))}[/]")
     if git_note:
         console.print(f"[phil.muted]{escape(git_note)}[/]")
