@@ -13,9 +13,14 @@ def test_cmd_problem(plan: Plan, config: PhilConfig) -> str | None:
     cmd = effective_test_cmd(plan, config)
     if not cmd:
         return "the plan has no test command and phil.toml sets no [project] test_cmd"
-    if ShellPolicy([]).denial_reason(cmd) == "forbidden":
+    if cmd == config.project.test_cmd:
+        return None
+    reason = ShellPolicy(config.shell.allow).denial_reason(cmd)
+    if reason is None:
+        return None
+    if reason == "forbidden":
         return f"test command {cmd!r} uses shell operators or a blocked command; Phil runs it directly"
-    return None
+    return f"test command {cmd!r} is not in [shell] allow; add it there or set [project] test_cmd in phil.toml"
 
 
 def test_cmd_differs(plan: Plan, config: PhilConfig) -> bool:
