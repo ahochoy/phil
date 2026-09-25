@@ -13,7 +13,7 @@ from phil.chat.planning import Planner, intake
 from phil.chat.session import ChatSession
 from phil.config import RUN_ROLES, PhilConfig
 from phil.contracts import Goal
-from phil.repo import RepoInfo
+from phil.repo import RepoInfo, resolve_repo
 from phil.run.launch import prepare_run
 from phil.store.paths import ProjectPaths
 from phil.ui.plan_view import render_goal, render_plan
@@ -44,7 +44,9 @@ class ChatController:
         sleep: Callable[[float], None] | None = None,
     ) -> None:
         self.info, self.config, self.conn, self.console, self.io = info, config, conn, console, io
-        self.base_sha = base_sha or info.head_sha
+        # None means "resolve HEAD when a run is actually started" (_start), not at chat start,
+        # so a long-running chat starts its run from the commit current at approval time.
+        self._explicit_base_sha = base_sha
         self.session = session or ChatSession.create(ProjectPaths(info.slug))
         extra = {"sleep": sleep} if sleep is not None else {}
         self.ctx = AgentContext(
@@ -56,26 +58,38 @@ class ChatController:
 
     def run(self) -> None:
         while True:
-            text = self.io.ask("you › ")
+            try:
+                text = self.io.ask("you › ")
+            except KeyboardInterrupt:
+                # Ctrl-C at the idle prompt: stay in the chat rather than exiting it.
+                self.console.print("[phil.muted]Cancelled.[/]")
+                continue
             if text is None:
                 return
             text = text.strip()
             if not text:
                 continue
-            if text.startswith("/"):
-                if not self._command(text):
-                    return
-                continue
             try:
-                self._goal(text)
+                if text.startswith("/"):
+                    if not self._command(text):
+                        return
+                else:
+                    self._goal(text)
             except KeyboardInterrupt:
                 self.console.print("[phil.muted]Cancelled.[/]")
             except _Ended:
                 return
-            except Exception as exc:  # agent or provider failure: report and keep the chat alive
-                self.session.note("error", error=f"{type(exc).__name__}: {exc}")
+            except Exception as exc:  # agent, provider, or command failure: report and keep the chat alive
+                self._safe_note("error", error=f"{type(exc).__name__}: {exc}")
                 self.console.print(f"[phil.error]Phil couldn't finish that: {escape(str(exc))}[/]")
                 self.console.print(f"[phil.muted]Details: {escape(str(self.session.dir))}[/]")
+
+    def _safe_note(self, kind: str, **data: object) -> None:
+        """Record a transcript note without letting a logging failure crash the REPL."""
+        try:
+            self.session.note(kind, **data)
+        except Exception:
+            pass
 
     def _command(self, text: str) -> bool:
         command = text.split()[0]
@@ -112,10 +126,12 @@ class ChatController:
             for n, question in enumerate(goal.open_questions, 1):
                 self.console.print(f"[phil.agent]{n}. {escape(question)}[/]")
             answer = self._ask("answers (or 'go' to plan anyway) › ")
+            self.session.user(answer, stage="answers")
             if answer.lower() == "go":
                 break
-            self.session.user(answer, stage="answers")
             goal = self._intake(text, previous=goal, answers=[answer])
+        if goal.open_questions:
+            self.console.print(f"[phil.muted]Planning with open questions: {len(goal.open_questions)}[/]")
         render_goal(self.console, goal)
         self.console.print("[phil.muted]Planning…[/]")
         draft = self.planner.draft(goal)
@@ -174,8 +190,18 @@ class ChatController:
     def _start(self, draft, answer: str) -> None:
         plan = draft.plan.model_copy(update={"test_cmd": effective_test_cmd(draft.plan, self.config)})
         self.session.note("approved", plan_version=draft.version, answer=answer)
-        record = prepare_run(self.info, plan, self.base_sha)
-        self.io.spawn(self.info.root, record.run_id, "start")
+        base_sha = self._explicit_base_sha or resolve_repo(self.info.root).head_sha
+        record = prepare_run(self.info, plan, base_sha)
+        try:
+            self.io.spawn(self.info.root, record.run_id, "start")
+        except (Exception, KeyboardInterrupt) as exc:
+            self._safe_note("spawn_failed", run_id=record.run_id, error=f"{type(exc).__name__}: {exc}")
+            run_id = escape(record.run_id)
+            self.console.print(
+                f"[phil.error]Run {run_id} was created but its worker didn't start: {escape(str(exc))}. "
+                f"Start it with `phil resume {run_id}`.[/]"
+            )
+            return
         self.session.note("run_started", run_id=record.run_id)
         run_id = escape(record.run_id)
         self.console.print(
