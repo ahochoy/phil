@@ -13,6 +13,15 @@ def _marker(dest: Path, sha: str) -> Path:
     return dest / f".phil-snapshot-{sha}"
 
 
+def _safe_members(member: tarfile.TarInfo, dest_path: str) -> tarfile.TarInfo | None:
+    # Skip entries the "data" filter rejects (absolute links, links leaving the snapshot) instead of
+    # aborting the export, so a repo with such a committed symlink can still be planned against.
+    try:
+        return tarfile.data_filter(member, dest_path)
+    except tarfile.FilterError:
+        return None
+
+
 def export_tree(repo_root: Path, sha: str, dest: Path) -> Path:
     """Export the tracked files of commit `sha` into `dest` (untracked and ignored files never appear).
 
@@ -31,6 +40,6 @@ def export_tree(repo_root: Path, sha: str, dest: Path) -> Path:
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
     with tarfile.open(fileobj=io.BytesIO(proc.stdout), mode="r:") as archive:
-        archive.extractall(dest, filter="data")
+        archive.extractall(dest, filter=_safe_members)
     _marker(dest, sha).write_text("")
     return dest

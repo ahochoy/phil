@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from phil.cli import main as cli
@@ -7,8 +8,6 @@ from phil.repo import resolve_repo
 from phil.store.db import connect
 from phil.store.paths import ProjectPaths
 from phil.store.runs import list_runs
-import pytest
-
 from tests.helpers import MODELS_TOML, run_git
 from tests.run.conftest import TEST_CMD, calc_plan
 
