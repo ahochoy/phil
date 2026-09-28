@@ -154,3 +154,14 @@ def test_worker_command_kills_process_groups_again_after_a_stop(calc_repo, monke
     assert result.exit_code == 0, result.output
     assert "stopped" in result.output
     assert kills == [1]
+
+
+def test_run_requires_the_provider_api_key(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    toml = (calc_repo / "phil.toml").read_text().replace('"test:model"', '"openrouter:openai/gpt-6-sol"')
+    (calc_repo / "phil.toml").write_text(toml)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path))])
+    assert result.exit_code == 1
+    assert "OPENROUTER_API_KEY is not set" in result.output
+    assert runs_for(calc_repo) == []

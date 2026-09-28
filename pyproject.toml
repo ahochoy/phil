@@ -5,15 +5,17 @@ description = "Contract-driven CLI coding agent"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "deepagents>=0.5.6",
-    "langchain>=1.2.17",
-    "langchain-openrouter>=0.2.3",
-    "langgraph>=1.1.10",
-    "langgraph-checkpoint>=4.0.3",
+    "deepagents>=0.7.19",
+    "langchain>=1.4.3",
+    "langchain-openrouter>=0.2.9",
+    "langgraph>=1.2.12",
+    "langgraph-checkpoint>=4.2.0",
     "rich>=15.0.0",
-    "typer",
-    "pydantic",
-    "langgraph-checkpoint-sqlite>=3.0.3",
+    "typer>=0.27.2",
+    # 2.13+ is Python 3.14-clean (2.12 warns on import); the newest openrouter SDK still caps
+    # pydantic <2.13, so this holds openrouter at 0.10.x until it lifts the cap.
+    "pydantic>=2.13",
+    "langgraph-checkpoint-sqlite>=3.1.1",
 ]
 
 [project.scripts]

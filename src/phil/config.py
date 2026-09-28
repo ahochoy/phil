@@ -1,10 +1,20 @@
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 ROLES = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer")
+# API-key environment variable each model provider reads. Providers not listed (a local server,
+# a custom endpoint) are not checked.
+PROVIDER_KEYS = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "google_genai": "GOOGLE_API_KEY",
+}
+
 # Roles the chat calls; `phil` checks these have models before the conversation starts.
 CHAT_ROLES = ("orchestrator", "architect", "critic")
 # Roles the run graph calls; `phil run` checks these have models before starting.
@@ -106,6 +116,16 @@ class PhilConfig(_Section):
 
     def missing_models(self, roles: tuple[str, ...]) -> list[str]:
         return [role for role in roles if role not in self.models]
+
+    def missing_keys(self, roles: tuple[str, ...], environ: Mapping[str, str]) -> list[str]:
+        """API-key variables that the models set for `roles` need but `environ` lacks, in role order."""
+        missing: list[str] = []
+        for role in roles:
+            provider = self.models.get(role, "").partition(":")[0]
+            key = PROVIDER_KEYS.get(provider)
+            if key and not environ.get(key) and key not in missing:
+                missing.append(key)
+        return missing
 
     def budget_for(self, role: str) -> RoleBudget:
         default = RoleBudget(max_input_tokens=DEFAULT_BUDGETS.get(role, 12_000))

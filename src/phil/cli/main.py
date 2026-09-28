@@ -14,7 +14,7 @@ from rich.markup import escape
 
 from phil import __version__
 from phil.chat.approval import git_policy_note, launch_problems
-from phil.config import CHAT_ROLES, ConfigError, load_config
+from phil.config import CHAT_ROLES, RUN_ROLES, ConfigError, PhilConfig, load_config
 from phil.contracts import Plan
 from phil.contracts.schema import export_schemas
 from phil.git import GitError, git
@@ -70,6 +70,17 @@ def _open_project(ctx: typer.Context) -> tuple[RepoInfo, sqlite3.Connection]:
     return info, connect(ProjectPaths(info.slug).db_path)
 
 
+def _require_api_keys(config: PhilConfig, roles: tuple[str, ...]) -> None:
+    missing = config.missing_keys(roles, os.environ)
+    if missing:
+        for key in missing:
+            console.print(
+                f"[phil.error]{escape(key)} is not set. Export it in this shell before running phil "
+                "(the models in phil.toml need it).[/]"
+            )
+        raise typer.Exit(1)
+
+
 def _chat(ctx: typer.Context) -> None:
     from phil.chat.controller import HELP, ChatController, ChatIO
 
@@ -86,6 +97,8 @@ def _chat(ctx: typer.Context) -> None:
             f'Add them under {escape("[models]")}, e.g. orchestrator = "openrouter:openai/gpt-6-luna".[/]'
         )
         raise typer.Exit(1)
+    # The chat starts runs too, and their worker inherits this environment.
+    _require_api_keys(config, CHAT_ROLES + RUN_ROLES)
     base = ctx.obj.get("base")
     base_sha: str | None
     if base is not None:
@@ -195,6 +208,7 @@ def run_plan(
         for problem in problems:
             console.print(f"[phil.error]{escape(problem)}.[/]")
         raise typer.Exit(1)
+    _require_api_keys(config, RUN_ROLES)
     if base is not None:
         try:
             base_sha = git(info.root, "rev-parse", f"{base}^{{commit}}").strip()

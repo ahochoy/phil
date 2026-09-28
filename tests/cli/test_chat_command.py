@@ -1,6 +1,7 @@
 from typer.testing import CliRunner
 
 from phil.cli import main as cli
+from phil.config import ROLES
 from phil.repo import resolve_repo
 from phil.store.db import connect
 from phil.store.paths import ProjectPaths
@@ -52,3 +53,13 @@ def test_chat_reports_a_bad_agent_factory(calc_repo, monkeypatch):
 def test_root_base_help_says_it_is_for_the_chat():
     result = runner.invoke(cli.app, ["--help"])
     assert "Chat only" in result.output
+
+
+def test_chat_requires_the_provider_api_key(calc_repo, monkeypatch):
+    (calc_repo / "phil.toml").write_text(
+        "[models]\n" + "".join(f'{r} = "openrouter:openai/gpt-6-luna"\n' for r in ROLES)
+    )
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
+    assert result.exit_code == 1
+    assert "OPENROUTER_API_KEY is not set" in result.output
