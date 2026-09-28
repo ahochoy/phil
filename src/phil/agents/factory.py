@@ -16,6 +16,15 @@ def filesystem_permissions(spec: AgentSpec) -> list[Any]:
     return rules
 
 
+def _tool_strategy(spec: AgentSpec) -> Any:
+    # Always return the contract through a tool call. LangChain otherwise auto-selects the provider's
+    # native JSON-schema mode for some model names (e.g. gpt-*), which some providers reject; tool
+    # calling is the most widely supported path across providers.
+    from langchain.agents.structured_output import ToolStrategy
+
+    return ToolStrategy(spec.out_contract)
+
+
 def build_agent(spec: AgentSpec, model: str, workdir: Path | None, tools: list[Callable[..., str]]) -> Any:
     if spec.harness == "lean":
         return _build_lean_agent(spec, model, tools)
@@ -27,7 +36,7 @@ def _build_lean_agent(spec: AgentSpec, model: str, tools: list[Callable[..., str
         raise ValueError(f"{spec.name} uses the lean harness, which does not support tools")
     from langchain.agents import create_agent
 
-    return create_agent(model, tools=[], system_prompt=load_prompt(spec), response_format=spec.out_contract)
+    return create_agent(model, tools=[], system_prompt=load_prompt(spec), response_format=_tool_strategy(spec))
 
 
 def _build_deep_agent(spec: AgentSpec, model: str, workdir: Path | None, tools: list[Callable[..., str]]) -> Any:
@@ -41,5 +50,5 @@ def _build_deep_agent(spec: AgentSpec, model: str, workdir: Path | None, tools: 
         system_prompt=load_prompt(spec),
         backend=backend,
         permissions=filesystem_permissions(spec),
-        response_format=spec.out_contract,
+        response_format=_tool_strategy(spec),
     )
