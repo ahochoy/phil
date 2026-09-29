@@ -14,6 +14,22 @@ from phil.store.runs import get_run
 from phil.store.telemetry import UsageLine, format_cost, usage_by_role
 
 _MAX_PER_CATEGORY = 5
+_MAX_DETAIL_LINES = 2000
+
+
+def detail_text(path: Path) -> str:
+    """A detail file as plain text for `phil show RUN N` and the chat's `/more N`: JSON is
+    pretty-printed, and anything past 2000 lines is cut with a note."""
+    text = path.read_text()
+    if path.suffix == ".json":
+        try:
+            text = json.dumps(json.loads(text), indent=2, default=repr)
+        except json.JSONDecodeError:
+            pass
+    lines = text.splitlines()
+    if len(lines) > _MAX_DETAIL_LINES:
+        text = "\n".join(lines[:_MAX_DETAIL_LINES]) + f"\n… ({len(lines) - _MAX_DETAIL_LINES} more lines not shown)"
+    return text
 
 
 def _newest_first(paths: list[Path]) -> list[Path]:

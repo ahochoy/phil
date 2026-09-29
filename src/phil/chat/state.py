@@ -21,6 +21,7 @@ class ToolbarView:
     paused: bool = False
     btw_pending: int = 0
     cancelling: bool = False
+    cost: tuple[float, str] | None = None  # (cost_usd, cost_source): the chat's running cost
 
 
 class ChatState:
@@ -48,6 +49,9 @@ class ChatState:
 
     def set_cancelling(self, cancelling: bool) -> None:
         self._update(cancelling=cancelling)
+
+    def set_cost(self, cost: float, source: str) -> None:
+        self._update(cost=(cost, source))
 
     def add_btw(self, delta: int) -> None:
         with self._lock:

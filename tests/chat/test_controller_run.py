@@ -353,7 +353,7 @@ def test_btw_usage_and_failure_keep_the_stage(calc_repo):
 def test_a_failing_btw_render_keeps_the_approval_stage(calc_repo, monkeypatch):
     import phil.chat.controller as controller_mod
 
-    def boom(console, brief):
+    def boom(console, brief, **kw):
         raise RuntimeError("render broke")
 
     monkeypatch.setattr(controller_mod, "render_brief", boom)
@@ -612,3 +612,113 @@ def test_reopen_during_a_revision_returns_to_approval(calc_repo):
     text, spawned, runs, factory, prompts = reopen(calc_repo, ["y"])
     assert "Plan CALC v1 · 1 task" in text
     assert prompts[0] == "Approve? [y / edit / n] › " and len(runs) == 1
+
+
+# --- 4c: cost, /show, /more, /park ------------------------------------------------------------------
+
+
+def test_chat_cost_reaches_the_toolbar(calc_repo):
+    seen = {}
+    text, spawned, runs, *_ = run_chat(
+        calc_repo,
+        ["add subtract", peek(seen, "cost", lambda c: (c.state.view().cost, c.session.id)), "n"],
+        FULL_SCRIPT,
+    )
+    cost, chat_id = seen["cost"]
+    assert cost == (0.0, "reported")
+    conn = connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path)
+    rows = conn.execute("SELECT DISTINCT layer, chat_id FROM telemetry").fetchall()
+    assert [tuple(row) for row in rows] == [("chat", chat_id)]  # intake, architect, critic all tagged
+    assert conn.execute("SELECT COUNT(*) FROM telemetry").fetchone()[0] == 3
+
+
+def test_run_cost_counts_toward_the_chat(calc_repo):
+    from phil.store.telemetry import TelemetryRow, record
+
+    seen = {}
+
+    def run_spends(controller):
+        paths, run_id, conn = _run(controller)
+        record(conn, TelemetryRow(
+            run_id=run_id, layer="run", node="implement", role="implementer", model="m", attempt=1,
+            packet_tokens=0, input_tokens=10, output_tokens=5, latency_ms=1, cost_usd=0.25,
+            outcome="ok", cost_source="estimated",
+        ))
+        update_run(conn, run_id, state="running", current_node="implement")
+        controller._watcher.poll_once()
+        return WAKE
+
+    run_chat(
+        calc_repo,
+        ["add subtract", "y", run_spends, peek(seen, "cost", lambda c: c.state.view().cost)],
+        FULL_SCRIPT,
+    )
+    assert seen["cost"] == (0.25, "estimated")
+
+
+def test_park_links_the_chat_and_its_run(calc_repo):
+    text, spawned, runs, *_ = run_chat(
+        calc_repo, ["/park", "/park cache the parser", "add subtract", "y", "/park try [bold]memo[/bold]"],
+        FULL_SCRIPT,
+    )
+    assert "Usage: /park <note>" in text
+    assert "Parked P-001." in text and "Parked P-002." in text
+    conn = connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path)
+    rows = conn.execute("SELECT * FROM parked ORDER BY id").fetchall()
+    chat_id = session_dir(calc_repo).name
+    assert [(r["note"], r["run_id"], r["raised_by"], r["why_not_now"]) for r in rows] == [
+        ("cache the parser", None, "user", "parked from chat"),
+        ("try [bold]memo[/bold]", runs[0].run_id, "user", "parked from chat"),
+    ]
+    assert rows[1]["source_label"] == f"chat {chat_id}"
+    assert rows[1]["source_path"] == str(session_dir(calc_repo))
+
+
+def write_summary(text):
+    def step(controller):
+        paths, run_id, conn = _run(controller)
+        (paths.run_dir(run_id) / "summary.md").write_text(text)
+        return WAKE
+
+    return step
+
+
+def test_show_and_more_after_a_run(calc_repo):
+    text, spawned, runs, *_ = run_chat(
+        calc_repo,
+        [
+            "/show", "/more 1",
+            "add subtract", "y",
+            write_summary("# Run summary\n\n## Tasks\n- [x] CALC-001 [done]\n"),
+            to_state("completed", tasks_done=1),
+            "/more 1", "/more 9", "/more x",
+            "/show",
+        ],
+        FULL_SCRIPT,
+    )
+    run_id = runs[0].run_id
+    assert "No run to show yet." in text
+    assert "No detail #1. Use /show to list them." in text
+    assert "1 summary" in text  # the completion notice numbers its refs
+    assert "# Run summary" in text and "- [x] CALC-001 [done]" in text  # /more 1 prints the file as-is
+    assert "No detail #9. Use /show to list them." in text
+    assert "Usage: /more <n>" in text
+    assert f"Run {run_id} · CALC · completed" in text  # /show renders the chat's last run
+    assert text.count("- [x] CALC-001 [done]") == 2  # /more 1 and /show's task list
+
+
+def test_more_expands_btw_details(calc_repo):
+    from phil.contracts import Ref
+
+    calc = str(calc_repo / "calc.py")
+    brief = Brief(headline="add is in calc.py", details=[Ref(label="calc", path=calc)])
+    text, *_ = run_chat(calc_repo, ["/btw where is add?", "/more 1", "/more 2"], {"btw": [brief]})
+    assert "→ 1 calc:" in text
+    assert "def add(a, b):" in text
+    assert "No detail #2. Use /show to list them." in text
+
+
+def test_help_lists_the_new_commands(calc_repo):
+    text, *_ = run_chat(calc_repo, ["/help"], {})
+    text = " ".join(text.split())  # the help line wraps
+    assert "/show" in text and "/more <n>" in text and "/park <note>" in text

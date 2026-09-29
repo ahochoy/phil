@@ -1,6 +1,7 @@
 from rich.cells import cell_len, set_cell_size
 
 from phil.chat.state import ToolbarView
+from phil.store.telemetry import format_cost
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 SEPARATOR = "  │  "
@@ -46,7 +47,9 @@ def render_toolbar(view: ToolbarView, now: float, width: int | None = None) -> s
     if view.btw_pending:
         parts.append((0, f"/btw ×{view.btw_pending}"))
     if not parts:
-        return _fit("Phil · type a goal, or /help", width)
+        parts.append((4, "Phil · type a goal, or /help"))
+    if view.cost is not None:
+        parts.append((-1, format_cost(*view.cost)))  # dropped first on a narrow terminal
     if width is not None:
         limit = width - 1
         while len(parts) > 1 and cell_len(SEPARATOR.join(text for _, text in parts)) > limit:
