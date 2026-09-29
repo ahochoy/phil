@@ -102,7 +102,9 @@ def _due(record: RunRecord, now: datetime, min_interval_s: float) -> bool:
     return (now - checked).total_seconds() >= min_interval_s
 
 
-def _clean_merged(info: RepoInfo, conn: sqlite3.Connection, record: RunRecord, publisher: Publisher) -> PrChange:
+def _clean_merged(
+    info: RepoInfo, conn: sqlite3.Connection, record: RunRecord, publisher: Publisher, head_oid: str | None
+) -> PrChange:
     number = record.pr_number
     assert number is not None
     paths = ProjectPaths(info.slug)
@@ -110,7 +112,7 @@ def _clean_merged(info: RepoInfo, conn: sqlite3.Connection, record: RunRecord, p
     entry = learnings_entry(record=record, run_dir=paths.run_dir(record.run_id), today=today)
     append_learnings(paths, entry, record.run_id)
     try:
-        clean_run(info, conn, record, publisher=publisher)
+        clean_run(info, conn, record, publisher=publisher, expected_remote_oid=head_oid)
     except CleanError as exc:
         current = get_run(conn, record.run_id)
         kind = "warning" if current is not None and current.state == "cleaned" else "cleanup_failed"
@@ -130,10 +132,12 @@ def sweep_prs(
     """Check runs with an open PR; clean up merged ones and record closed ones.
 
     Open PRs are checked at most every `min_interval_s` seconds (unless `force`); merged runs
-    whose cleanup failed earlier are always retried. Runs that are pending/running/escalated or
-    have a live or starting worker are skipped, and an error from `pr_state` skips that run this
-    time. Any error while cleaning one merged run becomes its `cleanup_failed` change and the
-    sweep goes on. Never prints.
+    whose cleanup failed earlier are always retried (the PR is looked up again for its head).
+    Runs that are pending/running/escalated or have a live or starting worker are skipped, and
+    an error from `pr_info` skips that run this time (logged). A merged PR is cleaned up only if
+    its head is the run's branch, and the remote branch is deleted only at the PR's head commit;
+    a run already cleaned by hand is just marked merged. Any error while cleaning one merged run
+    becomes its `cleanup_failed` change and the sweep goes on. Never prints.
     """
     now = now or datetime.now(UTC)
     candidates = [
@@ -153,26 +157,34 @@ def sweep_prs(
     for record in candidates:
         if record.state in UNSETTLED or is_worker_alive(record) or worker_starting(run_events(paths, record.run_id)):
             continue
-        number = record.pr_number
-        assert number is not None
-        if record.pr_state == "open":
-            try:
-                state = publisher.pr_state(number)
-                record = update_run(conn, record.run_id, pr_checked_at=utcnow())
-                if state == "closed":
-                    update_run(conn, record.run_id, pr_state="closed")
-                    changes.append(PrChange(record.run_id, number, "closed"))
-                    continue
-                if state != "merged":
-                    continue
-                record = update_run(conn, record.run_id, pr_state="merged")
-            except PublishError:  # gh failed: try again next sweep
-                continue
-            except Exception:  # a surprise: leave a trace in the log (the chat's phil.log) and move on
-                logger.warning("PR check for %s failed", record.run_id, exc_info=True)
-                continue
+        number, url = record.pr_number, record.pr_url
+        assert number is not None and url is not None
         try:
-            changes.append(_clean_merged(info, conn, record, publisher))
+            pr = publisher.pr_info(url)
+        except PublishError as exc:  # gh failed: try again next sweep
+            logger.info("PR check for %s failed: %s", record.run_id, exc)
+            continue
+        except Exception:  # a surprise: leave a trace in the log (the chat's phil.log) and move on
+            logger.warning("PR check for %s failed", record.run_id, exc_info=True)
+            continue
+        if record.pr_state == "open":
+            record = update_run(conn, record.run_id, pr_checked_at=utcnow())
+            if pr.state == "closed":
+                update_run(conn, record.run_id, pr_state="closed")
+                changes.append(PrChange(record.run_id, number, "closed"))
+                continue
+            if pr.state != "merged":
+                continue
+            record = update_run(conn, record.run_id, pr_state="merged")
+        if record.state == "cleaned":  # cleaned by hand before the merge: nothing left to learn or remove
+            changes.append(PrChange(record.run_id, number, "merged"))
+            continue
+        if pr.head_ref != record.branch:  # never remove a branch this PR doesn't point at
+            detail = f"PR #{number}'s head is {pr.head_ref}, not {record.branch}"
+            changes.append(PrChange(record.run_id, number, "cleanup_failed", detail))
+            continue
+        try:
+            changes.append(_clean_merged(info, conn, record, publisher, pr.head_oid or None))
         except Exception as exc:  # one run's failure must not stop the sweep (the chat runs it unattended)
             changes.append(PrChange(record.run_id, number, "cleanup_failed", f"{type(exc).__name__}: {exc}"))
     return changes

@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -23,39 +24,74 @@ class PullRequest:
     url: str
 
 
+@dataclass(frozen=True)
+class PrInfo:
+    """A pull request's state (`open`/`merged`/`closed`) and the head branch/commit it points at."""
+
+    state: str
+    head_ref: str
+    head_oid: str
+
+
 class Publisher(Protocol):
     def available(self) -> str | None: ...
     def push(self, branch: str) -> None: ...
     def create_pr(self, *, branch: str, base: str, title: str, body: str) -> PullRequest: ...
-    def pr_state(self, number: int) -> str: ...
-    def delete_remote_branch(self, branch: str) -> None: ...
+    def find_pr(self, branch: str) -> PullRequest | None: ...
+    def pr_info(self, url: str) -> PrInfo: ...
+    def delete_remote_branch(self, branch: str, expected_oid: str | None) -> bool: ...
 
 
 Runner = Callable[[list[str], str | None], subprocess.CompletedProcess]
 
 
-class GhPublisher:
-    """GitHub through the `gh` CLI: gh owns authentication, so Phil never sees a token."""
+def _last_line(result: subprocess.CompletedProcess) -> str:
+    detail = (result.stderr or result.stdout or "").strip().splitlines()
+    return detail[-1] if detail else "no output"
 
-    def __init__(self, repo_root: Path, *, runner: Runner | None = None,
+
+def unattended_env() -> dict[str, str]:
+    """The environment for gh and network git: never prompt on the terminal (Phil may be running
+    unattended in the chat), so a missing credential fails fast instead of hanging."""
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GH_PROMPT_DISABLED"] = "1"
+    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    return env
+
+
+class GhPublisher:
+    """GitHub through the `gh` CLI: gh owns authentication, so Phil never sees a token.
+
+    `runner` runs gh and `git_runner` runs the network git commands (push, ls-remote); both
+    default to a subprocess with a timeout and terminal prompts turned off.
+    """
+
+    def __init__(self, repo_root: Path, *, runner: Runner | None = None, git_runner: Runner | None = None,
                  which: Callable[[str], str | None] = shutil.which) -> None:
         self.repo_root, self._which = repo_root, which
         self._runner = runner or self._run
+        self._git_runner = git_runner or self._run
 
     def _run(self, args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
         try:
             return subprocess.run(args, cwd=self.repo_root, input=stdin, capture_output=True, text=True,
-                                  timeout=GH_TIMEOUT_S)
+                                  timeout=GH_TIMEOUT_S, env=unattended_env())
         except subprocess.TimeoutExpired as exc:
             raise PublishError(f"`{' '.join(args[:3])}` timed out after {GH_TIMEOUT_S}s") from exc
         except OSError as exc:
-            raise PublishError(f"could not run gh: {exc}") from exc
+            raise PublishError(f"could not run {args[0]}: {exc}") from exc
 
     def _gh(self, args: list[str], stdin: str | None = None) -> str:
         result = self._runner(["gh", *args], stdin)
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip().splitlines()
-            raise PublishError(f"gh {args[0]} {args[1]} failed: {detail[-1] if detail else 'no output'}")
+            raise PublishError(f"gh {args[0]} {args[1]} failed: {_last_line(result)}")
+        return result.stdout
+
+    def _git(self, *args: str) -> str:
+        result = self._git_runner(["git", *args], None)
+        if result.returncode != 0:
+            raise PublishError(f"git {args[0]} failed: {_last_line(result)}")
         return result.stdout
 
     def available(self) -> str | None:
@@ -74,10 +110,7 @@ class GhPublisher:
         return None
 
     def push(self, branch: str) -> None:
-        try:
-            git(self.repo_root, "push", "origin", f"refs/heads/{branch}:refs/heads/{branch}")
-        except GitError as exc:
-            raise PublishError(f"git push failed: {str(exc).strip().splitlines()[-1]}") from exc
+        self._git("push", "origin", f"refs/heads/{branch}:refs/heads/{branch}")
 
     def create_pr(self, *, branch: str, base: str, title: str, body: str) -> PullRequest:
         out = self._gh(["pr", "create", "--base", base, "--head", branch, "--title", title, "--body-file", "-"], body)
@@ -87,30 +120,61 @@ class GhPublisher:
             raise PublishError(f"gh pr create returned no pull request URL: {url!r}")
         return PullRequest(int(match.group(1)), url)
 
-    def pr_state(self, number: int) -> str:
-        out = self._gh(["pr", "view", str(number), "--json", "state"])
+    def find_pr(self, branch: str) -> PullRequest | None:
+        """The pull request whose head is `branch`, or None if gh finds none (or can't look)."""
         try:
-            state = str(json.loads(out)["state"]).lower()
+            out = self._gh(["pr", "view", branch, "--json", "number,url"])
+            data = json.loads(out)
+            return PullRequest(int(data["number"]), str(data["url"]))
+        except (PublishError, ValueError, KeyError, TypeError):
+            return None
+
+    def pr_info(self, url: str) -> PrInfo:
+        out = self._gh(["pr", "view", url, "--json", "state,headRefName,headRefOid"])
+        try:
+            data = json.loads(out)
+            info = PrInfo(str(data["state"]).lower(), str(data["headRefName"]), str(data["headRefOid"]))
         except (ValueError, KeyError, TypeError) as exc:
             raise PublishError(f"gh pr view returned unexpected output: {out[:80]!r}") from exc
-        if state not in ("open", "merged", "closed"):
-            raise PublishError(f"unknown pull request state {state!r}")
-        return state
+        if info.state not in ("open", "merged", "closed"):
+            raise PublishError(f"unknown pull request state {info.state!r}")
+        return info
 
-    def delete_remote_branch(self, branch: str) -> None:
+    def delete_remote_branch(self, branch: str, expected_oid: str | None) -> bool:
+        """Delete `origin/<branch>` if it still points at `expected_oid` (any commit when None).
+
+        Returns True if the branch is gone (deleted, or absent already) and False if it now
+        points at another commit and was left alone.
+        """
+        ref = f"refs/heads/{branch}"
         try:
-            if git(self.repo_root, "ls-remote", "--heads", "origin", branch).strip():
-                git(self.repo_root, "push", "origin", "--delete", branch)
-        except GitError as exc:
-            raise PublishError(f"could not delete origin/{branch}: {str(exc).strip().splitlines()[-1]}") from exc
+            listing = self._git("ls-remote", "--heads", "origin", ref)
+            oids = [line.split("\t")[0] for line in listing.splitlines() if line.split("\t")[1:] == [ref]]
+            if not oids:
+                return True
+            if expected_oid is not None and oids[0] != expected_oid:
+                return False
+            self._git("push", f"--force-with-lease={ref}:{oids[0]}", "origin", f":{ref}")
+        except PublishError as exc:
+            raise PublishError(f"could not delete origin/{branch}: {exc}") from exc
+        return True
 
 
 @dataclass
 class FakePublisher:
-    """Test double: records calls; `fail` maps a method name to the PublishError message it raises."""
+    """Test double: records calls; `fail` maps a method name to the PublishError message it raises.
+
+    `states`/`heads`/`oids` are keyed by PR number (a PR's head defaults to the branch it was
+    created from, its oid to ""); `remote_oids` maps a branch to the commit origin has for it
+    (absent: whatever we expect); `existing` maps a branch to the PR `find_pr` returns.
+    """
 
     unavailable: str | None = None
     states: dict[int, str] = field(default_factory=dict)
+    heads: dict[int, str] = field(default_factory=dict)
+    oids: dict[int, str] = field(default_factory=dict)
+    remote_oids: dict[str, str] = field(default_factory=dict)
+    existing: dict[str, PullRequest] = field(default_factory=dict)
     fail: dict[str, str] = field(default_factory=dict)
     calls: list[tuple] = field(default_factory=list)
     pushed: list[str] = field(default_factory=list)
@@ -134,17 +198,30 @@ class FakePublisher:
         self._maybe_fail("create_pr")
         number, self._next = self._next, self._next + 1
         self.states.setdefault(number, "open")
+        self.heads.setdefault(number, branch)
         return PullRequest(number, f"https://github.com/example/repo/pull/{number}")
 
-    def pr_state(self, number: int) -> str:
-        self.calls.append(("pr_state", number))
-        self._maybe_fail("pr_state")
-        return self.states.get(number, "open")
+    def find_pr(self, branch: str) -> PullRequest | None:
+        self.calls.append(("find_pr", branch))
+        self._maybe_fail("find_pr")
+        return self.existing.get(branch)
 
-    def delete_remote_branch(self, branch: str) -> None:
-        self.calls.append(("delete_remote_branch", branch))
+    def pr_info(self, url: str) -> PrInfo:
+        self.calls.append(("pr_info", url))
+        self._maybe_fail("pr_info")
+        match = _PR_NUMBER.search(url)
+        assert match is not None, url
+        number = int(match.group(1))
+        return PrInfo(self.states.get(number, "open"), self.heads.get(number, ""), self.oids.get(number, ""))
+
+    def delete_remote_branch(self, branch: str, expected_oid: str | None) -> bool:
+        self.calls.append(("delete_remote_branch", branch, expected_oid))
         self._maybe_fail("delete_remote_branch")
+        remote = self.remote_oids.get(branch)
+        if remote is not None and expected_oid is not None and remote != expected_oid:
+            return False
         self.deleted.append(branch)
+        return True
 
 
 def make_publisher(repo_root: Path) -> Publisher:

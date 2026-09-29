@@ -29,12 +29,16 @@ def clean_run(
     *,
     purge: bool = False,
     publisher: Publisher | None = None,
+    expected_remote_oid: str | None = None,
 ) -> None:
     """Remove a finished run's worktree, branch, checkpoints, and scratch files.
 
     Raises `CleanError` (never prints or exits). When `publisher` is given, the remote
-    branch is deleted last: a `PublishError` there is re-raised as `CleanError` only after
-    the run is already marked `cleaned`, so callers never repeat the local cleanup.
+    branch is deleted last, and only if it still points at `expected_remote_oid` (when given):
+    a `PublishError` there, or a remote branch that now points elsewhere (left alone), is
+    raised as `CleanError` only after the run is already marked `cleaned`, so callers never
+    repeat the local cleanup. Safe to run again, or concurrently with another cleanup of the
+    same run: files that vanish underneath it are ignored.
     """
     from phil.run.checkpoint import open_checkpointer
 
@@ -55,16 +59,13 @@ def clean_run(
     except GitError as exc:
         raise CleanError(str(exc)) from exc
 
-    try:
-        git(info.root, "show-ref", "--verify", "--quiet", f"refs/heads/{record.branch}")
-        branch_exists = True
-    except GitError:
-        branch_exists = False
+    branch_exists = _branch_exists(info.root, record.branch)
     if branch_exists:
         try:
             git(info.root, "branch", "-D", record.branch)
         except GitError as exc:
-            raise CleanError(str(exc)) from exc
+            if _branch_exists(info.root, record.branch):  # not just removed by a concurrent cleanup
+                raise CleanError(str(exc)) from exc
 
     manager.delete_refs(f"refs/phil/{record.run_id}/")
     saver = open_checkpointer(paths.db_path)
@@ -73,23 +74,44 @@ def clean_run(
     finally:
         saver.conn.close()
 
-    run_dir = paths.run_dir(record.run_id)
-    if run_dir.exists():
-        if purge:
-            shutil.rmtree(run_dir)
-        else:
-            for child in run_dir.iterdir():
-                if child.name in _KEPT_FILES:
-                    continue
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
+    _trim_run_dir(paths.run_dir(record.run_id), purge=purge)
 
     update_run(conn, record.run_id, state="cleaned", needs_attention=None)
 
     if publisher is not None:
         try:
-            publisher.delete_remote_branch(record.branch)
+            gone = publisher.delete_remote_branch(record.branch, expected_remote_oid)
         except PublishError as exc:
             raise CleanError(str(exc)) from exc
+        if not gone:
+            raise CleanError(f"origin/{record.branch} now points elsewhere; left it alone")
+
+
+def _branch_exists(root: Path, branch: str) -> bool:
+    try:
+        git(root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
+    except GitError:
+        return False
+    return True
+
+
+def _trim_run_dir(run_dir: Path, *, purge: bool) -> None:
+    """Delete the run dir (`purge`) or everything in it but the kept files; anything already
+    gone (another cleanup got there first) is fine."""
+    try:
+        if purge:
+            shutil.rmtree(run_dir)
+            return
+        children = list(run_dir.iterdir())
+    except FileNotFoundError:
+        return
+    for child in children:
+        if child.name in _KEPT_FILES:
+            continue
+        try:
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        except FileNotFoundError:
+            continue
