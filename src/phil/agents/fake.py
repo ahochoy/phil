@@ -47,7 +47,13 @@ class FakeAgentFactory:
         self.tools_seen: list[list[str]] = []
 
     def __call__(
-        self, spec: AgentSpec, model: str, workdir: Path | None, tools: list[Callable[..., str]]
+        self,
+        spec: AgentSpec,
+        model: str,
+        workdir: Path | None,
+        tools: list[Callable[..., str]],
+        *,
+        timeout_s: int = 180,
     ) -> FakeAgent:
         self.built.append((spec.name, model))
         self.tools_seen.append([tool.__name__ for tool in tools])
@@ -92,6 +98,12 @@ class ScriptedAgentFactory:
         return {role: len(items) for role, items in self.scripts.items()}
 
     def __call__(
-        self, spec: AgentSpec, model: str, workdir: Path | None, tools: list[Callable[..., str]]
+        self,
+        spec: AgentSpec,
+        model: str,
+        workdir: Path | None,
+        tools: list[Callable[..., str]],
+        *,
+        timeout_s: int = 180,
     ) -> _ScriptedAgent:
         return _ScriptedAgent(self, spec.name, workdir, {tool.__name__: tool for tool in tools})

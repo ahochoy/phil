@@ -40,6 +40,22 @@ class RunConfig(_Section):
     max_review_rounds: int = 2
     max_tokens: int = 400_000
     max_cost_usd: float = 2.0
+    model_timeout_s: int = 180
+    warn_at: float = 0.8
+
+    @field_validator("model_timeout_s")
+    @classmethod
+    def _validate_model_timeout_s(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("run.model_timeout_s must be > 0")
+        return value
+
+    @field_validator("warn_at")
+    @classmethod
+    def _validate_warn_at(cls, value: float) -> float:
+        if not 0 < value < 1:
+            raise ValueError("run.warn_at must be between 0 and 1 (exclusive)")
+        return value
 
 
 class ShellConfig(_Section):

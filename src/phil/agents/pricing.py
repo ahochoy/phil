@@ -11,6 +11,7 @@ from pathlib import Path
 
 MODELS_URL = "https://openrouter.ai/api/v1/models"
 CACHE_MAX_AGE_S = 24 * 3600
+RETRY_AFTER_FAILURE_S = 10 * 60  # cool-down before retrying a fetch that failed with no cache to fall back on
 
 
 @dataclass(frozen=True)
@@ -32,13 +33,16 @@ class PriceBook:
         fetch: Callable[[], dict] | None = None,
         clock: Callable[[], float] = time.time,
         max_age_s: float = CACHE_MAX_AGE_S,
+        retry_after_failure_s: float = RETRY_AFTER_FAILURE_S,
     ) -> None:
         self._cache_path = cache_path
         self._fetch = fetch if fetch is not None else _default_fetch
         self._clock = clock
         self._max_age_s = max_age_s
+        self._retry_after_failure_s = retry_after_failure_s
         self._lock = threading.Lock()
         self._loaded = False
+        self._failed_at: float | None = None
         self._prices: dict[str, Price] = {}
 
     def _write_cache_atomically(self, data: dict) -> None:
@@ -91,6 +95,8 @@ class PriceBook:
     def _load(self) -> None:
         if self._loaded:
             return
+        if self._failed_at is not None and self._clock() - self._failed_at < self._retry_after_failure_s:
+            return  # cooling down after a fetch failure with no cache to fall back on; stay empty
         data = self._read_fresh_cache()
         if data is None:
             try:
@@ -105,7 +111,14 @@ class PriceBook:
                     pass
             else:
                 data = self._read_stale_cache()  # fall back to a stale cache if present
-        self._prices = self._parse(data) if data is not None else {}
+        if data is None:
+            # Nothing to show for this attempt (no cache, fresh or stale, and no fetch): leave
+            # `_loaded` False so a later call retries once the cool-down above has elapsed,
+            # instead of caching "no prices" for the rest of the process.
+            self._failed_at = self._clock()
+            self._prices = {}
+            return
+        self._prices = self._parse(data)
         self._loaded = True
 
     def price(self, model: str) -> Price | None:

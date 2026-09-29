@@ -13,6 +13,13 @@
         "prompt": "0.0000001",
         "completion": "0.0000005"
       }
+    },
+    {
+      "id": "anthropic/claude-flash",
+      "pricing": {
+        "prompt": "0.000003",
+        "completion": "0.000012"
+      }
     }
   ]
 }

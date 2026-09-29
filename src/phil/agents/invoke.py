@@ -22,6 +22,9 @@ from phil.store.parked import park
 from phil.store.telemetry import CallRow, CostSource, TelemetryRow, record, record_calls, weakest
 from phil.workspace.shell import literal_pattern
 
+# `Callable[...]` can't express the `timeout_s` keyword-only parameter with its default;
+# real factories (build_agent) and scripted ones (ScriptedAgentFactory/FakeAgentFactory) all
+# accept it as `*, timeout_s: int = 180`.
 AgentFactory = Callable[[AgentSpec, str, Path | None, list[Callable[..., str]]], Any]
 
 
@@ -79,15 +82,16 @@ class _Usage:
 
 
 def _pricing_models(configured: str, call_model: str | None) -> list[str]:
-    """Model ids to price a call by: the call's own model when it belongs to the configured
-    model's family (same provider and vendor, e.g. ``openrouter:openai/...``), then the
-    configured model."""
-    provider, sep, model_id = configured.partition(":")
-    if call_model and sep and "/" in model_id and "/" in call_model:
-        if call_model.split("/", 1)[0] == model_id.split("/", 1)[0]:
-            candidate = f"{provider}:{call_model}"
-            if candidate != configured:
-                return [candidate, configured]
+    """Model ids to price a call by: the call's own reported model first — a deep agent's
+    sub-agent, or an OpenRouter fallback route, can report a model from a different vendor than
+    the one configured for the role, and the price book may still know it as
+    ``openrouter:<call_model>`` — then the configured model, when the book doesn't know the
+    reported one."""
+    provider, sep, _ = configured.partition(":")
+    if call_model and sep and "/" in call_model:
+        candidate = f"{provider}:{call_model}"
+        if candidate != configured:
+            return [candidate, configured]
     return [configured]
 
 
@@ -239,7 +243,7 @@ def invoke_agent(
     tools: list[Callable[..., str]] = []
     if "shell" in spec.tools and ctx.workdir is not None:
         tools.append(make_shell_tool(ctx.workdir, shell, log, ctx.artifacts, log_prefix=log_prefix))
-    agent = _resolve_factory(ctx)(spec, model, ctx.workdir, tools)
+    agent = _resolve_factory(ctx)(spec, model, ctx.workdir, tools, timeout_s=ctx.config.run.model_timeout_s)
     from phil.agents.collector import UsageCollector  # lazy: keeps langchain out of module import
 
     messages: list[dict[str, str]] = [{"role": "user", "content": packet.render()}]

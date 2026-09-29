@@ -156,7 +156,7 @@ def test_shell_log_prefix_matches_artifact_base_name(conn, artifacts, tmp_path):
     config = PhilConfig(shell=shell_config, models=TEST_MODELS)
     captured: dict = {}
 
-    def factory(spec, model, workdir, tools):
+    def factory(spec, model, workdir, tools, *, timeout_s=180):
         captured["tools"] = tools
         return FakeAgent([TaskResult(phase="red", summary="s", files_changed=[], tests_added=[], self_check=self_check())])
 
@@ -234,7 +234,7 @@ class CallbackAgent:
 
 
 def accounting_context(config, conn, artifacts, agent, **overrides):
-    return context(config, conn, artifacts, lambda spec, model, workdir, tools: agent, **overrides)
+    return context(config, conn, artifacts, lambda spec, model, workdir, tools, *, timeout_s=180: agent, **overrides)
 
 
 def calls_rows(conn):
@@ -308,6 +308,21 @@ def test_call_model_in_the_configured_family_is_priced_as_itself(conn, artifacts
     invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
     [row] = telemetry(conn)
     assert row["cost_usd"] == pytest.approx(0.0000001 * 1000 + 0.0000005 * 100)
+
+
+def test_call_model_from_a_different_vendor_is_priced_as_itself_when_the_book_knows_it(
+    conn, artifacts, critic_packet, tmp_path
+):
+    # A deep agent's sub-agent (or an OpenRouter fallback route) can report a model from a
+    # vendor other than the one configured for the role; when the price book knows that exact
+    # model, it should be used, not the configured model's (unrelated) rate.
+    config = PhilConfig(models=TEST_MODELS | {"critic": OPENROUTER_MODEL})
+    agent = CallbackAgent([("llm", 1000, 100, None, "anthropic/claude-flash")], critique())
+    ctx = accounting_context(config, conn, artifacts, agent, prices=price_book(tmp_path))
+    invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+    [row] = telemetry(conn)
+    assert row["cost_source"] == "estimated"
+    assert row["cost_usd"] == pytest.approx(0.000003 * 1000 + 0.000012 * 100)
 
 
 def test_unpriced_model_cost_is_unknown(config, conn, artifacts, critic_packet, tmp_path):
