@@ -128,3 +128,22 @@ def test_cli_import_does_not_load_llm_stack():
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == ""
+
+
+def test_runs_shows_the_pull_request_marker(git_repo):
+    from phil.store.runs import update_run
+
+    conn = _conn_for(git_repo)
+    for run_id, state in (("r-0001", "open"), ("r-0002", "merged"), ("r-0003", "closed")):
+        create_run(conn, run_id=run_id, keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=1)
+        update_run(conn, run_id, pr_number=12, pr_state=state, pr_url="https://github.com/o/r/pull/12")
+    create_run(conn, run_id="r-0004", keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=1)
+
+    result = runner.invoke(app, ["--repo", str(git_repo), "runs"])
+
+    assert result.exit_code == 0, result.output
+    lines = {line.split()[0]: line for line in result.output.splitlines() if line.startswith("r-")}
+    assert "PR #12" in lines["r-0001"]
+    assert "merged #12" in lines["r-0002"]
+    assert "closed #12" in lines["r-0003"]
+    assert "#12" not in lines["r-0004"]

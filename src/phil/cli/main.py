@@ -1,5 +1,6 @@
 import importlib
 import json
+import logging
 import os
 import signal
 import sqlite3
@@ -27,6 +28,8 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
 from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(add_completion=False, help="Phil: a contract-driven coding agent.")
 console = make_console()
@@ -239,10 +242,32 @@ def _run_chat(info, config, conn, out, tty, factory, base_sha, session, resume: 
         terminal.close()
 
 
+def _print_pr_changes(changes) -> None:
+    from phil.publish.service import change_line
+
+    for change in changes:
+        style = "phil.muted" if change.kind == "merged" else "phil.warn"
+        console.print(f"[{style}]{escape(change_line(change))}[/]")
+
+
+def _sweep_quietly(info: RepoInfo, conn: sqlite3.Connection) -> None:
+    """Notice merged/closed pull requests; never let a failure here break the command."""
+    try:
+        from phil.publish import publisher as publishing
+        from phil.publish.service import sweep_prs
+
+        changes = sweep_prs(info, conn, publishing.make_publisher(info.root))
+    except Exception:
+        logger.debug("pull request sweep failed", exc_info=True)
+        return
+    _print_pr_changes(changes)
+
+
 @app.command()
 def runs(ctx: typer.Context) -> None:
     """List runs for the current repository."""
-    _, conn = _open_project(ctx)
+    info, conn = _open_project(ctx)
+    _sweep_quietly(info, conn)
     render_runs(console, conn)
 
 
@@ -542,6 +567,7 @@ def show_command(
     _require_run(conn, run_id)
     paths = ProjectPaths(info.slug)
     if n is None:
+        _sweep_quietly(info, conn)
         render_show(console, conn, paths, run_id)
         return
     refs = show_refs(paths, run_id)
@@ -560,13 +586,20 @@ def show_command(
 @app.command()
 def clean(
     ctx: typer.Context,
-    run_id: str,
+    run_id: str | None = typer.Argument(None, help="The run to clean up."),
     purge: bool = typer.Option(False, "--purge", help="Also delete the run summary."),
+    merged: bool = typer.Option(False, "--merged", help="Clean up every run whose pull request has merged."),
 ) -> None:
     """Remove a finished run's worktree, branch, checkpoints, and scratch files."""
     from phil.run.cleanup import CleanError, clean_run
 
+    if (run_id is None) == (not merged):
+        console.print("[phil.error]Usage: phil clean <run-id> or phil clean --merged[/]")
+        raise typer.Exit(2)
     info, conn = _open_project(ctx)
+    if run_id is None:
+        _clean_merged(info, conn)
+        return
     record = _require_run(conn, run_id)
     if record.state in ("pending", "running", "escalated"):
         console.print(
@@ -585,6 +618,22 @@ def clean(
         raise typer.Exit(1) from exc
     kept = "" if purge else " (kept summary.md and open_issues.json)"
     console.print(f"Cleaned [phil.id]{escape(run_id)}[/]{kept}.")
+
+
+def _clean_merged(info: RepoInfo, conn: sqlite3.Connection) -> None:
+    from phil.publish import publisher as publishing
+    from phil.publish.service import sweep_prs
+
+    publisher = publishing.make_publisher(info.root)
+    reason = publisher.available()
+    if reason is not None:
+        console.print(f"[phil.error]{escape(reason)}[/]")
+        raise typer.Exit(1)
+    changes = sweep_prs(info, conn, publisher, force=True)
+    if not changes:
+        console.print("No merged pull requests to clean up.")
+        return
+    _print_pr_changes(changes)
 
 
 @app.command("pr")
