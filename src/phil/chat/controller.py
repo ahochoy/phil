@@ -1,6 +1,7 @@
 import queue
 import shutil
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -85,10 +86,14 @@ class ChatController:
         self.stage = "idle"
         self._parent_stage = "idle"  # where edit / confirm_replace return to
         self._generation = 0
+        # Guards generation changes and job step writes together, so a stale job can't set the step
+        # after the main thread moved on (check-then-set under one lock).
+        self._step_lock = threading.Lock()
         self._goal: Goal | None = None
         self._goal_text = ""
         self._rounds = 0
         self._draft: PlanDraft | None = None
+        self._shown_test_cmd: str | None = None  # the effective test command in the last plan render
         self._revising = False
         self._run_id: str | None = None
         self._base_sha: str | None = None
@@ -110,19 +115,26 @@ class ChatController:
 
         def work() -> None:
             try:
-                self.post(ChatEvent(kind, fn(), generation))
+                event = ChatEvent(kind, fn(), generation)
             except Exception as exc:
-                self.post(ChatEvent("job_failed", {"job": kind, "error": f"{type(exc).__name__}: {exc}"}, generation))
-            finally:
-                if generation == self._generation:
-                    self.state.set_step(None, time.time())
+                event = ChatEvent("job_failed", {"job": kind, "error": f"{type(exc).__name__}: {exc}"}, generation)
+            # Clear the step before posting: once posted, the main loop may start the next job and its step.
+            self._step(None, generation)
+            self.post(event)
 
         self.io.submit(work)
 
     def _step(self, step: str | None, generation: int) -> None:
         """Toolbar step for a job; a replaced or cancelled goal's job can't overwrite the current one."""
-        if generation == self._generation:
-            self.state.set_step(step, time.time())
+        with self._step_lock:
+            if generation == self._generation:
+                self.state.set_step(step, time.time())
+
+    def _next_generation(self) -> None:
+        """Start a new goal generation: in-flight results become stale and the step is cleared."""
+        with self._step_lock:
+            self._generation += 1
+            self.state.set_step(None, time.time())
 
     def _drain(self) -> None:
         if self.stage != "confirm_replace" and self._held:
@@ -145,6 +157,18 @@ class ChatController:
             self._handle(event)
         except Exception as exc:
             self._report(exc)
+            self._recover()
+
+    def _recover(self) -> None:
+        """After a failed event handler, return to a stage the user can act on."""
+        if self.stage in ("running", "confirm_replace"):
+            return  # the run (or the pending question) is unaffected
+        if self._draft is not None:
+            self._revising = False
+            self._set_stage("approval")
+        else:
+            self._reset_goal()
+            self._set_stage("idle")
 
     def _handle(self, event: ChatEvent) -> None:
         if event.generation not in (-1, self._generation):
@@ -266,10 +290,16 @@ class ChatController:
 
     def _interrupt(self) -> None:
         """Ctrl-C: cancel an in-flight goal, back out of a sub-prompt, or just acknowledge."""
-        if self.stage in GOAL_JOB_STAGES:
-            self._generation += 1  # the in-flight result is dropped when it lands
+        if self.stage == "planning" and self._revising and self._draft is not None:
+            self._next_generation()  # the revision is dropped when it lands
             self.state.set_cancelling(True)
-            self.state.set_step(None, time.time())
+            self._revising = False
+            self._set_stage("approval")
+            self.console.print("[phil.muted]Cancelled the revision.[/]")
+            self._show_plan(self._draft)
+        elif self.stage in GOAL_JOB_STAGES:
+            self._next_generation()  # the in-flight result is dropped when it lands
+            self.state.set_cancelling(True)
             self._reset_goal()
             self._set_stage("idle")
             self.console.print("[phil.muted]Cancelled the current goal.[/]")
@@ -287,7 +317,7 @@ class ChatController:
         self._goal, self._goal_text, self._rounds, self._draft, self._revising = None, "", 0, None, False
 
     def _begin_goal(self, text: str) -> None:
-        self._generation += 1
+        self._next_generation()
         self._reset_goal()
         self._goal_text = text
         self._set_stage("intake")
@@ -338,7 +368,7 @@ class ChatController:
 
         def fn() -> dict:
             self._step("snapshot", generation)
-            tree = self._snapshot()
+            tree = self._snapshot(generation)
             return {"draft": self.planner.draft(goal, tree, on_step=lambda step: self._step(step, generation))}
 
         self._job("plan_ready", fn)
@@ -376,10 +406,11 @@ class ChatController:
         note = problem or (
             f"plan test command differs from phil.toml's ({self.config.project.test_cmd})" if differs else None
         )
+        self._shown_test_cmd = effective_test_cmd(draft.plan, self.config)
         render_plan(
             self.console,
             draft,
-            test_cmd=effective_test_cmd(draft.plan, self.config),
+            test_cmd=self._shown_test_cmd,
             test_cmd_note=note,
             git_note=git_policy_note(self.config),
         )
@@ -393,12 +424,19 @@ class ChatController:
                 self.config = load_config(self.info.root)
             except ConfigError as exc:
                 self.console.print(f"[phil.error]{escape(str(exc))}[/]")
+                self._show_plan(draft)
                 return
             problems = launch_problems(draft.plan, self.config)
             if problems:
                 for item in problems:
                     self.console.print(f"[phil.error]{escape(item)}.[/]")
                 self.console.print("[phil.muted]Fix phil.toml and answer y again, or use edit to change the plan.[/]")
+                self._show_plan(draft)
+                return
+            if effective_test_cmd(draft.plan, self.config) != self._shown_test_cmd:
+                # phil.toml changed the test command since the plan was shown: show what would run first.
+                self.console.print("[phil.warn]The test command changed in phil.toml. Review it and answer again.[/]")
+                self._show_plan(draft)
                 return
             self._start(draft, answer)
         elif choice == "edit":
@@ -424,7 +462,7 @@ class ChatController:
 
         def fn() -> dict:
             self._step("snapshot", generation)
-            tree = self._snapshot()
+            tree = self._snapshot(generation)
             revised = self.planner.revise(
                 goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation)
             )
@@ -466,10 +504,14 @@ class ChatController:
 
     # --- 4a helpers ------------------------------------------------------------------------------
 
-    def _snapshot(self) -> Path:
-        """Export the base commit's tracked files for the architect (never the live working tree)."""
+    def _snapshot(self, generation: int) -> Path:
+        """Export the base commit's tracked files for the architect (never the live working tree).
+
+        Each goal generation gets its own directory, so a stale job re-exporting can't remove a tree
+        another job is reading. All of `tree/` is removed when the chat ends.
+        """
         sha = self._explicit_base_sha or resolve_repo(self.info.root).head_sha
-        return export_tree(self.info.root, sha, self.session.dir / "tree" / sha[:12])
+        return export_tree(self.info.root, sha, self.session.dir / "tree" / f"{sha[:12]}-g{generation}")
 
     def _remove_snapshots(self) -> None:
         try:

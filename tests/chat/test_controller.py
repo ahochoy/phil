@@ -13,7 +13,7 @@ from tests.chat.conftest import critique, goal, plan
 from tests.helpers import MODELS_TOML, TEST_MODELS, run_git
 
 
-def run_chat(repo, answers, scripts, config=None, submit=None, **kw):
+def run_chat(repo, answers, scripts, config=None, submit=None, wake=None, **kw):
     """Drive a chat. Script items are strings, None (EOF), or callables `(controller) -> str | None | WAKE`."""
     info = resolve_repo(repo)
     conn = connect(ProjectPaths(info.slug).db_path)
@@ -32,6 +32,8 @@ def run_chat(repo, answers, scripts, config=None, submit=None, **kw):
     io = ChatIO(ask=ask, spawn=lambda root, run_id, mode, decision=None: spawned.append((run_id, mode, decision)))
     if submit is not None:
         io.submit = submit
+    if wake is not None:
+        io.wake = lambda: wake(holder["controller"])
     factory = ScriptedAgentFactory(scripts)
     config = config or PhilConfig(models=TEST_MODELS)
     controller = ChatController(info, config, conn, console, io, factory=factory, **kw)
@@ -272,9 +274,10 @@ def test_base_sha_stays_fixed_when_explicit(calc_repo):
 def test_run_plan_json_uses_effective_test_cmd(calc_repo):
     info = resolve_repo(calc_repo)
     (calc_repo / "phil.toml").write_text(MODELS_TOML + '[project]\ntest_cmd = "uv run pytest -q"\n')
+    # The chat started with a config lacking test_cmd, so the first y re-renders the plan with phil.toml's.
     text, spawned, runs, *_ = run_chat(
         calc_repo,
-        ["add subtract", "y"],
+        ["add subtract", "y", "y"],
         {"intake": [goal()], "architect": [plan(test_cmd=None)], "critic": [critique()]},
     )
     stored = ArtifactStore(ProjectPaths(info.slug).run_dir(runs[0].run_id)).read_plan()
@@ -403,7 +406,7 @@ def test_new_goal_while_running_is_refused(calc_repo):
     assert len(runs) == 1 and prompts[-2:] == ["you › ", "you › "]
 
 
-def test_replace_goal_mid_planning(calc_repo):
+def test_replace_goal_during_intake(calc_repo):
     submit, run_next, pending = deferred()
     text, spawned, runs, factory, prompts = run_chat(
         calc_repo,
@@ -429,7 +432,7 @@ def test_replace_goal_mid_planning(calc_repo):
     assert users[:3] == [("goal", "add subtract"), ("goal", "add multiply"), ("confirm_replace", "y")]
 
 
-def test_declining_replace_keeps_the_current_goal(calc_repo):
+def test_declining_replace_during_intake_keeps_the_current_goal(calc_repo):
     submit, run_next, pending = deferred()
     text, spawned, runs, factory, prompts = run_chat(
         calc_repo,
@@ -443,7 +446,7 @@ def test_declining_replace_keeps_the_current_goal(calc_repo):
     assert factory.remaining() == {"intake": 0, "architect": 0, "critic": 0}
 
 
-def test_ctrl_c_during_planning_cancels_the_goal(calc_repo):
+def test_ctrl_c_during_intake_cancels_the_goal(calc_repo):
     submit, run_next, pending = deferred()
     seen = {}
 
@@ -527,3 +530,157 @@ def test_state_json_write_failure_is_silent(calc_repo, monkeypatch):
     monkeypatch.setattr(ChatSession, "save_state", boom)
     text, spawned, runs, *_ = run_chat(calc_repo, ["add subtract", "y"], FULL_SCRIPT)
     assert len(runs) == 1 and "disk full" not in text
+
+
+def ctrl_c(controller):
+    raise KeyboardInterrupt()
+
+
+def test_refused_approval_rerenders_and_a_changed_test_command_is_shown_before_starting(calc_repo):
+    def add_test_cmd(controller):
+        (calc_repo / "phil.toml").write_text(MODELS_TOML + '[project]\ntest_cmd = "make check"\n')
+        return "y"
+
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["add subtract", "y", add_test_cmd, "y"],
+        {"intake": [goal()], "architect": [plan(test_cmd=None)], "critic": [critique()]},
+    )
+    assert text.count("Tests: none") == 2  # first render, then again after the refused y
+    assert "Tests: make check" in text  # the second y re-rendered instead of starting
+    assert text.index("Tests: make check") < text.index("started in the background")
+    assert prompts.count("Approve? [y / edit / n] › ") == 3 and len(runs) == 1
+    info = resolve_repo(calc_repo)
+    stored = ArtifactStore(ProjectPaths(info.slug).run_dir(runs[0].run_id)).read_plan()
+    assert stored.test_cmd == "make check"
+
+
+def test_the_step_is_cleared_before_a_job_posts(calc_repo):
+    steps = []
+    run_chat(calc_repo, ["add subtract", "n"], FULL_SCRIPT, wake=lambda c: steps.append(c.state.view().step))
+    assert steps == [None, None]  # goal_ready, plan_ready
+
+
+def test_each_goal_plans_from_its_own_snapshot(calc_repo):
+    seen = []
+
+    def architect(turn):
+        seen.append(turn.workdir)
+        return plan()
+
+    run_chat(
+        calc_repo,
+        ["add subtract", "n", "add multiply", "n"],
+        {"intake": [goal(), goal("Add multiply")], "architect": [architect, architect], "critic": [critique()] * 2},
+    )
+    first, second = seen
+    assert first != second and first.parent == second.parent
+    assert first.name.endswith("-g1") and second.name.endswith("-g2")
+
+
+def test_a_failing_event_handler_does_not_strand_the_stage(calc_repo, monkeypatch):
+    from phil.chat.session import ChatSession
+
+    original = ChatSession.contract
+
+    def contract(self, kind, value):
+        if kind == "plan":
+            raise OSError("transcript unwritable")
+        return original(self, kind, value)
+
+    monkeypatch.setattr(ChatSession, "contract", contract)
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo, ["add subtract", "add multiply", "/quit"],
+        {"intake": [goal(), goal("Add multiply")], "architect": [plan()] * 2, "critic": [critique()] * 2},
+    )
+    assert "transcript unwritable" in text
+    assert prompts == ["you › ", "you › ", "you › "]  # back at idle: the next goal starts, no replace question
+
+
+def test_a_failing_revise_handler_returns_to_approval(calc_repo, monkeypatch):
+    from phil.chat.session import ChatSession
+
+    original = ChatSession.contract
+    plans = []
+
+    def contract(self, kind, value):
+        if kind == "plan":
+            plans.append(value)
+            if len(plans) == 2:
+                raise OSError("transcript unwritable")
+        return original(self, kind, value)
+
+    monkeypatch.setattr(ChatSession, "contract", contract)
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo, ["add subtract", "edit", "two tasks", "y"],
+        {"intake": [goal()], "architect": [plan(), plan(n=2)], "critic": [critique()] * 2},
+    )
+    assert "transcript unwritable" in text
+    assert prompts[3] == "Approve? [y / edit / n] › "
+    assert len(runs) == 1 and runs[0].tasks_total == 1
+
+
+def test_goal_result_held_while_confirming_replace_is_handled_after_no(calc_repo):
+    submit, run_next, pending = deferred()
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["add subtract", "add multiply", run_next, "n", run_next, "n"],
+        FULL_SCRIPT,
+        submit=submit,
+    )
+    replace = "Replace the current goal? [y / n] › "
+    assert prompts[2:4] == [replace, replace]  # the goal result arrived but waited for the answer
+    assert prompts[4] == "you › "  # after n: the held result started planning
+    assert "Keeping the current goal." in text
+    assert "Goal: Add subtract to calc" in text and "Plan CALC v1" in text
+    assert text.index("Keeping the current goal.") < text.index("Goal: Add subtract to calc")
+
+
+def test_replace_goal_during_planning(calc_repo):
+    submit, run_next, pending = deferred()
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["add subtract", run_next, "add multiply", "y", run_next, run_next, run_next, "n"],
+        {
+            "intake": [goal(), goal("Add multiply")],
+            "architect": [plan(), plan(keyword="MUL")],
+            "critic": [critique(), critique()],
+        },
+        submit=submit,
+    )
+    assert "Goal: Add subtract to calc" in text  # goal 1 reached planning
+    assert "Plan MUL" in text and "Plan CALC" not in text  # its draft landed stale and was dropped
+    assert factory.remaining() == {"intake": 0, "architect": 0, "critic": 0} and pending == []
+
+
+def test_ctrl_c_during_a_plan_job_drops_the_stale_draft(calc_repo):
+    submit, run_next, pending = deferred()
+    seen = {}
+
+    def check(controller):
+        seen["stage"] = controller.stage
+        seen["cancelling"] = controller.state.view().cancelling
+        return None
+
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo, ["add subtract", run_next, ctrl_c, run_next, check], FULL_SCRIPT, submit=submit
+    )
+    assert "Goal: Add subtract to calc" in text and "Cancelled the current goal." in text
+    assert "Plan CALC" not in text
+    assert factory.remaining() == {"intake": 0, "architect": 0, "critic": 0}  # the plan job ran, stale
+    assert seen == {"stage": "idle", "cancelling": False}
+
+
+def test_ctrl_c_during_a_revise_returns_to_approval_with_the_old_draft(calc_repo):
+    submit, run_next, pending = deferred()
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["add subtract", run_next, run_next, "edit", "make it two tasks", ctrl_c, run_next, "y"],
+        {"intake": [goal()], "architect": [plan(), plan(n=2)], "critic": [critique(), critique()]},
+        submit=submit,
+    )
+    assert "Cancelled the revision." in text
+    assert text.count("Plan CALC v1 · 1 task") == 2  # re-rendered after the cancel
+    assert "Plan CALC v2" not in text  # the revise landed stale
+    assert prompts[6] == "Approve? [y / edit / n] › "
+    assert len(runs) == 1 and runs[0].tasks_total == 1

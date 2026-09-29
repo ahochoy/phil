@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -52,17 +53,30 @@ class Planner:
         self.overview = overview
         self.version = 0
         self._calls = 0
+        # Chat jobs run on worker threads, and a replaced goal's cycle may overlap the new one's.
+        self._lock = threading.Lock()
 
-    def _architect(self, goal: Goal, previous: Plan | None, critique: PlanCritique | None, tree: Path) -> Plan:
-        self._calls += 1
+    def _next_call(self) -> int:
+        with self._lock:
+            self._calls += 1
+            return self._calls
+
+    def _next_version(self) -> int:
+        with self._lock:
+            self.version += 1
+            return self.version
+
+    def _architect(
+        self, goal: Goal, previous: Plan | None, critique: PlanCritique | None, tree: Path, call: int
+    ) -> Plan:
         contract = ArchitectInput(goal=goal, repo_overview=self.overview, previous_plan=previous, critique=critique)
         packet = build_packet("architect", contract, budget_tokens=_budget(self.ctx, "architect"))
         ctx = replace(self.ctx, workdir=tree)
-        return invoke_agent(get_spec("architect"), packet, ctx, node="architect", call=self._calls)
+        return invoke_agent(get_spec("architect"), packet, ctx, node="architect", call=call)
 
-    def _critic(self, goal: Goal, plan: Plan) -> PlanCritique:
+    def _critic(self, goal: Goal, plan: Plan, call: int) -> PlanCritique:
         packet = build_packet("critic", CriticInput(goal=goal, plan=plan), budget_tokens=_budget(self.ctx, "critic"))
-        return invoke_agent(get_spec("critic"), packet, self.ctx, node="critic", call=self._calls)
+        return invoke_agent(get_spec("critic"), packet, self.ctx, node="critic", call=call)
 
     def _cycle(
         self,
@@ -74,21 +88,22 @@ class Planner:
     ) -> PlanDraft:
         if on_step:
             on_step("architect")
-        plan = self._architect(goal, previous, critique, tree)
+        call = self._next_call()
+        plan = self._architect(goal, previous, critique, tree, call)
         if on_step:
             on_step("critic")
-        review = self._critic(goal, plan)
+        review = self._critic(goal, plan, call)
         for _ in range(MAX_CRITIC_REVISIONS):
             if review.verdict != "revise":
                 break
             if on_step:
                 on_step("revise")
-            plan = self._architect(goal, plan, review, tree)
+            call = self._next_call()
+            plan = self._architect(goal, plan, review, tree, call)
             if on_step:
                 on_step("critic")
-            review = self._critic(goal, plan)
-        self.version += 1
-        return PlanDraft(_with_notes(plan, review), review, self.version)
+            review = self._critic(goal, plan, call)
+        return PlanDraft(_with_notes(plan, review), review, self._next_version())
 
     def draft(self, goal: Goal, tree: Path, on_step: Callable[[str], None] | None = None) -> PlanDraft:
         return self._cycle(goal, None, None, tree, on_step)
