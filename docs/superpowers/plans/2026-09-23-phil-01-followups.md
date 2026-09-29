@@ -29,6 +29,8 @@ Findings from plan 1's task reviews and final review that were deliberately defe
 
 Raised by the user on 2026-09-23. Spec §1 "Teammate principles" and "MVP beyond v1".
 
+Done in plan 5 except full project memory (spec #2) and non-GitHub hosts.
+
 - **Phil raises the PR.** After `finish`, a publisher step pushes `phil/<run-id>` and opens a PR. The description is concise and clearly organized: what changed and why, how it was verified (gates, tester, reviewer), and a clearly marked section for any action the reviewer must take. It follows the target repo's PR template and conventions when present.
 - **Phil cleans up after merge.** A command (e.g. `phil done <run-id>`, or automatic when Phil sees the PR merged) that: records learnings (confirmed assumptions, parked items, reviewer notes) to project memory; removes the worktree, the local run branch, and run scratch files; and keeps only what is worth keeping. No manual commands for the user.
 - **No permission gaps.** Cleanup runs from Phil's own process against state it owns (`~/.phil`, `phil/<run-id>` branches), not from inside a worktree-bound agent, so it cannot be blocked the way agents stuck in a worktree often are.

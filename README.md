@@ -37,6 +37,40 @@ Reopen a chat later:
     phil --resume <chat-id>   # reopen a specific chat directly
     phil --new                # skip the list and start a new chat
 
+## Pull requests and cleanup
+
+Needs the `gh` CLI installed and logged in (`gh auth login`) and an `origin` remote. Without
+either, `phil pr` and `phil clean --merged` say what's missing and exit 1; the chat's own
+checks just skip.
+
+When a run completes, the chat asks `Open a PR for <run> → <base>?`. Answer `y` to push
+`phil/<run-id>` and open the pull request; anything else declines (printing `phil pr <run>` as
+the way to open one later) and, unless it's blank/`n`/`no`, is kept and used to start the next
+goal. Open a PR for any completed run directly, any time, with:
+
+    phil pr <run-id> [--base <branch>]
+
+The PR body follows the target repo's PR template when present, and lays out what changed, how
+it was verified (gates, tester, reviewer), and any action still needed.
+
+The chat notices a merge on its own — each run's open PR is checked at most once every 5
+minutes — and `phil runs` / `phil show <run>` check too whenever you run them. A merge prints
+`<run> merged (#N); cleaned up.`; a PR closed without merging gets one notice and needs
+`phil clean <run>` to remove it. A check that fails unexpectedly (not just "not merged yet
+either") is logged to the chat's `phil.log`, not printed, and retried next time.
+
+`phil clean <run>` removes the run's worktree, local branch, checkpoints, and scratch files,
+keeping `summary.md`, `open_issues.json`, and the run's telemetry rows in `phil.db` (`--purge`
+also removes `summary.md`/`open_issues.json`). It leaves the remote branch alone — that's only
+deleted after a merge, whether the chat noticed it or you ran:
+
+    phil clean --merged      # clean up every run whose pull request has merged
+
+A merge cleanup also appends one entry to `~/.phil/projects/<slug>/learnings.md` (created on
+first use): the run's goal, confirmed/unconfirmed assumptions, and up to 5 reviewer notes in
+the same `- (severity) note [file:line]` format `phil show` uses for open issues. Nothing in
+Phil reads this file yet — it's a plain log for you.
+
 ## Observability
 
 Every model call is counted, including calls made inside a deep agent's own sub-agents — not

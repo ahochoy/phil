@@ -425,7 +425,7 @@ Phil itself is built test-first.
 | Native (Go/Rust) TUI frontend | JSON Schema contract export; `present()` output as the wire format |
 | Promoting parked items to roadmap stories | `ParkedItem.status = "promoted"`, spec #2 |
 | Parallel task execution | `pick_task` currently sequential |
-| Raise the PR and clean up after merge (MVP lifecycle, §1) | `finish` node → publisher step; `WorktreeManager.remove`; run artifacts → project memory; `phil clean` |
+| Raise the PR and clean up after merge (MVP lifecycle, §1) | `finish` node → publisher step; `WorktreeManager.remove`; run artifacts → project memory; `phil clean` → done in plan 5 (docs/superpowers/specs/2026-09-29-phil-05-pr-and-cleanup-design.md) |
 
 ## 14. Relationship to existing code
 
