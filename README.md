@@ -11,6 +11,24 @@ Plan and start work from a chat in your repo (set models first — see phil.toml
     cd your-repo
     phil                     # type a goal; approve the plan with y / edit / n
 
+One chat follows one goal at a time — intake, plan, approval, then its run — and shows a live
+bottom toolbar (the current step and its elapsed time, then the run's node and task progress).
+The prompt stays usable while a goal is being planned or a run works in the background:
+
+- If the run needs your input, the chat flags it right away (`⏸ <run> needs you: …`) and asks
+  at the next idle prompt; jump to it any time with `/answer`.
+- Ask a side question while work continues with `/btw <question>` — read-only, it never changes
+  the plan or the run.
+- If a run failed or was stopped, continue it with `/resume`.
+- `/runs` lists runs, `/help` shows the commands, `/quit` (or Ctrl-D) leaves the chat — a run
+  left running keeps going in the background.
+
+Reopen a chat later:
+
+    phil                      # lists this repo's open chats; pick a number or press Enter for a new one
+    phil --resume <chat-id>   # reopen a specific chat directly
+    phil --new                # skip the list and start a new chat
+
 ## Development
 
     uv sync
