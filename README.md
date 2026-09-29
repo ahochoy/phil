@@ -61,16 +61,24 @@ provider prefix always shows as reported or unknown, never estimated.
 A run pauses at 100% of its `[run] max_tokens` / `max_cost_usd` limits as before, and now warns
 once at `[run] warn_at` (default `0.8`, i.e. 80%) of whichever limit it's closer to; the chat and
 `phil attach` print the warning (e.g. `r-7f3a has used 80% of its budget ($1.61 of $2.00).`).
+Because every model call now counts (sub-agents, summarisation, failed tries), the token limit
+defaults to `1500000`; cost (`max_cost_usd`, default `2.0`) is the primary guard.
 
 Model calls time out after `[run] model_timeout_s` (default `180`) and Phil's own retry policy
-runs instead of the provider SDK's: a timeout gets 2 tries total (a stuck provider otherwise
-costs one full timeout per attempt), other transient errors (rate limits, 5xx, a 200 response
-carrying a transient error code) keep the usual 3.
+runs instead of the provider SDK's (SDK retries are off for OpenRouter, OpenAI, Anthropic and
+Google). Each model call is retried on its own — including a deep agent's sub-agent calls — so
+a transient failure on the tenth call of an agent repeats just that call, not the nine before it
+or the tools they ran. A timeout gets 2 tries total (a stuck provider otherwise costs one full
+timeout per attempt); other transient errors — rate limits, 5xx, Anthropic's 529 "overloaded",
+connection failures, a 200 response carrying a transient error code — get 3. Every retry is
+counted in the `retries` column of `phil show`.
 
 ```toml
 [run]
 model_timeout_s = 180
 warn_at = 0.8
+max_tokens = 1500000
+max_cost_usd = 2.0
 ```
 
 ## Development

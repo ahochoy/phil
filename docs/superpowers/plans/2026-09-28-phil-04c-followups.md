@@ -69,3 +69,16 @@ apply — the lean read-only architect stays deferred there), `2026-09-28-phil-0
   relative order, or make ordering non-deterministic when two files land in the same tick. A
   monotonic write-order counter (or numbering artifacts on write) would be more reliable than
   relying on mtime.
+
+## Budget defaults (`phil.config.RunConfig`)
+
+- **`[run] max_tokens` default raised from 400,000 to 1,500,000** (final-review fix wave). Since
+  4c every model call is counted — deep-agent sub-agent and summarisation calls, and failed tries
+  — so the same work now reports more tokens than it did before 4c, and the old ceiling paused
+  ordinary runs. `max_cost_usd = 2.0` stays the primary guard. Revisit both defaults once there's
+  real usage data from 4c telemetry (`phil show`'s per-role model calls and tokens).
+- **Summarisation model calls aren't retried per call.** deepagents' summarisation middleware
+  calls the model directly (not through `wrap_model_call`), so `PhilModelRetryMiddleware` doesn't
+  cover it; a transient error there still falls back to `call_with_retry` re-running the whole
+  agent (the pre-fix behaviour), which is rare but repeats earlier calls and tools.
+

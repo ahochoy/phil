@@ -38,7 +38,7 @@ class RunConfig(_Section):
     tester_mode: Literal["run", "task+run"] = "run"
     max_attempts_per_phase: int = 3
     max_review_rounds: int = 2
-    max_tokens: int = 400_000
+    max_tokens: int = 1_500_000  # every model call counts (sub-agents, failed tries); cost is the main guard
     max_cost_usd: float = 2.0
     model_timeout_s: int = 180
     warn_at: float = 0.8

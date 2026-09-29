@@ -5,8 +5,18 @@ import pytest
 from tests.helpers import run_git
 
 
+def _is_live(request: pytest.FixtureRequest) -> bool:
+    return request.node.get_closest_marker("live") is not None
+
+
 @pytest.fixture(autouse=True)
-def phil_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def phil_home(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    if _is_live(request):
+        # Live tests (opt-in, `-m live`) call real APIs: let the real default price book use
+        # its real cache under the real PHIL_HOME instead of refetching into a temp dir.
+        from phil.store.paths import phil_home as real_phil_home
+
+        return real_phil_home()
     home = tmp_path / "phil_home"
     monkeypatch.setenv("PHIL_HOME", str(home))
     return home
@@ -38,7 +48,10 @@ def guard_against_price_fetches(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
-def no_price_fetch(monkeypatch: pytest.MonkeyPatch):
+def no_price_fetch(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    if _is_live(request):
+        yield  # live tests may fetch the real OpenRouter price list
+        return
     yield from guard_against_price_fetches(monkeypatch)
 
 

@@ -11,6 +11,10 @@ def test_missing_file_gives_defaults(tmp_path):
     assert config.run.max_attempts_per_phase == 3
     assert config.run.model_timeout_s == 180
     assert config.run.warn_at == 0.8
+    # every model call is counted since 4c (sub-agents, failed tries), so the token ceiling is
+    # generous; cost stays the primary guard
+    assert config.run.max_tokens == 1_500_000
+    assert config.run.max_cost_usd == 2.0
     assert config.models == {}
 
 
