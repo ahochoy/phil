@@ -34,7 +34,7 @@ A run ends at a reviewed `phil/<run-id>` branch in a worktree under `~/.phil`. T
 
 - **When:** the chat's completion notice for a `completed` run with a base branch asks `Open a PR for r-7f3a → main? (y/n)`; `y` publishes on a job thread and posts the result. `phil pr <run>` does the same from the CLI. Refused (one clear line, no change) for runs that aren't `completed`, runs already published, runs with no base branch (detached HEAD — `phil pr <run> --base <branch>` supplies one), and when `Publisher.available()` gives a reason (printed with its fix).
 - **Steps:** push the branch; create the PR (`--base <base_branch> --head phil/<run-id>`); store `pr_url`, `pr_number`, `pr_state="open"`; print `Opened PR #12: <url>`. A failed push or create prints the error line; the run is unchanged and the command can be repeated.
-- **Title:** the plan's goal, one line, capped at 72 characters.
+- **Title:** `<KEYWORD>: <first sentence of the plan's description>`, one line, capped at 72 characters (the `Plan` contract has no separate goal field; its description is the one-line approach).
 - **Body** (code-rendered from the run's records — no model call):
   1. `## Action needed` — open issues (deduplicated, from `open_issues.json`), still-open assumptions, and failing checks; or `None.`
   2. `## What changed` — the goal, then one line per task (id, title, status).
@@ -46,8 +46,8 @@ A run ends at a reviewed `phil/<run-id>` branch in a worktree under `~/.phil`. T
 ### 3.4 Noticing the merge
 
 - The PR's state is the only reliable merge signal (squash merges break git ancestry). Phil checks runs whose `pr_state` is `open`:
-  - from the chat's `RunWatcher` while a chat is open (at most every 5 minutes), and
-  - when `phil`, `phil runs` or `phil show` starts, skipping runs checked in the last 5 minutes (`pr_checked_at`).
+  - from the chat while it is open: a background check when the chat starts and every 5 minutes after (the `RunWatcher` stops when its run finishes, so this is a separate timer), and
+  - when `phil runs` or `phil show` starts, skipping runs checked in the last 5 minutes (`pr_checked_at`).
   Checks run in the background of the chat and never block its prompt; a failed check is logged and retried next time.
 - `merged` → clean up (§3.5) and report `r-7f3a merged (#12); cleaned up.` (in the chat, or on stdout for the CLI commands).
 - `closed` without merge → record `pr_state="closed"` and say `r-7f3a's PR #12 was closed without merging; phil clean r-7f3a removes it.` once. No automatic cleanup.
