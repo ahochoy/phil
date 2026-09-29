@@ -58,6 +58,7 @@ def run_chat(repo, answers, scripts, config=None, submit=None, wake=None, **kw):
             ProjectPaths(info.slug), run_id, holder["controller"].post, alive=lambda r: False, starting=lambda e: False
         ),
     )
+    kw.setdefault("start_pr_monitor", False)  # only the PR monitor tests start its timer thread
     controller = ChatController(info, config, conn, console, io, factory=factory, **kw)
     holder["controller"] = controller
     controller.run()
@@ -131,7 +132,7 @@ def test_approval_rereads_phil_toml(calc_repo):
     spawned = []
     io = ChatIO(ask=ask, spawn=lambda root, run_id, mode, decision=None: spawned.append(run_id))
     factory = ScriptedAgentFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
-    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory).run()
+    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory, start_pr_monitor=False).run()
     text = console.export_text()
     assert "implementer, tester, reviewer" in text  # first y refused
     runs = list_runs(conn)
@@ -151,7 +152,7 @@ def test_approval_reports_a_broken_phil_toml(calc_repo):
 
     io = ChatIO(ask=ask, spawn=lambda *a: None)
     factory = ScriptedAgentFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
-    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory).run()
+    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory, start_pr_monitor=False).run()
     assert "phil.toml" in console.export_text()
     assert list_runs(conn) == []
 
@@ -200,7 +201,7 @@ def test_spawn_failure_reports_resume_and_keeps_chat_alive(calc_repo):
 
     io = ChatIO(ask=lambda prompt: queue.pop(0) if queue else None, spawn=spawn)
     factory = ScriptedAgentFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
-    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory).run()
+    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory, start_pr_monitor=False).run()
     text = console.export_text()
     runs = list_runs(conn)
     assert len(runs) == 1
@@ -223,7 +224,7 @@ def test_keyboard_interrupt_at_idle_prompt_continues(calc_repo):
         return "/quit"
 
     io = ChatIO(ask=ask, spawn=lambda *a: None)
-    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io).run()
+    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, start_pr_monitor=False).run()
     assert "Cancelled." in console.export_text()
 
 
@@ -266,7 +267,7 @@ def test_base_sha_resolves_at_approval_when_not_pinned(calc_repo):
 
     io = ChatIO(ask=ask, spawn=lambda *a: None)
     factory = ScriptedAgentFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
-    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory).run()
+    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory, start_pr_monitor=False).run()
     new_sha = run_git(calc_repo, "rev-parse", "HEAD").strip()
     runs = list_runs(conn)
     assert new_sha != info.head_sha
@@ -287,7 +288,8 @@ def test_base_sha_stays_fixed_when_explicit(calc_repo):
     io = ChatIO(ask=ask, spawn=lambda *a: None)
     factory = ScriptedAgentFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
     ChatController(
-        info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory, base_sha=info.head_sha
+        info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory, base_sha=info.head_sha,
+        start_pr_monitor=False,
     ).run()
     runs = list_runs(conn)
     assert runs[0].base_sha == info.head_sha

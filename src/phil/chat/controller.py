@@ -1,10 +1,11 @@
+import logging
 import queue
 import shutil
 import sqlite3
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from rich.console import Console
@@ -23,6 +24,8 @@ from phil.chat.state import ChatState, RunView
 from phil.chat.watcher import RunWatcher
 from phil.config import ConfigError, PhilConfig, load_config
 from phil.contracts import Goal, Plan, PlanCritique, Ref, RunStatus
+from phil.publish import publisher as publishing
+from phil.publish.service import PrChange, PublishRefused, change_line, publish_run, sweep_prs
 from phil.repo import RepoInfo, resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, worker_starting
 from phil.store.db import connect
@@ -35,6 +38,8 @@ from phil.ui.brief_view import render_brief
 from phil.ui.plan_view import _clip, render_goal, render_plan
 from phil.ui.runs_view import render_runs
 from phil.ui.show_view import detail_text, render_show, show_refs
+
+logger = logging.getLogger(__name__)  # the chat sends `phil` loggers to its phil.log, never the console
 
 WAKE = object()  # ChatIO.ask returns this when a background event interrupted the prompt
 MAX_QUESTION_ROUNDS = 2
@@ -50,6 +55,7 @@ PROMPTS = {
     "edit": "What should change? › ",
     "confirm_replace": "Replace the current goal? [y / n] › ",
     "hint": "Hint for the retry (optional) › ",
+    "confirm_pr": "Open a PR? [y / n] › ",
 }
 # The transcript's `stage` label for a non-command input typed at each chat stage (4a's labels).
 TRANSCRIPT_STAGES = {"idle": "goal", "intake": "goal", "planning": "goal", "running": "goal", "questions": "answers"}
@@ -58,6 +64,8 @@ RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
 RUN_EVENTS = ("run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning")
 RECENT_EVENTS = 10  # run events a /btw answer sees
 NOTICE_REFS = 3  # details a completion notice lists
+PR_CHECK_INTERVAL_S = 300  # how often an open chat checks its runs' PRs for merges
+PR_JOB_ERROR_PREFIXES = ("PublishRefused: ", "PublishError: ")
 NOT_IN_SNAPSHOT = "That detail isn't a file in the repo snapshot; not opening it."
 
 
@@ -92,6 +100,8 @@ class ChatController:
         resume: bool = False,
         worker_alive: Callable[[object], bool] = is_worker_alive,
         worker_starting: Callable[[object], bool] = worker_starting,
+        pr_check_interval_s: float = PR_CHECK_INTERVAL_S,
+        start_pr_monitor: bool = True,
     ) -> None:
         self.info, self.config, self.conn, self.console, self.io = info, config, conn, console, io
         # `conn` belongs to the main thread; each job opens its own connection to this database.
@@ -145,6 +155,14 @@ class ChatController:
         # (`_refs_tree`, None if it had none), never from the live tree or anywhere else on disk.
         self._refs_from_btw = False
         self._refs_tree: Path | None = None
+        self._pr_offer: str | None = None  # the completed run the confirm_pr question is about
+        self._pr_step_generation: int | None = None  # the generation whose toolbar shows "Opening PR"
+        # The PR monitor: a daemon timer thread that only submits `pr_changes` jobs (never prints and
+        # never touches `self.conn`); `_pr_stop` ends it and `_pr_busy` skips a tick while a job runs.
+        self._pr_interval, self._start_pr_monitor = pr_check_interval_s, start_pr_monitor
+        self._pr_stop = threading.Event()
+        self._pr_busy = threading.Event()
+        self._pr_thread: threading.Thread | None = None
 
     # --- events and jobs -------------------------------------------------------------------------
 
@@ -160,31 +178,39 @@ class ChatController:
         *,
         generation: int | None = None,
         failed: str = "job_failed",
+        failed_data: dict | None = None,
+        after: Callable[[], None] | None = None,
     ) -> None:
         """Run `fn` through io.submit; it reports only by posting `kind` (or `failed`) events.
 
         `fn` gets the job's own AgentContext: a SQLite connection can't cross threads, so each job opens
         one on its thread (agent telemetry and parking write through it) and closes it when done.
         Goal jobs carry the current goal generation; side jobs (/btw) pass -1 so they're never stale.
+        `failed_data` is added to a failure event; `after` runs on the job's thread once it has posted.
         """
         generation = self._generation if generation is None else generation
 
         def work() -> None:
-            conn = None
             try:
-                conn = connect(self._db_path)
-                event = ChatEvent(kind, fn(replace(self.ctx, conn=conn)), generation)
-            except Exception as exc:
-                event = ChatEvent(failed, {"job": kind, "error": f"{type(exc).__name__}: {exc}"}, generation)
+                conn = None
+                try:
+                    conn = connect(self._db_path)
+                    event = ChatEvent(kind, fn(replace(self.ctx, conn=conn)), generation)
+                except Exception as exc:
+                    data = {"job": kind, "error": f"{type(exc).__name__}: {exc}", **(failed_data or {})}
+                    event = ChatEvent(failed, data, generation)
+                finally:
+                    if conn is not None:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                # Clear the step before posting: once posted, the main loop may start the next job and its step.
+                self._step(None, generation)
+                self.post(event)
             finally:
-                if conn is not None:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-            # Clear the step before posting: once posted, the main loop may start the next job and its step.
-            self._step(None, generation)
-            self.post(event)
+                if after is not None:
+                    after()
 
         self.io.submit(work)
 
@@ -278,6 +304,8 @@ class ChatController:
             stage = self.stage
             if stage == "confirm_replace":
                 stage = self._parent_stage
+            elif stage == "confirm_pr":
+                stage = "idle"  # the question isn't asked again; `phil pr` opens the PR later
             elif stage == "edit" or (stage == "planning" and self._revising and self._draft is not None):
                 stage = "approval"  # a reopened chat returns to the draft being revised
             draft = self._draft
@@ -325,8 +353,11 @@ class ChatController:
                 self._reopen()
             self._refresh_cost()
             self._refresh_parked()
+            if self._start_pr_monitor:
+                self._start_pr_monitor_thread()
             self._loop()
         finally:
+            self._stop_pr_monitor()
             self._stop_watcher()
             self._remove_snapshots()
             self._save()
@@ -378,6 +409,8 @@ class ChatController:
             self._edit(text)
         elif stage == "confirm_replace":
             self._confirm_replace(text)
+        elif stage == "confirm_pr":
+            self._confirm_pr(text)
         elif stage == "paused":
             self._pause_answer(text)
         elif stage == "hint":
@@ -436,6 +469,8 @@ class ChatController:
         elif self.stage in ("paused", "hint"):
             self._set_stage("running")
             self.console.print("[phil.muted]Answer it later with /answer.[/]")
+        elif self.stage == "confirm_pr":
+            self._decline_pr()
         else:
             self.console.print("[phil.muted]Cancelled.[/]")
 
@@ -815,6 +850,8 @@ class ChatController:
             self._reset_goal()  # the chat takes its next goal
         self._set_stage("idle")
         self._run_notice(run_id, state, data)
+        if state == "completed":
+            self._offer_pr(run_id)
 
     def _run_notice(self, run_id: str, state: str, data: dict) -> None:
         rid = escape(run_id)
@@ -1011,6 +1048,117 @@ class ChatController:
         self.state.add_btw(-1)
         self._safe_note("btw_failed", error=data["error"])
         self.console.print(f"[phil.error]/btw failed: {escape(data['error'])}[/]")
+
+    # --- pull requests ---------------------------------------------------------------------------
+
+    def _offer_pr(self, run_id: str) -> None:
+        """After a completed run's notice: ask to open its PR, if it has a base branch and no PR yet."""
+        record = get_run(self.conn, run_id)
+        if record is None or record.base_branch is None or record.pr_url is not None:
+            return
+        self.console.print(f"Open a PR for [phil.id]{escape(run_id)}[/] → {escape(record.base_branch)}?")
+        self._pr_offer = run_id
+        self._set_stage("confirm_pr")
+
+    def _confirm_pr(self, text: str) -> None:
+        choice = text.lower()
+        if choice in ("y", "yes"):
+            run_id, self._pr_offer = self._pr_offer, None
+            self._set_stage("idle")  # the chat stays usable while the PR opens
+            self._open_pr(run_id)
+            return
+        self._decline_pr()
+        if choice not in ("", "n", "no"):
+            self._begin_goal(text)  # a goal typed at the question isn't lost
+
+    def _decline_pr(self) -> None:
+        run_id, self._pr_offer = self._pr_offer, None
+        self.console.print(f"No PR. `phil pr {escape(run_id or '')}` opens one later.")
+        self._set_stage("idle")
+
+    def _open_pr(self, run_id: str) -> None:
+        self.console.print(f"Opening a PR for [phil.id]{escape(run_id)}[/]…")
+        generation = self._generation
+        self._pr_step_generation = generation
+        self._step("Opening PR", generation)
+        info = self.info
+
+        def fn(ctx: AgentContext) -> dict:
+            record = get_run(ctx.conn, run_id)
+            if record is None:
+                raise PublishRefused(f"{run_id} no longer exists")
+            record = publish_run(info, ctx.conn, record, publishing.make_publisher(info.root))
+            return {"run_id": run_id, "number": record.pr_number, "url": record.pr_url}
+
+        self._job("pr_opened", fn, generation=-1, failed="pr_open_failed", failed_data={"run_id": run_id})
+
+    def _clear_pr_step(self) -> None:
+        generation, self._pr_step_generation = self._pr_step_generation, None
+        if generation is not None:
+            self._step(None, generation)  # a newer goal's step is left alone
+
+    def _on_pr_opened(self, data: dict) -> None:
+        self._clear_pr_step()
+        self._safe_note("pr_opened", run_id=data["run_id"], number=data["number"], url=data["url"])
+        self.console.print(f"Opened PR #{data['number']}: {escape(str(data['url']))}")
+
+    def _on_pr_open_failed(self, data: dict) -> None:
+        self._clear_pr_step()
+        error = str(data.get("error", ""))
+        for prefix in PR_JOB_ERROR_PREFIXES:
+            error = error.removeprefix(prefix)
+        run_id = str(data.get("run_id", ""))
+        self._safe_note("pr_open_failed", run_id=run_id, error=error)
+        self.console.print(f"[phil.warn]Couldn't open the PR: {escape(error)}[/]")
+        self.console.print(f"Fix that, then `phil pr {escape(run_id)}`.")
+
+    def _start_pr_monitor_thread(self) -> None:
+        self._pr_stop.clear()
+        thread = threading.Thread(target=self._pr_monitor, name="phil-pr-monitor", daemon=True)
+        thread.start()
+        self._pr_thread = thread
+
+    def _pr_monitor(self) -> None:
+        """Timer thread: check PRs now, then every interval, until the chat ends. Only submits jobs."""
+        while not self._pr_stop.is_set():
+            try:
+                self._pr_tick()
+            except Exception:
+                logger.warning("PR check couldn't start", exc_info=True)
+            if self._pr_stop.wait(self._pr_interval):
+                return
+
+    def _pr_tick(self) -> None:
+        if self._pr_stop.is_set() or self._pr_busy.is_set():
+            return  # quitting, or the previous check is still running
+        self._pr_busy.set()
+        info = self.info
+
+        def fn(ctx: AgentContext) -> dict:
+            changes = sweep_prs(info, ctx.conn, publishing.make_publisher(info.root))
+            return {"changes": [asdict(change) for change in changes]}
+
+        try:
+            self._job("pr_changes", fn, generation=-1, failed="pr_changes_failed", after=self._pr_busy.clear)
+        except BaseException:
+            self._pr_busy.clear()
+            raise
+
+    def _stop_pr_monitor(self) -> None:
+        self._pr_stop.set()
+        thread, self._pr_thread = self._pr_thread, None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+
+    def _on_pr_changes(self, data: dict) -> None:
+        for raw in data.get("changes", []):
+            change = PrChange(**raw)
+            style = "phil.muted" if change.kind == "merged" else "phil.warn"
+            self.console.print(f"[{style}]{escape(change_line(change))}[/]")
+        self._refresh_parked()
+
+    def _on_pr_changes_failed(self, data: dict) -> None:
+        logger.warning("PR check failed: %s", data.get("error"))  # phil.log only; the next check retries
 
     # --- reopening -------------------------------------------------------------------------------
 

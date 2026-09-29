@@ -146,3 +146,89 @@ def test_change_lines():
     assert change_line(PrChange("r-7f3a", 12, "warning", "could not delete origin/x")) == (
         "r-7f3a merged (#12); cleaned up, but could not delete origin/x"
     )
+
+
+def test_a_run_with_a_live_worker_is_skipped(calc_repo):
+    import os
+
+    from phil.store.db import utcnow
+
+    info, conn, record, paths, fake = published_run(calc_repo)
+    fake.states[12] = "merged"
+    update_run(conn, record.run_id, pid=os.getpid(), heartbeat_at=utcnow())
+
+    assert sweep_prs(info, conn, fake, force=True) == []
+
+    assert fake.calls == []
+    assert get_run(conn, record.run_id).state == "completed"
+
+
+def test_a_starting_worker_is_skipped(calc_repo):
+    import os
+
+    from phil.store.events import run_events
+
+    info, conn, record, paths, fake = published_run(calc_repo)
+    fake.states[12] = "merged"
+    run_events(paths, record.run_id).append("spawn", pid=os.getpid(), mode="continue")
+
+    assert sweep_prs(info, conn, fake, force=True) == []
+
+    assert fake.calls == []
+    assert get_run(conn, record.run_id).state == "completed"
+
+
+def test_a_run_that_is_not_settled_is_skipped(calc_repo):
+    info, conn, record, paths, fake = published_run(calc_repo)
+    fake.states[12] = "merged"
+    for state in ("pending", "running", "escalated"):
+        conn.execute("UPDATE runs SET state = ? WHERE run_id = ?", (state, record.run_id))
+        conn.commit()
+
+        assert sweep_prs(info, conn, fake, force=True) == []
+
+        assert fake.calls == []
+        assert get_run(conn, record.run_id).pr_state == "open"
+
+
+def test_an_unexpected_error_is_a_failed_cleanup_and_the_sweep_goes_on(calc_repo, monkeypatch):
+    info, conn, record, paths, fake = published_run(calc_repo)
+    fake.states[12] = "merged"
+    calls = []
+
+    def boom(*args, **kwargs):
+        calls.append(args)
+        raise OSError("disk full")
+
+    monkeypatch.setattr("phil.publish.service.append_learnings", boom)
+    changes = sweep_prs(info, conn, fake)
+
+    assert changes == [PrChange(record.run_id, 12, "cleanup_failed", "OSError: disk full")]
+    stored = get_run(conn, record.run_id)
+    assert (stored.pr_state, stored.state) == ("merged", "completed")
+
+
+def test_one_failing_run_does_not_stop_the_others(calc_repo, monkeypatch):
+    import phil.publish.service as service
+
+    info, conn, first, paths, fake = published_run(calc_repo)
+    second = finished_run(calc_repo)[1]
+    second = publish_run(info, conn, get_run(conn, second.run_id), fake)
+    update_run(conn, second.run_id, pr_checked_at="2000-01-01T00:00:00+00:00")
+    fake.states[12] = "merged"
+    fake.states[13] = "merged"
+    real_clean_run = service.clean_run
+
+    def clean_one(info_, conn_, record, **kwargs):
+        if record.run_id == first.run_id:
+            raise RuntimeError("unexpected")
+        return real_clean_run(info_, conn_, record, **kwargs)
+
+    monkeypatch.setattr("phil.publish.service.clean_run", clean_one)
+    changes = sweep_prs(info, conn, fake)
+
+    assert sorted(changes, key=lambda c: c.number) == [
+        PrChange(first.run_id, 12, "cleanup_failed", "RuntimeError: unexpected"),
+        PrChange(second.run_id, 13, "merged"),
+    ]
+    assert get_run(conn, second.run_id).state == "cleaned"

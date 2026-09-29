@@ -249,7 +249,7 @@ def test_a_chat_runs_real_jobs_through_submit_post_and_wake(calc_repo):
             conn = connect(ProjectPaths(info.slug).db_path)
             try:
                 controller = ChatController(
-                    info, PhilConfig(models=TEST_MODELS), conn, console, io_,
+                    info, PhilConfig(models=TEST_MODELS), conn, console, io_, start_pr_monitor=False,
                     factory=ScriptedAgentFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]}),
                     watcher_factory=lambda run_id: ManualWatcher(
                         ProjectPaths(info.slug), run_id, box["controller"].post,

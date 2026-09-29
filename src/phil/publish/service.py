@@ -10,15 +10,19 @@ from datetime import UTC, datetime
 
 from phil.publish.learnings import append_learnings, learnings_entry
 from phil.publish.pr_body import find_pr_template, pr_title, render_pr_body
-from phil.publish.publisher import Publisher, PublishError
+from phil.publish.publisher import Publisher
 from phil.repo import RepoInfo
 from phil.run.cleanup import CleanError, clean_run
-from phil.run.launch import is_worker_alive
+from phil.run.launch import is_worker_alive, worker_starting
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import utcnow
+from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, get_run, list_runs, update_run
 from phil.store.telemetry import run_usage
+
+
+UNSETTLED = ("pending", "running", "escalated")  # a worker may own these runs; the sweep leaves them
 
 
 class PublishRefused(Exception):
@@ -123,8 +127,10 @@ def sweep_prs(
     """Check runs with an open PR; clean up merged ones and record closed ones.
 
     Open PRs are checked at most every `min_interval_s` seconds (unless `force`); merged runs
-    whose cleanup failed earlier are always retried. Runs with a live worker are skipped, and a
-    `PublishError` from `pr_state` skips that run this time. Never prints.
+    whose cleanup failed earlier are always retried. Runs that are pending/running/escalated or
+    have a live or starting worker are skipped, and an error from `pr_state` skips that run this
+    time. Any error while cleaning one merged run becomes its `cleanup_failed` change and the
+    sweep goes on. Never prints.
     """
     now = now or datetime.now(UTC)
     candidates = [
@@ -139,26 +145,30 @@ def sweep_prs(
     if not candidates or publisher.available() is not None:
         return []
 
+    paths = ProjectPaths(info.slug)
     changes: list[PrChange] = []
     for record in candidates:
-        if is_worker_alive(record):
+        if record.state in UNSETTLED or is_worker_alive(record) or worker_starting(run_events(paths, record.run_id)):
             continue
         number = record.pr_number
         assert number is not None
         if record.pr_state == "open":
             try:
                 state = publisher.pr_state(number)
-            except PublishError:
+                record = update_run(conn, record.run_id, pr_checked_at=utcnow())
+                if state == "closed":
+                    update_run(conn, record.run_id, pr_state="closed")
+                    changes.append(PrChange(record.run_id, number, "closed"))
+                    continue
+                if state != "merged":
+                    continue
+                record = update_run(conn, record.run_id, pr_state="merged")
+            except Exception:  # PublishError or a surprise: skip this run until the next sweep
                 continue
-            record = update_run(conn, record.run_id, pr_checked_at=utcnow())
-            if state == "closed":
-                update_run(conn, record.run_id, pr_state="closed")
-                changes.append(PrChange(record.run_id, number, "closed"))
-                continue
-            if state != "merged":
-                continue
-            record = update_run(conn, record.run_id, pr_state="merged")
-        changes.append(_clean_merged(info, conn, record, publisher))
+        try:
+            changes.append(_clean_merged(info, conn, record, publisher))
+        except Exception as exc:  # one run's failure must not stop the sweep (the chat runs it unattended)
+            changes.append(PrChange(record.run_id, number, "cleanup_failed", f"{type(exc).__name__}: {exc}"))
     return changes
 
 

@@ -213,7 +213,9 @@ def test_completion_notice_then_next_goal(calc_repo):
     summary = ProjectPaths(resolve_repo(calc_repo).slug).run_dir(run_id) / "summary.md"
     assert f"Summary:{summary}" in "".join(text.split())  # the long path may wrap
     assert seen["view"] == (None, False, None)
-    assert prompts[3] == "you › "
+    # The chat asks to open the PR; a goal typed at that question starts as the next goal.
+    assert prompts[3] == "Open a PR? [y / n] › "
+    assert f"No PR. `phil pr {run_id}` opens one later." in text
     assert "Goal: Add multiply" in text and "Plan dropped." in text
     assert "Plan MUL v2" in text  # plan versions count per chat
     state = json.loads((session_dir(calc_repo) / "state.json").read_text())
