@@ -1,0 +1,25 @@
+{
+  "data": [
+    {
+      "id": "openai/gpt-6-sol",
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.00001"
+      }
+    },
+    {
+      "id": "openai/gpt-6-luna",
+      "pricing": {
+        "prompt": "0.0000001",
+        "completion": "0.0000005"
+      }
+    },
+    {
+      "id": "anthropic/claude-flash",
+      "pricing": {
+        "prompt": "0.000003",
+        "completion": "0.000012"
+      }
+    }
+  ]
+}

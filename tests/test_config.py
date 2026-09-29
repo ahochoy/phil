@@ -9,7 +9,34 @@ def test_missing_file_gives_defaults(tmp_path):
     config = load_config(tmp_path)
     assert config.run.tester_mode == "run"
     assert config.run.max_attempts_per_phase == 3
+    assert config.run.model_timeout_s == 180
+    assert config.run.warn_at == 0.8
+    # every model call is counted since 4c (sub-agents, failed tries), so the token ceiling is
+    # generous; cost stays the primary guard
+    assert config.run.max_tokens == 1_500_000
+    assert config.run.max_cost_usd == 2.0
     assert config.models == {}
+
+
+def test_model_timeout_s_and_warn_at_are_loaded(tmp_path):
+    (tmp_path / "phil.toml").write_text("[run]\nmodel_timeout_s = 60\nwarn_at = 0.5\n")
+    config = load_config(tmp_path)
+    assert config.run.model_timeout_s == 60
+    assert config.run.warn_at == 0.5
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_non_positive_model_timeout_s_is_rejected(tmp_path, value):
+    (tmp_path / "phil.toml").write_text(f"[run]\nmodel_timeout_s = {value}\n")
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
+
+
+@pytest.mark.parametrize("value", [0, 1, -0.1, 1.1])
+def test_warn_at_outside_open_unit_interval_is_rejected(tmp_path, value):
+    (tmp_path / "phil.toml").write_text(f"[run]\nwarn_at = {value}\n")
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
 
 
 def test_models_must_be_set_per_role(tmp_path):

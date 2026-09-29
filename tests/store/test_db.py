@@ -43,3 +43,17 @@ def test_new_migration_applies_once(tmp_path, monkeypatch):
     columns = [row["name"] for row in conn.execute("PRAGMA table_info(runs)")]
     assert columns.count("note") == 1
     assert user_version(conn) == len(MIGRATIONS) + 1
+
+
+def test_telemetry_table_has_the_new_observability_columns(tmp_path):
+    conn = connect(tmp_path / "phil.db")
+    columns = [row["name"] for row in conn.execute("PRAGMA table_info(telemetry)")]
+    for expected in ("chat_id", "model_calls", "tool_calls", "retries", "cost_source"):
+        assert expected in columns
+
+
+def test_calls_table_exists(tmp_path):
+    conn = connect(tmp_path / "phil.db")
+    columns = [row["name"] for row in conn.execute("PRAGMA table_info(calls)")]
+    for expected in ("id", "telemetry_id", "model", "input_tokens", "output_tokens", "cost_usd", "cost_source", "created_at"):
+        assert expected in columns

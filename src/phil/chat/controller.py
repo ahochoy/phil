@@ -9,6 +9,7 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.markup import escape
+from rich.text import Text
 
 from phil.agents.invoke import AgentContext
 from phil.chat.approval import effective_test_cmd, git_policy_note, launch_problems, test_cmd_differs, test_cmd_problem
@@ -21,23 +22,27 @@ from phil.chat.snapshot import export_tree
 from phil.chat.state import ChatState, RunView
 from phil.chat.watcher import RunWatcher
 from phil.config import ConfigError, PhilConfig, load_config
-from phil.contracts import Goal, Plan, PlanCritique, RunStatus
+from phil.contracts import Goal, Plan, PlanCritique, Ref, RunStatus
 from phil.repo import RepoInfo, resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, worker_starting
 from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
-from phil.store.runs import get_run
-from phil.store.telemetry import run_totals
+from phil.store.parked import open_count, park
+from phil.store.runs import get_run, list_runs
+from phil.store.telemetry import budget_warning_line, chat_usage, run_totals
 from phil.ui.brief_view import render_brief
 from phil.ui.plan_view import _clip, render_goal, render_plan
 from phil.ui.runs_view import render_runs
+from phil.ui.show_view import detail_text, render_show, show_refs
 
 WAKE = object()  # ChatIO.ask returns this when a background event interrupted the prompt
 MAX_QUESTION_ROUNDS = 2
 HELP = (
     "Type a goal to plan it. Commands: /runs, /btw <question> (ask while work continues), "
-    "/answer (a paused run's question), /resume (a failed or stopped run), /help, /quit (or Ctrl-D)."
+    "/answer (a paused run's question), /resume (a failed or stopped run), /show (the chat's run: usage "
+    "and numbered details), /more <n> (print detail n), /park <note> (set an idea aside), /help, "
+    "/quit (or Ctrl-D)."
 )
 PROMPTS = {
     "questions": "answers (or 'go' to plan anyway) › ",
@@ -50,8 +55,10 @@ PROMPTS = {
 TRANSCRIPT_STAGES = {"idle": "goal", "intake": "goal", "planning": "goal", "running": "goal", "questions": "answers"}
 GOAL_JOB_STAGES = ("intake", "planning")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
-RUN_EVENTS = ("run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error")
+RUN_EVENTS = ("run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning")
 RECENT_EVENTS = 10  # run events a /btw answer sees
+NOTICE_REFS = 3  # details a completion notice lists
+NOT_IN_SNAPSHOT = "That detail isn't a file in the repo snapshot; not opening it."
 
 
 @dataclass
@@ -95,8 +102,9 @@ class ChatController:
         self.session = session or ChatSession.create(ProjectPaths(info.slug))
         extra = {"sleep": sleep} if sleep is not None else {}
         self.ctx = AgentContext(
-            config=config, conn=conn, layer="chat", artifacts=self.session.artifacts, factory=factory, **extra
-        )
+            config=config, conn=conn, layer="chat", artifacts=self.session.artifacts, factory=factory,
+            chat_id=self.session.id, **extra
+        )  # jobs copy this context (with their own connection), so their telemetry is tagged with the chat
         self.overview = repo_overview(info.root)
         self.planner = Planner(self.ctx, self.overview)
         self._intake_calls = 0
@@ -132,6 +140,11 @@ class ChatController:
         self._btw_calls = 0
         self._resume = resume
         self._write_warned = False  # a failed state/transcript write was reported
+        self._last_refs: list[Ref] = []  # what /more <n> expands: the last /show, completion notice or /btw details
+        # /btw details are model-written paths: they're opened only inside that answer's repo snapshot
+        # (`_refs_tree`, None if it had none), never from the live tree or anywhere else on disk.
+        self._refs_from_btw = False
+        self._refs_tree: Path | None = None
 
     # --- events and jobs -------------------------------------------------------------------------
 
@@ -212,6 +225,18 @@ class ChatController:
                 # Only a failed goal-job result can strand the goal's stage; a failed /btw answer or
                 # run event leaves the questions / edit / approval stage as it was.
                 self._recover()
+        finally:
+            # A finished job or a run progress/done event may have added telemetry.
+            self._refresh_cost()
+
+    def _refresh_cost(self) -> None:
+        """The chat's running cost on the toolbar (its own agent calls plus its runs'); main thread only."""
+        try:
+            totals = chat_usage(self.conn, self.session.id)
+        except Exception:
+            return  # the toolbar keeps the last cost; the chat carries on
+        if totals.tokens or totals.cost_usd:
+            self.state.set_cost(totals.cost_usd, totals.cost_source)
 
     def _recover(self) -> None:
         """After a failed goal-job handler, return to a stage the user can act on."""
@@ -298,6 +323,8 @@ class ChatController:
         try:
             if self._resume:
                 self._reopen()
+            self._refresh_cost()
+            self._refresh_parked()
             self._loop()
         finally:
             self._stop_watcher()
@@ -376,6 +403,12 @@ class ChatController:
             self._answer_command()
         elif command == "/resume":
             self._resume_command()
+        elif command == "/show":
+            self._show_command()
+        elif command == "/more":
+            self._more_command(text[len(command):].strip())
+        elif command == "/park":
+            self._park_command(text[len(command):].strip())
         else:
             self.console.print(f"Unknown command {escape(command)}. Try /help.")
         return True
@@ -691,6 +724,10 @@ class ChatController:
             )
         )
 
+    def _on_budget_warning(self, data: dict) -> None:
+        line = budget_warning_line(self._run_id, **data)
+        self.console.print(f"[phil.warn]{escape(line)}[/]")
+
     def _on_run_paused(self, data: dict) -> None:
         escalation = data["escalation"]
         if self._answer_sent:
@@ -771,6 +808,7 @@ class ChatController:
         self._pause, self._lost, self._answer_sent = None, False, False
         run_id, state = self._run_id, data.get("state", "")
         self._safe_note("run_done", run_id=run_id, state=state)
+        self._refresh_parked()  # workers may have parked items during the run
         if state not in ("failed", "stopped"):  # failed/stopped keep the run id for /resume
             self._done_seen = True
             self._run_id = None
@@ -786,6 +824,7 @@ class ChatController:
             detail = f": {escape(attention)}" if attention else "."
             self.console.print(f"[phil.warn]Run {rid} {escape(state)}{detail}[/]")
             self.console.print("Continue it with /resume.")
+            self._notice_refs(run_id)
             return
         if state == "completed":
             tokens, cost = data.get("tokens", 0), data.get("cost_usd", 0.0)
@@ -800,6 +839,17 @@ class ChatController:
         else:
             self.console.print(f"Run {rid} was {escape(state)}.")
             self.console.print(summary)
+        self._notice_refs(run_id)
+
+    def _notice_refs(self, run_id: str) -> None:
+        """List the run's first few details, numbered for /more."""
+        refs = show_refs(ProjectPaths(self.info.slug), run_id)[:NOTICE_REFS]
+        if not refs:
+            return
+        self._set_refs(refs)
+        self.console.print("[phil.muted]Details (/more <n> prints one, /show lists all):[/]")
+        for number, ref in enumerate(refs, start=1):
+            self.console.print(f"  [phil.id]{number}[/] {escape(ref.label)}")
 
     def _on_worker_lost(self, data: dict) -> None:
         self._lost = True
@@ -838,6 +888,70 @@ class ChatController:
         self.console.print(f"Continuing [phil.id]{escape(run_id)}[/] from its last checkpoint.")
         self._follow()
 
+    # --- /show, /more, /park ----------------------------------------------------------------------
+
+    def _set_refs(self, refs: list[Ref], *, btw_tree: Path | None = None, from_btw: bool = False) -> None:
+        self._last_refs, self._refs_from_btw, self._refs_tree = list(refs), from_btw, btw_tree
+
+    def _refresh_parked(self) -> None:
+        try:
+            self.state.set_parked(open_count(self.conn))
+        except Exception:
+            pass  # the toolbar keeps the last count
+
+    def _chat_run(self) -> str | None:
+        """The run this chat follows, else the last run it started."""
+        if self._run_id is not None:
+            return self._run_id
+        mine = [record for record in list_runs(self.conn) if record.chat_id == self.session.id]
+        return mine[0].run_id if mine else None
+
+    def _show_command(self) -> None:
+        run_id = self._chat_run()
+        if run_id is None or get_run(self.conn, run_id) is None:
+            self.console.print("No run to show yet.")
+            return
+        self._set_refs(render_show(self.console, self.conn, ProjectPaths(self.info.slug), run_id))
+
+    def _more_command(self, arg: str) -> None:
+        if not arg.isdigit():
+            self.console.print("Usage: /more <n>")
+            return
+        n = int(arg)
+        if not 1 <= n <= len(self._last_refs):
+            self.console.print(f"No detail #{n}. Use /show to list them.")
+            return
+        ref = self._last_refs[n - 1]
+        if self._refs_from_btw:
+            path = _inside_snapshot(self._refs_tree, ref.path)
+            if path is None:
+                self.console.print(NOT_IN_SNAPSHOT)
+                return
+        else:
+            path = Path(ref.path)  # Phil's own listing: files under the run's directory
+        try:
+            text = detail_text(path)
+        except (OSError, UnicodeDecodeError) as exc:
+            self.console.print(f"[phil.error]Couldn't read {escape(str(path))}: {escape(type(exc).__name__)}[/]")
+            return
+        self.console.print(Text(text))  # plain text: never markup
+
+    def _park_command(self, note: str) -> None:
+        if not note:
+            self.console.print("Usage: /park <note>")
+            return
+        item = park(
+            self.conn,
+            raised_by="user",
+            note=note,
+            why_not_now="parked from chat",
+            source=Ref(label=f"chat {self.session.id}", path=str(self.session.dir)),
+            run_id=self._run_id,
+        )
+        self._safe_note("parked", id=item.id, note=note)
+        self._refresh_parked()
+        self.console.print(f"Parked [phil.id]{escape(item.id)}[/].")
+
     # --- /btw ------------------------------------------------------------------------------------
 
     def _btw(self, question: str) -> None:
@@ -863,7 +977,7 @@ class ChatController:
                 ctx, question, goal=goal, plan=plan, run=run, recent_events=recent,
                 pending_question=pending, tree=tree, call=call,
             )
-            return {"brief": brief, "question": question}
+            return {"brief": brief, "question": question, "tree": tree}
 
         self._job("btw_answer", fn, generation=-1, failed="btw_failed")
 
@@ -889,7 +1003,9 @@ class ChatController:
         brief = data["brief"]
         self._safe_note("btw", question=data.get("question"), brief=brief.model_dump(mode="json"))
         self.console.print("[phil.muted]btw ›[/]")
-        render_brief(self.console, brief)
+        render_brief(self.console, brief, numbered=True)
+        if brief.details:
+            self._set_refs(brief.details, btw_tree=data.get("tree"), from_btw=True)
 
     def _on_btw_failed(self, data: dict) -> None:
         self.state.add_btw(-1)
@@ -980,6 +1096,28 @@ class ChatController:
                 f"[phil.muted]This chat keeps its base {escape(label)}; --base {escape(given[:7])} is ignored.[/]"
             )
         self._explicit_base_sha = kept
+
+
+def _inside_snapshot(tree: Path | None, raw: str) -> Path | None:
+    """A /btw detail path as a file inside its repo snapshot, or None.
+
+    The /btw agent reads the snapshot through deepagents' virtual filesystem, where `/` is the
+    snapshot root, so a leading `/` is read as the snapshot root too (`/calc.py` is the
+    snapshot's calc.py; `/etc/hosts` is `<snapshot>/etc/hosts`, which doesn't exist). `~`
+    paths, `..` escapes and symlinks resolving outside the snapshot are refused."""
+    if tree is None or not raw or raw.startswith("~"):
+        return None
+    relative = Path(raw.lstrip("/"))
+    if relative.is_absolute():  # e.g. a Windows drive path
+        return None
+    try:
+        root = tree.resolve(strict=True)
+        candidate = (root / relative).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        return None
+    return candidate
 
 
 def _count(value: object) -> int | None:

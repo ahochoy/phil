@@ -70,6 +70,53 @@ def test_budget_guard_runs_before_tester_and_review(make_harness, node, max_toke
     assert runner.resume(harness.engine, harness.graph, {"action": "continue"}).status == "completed"
 
 
+def test_budget_warning_fires_once_at_eighty_percent_and_completes(make_harness):
+    # warn_at defaults to 0.8; max_tokens=700 keeps every budget check under the 700-token limit
+    # (checks happen before that node's own call, so the run never sees >=700 at a check), but the
+    # review check (after 3 calls of 200 tokens each = 600) crosses warn_at * 700 = 560.
+    config = PhilConfig.model_validate({"run": {"max_tokens": 700}})
+    harness = make_harness(
+        {"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]},
+        config=config, usage=(160, 40, 0.0),
+    )
+    done = outcome_start(harness)
+    assert done.status == "completed"
+    warnings = [e for e in harness.deps.events.read()[0] if e["kind"] == "budget_warning"]
+    assert len(warnings) == 1
+    warning = warnings[0]
+    assert warning["tokens"] == 600
+    assert warning["max_tokens"] == 700
+    assert warning["cost_usd"] == 0.0
+    assert warning["max_cost_usd"] == 2.0
+    assert warning["cost_source"] == "reported"
+
+
+def test_budget_warning_also_fires_alongside_an_escalation_that_crosses_the_limit(make_harness):
+    config = PhilConfig.model_validate({"run": {"max_tokens": 100}})
+    harness = make_harness(
+        {"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]},
+        config=config, usage=(100, 20, 0.0),
+    )
+    paused = outcome_start(harness)
+    assert paused.escalation["reason"] == "budget"  # crossing 100% still escalates as before
+    warnings = [e for e in harness.deps.events.read()[0] if e["kind"] == "budget_warning"]
+    assert len(warnings) == 1
+    assert warnings[0]["tokens"] == 120
+
+
+def test_budget_warned_resets_when_continue_raises_the_limit(make_harness):
+    config = PhilConfig.model_validate({"run": {"max_tokens": 100}})
+    harness = make_harness(
+        {"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]},
+        config=config, usage=(100, 20, 0.0),
+    )
+    outcome_start(harness)
+    again = runner.resume(harness.engine, harness.graph, {"action": "continue"})
+    assert again.escalation["reason"] == "budget"  # the raised limit is crossed again by more usage
+    warnings = [e for e in harness.deps.events.read()[0] if e["kind"] == "budget_warning"]
+    assert [w["tokens"] for w in warnings] == [120, 240]  # fired once per limit, not just once ever
+
+
 def test_budget_abort(make_harness):
     config = PhilConfig.model_validate({"run": {"max_tokens": 100}})
     harness = make_harness({"implementer": [write_red]}, config=config, usage=(100, 20, 0.0))

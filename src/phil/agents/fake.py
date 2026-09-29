@@ -30,7 +30,7 @@ class FakeAgent:
         self.usage = usage
         self.calls: list[dict] = []
 
-    def invoke(self, payload: dict) -> dict:
+    def invoke(self, payload: dict, config: dict | None = None) -> dict:
         if not self.outputs:
             raise AssertionError(f"FakeAgent has no scripted output left (call {len(self.calls)})")
         self.calls.append(payload)
@@ -47,7 +47,13 @@ class FakeAgentFactory:
         self.tools_seen: list[list[str]] = []
 
     def __call__(
-        self, spec: AgentSpec, model: str, workdir: Path | None, tools: list[Callable[..., str]]
+        self,
+        spec: AgentSpec,
+        model: str,
+        workdir: Path | None,
+        tools: list[Callable[..., str]],
+        *,
+        timeout_s: int = 180,
     ) -> FakeAgent:
         self.built.append((spec.name, model))
         self.tools_seen.append([tool.__name__ for tool in tools])
@@ -70,7 +76,7 @@ class _ScriptedAgent:
         self.workdir = workdir
         self.tools = tools
 
-    def invoke(self, payload: dict) -> dict:
+    def invoke(self, payload: dict, config: dict | None = None) -> dict:
         script = self.factory.scripts.setdefault(self.role, [])
         if not script:
             raise AssertionError(f"no scripted output left for {self.role}")
@@ -92,6 +98,12 @@ class ScriptedAgentFactory:
         return {role: len(items) for role, items in self.scripts.items()}
 
     def __call__(
-        self, spec: AgentSpec, model: str, workdir: Path | None, tools: list[Callable[..., str]]
+        self,
+        spec: AgentSpec,
+        model: str,
+        workdir: Path | None,
+        tools: list[Callable[..., str]],
+        *,
+        timeout_s: int = 180,
     ) -> _ScriptedAgent:
         return _ScriptedAgent(self, spec.name, workdir, {tool.__name__: tool for tool in tools})

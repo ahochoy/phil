@@ -16,6 +16,7 @@ from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
+from phil.store.telemetry import budget_warning_line
 from tests.chat.conftest import critique, goal, plan
 from tests.chat.test_controller import FULL_SCRIPT, deferred, run_chat, session_dir
 
@@ -42,6 +43,19 @@ def escalate(summary="CALC-001 failed 3 attempts", options=("retry", "skip", "ab
         paths, run_id, conn = _run(controller)
         set_state(controller, "escalated", needs_attention=summary)
         run_events(paths, run_id).append("escalation", escalation={"summary": summary, "options": list(options)})
+        controller._watcher.poll_once()
+        return WAKE
+
+    return step
+
+
+def budget_warn(tokens=600, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0, cost_source="reported"):
+    def step(controller):
+        paths, run_id, conn = _run(controller)
+        run_events(paths, run_id).append(
+            "budget_warning", tokens=tokens, cost_usd=cost_usd, max_tokens=max_tokens,
+            max_cost_usd=max_cost_usd, cost_source=cost_source,
+        )
         controller._watcher.poll_once()
         return WAKE
 
@@ -140,6 +154,17 @@ def test_answer_command_returns_to_the_pending_question(calc_repo):
     assert "Nothing needs you right now." in text
     assert prompts[4:7] == [PAUSE_PROMPT, "you › ", PAUSE_PROMPT]  # Ctrl-C backs out; /answer returns
     assert (runs[0].run_id, "resume", {"action": "skip"}) in spawned
+
+
+def test_budget_warning_is_printed(calc_repo):
+    text, spawned, runs, *_ = run_chat(
+        calc_repo, ["add subtract", "y", budget_warn(), to_state("completed", tasks_done=1)], FULL_SCRIPT
+    )
+    run_id = runs[0].run_id
+    expected = budget_warning_line(
+        run_id, tokens=600, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0, cost_source="reported"
+    )
+    assert expected in text
 
 
 def test_progress_goes_to_the_toolbar(calc_repo):
@@ -328,7 +353,7 @@ def test_btw_usage_and_failure_keep_the_stage(calc_repo):
 def test_a_failing_btw_render_keeps_the_approval_stage(calc_repo, monkeypatch):
     import phil.chat.controller as controller_mod
 
-    def boom(console, brief):
+    def boom(console, brief, **kw):
         raise RuntimeError("render broke")
 
     monkeypatch.setattr(controller_mod, "render_brief", boom)
@@ -587,3 +612,223 @@ def test_reopen_during_a_revision_returns_to_approval(calc_repo):
     text, spawned, runs, factory, prompts = reopen(calc_repo, ["y"])
     assert "Plan CALC v1 · 1 task" in text
     assert prompts[0] == "Approve? [y / edit / n] › " and len(runs) == 1
+
+
+# --- 4c: cost, /show, /more, /park ------------------------------------------------------------------
+
+
+def test_chat_cost_reaches_the_toolbar(calc_repo):
+    seen = {}
+    text, spawned, runs, *_ = run_chat(
+        calc_repo,
+        ["add subtract", peek(seen, "cost", lambda c: (c.state.view().cost, c.session.id)), "n"],
+        FULL_SCRIPT,
+    )
+    cost, chat_id = seen["cost"]
+    assert cost == (0.0, "reported")
+    conn = connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path)
+    rows = conn.execute("SELECT DISTINCT layer, chat_id FROM telemetry").fetchall()
+    assert [tuple(row) for row in rows] == [("chat", chat_id)]  # intake, architect, critic all tagged
+    assert conn.execute("SELECT COUNT(*) FROM telemetry").fetchone()[0] == 3
+
+
+def test_run_cost_counts_toward_the_chat(calc_repo):
+    from phil.store.telemetry import TelemetryRow, record
+
+    seen = {}
+
+    def run_spends(controller):
+        paths, run_id, conn = _run(controller)
+        record(conn, TelemetryRow(
+            run_id=run_id, layer="run", node="implement", role="implementer", model="m", attempt=1,
+            packet_tokens=0, input_tokens=10, output_tokens=5, latency_ms=1, cost_usd=0.25,
+            outcome="ok", cost_source="estimated",
+        ))
+        update_run(conn, run_id, state="running", current_node="implement")
+        controller._watcher.poll_once()
+        return WAKE
+
+    run_chat(
+        calc_repo,
+        ["add subtract", "y", run_spends, peek(seen, "cost", lambda c: c.state.view().cost)],
+        FULL_SCRIPT,
+    )
+    assert seen["cost"] == (0.25, "estimated")
+
+
+def test_park_links_the_chat_and_its_run(calc_repo):
+    text, spawned, runs, *_ = run_chat(
+        calc_repo, ["/park", "/park cache the parser", "add subtract", "y", "/park try [bold]memo[/bold]"],
+        FULL_SCRIPT,
+    )
+    assert "Usage: /park <note>" in text
+    assert "Parked P-001." in text and "Parked P-002." in text
+    conn = connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path)
+    rows = conn.execute("SELECT * FROM parked ORDER BY id").fetchall()
+    chat_id = session_dir(calc_repo).name
+    assert [(r["note"], r["run_id"], r["raised_by"], r["why_not_now"]) for r in rows] == [
+        ("cache the parser", None, "user", "parked from chat"),
+        ("try [bold]memo[/bold]", runs[0].run_id, "user", "parked from chat"),
+    ]
+    assert rows[1]["source_label"] == f"chat {chat_id}"
+    assert rows[1]["source_path"] == str(session_dir(calc_repo))
+
+
+def write_summary(text):
+    def step(controller):
+        paths, run_id, conn = _run(controller)
+        (paths.run_dir(run_id) / "summary.md").write_text(text)
+        return WAKE
+
+    return step
+
+
+def test_show_and_more_after_a_run(calc_repo):
+    text, spawned, runs, *_ = run_chat(
+        calc_repo,
+        [
+            "/show", "/more 1",
+            "add subtract", "y",
+            write_summary("# Run summary\n\n## Tasks\n- [x] CALC-001 [done]\n"),
+            to_state("completed", tasks_done=1),
+            "/more 1", "/more 9", "/more x",
+            "/show",
+        ],
+        FULL_SCRIPT,
+    )
+    run_id = runs[0].run_id
+    assert "No run to show yet." in text
+    assert "No detail #1. Use /show to list them." in text
+    assert "1 summary" in text  # the completion notice numbers its refs
+    assert "# Run summary" in text and "- [x] CALC-001 [done]" in text  # /more 1 prints the file as-is
+    assert "No detail #9. Use /show to list them." in text
+    assert "Usage: /more <n>" in text
+    assert f"Run {run_id} · CALC · completed" in text  # /show renders the chat's last run
+    assert text.count("- [x] CALC-001 [done]") == 2  # /more 1 and /show's task list
+
+
+REFUSED = "That detail isn't a file in the repo snapshot; not opening it."
+
+
+def test_more_expands_btw_details_only_from_the_snapshot(calc_repo, tmp_path):
+    from phil.contracts import Ref
+
+    outside = tmp_path / "secret.txt"
+    outside.write_text("TOP SECRET")
+
+    def btw_agent(turn):
+        (calc_repo / "calc.py").write_text("LIVE EDIT\n")  # the live tree is never read
+        (turn.workdir / "link").symlink_to(outside)
+        return Brief(headline="add is in calc.py", details=[
+            Ref(label="calc", path="calc.py"),
+            Ref(label="key", path="~/.ssh/id_rsa"),
+            Ref(label="hosts", path="/etc/hosts"),
+            Ref(label="up", path="../../outside"),
+            Ref(label="link", path="link"),
+            Ref(label="abs", path=str(outside)),
+            Ref(label="virtual", path="/calc.py"),  # deepagents' virtual path for calc.py
+        ])
+
+    text, *_ = run_chat(
+        calc_repo,
+        ["add subtract", "/btw where is add?", "/more 1", "/more 2", "/more 3", "/more 4", "/more 5", "/more 6",
+         "/more 7", "/more 8", "n"],
+        {**FULL_SCRIPT, "btw": [btw_agent]},
+    )
+    assert "→ 1 calc:" in text
+    assert text.count("def add(a, b):") == 2 and "LIVE EDIT" not in text  # /more 1 and /more 7
+    assert text.count(REFUSED) == 5
+    assert "TOP SECRET" not in text
+    assert "No detail #8. Use /show to list them." in text
+
+
+def test_btw_details_without_a_snapshot_are_refused(calc_repo):
+    from phil.contracts import Ref
+
+    brief = Brief(headline="add is in calc.py", details=[Ref(label="calc", path="calc.py")])
+    text, *_ = run_chat(calc_repo, ["/btw where is add?", "/more 1"], {"btw": [brief]})
+    assert REFUSED in text and "def add" not in text
+
+
+def test_more_refuses_a_ref_with_an_embedded_nul_byte(calc_repo):
+    # `Path.resolve()` raises ValueError ("embedded null character in path") for this, rather
+    # than OSError/RuntimeError; `_inside_snapshot` must treat it as "not in the snapshot" too.
+    from phil.contracts import Ref
+
+    brief = Brief(headline="add is in calc.py", details=[Ref(label="bad", path="calc.py\x00evil")])
+    text, *_ = run_chat(
+        calc_repo, ["add subtract", "/btw where is add?", "/more 1", "n"], {**FULL_SCRIPT, "btw": [brief]}
+    )
+    assert REFUSED in text and "def add" not in text
+
+
+def test_parked_count_refreshes_when_the_run_finishes(calc_repo):
+    # A worker can park items (`SelfCheck.out_of_scope`) during the run; the toolbar's count,
+    # last refreshed at chat/run start, must pick those up when the run ends too.
+    from phil.contracts import Ref
+    from phil.store.parked import park
+
+    seen = {}
+
+    def worker_parks(controller):
+        paths, run_id, conn = _run(controller)
+        park(
+            conn, raised_by="implementer", note="a worker parked this", why_not_now="out of scope",
+            source=Ref(label="implement output", path=""), run_id=run_id,
+        )
+        return WAKE
+
+    text, spawned, runs, *_ = run_chat(
+        calc_repo,
+        [
+            "add subtract", "y",
+            peek(seen, "before", lambda c: c.state.view().parked),
+            worker_parks,
+            to_state("completed", tasks_done=1),
+            peek(seen, "after", lambda c: c.state.view().parked),
+        ],
+        FULL_SCRIPT,
+    )
+    assert seen == {"before": 0, "after": 1}
+
+
+def test_park_updates_the_parked_count(calc_repo):
+    seen = {}
+    run_chat(
+        calc_repo,
+        [peek(seen, "before", lambda c: c.state.view().parked), "/park one", "/park two",
+         peek(seen, "after", lambda c: c.state.view().parked)],
+        {},
+    )
+    assert seen == {"before": 0, "after": 2}
+    seen.clear()
+    run_chat(calc_repo, [peek(seen, "start", lambda c: c.state.view().parked)], {})  # counted at chat start
+    assert seen == {"start": 2}
+
+
+def test_help_lists_the_new_commands(calc_repo):
+    text, *_ = run_chat(calc_repo, ["/help"], {})
+    text = " ".join(text.split())  # the help line wraps
+    assert "/show" in text and "/more <n>" in text and "/park <note>" in text
+
+
+def test_inside_snapshot_reads_a_leading_slash_as_the_snapshot_root(tmp_path):
+    # The /btw agent reads the snapshot through deepagents' virtual filesystem, whose paths are
+    # absolute from the snapshot root ("/calc.py"); models copy those into Brief.details.
+    from phil.chat.controller import _inside_snapshot
+
+    tree = tmp_path / "snap"
+    (tree / "pkg").mkdir(parents=True)
+    (tree / "calc.py").write_text("def add(a, b): ...\n")
+    (tree / "pkg" / "mod.py").write_text("x = 1\n")
+    (tmp_path / "secret.txt").write_text("TOP SECRET")
+    root = tree.resolve()
+    assert _inside_snapshot(tree, "/calc.py") == root / "calc.py"
+    assert _inside_snapshot(tree, "//pkg/mod.py") == root / "pkg" / "mod.py"
+    assert _inside_snapshot(tree, "calc.py") == root / "calc.py"
+    assert _inside_snapshot(tree, "/etc/hosts") is None  # <snapshot>/etc/hosts: no such file
+    assert _inside_snapshot(tree, "/../secret.txt") is None
+    assert _inside_snapshot(tree, str(tmp_path / "secret.txt")) is None
+    assert _inside_snapshot(tree, "~/secret.txt") is None
+    assert _inside_snapshot(tree, "/calc.py\x00") is None
+    assert _inside_snapshot(tree, "/") is None

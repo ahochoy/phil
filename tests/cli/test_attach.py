@@ -79,6 +79,33 @@ def test_render_event_handles_the_spawn_kind_without_raising():
     assert "resume" in text
 
 
+def test_render_event_prints_the_budget_warning_line():
+    console = make_console(record=True, width=120)
+    render_event(
+        console,
+        {
+            "kind": "budget_warning", "ts": "2026-09-28T00:00:00Z", "tokens": 600, "cost_usd": 0.0,
+            "max_tokens": 700, "max_cost_usd": 2.0, "cost_source": "reported",
+        },
+        run_id="r-7f3a",
+    )
+    text = console.export_text()
+    assert "r-7f3a has used 86% of its budget (600 of 700 tokens)." in text
+
+
+def test_attach_renders_a_budget_warning_from_the_run(calc_repo):
+    info, record = escalated_run(calc_repo)
+    paths = ProjectPaths(info.slug)
+    run_events(paths, record.run_id).append(
+        "budget_warning", tokens=600, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0, cost_source="reported"
+    )
+    io = AttachIO(choose=lambda p, o: "abort", ask_hint=lambda: None, spawn=lambda m, d: None, sleep=lambda _: None)
+    console = make_console(record=True, width=120)
+    attach(connect(paths.db_path), record.run_id, run_events(paths, record.run_id), console, io, poll_s=0)
+    text = console.export_text()
+    assert f"{record.run_id} has used 86% of its budget (600 of 700 tokens)." in text
+
+
 def test_attach_does_not_spawn_when_the_run_moved_on_while_prompting(calc_repo):
     info, record = escalated_run(calc_repo)
     paths = ProjectPaths(info.slug)

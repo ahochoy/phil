@@ -530,6 +530,35 @@ def diff(ctx: typer.Context, run_id: str) -> None:
         raise typer.Exit(1) from exc
 
 
+@app.command("show")
+def show_command(
+    ctx: typer.Context,
+    run_id: str,
+    n: int | None = typer.Argument(None, help="Print detail #N in full instead of the overview."),
+) -> None:
+    """Show a run's tasks, usage, open issues, and numbered details."""
+    from phil.ui import show_view
+    from phil.ui.show_view import render_show, show_refs
+
+    info, conn = _open_project(ctx)
+    _require_run(conn, run_id)
+    paths = ProjectPaths(info.slug)
+    if n is None:
+        render_show(console, conn, paths, run_id)
+        return
+    refs = show_refs(paths, run_id)
+    if n < 1 or n > len(refs):
+        console.print(f"[phil.error]No detail #{n} for {escape(run_id)}.[/]")
+        raise typer.Exit(1)
+    path = Path(refs[n - 1].path)
+    try:
+        text = show_view.detail_text(path)
+    except (OSError, UnicodeDecodeError) as exc:
+        console.print(f"[phil.error]Couldn't read {escape(str(path))}: {escape(type(exc).__name__)}[/]")
+        raise typer.Exit(1) from exc
+    typer.echo(text)
+
+
 @app.command()
 def clean(
     ctx: typer.Context,

@@ -9,6 +9,7 @@ from rich.markup import escape
 from phil.run.launch import is_worker_alive, worker_starting
 from phil.store.events import EventLog
 from phil.store.runs import RunRecord, get_run
+from phil.store.telemetry import budget_warning_line
 
 TERMINAL = ("completed", "aborted", "cleaned")
 
@@ -23,7 +24,7 @@ class AttachIO:
     starting: Callable[[EventLog], bool] = field(default=worker_starting)
 
 
-def render_event(console: Console, event: dict) -> None:
+def render_event(console: Console, event: dict, run_id: str = "") -> None:
     kind = event["kind"]
     if kind == "node":
         console.print(f"[phil.muted]· {escape(str(event['node']))}[/]")
@@ -41,6 +42,9 @@ def render_event(console: Console, event: dict) -> None:
         console.print(f"[phil.muted]spawning worker {event.get('pid')} ({escape(str(event.get('mode')))})[/]")
     elif kind == "outcome":
         console.print(f"[phil.muted]worker finished: {escape(str(event.get('status')))}[/]")
+    elif kind == "budget_warning":
+        fields = {k: v for k, v in event.items() if k not in ("kind", "ts")}
+        console.print(f"[phil.warn]{escape(budget_warning_line(run_id, **fields))}[/]")
 
 
 def _prompt(escalation: dict) -> str:
@@ -83,7 +87,7 @@ def attach(
     while True:
         new, offset = events.read(offset)
         for event in new:
-            render_event(console, event)
+            render_event(console, event, run_id)
         record = get_run(conn, run_id)
         assert record is not None
         if record.state in TERMINAL:

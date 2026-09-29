@@ -1,13 +1,15 @@
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
 from phil.agents.evidence import check_evidence
+from phil.agents.pricing import PriceBook, default_price_book
 from phil.agents.retry import call_with_retry
 from phil.agents.spec import AgentSpec
 from phil.agents.tools import CommandLog, make_shell_tool
@@ -17,9 +19,12 @@ from phil.contracts import Contract, Ref
 from phil.packets import Packet
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.parked import park
-from phil.store.telemetry import TelemetryRow, record
+from phil.store.telemetry import CallRow, CostSource, TelemetryRow, record, record_calls, weakest
 from phil.workspace.shell import literal_pattern
 
+# `Callable[...]` can't express the `timeout_s` keyword-only parameter with its default;
+# real factories (build_agent) and scripted ones (ScriptedAgentFactory/FakeAgentFactory) all
+# accept it as `*, timeout_s: int = 180`.
 AgentFactory = Callable[[AgentSpec, str, Path | None, list[Callable[..., str]]], Any]
 
 
@@ -35,6 +40,8 @@ class AgentContext:
     sleep: Callable[[float], None] = time.sleep
     command_log: CommandLog | None = None
     extra_allow: tuple[str, ...] = ()
+    chat_id: str | None = None
+    prices: PriceBook | None = None  # None: the process-wide default book, created on first use
 
 
 class ContractViolation(Exception):
@@ -46,6 +53,97 @@ class ContractViolation(Exception):
 
     def __str__(self) -> str:
         return f"{self.agent} returned invalid output: {'; '.join(self.problems)}"
+
+
+_default_prices: PriceBook | None = None
+_default_prices_lock = threading.Lock()
+
+
+def _price_book(ctx: AgentContext) -> PriceBook:
+    """The context's price book, or a process-wide default created (and fetched) only when a
+    model call actually needs an estimate."""
+    global _default_prices
+    if ctx.prices is not None:
+        return ctx.prices
+    with _default_prices_lock:
+        if _default_prices is None:
+            _default_prices = default_price_book()
+        return _default_prices
+
+
+@dataclass
+class _Usage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    tool_calls: dict[str, int] = field(default_factory=dict)
+    cost_source: CostSource = "reported"
+    calls: list[CallRow] = field(default_factory=list)
+
+
+def _pricing_models(configured: str, call_model: str | None) -> list[str]:
+    """Model ids to price a call by: the call's own reported model first — a deep agent's
+    sub-agent, or an OpenRouter fallback route, can report a model from a different vendor than
+    the one configured for the role, and the price book may still know it as
+    ``openrouter:<call_model>`` — then the configured model, when the book doesn't know the
+    reported one."""
+    provider, sep, _ = configured.partition(":")
+    if call_model and sep and "/" in call_model:
+        candidate = f"{provider}:{call_model}"
+        if candidate != configured:
+            return [candidate, configured]
+    return [configured]
+
+
+def _estimate(
+    ctx: AgentContext, configured: str, call_model: str | None, input_tokens: int, output_tokens: int
+) -> float | None:
+    prices = _price_book(ctx)
+    for name in _pricing_models(configured, call_model):
+        cost = prices.estimate(name, input_tokens, output_tokens)
+        if cost is not None:
+            return cost
+    return None
+
+
+def _usage(ctx: AgentContext, collector: Any, messages: list, configured: str) -> _Usage:
+    """Callback totals win when the collector saw model calls; otherwise (scripted fakes) fall
+    back to the usage on the returned messages."""
+    tool_calls = dict(collector.tool_calls)
+    if not collector.calls:
+        usage = extract_usage(messages)
+        return _Usage(usage.input_tokens, usage.output_tokens, usage.cost_usd, tool_calls)
+    rows: list[CallRow] = []
+    for model_call in collector.calls:
+        source: CostSource
+        if model_call.reported_cost is not None:
+            cost, source = model_call.reported_cost, "reported"
+        else:
+            estimate = _estimate(ctx, configured, model_call.model, model_call.input_tokens, model_call.output_tokens)
+            cost, source = (estimate, "estimated") if estimate is not None else (0.0, "unknown")
+        rows.append(
+            CallRow(
+                model=model_call.model or configured,
+                input_tokens=model_call.input_tokens,
+                output_tokens=model_call.output_tokens,
+                cost_usd=cost,
+                cost_source=source,
+            )
+        )
+    return _Usage(
+        input_tokens=sum(row.input_tokens for row in rows),
+        output_tokens=sum(row.output_tokens for row in rows),
+        cost_usd=sum(row.cost_usd for row in rows),
+        tool_calls=tool_calls,
+        cost_source=weakest([row.cost_source for row in rows]),
+        calls=rows,
+    )
+
+
+def _record_usage(ctx: AgentContext, row: TelemetryRow, usage: _Usage) -> None:
+    telemetry_id = record(ctx.conn, row)
+    if usage.calls:
+        record_calls(ctx.conn, telemetry_id, usage.calls)
 
 
 def _resolve_factory(ctx: AgentContext) -> AgentFactory:
@@ -91,9 +189,11 @@ def _record_error(
     call: int,
     packet: Packet,
     started: float,
+    usage: _Usage,
+    retries: int,
 ) -> None:
-    record(
-        ctx.conn,
+    _record_usage(
+        ctx,
         TelemetryRow(
             run_id=ctx.run_id,
             layer=ctx.layer,
@@ -102,13 +202,19 @@ def _record_error(
             model=model,
             attempt=attempt,
             packet_tokens=packet.tokens,
-            input_tokens=0,
-            output_tokens=0,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
             latency_ms=int((time.monotonic() - started) * 1000),
-            cost_usd=0.0,
+            cost_usd=usage.cost_usd,
             outcome="error",
             call=call,
+            chat_id=ctx.chat_id,
+            model_calls=len(usage.calls),
+            tool_calls=usage.tool_calls,
+            retries=retries,
+            cost_source=usage.cost_source,
         ),
+        usage,
     )
 
 
@@ -137,7 +243,10 @@ def invoke_agent(
     tools: list[Callable[..., str]] = []
     if "shell" in spec.tools and ctx.workdir is not None:
         tools.append(make_shell_tool(ctx.workdir, shell, log, ctx.artifacts, log_prefix=log_prefix))
-    agent = _resolve_factory(ctx)(spec, model, ctx.workdir, tools)
+    agent = _resolve_factory(ctx)(spec, model, ctx.workdir, tools, timeout_s=ctx.config.run.model_timeout_s)
+    # lazy: keeps langchain out of module import
+    from phil.agents.collector import UsageCollector
+    from phil.agents.model_retry import TRACKER_KEY, ModelRetryTracker, model_call_retried
 
     messages: list[dict[str, str]] = [{"role": "user", "content": packet.render()}]
     problems: list[str] = []
@@ -151,12 +260,41 @@ def invoke_agent(
                 ctx.artifacts.write_json("packets", f"{name}.retry", {"messages": payload_messages})
         started = time.monotonic()
         parse_problems: list[str] | None = None
+        collector = UsageCollector(ignore_tools={spec.out_contract.__name__})
+        sleeps: list[float] = []
+
+        def counting_sleep(delay: float) -> None:
+            sleeps.append(delay)
+            ctx.sleep(delay)
+
+        # A failed model call is retried in place by the agent's model-retry middleware (sleeping
+        # through `counting_sleep`); `call_with_retry` re-runs the whole agent only for a transient
+        # error raised outside a wrapped model call (a fake agent, a summarisation call), never
+        # again for one the middleware already handled.
+        tracker = ModelRetryTracker(sleep=counting_sleep)
         try:
-            result = call_with_retry(agent, {"messages": payload_messages}, sleep=ctx.sleep)
+            result, _ = call_with_retry(
+                agent,
+                {"messages": payload_messages},
+                sleep=counting_sleep,
+                config={"callbacks": [collector], "configurable": {TRACKER_KEY: tracker}},
+                retryable=lambda exc: not model_call_retried(exc),
+            )
+            retries = len(sleeps)  # each retry — per model call or whole agent — sleeps exactly once
         except Exception as exc:
+            retries = len(sleeps)
             if not _is_structured_output_parse_error(exc):
                 _record_error(
-                    ctx, spec=spec, model=model, node=node, attempt=attempt, call=call, packet=packet, started=started
+                    ctx,
+                    spec=spec,
+                    model=model,
+                    node=node,
+                    attempt=attempt,
+                    call=call,
+                    packet=packet,
+                    started=started,
+                    usage=_usage(ctx, collector, [], model),
+                    retries=retries,
                 )
                 raise
             result = {}
@@ -171,9 +309,9 @@ def invoke_agent(
             problems = check_evidence(output, commands=log.commands, workdir=ctx.workdir)
             if problems:
                 outcome = "evidence_fail"
-        usage = extract_usage(result.get("messages", []))
-        record(
-            ctx.conn,
+        usage = _usage(ctx, collector, result.get("messages", []), model)
+        _record_usage(
+            ctx,
             TelemetryRow(
                 run_id=ctx.run_id,
                 layer=ctx.layer,
@@ -188,7 +326,13 @@ def invoke_agent(
                 cost_usd=usage.cost_usd,
                 outcome=outcome,
                 call=call,
+                chat_id=ctx.chat_id,
+                model_calls=len(usage.calls),
+                tool_calls=usage.tool_calls,
+                retries=retries,
+                cost_source=usage.cost_source,
             ),
+            usage,
         )
         if problems and ctx.artifacts is not None:
             raw = result.get("structured_response")

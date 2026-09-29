@@ -1,11 +1,52 @@
 import httpx
+import openrouter.components.badrequestresponseerrordata as openrouter_badrequest_data
+import openrouter.components.serviceunavailableresponseerrordata as openrouter_serviceunavailable_data
+import openrouter.errors.badrequestresponse_error as openrouter_badrequest_error
+import openrouter.errors.serviceunavailableresponse_error as openrouter_serviceunavailable_error
 import pytest
+from langchain_openrouter import ChatOpenRouter
 
 from phil.agents.fake import FakeAgent, FakeAgentFactory
 from phil.agents.invoke import AgentContext, invoke_agent
 from phil.agents.registry import get_spec
-from phil.agents.retry import call_with_retry, is_transient
+from phil.agents.retry import call_with_retry, is_timeout, is_transient
 from tests.agents.conftest import critique
+
+
+def _openrouter_response(status: int, message: str, code: int) -> httpx.Response:
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    return httpx.Response(status, request=request, json={"error": {"code": code, "message": message}})
+
+
+def openrouter_service_unavailable() -> Exception:
+    """A real `openrouter` SDK exception for a 503 response."""
+    data = openrouter_serviceunavailable_error.ServiceUnavailableResponseErrorData(
+        error=openrouter_serviceunavailable_data.ServiceUnavailableResponseErrorData(
+            code=503, message="Service temporarily unavailable"
+        )
+    )
+    return openrouter_serviceunavailable_error.ServiceUnavailableResponseError(
+        data=data, raw_response=_openrouter_response(503, "Service temporarily unavailable", 503)
+    )
+
+
+def openrouter_bad_request() -> Exception:
+    """A real `openrouter` SDK exception for a 400 response."""
+    data = openrouter_badrequest_error.BadRequestResponseErrorData(
+        error=openrouter_badrequest_data.BadRequestResponseErrorData(code=400, message="Provider returned error")
+    )
+    return openrouter_badrequest_error.BadRequestResponseError(
+        data=data, raw_response=_openrouter_response(400, "Provider returned error", 400)
+    )
+
+
+def openrouter_200_with_error(code: int, message: str = "trouble upstream") -> Exception:
+    """The plain `ValueError` `langchain_openrouter.ChatOpenRouter` raises when OpenRouter
+    answers HTTP 200 with an error payload in the body."""
+    model = ChatOpenRouter(model="openai/gpt-6-luna", api_key="test-key-not-used")
+    with pytest.raises(ValueError) as excinfo:
+        model._create_chat_result({"error": {"code": code, "message": message}})
+    return excinfo.value
 
 
 class HTTPError(Exception):
@@ -22,18 +63,64 @@ def test_is_transient():
     assert not is_transient(ValueError("bad"))
 
 
+def test_client_side_timeout_is_transient():
+    # A model-call timeout (RunConfig.model_timeout_s elapsing) surfaces as a raw httpx timeout
+    # from the openrouter SDK's underlying client, not a response with a status.
+    assert is_transient(httpx.ReadTimeout("timed out waiting for a response"))
+
+
+def test_openrouter_sdk_response_errors_are_transient_or_not_by_status():
+    assert is_transient(openrouter_service_unavailable())
+    assert not is_transient(openrouter_bad_request())
+
+
+def test_openrouter_200_with_error_is_transient_by_payload_code():
+    # OpenRouter can answer HTTP 200 with an error payload in the body (e.g. the upstream
+    # provider failed after billing succeeded); langchain_openrouter surfaces that as a plain
+    # ValueError with no status/response attribute at all.
+    assert is_transient(openrouter_200_with_error(503))
+    assert not is_transient(openrouter_200_with_error(400))
+
+
 def test_retries_transient_errors_with_backoff():
     delays: list[float] = []
     agent = FakeAgent([HTTPError(429), HTTPError(503), "done"])
-    result = call_with_retry(agent, {"messages": []}, sleep=delays.append)
+    result, retries = call_with_retry(agent, {"messages": []}, sleep=delays.append)
     assert result["structured_response"] == "done"
     assert delays == [1.0, 2.0]
+    assert retries == 2
 
 
 def test_gives_up_after_attempts():
     agent = FakeAgent([HTTPError(429), HTTPError(429), HTTPError(429)])
     with pytest.raises(HTTPError):
         call_with_retry(agent, {"messages": []}, sleep=lambda _: None)
+
+
+def test_is_timeout_recognises_timeout_classes_only():
+    assert is_timeout(TimeoutError())
+    assert is_timeout(httpx.ReadTimeout("slow"))
+    assert is_timeout(httpx.ConnectTimeout("slow"))
+    assert is_timeout(openrouter_service_unavailable()) is False  # transient, but not a timeout
+    assert is_timeout(HTTPError(429)) is False
+    assert is_timeout(ValueError("bad")) is False
+
+
+def test_a_timeout_gets_at_most_two_tries_total():
+    delays: list[float] = []
+    agent = FakeAgent([TimeoutError(), TimeoutError(), "never"])
+    with pytest.raises(TimeoutError):
+        call_with_retry(agent, {"messages": []}, sleep=delays.append)
+    assert delays == [1.0]  # one retry only, not the usual 3 attempts
+
+
+def test_a_timeout_can_still_succeed_on_its_one_retry():
+    delays: list[float] = []
+    agent = FakeAgent([httpx.ReadTimeout("slow"), "done"])
+    result, retries = call_with_retry(agent, {"messages": []}, sleep=delays.append)
+    assert result["structured_response"] == "done"
+    assert retries == 1
+    assert delays == [1.0]
 
 
 def test_does_not_retry_permanent_errors():
@@ -70,3 +157,122 @@ def test_real_httpx_transport_errors_are_transient(exc):
 
 def test_permanent_httpx_errors_are_not_transient():
     assert not is_transient(httpx.UnsupportedProtocol("ftp"))
+
+
+def test_no_retries_reports_zero():
+    result, retries = call_with_retry(FakeAgent(["done"]), {"messages": []}, sleep=lambda _: None)
+    assert (result["structured_response"], retries) == ("done", 0)
+
+
+def test_passes_config_to_the_agent_only_when_given():
+    seen: list = []
+
+    class Recorder:
+        def invoke(self, payload, config=None):
+            seen.append(config)
+            return {"messages": []}
+
+    call_with_retry(Recorder(), {"messages": []}, sleep=lambda _: None)
+    call_with_retry(Recorder(), {"messages": []}, sleep=lambda _: None, config={"callbacks": []})
+    assert seen == [None, {"callbacks": []}]
+
+
+def test_invoke_agent_records_retry_count(config, conn, artifacts, critic_packet):
+    factory = FakeAgentFactory([HTTPError(429), HTTPError(503), critique()])
+    ctx = AgentContext(
+        config=config, conn=conn, layer="run", artifacts=artifacts, factory=factory, sleep=lambda _: None
+    )
+    invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+    assert [row["retries"] for row in conn.execute("SELECT retries FROM telemetry")] == [2]
+
+
+def _anthropic_request() -> httpx.Request:
+    return httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+
+def test_anthropic_timeout_and_connection_errors_are_transient():
+    import anthropic
+
+    timeout = anthropic.APITimeoutError(request=_anthropic_request())
+    connection = anthropic.APIConnectionError(request=_anthropic_request())
+    assert is_transient(timeout)
+    assert is_timeout(timeout)
+    assert is_transient(connection)
+    assert not is_timeout(connection)
+
+
+def test_anthropic_overloaded_529_is_transient_but_not_a_timeout():
+    import anthropic
+
+    response = httpx.Response(529, request=_anthropic_request(), json={"error": {"type": "overloaded_error"}})
+    overloaded = anthropic.OverloadedError("Overloaded", response=response, body=None)
+    assert is_transient(overloaded)
+    assert not is_timeout(overloaded)
+
+
+def test_anthropic_permanent_status_errors_stay_permanent():
+    import anthropic
+
+    response = httpx.Response(400, request=_anthropic_request(), json={})
+    assert not is_transient(anthropic.BadRequestError("bad", response=response, body=None))
+
+
+def test_openai_timeout_and_connection_errors_are_transient():
+    openai = pytest.importorskip("openai")
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    timeout = openai.APITimeoutError(request=request)
+    connection = openai.APIConnectionError(request=request)
+    assert is_transient(timeout) and is_timeout(timeout)
+    assert is_transient(connection) and not is_timeout(connection)
+
+
+def test_a_timeout_with_a_single_attempt_is_raised_not_unreachable():
+    delays: list[float] = []
+    agent = FakeAgent([TimeoutError(), "never"])
+    with pytest.raises(TimeoutError):
+        call_with_retry(agent, {"messages": []}, sleep=delays.append, attempts=1)
+    assert delays == []
+
+
+def test_langchain_core_model_errors_are_classified():
+    from langchain_core.exceptions import (
+        ModelAPIError,
+        ModelAuthenticationError,
+        ModelConnectionError,
+        ModelInvalidRequestError,
+        ModelRateLimitError,
+        ModelTimeoutError,
+    )
+
+    assert is_transient(ModelRateLimitError("slow down")) and not is_timeout(ModelRateLimitError("x"))
+    assert is_transient(ModelConnectionError("refused")) and not is_timeout(ModelConnectionError("x"))
+    assert is_transient(ModelTimeoutError("slow")) and is_timeout(ModelTimeoutError("slow"))
+    assert not is_transient(ModelAuthenticationError("bad key"))
+    assert not is_transient(ModelInvalidRequestError("bad request"))
+
+    class CodedAPIError(ModelAPIError):
+        def __init__(self, code: int | None) -> None:
+            super().__init__(code)
+            self.code = code
+
+    assert is_transient(CodedAPIError(503))
+    assert not is_transient(CodedAPIError(501))
+    assert not is_transient(CodedAPIError(None))  # no status to judge by
+
+    class ResponseAPIError(ModelAPIError):
+        def __init__(self, status: int) -> None:
+            super().__init__(status)
+            self.response = httpx.Response(status, request=httpx.Request("POST", "https://example.invalid"))
+
+    assert is_transient(ResponseAPIError(502))
+
+
+def test_google_genai_rate_limit_and_server_errors_are_transient():
+    chat_models = pytest.importorskip("langchain_google_genai.chat_models")
+
+    # langchain_google_genai raises GoogleRateLimitError(msg) for a 429: no status attribute at all
+    rate_limited = chat_models.GoogleRateLimitError("Error calling model 'gemini' (RESOURCE_EXHAUSTED): 429")
+    assert is_transient(rate_limited) and not is_timeout(rate_limited)
+    assert is_transient(chat_models.GoogleAPIError(503, {"error": {"code": 503, "status": "UNAVAILABLE"}}))
+    assert not is_transient(chat_models.GoogleAPIError(501, {"error": {"code": 501, "status": "UNIMPLEMENTED"}}))
+    assert not is_transient(chat_models.GoogleAuthenticationError("bad key"))

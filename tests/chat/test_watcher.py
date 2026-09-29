@@ -120,6 +120,34 @@ def test_watch_error_posted_after_five_consecutive_failures(calc_repo, monkeypat
     assert kinds(posted).count("watch_error") == 2
 
 
+def test_budget_warning_posted_once_per_event(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    events.append(
+        "budget_warning", tokens=600, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0, cost_source="reported"
+    )
+    watcher.poll_once()
+    watcher.poll_once()
+    assert kinds(posted).count("budget_warning") == 1
+    warning = [e for e in posted if e.kind == "budget_warning"][0]
+    assert warning.data == {
+        "tokens": 600, "cost_usd": 0.0, "max_tokens": 700, "max_cost_usd": 2.0, "cost_source": "reported",
+    }
+    events.append(
+        "budget_warning", tokens=650, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0, cost_source="reported"
+    )
+    watcher.poll_once()
+    assert kinds(posted).count("budget_warning") == 2
+
+
+def test_run_progress_carries_tokens_cost_and_cost_source(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo, alive=lambda r: True)
+    update_run(conn, run_id, state="running", current_node="implement")
+    watcher.poll_once()
+    progress = [e for e in posted if e.kind == "run_progress"][0]
+    assert (progress.data["tokens"], progress.data["cost_usd"], progress.data["cost_source"]) == (0, 0.0, "reported")
+
+
 def test_thread_start_and_stop(calc_repo):
     paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo, interval_s=0.01)
     watcher.start()
@@ -166,3 +194,23 @@ def test_chat_logging_keeps_watcher_tracebacks_off_the_terminal(calc_repo, tmp_p
     log = (tmp_path / "chat" / "phil.log").read_text()
     assert "run watcher poll failed" in log and "RuntimeError: boom" in log
     assert logging.getLogger("phil").propagate  # restored when the chat ends
+
+
+def test_a_budget_warning_from_before_the_watcher_started_is_not_reposted(calc_repo):
+    # Reopening or resuming a chat starts a new watcher over the same event log: a warning the
+    # user was already shown must not be printed again.
+    paths, run_id, conn, events, first, posted, now = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    events.append(
+        "budget_warning", tokens=600, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0, cost_source="reported"
+    )
+    reopened = []
+    watcher = RunWatcher(paths, run_id, reopened.append, alive=lambda r: False, starting=lambda e: False,
+                         clock=lambda: now[0])
+    watcher.poll_once()
+    assert "budget_warning" not in kinds(reopened)
+    events.append(
+        "budget_warning", tokens=690, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0, cost_source="reported"
+    )
+    watcher.poll_once()
+    assert [e.data["tokens"] for e in reopened if e.kind == "budget_warning"] == [690]

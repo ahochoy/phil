@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from phil.run.state import load_plan
@@ -77,3 +79,28 @@ def test_red_snapshot_is_pinned(make_harness, calc_repo):
     harness = make_harness({"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]})
     harness.start()
     assert run_git(calc_repo, "cat-file", "-t", "refs/phil/r-0001/red").strip() == "tree"
+
+
+def test_open_issues_json_is_written_with_no_stray_temp_file(make_harness):
+    harness = make_harness(
+        {"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]}
+    )
+    final = harness.start()
+    run_dir = harness.deps.artifacts.run_dir
+    assert json.loads((run_dir / "open_issues.json").read_text()) == final["open_issues"]
+    assert list(run_dir.glob("open_issues.json.*.tmp")) == []
+
+
+def test_open_issues_json_write_failure_leaves_no_temp_file_behind(make_harness, monkeypatch):
+    def broken_replace(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("phil.run.engine.os.replace", broken_replace)
+    harness = make_harness(
+        {"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]}
+    )
+    with pytest.raises(OSError, match="disk full"):
+        harness.start()
+    run_dir = harness.deps.artifacts.run_dir
+    assert not (run_dir / "open_issues.json").exists()
+    assert list(run_dir.glob("open_issues.json.*.tmp")) == []

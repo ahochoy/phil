@@ -5,7 +5,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from phil.store.runs import list_runs
-from phil.store.telemetry import run_totals
+from phil.store.telemetry import format_cost, run_usage
 
 
 def _format_tokens(tokens: int) -> str:
@@ -22,13 +22,13 @@ def render_runs(console: Console, conn: sqlite3.Connection) -> None:
     for column in ("run", "plan", "done", "state", "tokens", "cost"):
         table.add_column(column, style="phil.muted", no_wrap=True)
     for run in records:
-        tokens, cost = run_totals(conn, run.run_id)
+        totals = run_usage(conn, run.run_id)
         table.add_row(
             f"[phil.id]{escape(run.run_id)}[/]",
             escape(run.keyword),
             f"{run.tasks_done}/{run.tasks_total}",
             escape(run.state),
-            _format_tokens(tokens),
-            f"[phil.cost]${cost:.2f}[/]",
+            _format_tokens(totals.tokens),
+            f"[phil.cost]{escape(format_cost(totals.cost_usd, totals.cost_source))}[/]",
         )
     console.print(table)
