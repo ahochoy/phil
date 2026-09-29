@@ -66,6 +66,30 @@ def test_on_llm_end_falls_back_to_token_usage_in_llm_output():
     assert (call.input_tokens, call.output_tokens) == (7, 3)
 
 
+def test_token_usage_fallback_reads_openai_style_prompt_and_completion_tokens():
+    collector = UsageCollector()
+    result = LLMResult(
+        generations=[[ChatGeneration(message=AIMessage(content="hi"))]],
+        llm_output={"token_usage": {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15}},
+    )
+    collector.on_llm_end(result, run_id=uuid.uuid4())
+    [call] = collector.calls
+    assert (call.input_tokens, call.output_tokens) == (11, 4)
+
+
+def test_token_usage_fallback_is_applied_once_across_several_generations():
+    # llm_output's token_usage is the aggregate for the whole response: with n > 1 generations
+    # it must be counted once, not once per generation.
+    collector = UsageCollector()
+    result = LLMResult(
+        generations=[[ChatGeneration(message=AIMessage(content="a")), ChatGeneration(message=AIMessage(content="b"))]],
+        llm_output={"token_usage": {"input_tokens": 7, "output_tokens": 3}},
+    )
+    collector.on_llm_end(result, run_id=uuid.uuid4())
+    assert sum(c.input_tokens for c in collector.calls) == 7
+    assert sum(c.output_tokens for c in collector.calls) == 3
+
+
 def test_on_tool_start_counts_tools_and_ignores_the_contract_tool():
     collector = UsageCollector(ignore_tools={"PlanCritique"})
     collector.on_tool_start({"name": "read_file"}, "", run_id=uuid.uuid4())

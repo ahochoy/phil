@@ -21,6 +21,19 @@ def _usage_from_message(message: object) -> tuple[int, int] | None:
     return int(usage.get("input_tokens", 0) or 0), int(usage.get("output_tokens", 0) or 0)
 
 
+def _token_usage(usage: object) -> tuple[int, int] | None:
+    """(input, output) tokens from an ``llm_output["token_usage"]`` dict, in either naming:
+    ``input_tokens``/``output_tokens`` or OpenAI-style ``prompt_tokens``/``completion_tokens``."""
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+    output_tokens = usage.get("output_tokens") or usage.get("completion_tokens") or 0
+    try:
+        return int(input_tokens), int(output_tokens)
+    except (TypeError, ValueError):
+        return None
+
+
 def _model_name(response_metadata: dict) -> str | None:
     return response_metadata.get("model_name") or response_metadata.get("model")
 
@@ -37,11 +50,11 @@ class UsageCollector(BaseCallbackHandler):
         self._ignore_tools = set(ignore_tools)
 
     def on_llm_end(self, response: LLMResult, *, run_id, parent_run_id=None, **kwargs) -> None:
-        token_usage_fallback = None
         llm_output = response.llm_output or {}
-        if isinstance(llm_output.get("token_usage"), dict):
-            usage = llm_output["token_usage"]
-            token_usage_fallback = (int(usage.get("input_tokens", 0) or 0), int(usage.get("output_tokens", 0) or 0))
+        # The response-level aggregate, for generations whose message carries no usage. It is
+        # for the whole response, so it is applied to one generation only (n > 1 would
+        # otherwise count it n times).
+        token_usage_fallback = _token_usage(llm_output.get("token_usage"))
         fallback_model = _model_name(llm_output)
 
         new_calls: list[ModelCall] = []
@@ -50,7 +63,9 @@ class UsageCollector(BaseCallbackHandler):
                 message = getattr(generation, "message", None)
                 if message is None:
                     continue
-                usage = _usage_from_message(message) or token_usage_fallback or (0, 0)
+                usage = _usage_from_message(message)
+                if usage is None:
+                    usage, token_usage_fallback = token_usage_fallback or (0, 0), None
                 response_metadata = getattr(message, "response_metadata", None) or {}
                 cost = response_metadata.get("cost")
                 model = _model_name(response_metadata) or fallback_model
