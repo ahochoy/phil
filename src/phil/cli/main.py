@@ -131,7 +131,7 @@ def _chat(ctx: typer.Context) -> None:
         except EOFError:
             return None
 
-    io = ChatIO(ask=ask, spawn=lambda root, run_id, mode: spawn_worker(root, run_id, mode))
+    io = ChatIO(ask=ask, spawn=lambda root, run_id, mode, decision=None: spawn_worker(root, run_id, mode, decision))
     try:
         factory = _factory_from_env()
     except Exception as exc:

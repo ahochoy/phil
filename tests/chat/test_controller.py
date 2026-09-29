@@ -1,7 +1,7 @@
 import json
 
 from phil.agents.fake import ScriptedAgentFactory
-from phil.chat.controller import ChatController, ChatIO
+from phil.chat.controller import WAKE, ChatController, ChatIO
 from phil.config import PhilConfig
 from phil.repo import resolve_repo
 from phil.store.artifacts import ArtifactStore
@@ -13,26 +13,41 @@ from tests.chat.conftest import critique, goal, plan
 from tests.helpers import MODELS_TOML, TEST_MODELS, run_git
 
 
-def run_chat(repo, answers, scripts, config=None):
+def run_chat(repo, answers, scripts, config=None, submit=None, **kw):
+    """Drive a chat. Script items are strings, None (EOF), or callables `(controller) -> str | None | WAKE`."""
     info = resolve_repo(repo)
     conn = connect(ProjectPaths(info.slug).db_path)
     console = make_console(record=True, width=120)
     queue = list(answers)
     spawned = []
-    io = ChatIO(ask=lambda prompt: queue.pop(0) if queue else None, spawn=lambda root, run_id, mode: spawned.append((run_id, mode)))
+    holder = {}
+
+    def ask(prompt):
+        holder.setdefault("prompts", []).append(prompt)
+        if not queue:
+            return None
+        item = queue.pop(0)
+        return item(holder["controller"]) if callable(item) else item
+
+    io = ChatIO(ask=ask, spawn=lambda root, run_id, mode, decision=None: spawned.append((run_id, mode, decision)))
+    if submit is not None:
+        io.submit = submit
     factory = ScriptedAgentFactory(scripts)
-    ChatController(info, config or PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory).run()
-    return console.export_text(), spawned, list_runs(conn), factory
+    config = config or PhilConfig(models=TEST_MODELS)
+    controller = ChatController(info, config, conn, console, io, factory=factory, **kw)
+    holder["controller"] = controller
+    controller.run()
+    return console.export_text(), spawned, list_runs(conn), factory, holder["prompts"]
 
 
 def test_goal_to_approved_run(calc_repo):
-    text, spawned, runs, factory = run_chat(
+    text, spawned, runs, factory, _ = run_chat(
         calc_repo,
         ["add subtract", "y"],
         {"intake": [goal()], "architect": [plan()], "critic": [critique(notes=["looks fine"])]},
     )
     assert [r.run_id for r in runs] == [spawned[0][0]]
-    assert spawned[0][1] == "start"
+    assert spawned[0][1:] == ("start", None)
     assert runs[0].keyword == "CALC"
     assert "Plan CALC v1" in text and "looks fine" in text
     assert f"phil attach {spawned[0][0]}" in text
@@ -40,7 +55,7 @@ def test_goal_to_approved_run(calc_repo):
 
 
 def test_clarifying_questions_are_asked_once_answered(calc_repo):
-    text, spawned, runs, factory = run_chat(
+    text, spawned, runs, factory, _ = run_chat(
         calc_repo,
         ["add subtract", "in calc.py", "n"],
         {"intake": [goal(open_questions=["Which module?"]), goal()], "architect": [plan()], "critic": [critique()]},
@@ -51,7 +66,7 @@ def test_clarifying_questions_are_asked_once_answered(calc_repo):
 
 
 def test_edit_revises_the_plan(calc_repo):
-    text, spawned, runs, factory = run_chat(
+    text, spawned, runs, factory, _ = run_chat(
         calc_repo,
         ["add subtract", "edit", "make it two tasks", "y"],
         {"intake": [goal()], "architect": [plan(), plan(n=2)], "critic": [critique(), critique()]},
@@ -65,7 +80,7 @@ CHAT_ONLY_TOML = "[models]\n" + "".join(f'{r} = "test:model"\n' for r in ("orche
 
 def test_missing_run_models_block_approval(calc_repo):
     (calc_repo / "phil.toml").write_text(CHAT_ONLY_TOML)
-    text, spawned, runs, _ = run_chat(
+    text, spawned, runs, *_ = run_chat(
         calc_repo, ["add subtract", "y", "n"],
         {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
     )
@@ -90,7 +105,7 @@ def test_approval_rereads_phil_toml(calc_repo):
         return queue.pop(0) if queue else None
 
     spawned = []
-    io = ChatIO(ask=ask, spawn=lambda root, run_id, mode: spawned.append(run_id))
+    io = ChatIO(ask=ask, spawn=lambda root, run_id, mode, decision=None: spawned.append(run_id))
     factory = ScriptedAgentFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
     ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory).run()
     text = console.export_text()
@@ -118,7 +133,7 @@ def test_approval_reports_a_broken_phil_toml(calc_repo):
 
 
 def test_bad_test_command_blocks_approval(calc_repo):
-    text, spawned, runs, _ = run_chat(
+    text, spawned, runs, *_ = run_chat(
         calc_repo, ["add subtract", "y", "n"],
         {"intake": [goal()], "architect": [plan(test_cmd="pytest; rm -rf /")], "critic": [critique()]},
     )
@@ -127,7 +142,7 @@ def test_bad_test_command_blocks_approval(calc_repo):
 
 
 def test_agent_failure_returns_to_the_prompt(calc_repo):
-    text, spawned, runs, _ = run_chat(
+    text, spawned, runs, *_ = run_chat(
         calc_repo, ["add subtract", "/help"],
         {"intake": [RuntimeError("provider down")]},
     )
@@ -156,7 +171,7 @@ def test_spawn_failure_reports_resume_and_keeps_chat_alive(calc_repo):
     console = make_console(record=True, width=120)
     queue = ["add subtract", "y", "/help"]
 
-    def spawn(root, run_id, mode):
+    def spawn(root, run_id, mode, decision=None):
         raise RuntimeError("no fork")
 
     io = ChatIO(ask=lambda prompt: queue.pop(0) if queue else None, spawn=spawn)
@@ -195,14 +210,14 @@ def test_slash_command_failure_does_not_crash_the_repl(calc_repo, monkeypatch):
         raise RuntimeError("db exploded")
 
     monkeypatch.setattr(controller_mod, "render_runs", boom)
-    text, spawned, runs, _ = run_chat(calc_repo, ["/runs", "/help"], {})
+    text, spawned, runs, *_ = run_chat(calc_repo, ["/runs", "/help"], {})
     assert "couldn't finish that" in text
     assert "db exploded" in text
     assert "Commands: /runs" in text  # /help printed after recovering: the loop kept going
 
 
 def test_go_answer_is_recorded_and_open_questions_noted(calc_repo):
-    text, spawned, runs, factory = run_chat(
+    text, spawned, runs, factory, _ = run_chat(
         calc_repo,
         ["add subtract", "go", "n"],
         {"intake": [goal(open_questions=["Which module?"])], "architect": [plan()], "critic": [critique()]},
@@ -257,7 +272,7 @@ def test_base_sha_stays_fixed_when_explicit(calc_repo):
 def test_run_plan_json_uses_effective_test_cmd(calc_repo):
     info = resolve_repo(calc_repo)
     (calc_repo / "phil.toml").write_text(MODELS_TOML + '[project]\ntest_cmd = "uv run pytest -q"\n')
-    text, spawned, runs, _ = run_chat(
+    text, spawned, runs, *_ = run_chat(
         calc_repo,
         ["add subtract", "y"],
         {"intake": [goal()], "architect": [plan(test_cmd=None)], "critic": [critique()]},
@@ -306,7 +321,7 @@ def test_snapshot_is_removed_after_eof_mid_conversation(calc_repo):
 
 
 def test_transcript_records_raw_text_before_stripping(calc_repo):
-    text, spawned, runs, _ = run_chat(
+    text, spawned, runs, *_ = run_chat(
         calc_repo, ["/runs", "  add subtract \n", " edit ", "  ", " yes "],
         {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
     )
@@ -322,7 +337,7 @@ def test_transcript_records_raw_text_before_stripping(calc_repo):
 
 
 def test_approved_is_noted_after_the_run_is_prepared(calc_repo):
-    text, spawned, runs, _ = run_chat(
+    text, spawned, runs, *_ = run_chat(
         calc_repo, ["add subtract", "y"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}
     )
     kinds = [e["kind"] for e in transcript(calc_repo)]
@@ -338,7 +353,7 @@ def test_prepare_failure_is_noted_and_reported(calc_repo, monkeypatch):
         raise RuntimeError("disk full")
 
     monkeypatch.setattr(controller_mod, "prepare_run", boom)
-    text, spawned, runs, _ = run_chat(
+    text, spawned, runs, *_ = run_chat(
         calc_repo, ["add subtract", "y", "/help"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}
     )
     assert "disk full" in text
@@ -349,8 +364,166 @@ def test_prepare_failure_is_noted_and_reported(calc_repo, monkeypatch):
 
 
 def test_start_message_names_the_base_commit(calc_repo):
-    text, spawned, runs, _ = run_chat(
+    text, spawned, runs, *_ = run_chat(
         calc_repo, ["add subtract", "y"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}
     )
     sha7 = runs[0].base_sha[:7]
     assert f"Run {runs[0].run_id} started in the background from {sha7}." in text
+
+
+FULL_SCRIPT = {"intake": [goal()], "architect": [plan()], "critic": [critique()]}
+
+
+def deferred():
+    """A submit that holds jobs until the script runs them, plus the script item that runs the next one."""
+    pending = []
+
+    def run_next(controller):
+        pending.pop(0)()
+        return WAKE
+
+    return pending.append, run_next, pending
+
+
+def test_prompts_follow_the_stage(calc_repo):
+    *_, prompts = run_chat(calc_repo, ["add subtract", "y"], FULL_SCRIPT)
+    assert prompts[:2] == ["you › ", "Approve? [y / edit / n] › "]
+
+
+def test_runs_are_linked_to_the_chat(calc_repo):
+    text, spawned, runs, *_ = run_chat(calc_repo, ["add subtract", "y"], FULL_SCRIPT)
+    assert runs[0].chat_id == session_dir(calc_repo).name
+    assert runs[0].chat_id.startswith("c-")
+
+
+def test_new_goal_while_running_is_refused(calc_repo):
+    text, spawned, runs, factory, prompts = run_chat(calc_repo, ["add subtract", "y", "add multiply"], FULL_SCRIPT)
+    assert f"This chat is following run {runs[0].run_id}." in text
+    assert "Use /btw to ask about it" in text
+    assert len(runs) == 1 and prompts[-2:] == ["you › ", "you › "]
+
+
+def test_replace_goal_mid_planning(calc_repo):
+    submit, run_next, pending = deferred()
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        [
+            "add subtract",  # goal 1: its intake job is held
+            "add multiply",  # a new goal while goal 1 is in flight
+            "y",  # replace: goal 2's intake job is held behind goal 1's
+            run_next,  # goal 1's intake runs now; its result is stale
+            run_next,  # goal 2's intake runs
+            run_next,  # goal 2's plan job runs
+            "n",
+        ],
+        {"intake": [goal(), goal("Add multiply")], "architect": [plan()], "critic": [critique()]},
+        submit=submit,
+    )
+    assert prompts[:3] == ["you › ", "you › ", "Replace the current goal? [y / n] › "]
+    assert "Goal: Add multiply" in text
+    assert "Add subtract to calc" not in text  # goal 1's result arrived after the replace and was dropped
+    assert text.count("Plan CALC v1") == 1 and "Plan dropped." in text
+    assert factory.remaining() == {"intake": 0, "architect": 0, "critic": 0}
+    assert pending == []
+    users = [(e["stage"], e["text"]) for e in transcript(calc_repo) if e["kind"] == "user"]
+    assert users[:3] == [("goal", "add subtract"), ("goal", "add multiply"), ("confirm_replace", "y")]
+
+
+def test_declining_replace_keeps_the_current_goal(calc_repo):
+    submit, run_next, pending = deferred()
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["add subtract", "add multiply", "n", run_next, run_next, "n"],
+        FULL_SCRIPT,
+        submit=submit,
+    )
+    assert "Keeping the current goal." in text
+    assert "Goal: Add subtract to calc" in text and "Plan CALC v1" in text
+    assert prompts[3] == "you › "  # back to the goal's stage while its job is pending
+    assert factory.remaining() == {"intake": 0, "architect": 0, "critic": 0}
+
+
+def test_ctrl_c_during_planning_cancels_the_goal(calc_repo):
+    submit, run_next, pending = deferred()
+    seen = {}
+
+    def ctrl_c(controller):
+        raise KeyboardInterrupt()
+
+    def check_cancelling(controller):
+        seen["cancelling_before"] = controller.state.view().cancelling
+        return run_next(controller)
+
+    def check_after(controller):
+        seen["cancelling_after"] = controller.state.view().cancelling
+        seen["stage"] = controller.stage
+        return None
+
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo, ["add subtract", ctrl_c, check_cancelling, check_after], FULL_SCRIPT, submit=submit
+    )
+    assert "Cancelled the current goal." in text
+    assert "Plan CALC" not in text and "Goal:" not in text
+    assert prompts[2:] == ["you › ", "you › "]
+    assert seen == {"cancelling_before": True, "cancelling_after": False, "stage": "idle"}
+    assert factory.remaining() == {"intake": 0, "architect": 1, "critic": 1}  # the stale goal never planned
+
+
+def test_ctrl_c_at_approval_edit_returns_to_approval(calc_repo):
+    def ctrl_c(controller):
+        raise KeyboardInterrupt()
+
+    text, spawned, runs, factory, prompts = run_chat(calc_repo, ["add subtract", "edit", ctrl_c, "n"], FULL_SCRIPT)
+    assert prompts == [
+        "you › ",
+        "Approve? [y / edit / n] › ",
+        "What should change? › ",
+        "Approve? [y / edit / n] › ",
+        "you › ",
+    ]
+    assert "Plan dropped." in text
+
+
+def test_failed_revise_keeps_the_draft(calc_repo):
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["add subtract", "edit", "make it two tasks", "y"],
+        {"intake": [goal()], "architect": [plan(), RuntimeError("provider down")], "critic": [critique()]},
+    )
+    assert "couldn't finish that" in text and "provider down" in text
+    assert prompts[3] == "Approve? [y / edit / n] › "
+    assert len(runs) == 1 and runs[0].tasks_total == 1
+
+
+def test_worker_jobs_post_events_instead_of_printing(calc_repo):
+    submit, run_next, pending = deferred()
+    seen = {}
+
+    def run_quietly(controller):
+        before = controller.console.export_text(clear=False)
+        pending.pop(0)()
+        seen["printed"] = controller.console.export_text(clear=False)[len(before):]
+        seen["queued"] = [e.kind for e in list(controller.events.queue)]
+        return WAKE
+
+    text, *_ = run_chat(calc_repo, ["add subtract", run_quietly, "/quit"], FULL_SCRIPT, submit=submit)
+    assert seen == {"printed": "", "queued": ["goal_ready"]}
+
+
+def test_state_json_tracks_the_stage(calc_repo):
+    text, spawned, runs, *_ = run_chat(calc_repo, ["add subtract", "y"], FULL_SCRIPT)
+    state = json.loads((session_dir(calc_repo) / "state.json").read_text())
+    assert state["stage"] == "running" and state["run_id"] == runs[0].run_id and state["plan"]["keyword"] == "CALC"
+    assert state["goal"]["objective"] == "Add subtract to calc"
+    assert state["base_sha"] == runs[0].base_sha and state["version"] == 1 and state["done_seen"] is False
+
+
+def test_state_json_write_failure_is_silent(calc_repo, monkeypatch):
+    from phil.chat.session import ChatSession
+
+    def boom(self, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ChatSession, "save_state", boom)
+    text, spawned, runs, *_ = run_chat(calc_repo, ["add subtract", "y"], FULL_SCRIPT)
+    assert len(runs) == 1 and "disk full" not in text
