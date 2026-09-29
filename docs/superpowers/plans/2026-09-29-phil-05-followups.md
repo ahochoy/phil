@@ -28,6 +28,23 @@ the two items below), `2026-09-28-phil-04c-followups.md`.
   (architect, critic, or otherwise) consults it when planning a new run. That's the natural next
   step once project memory (above) is designed.
 
+- **Per-task outcomes in the PR body.** Spec §3.3 item 3 asks for each task's gates, tester
+  and reviewer outcomes under "How it was verified"; the body only has one tests line, the
+  tester report count and the newest reviewer verdict. Deferred from the final review.
+
+## Final review (deferred)
+
+- **Downgrade hazard.** Plan 5 migrates `phil.db` (the `runs` table gains `pr_*`/`base_branch`
+  columns) and `get_run`/`list_runs` build `RunRecord(**row)`, so an older Phil opening a
+  migrated `phil.db` fails on the unknown columns. Either tolerate unknown columns when reading
+  rows or record a schema version that older builds refuse with a clear message.
+- **Reopened PRs aren't re-checked.** Once a sweep records `pr_state = "closed"` the run is never
+  looked at again, so a PR reopened (and maybe merged) later is missed; `phil clean <run>` is
+  the only way out. Re-check closed PRs occasionally, or offer `phil pr <run> --recheck`.
+- **Fix the cross-imported test fixtures early in the next plan.** The `calc_repo` re-exports
+  below cause an order-dependent `fixture 'calc_repo' not found` under some collection orders;
+  do the hoisting as the first task of the next plan, before it grows more tests on them.
+
 ## Review minors
 
 - **PR jobs share the chat's 3 job slots.** `phil.chat.terminal.MAX_JOBS = 3`

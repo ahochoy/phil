@@ -50,14 +50,20 @@ goal. Open a PR for any completed run directly, any time, with:
 
     phil pr <run-id> [--base <branch>]
 
-The PR body follows the target repo's PR template when present, and lays out what changed, how
-it was verified (gates, tester, reviewer), and any action still needed.
+The PR body lays out any action still needed, what changed (the plan's description and tasks),
+and how it was verified: a tests line (no new failures against the base, or how many are still
+failing), the number of tester reports, and the newest reviewer verdict. If the repo has a PR
+template, it is appended under `## Template`, unfilled.
 
 The chat notices a merge on its own — each run's open PR is checked at most once every 5
 minutes — and `phil runs` / `phil show <run>` check too whenever you run them. A merge prints
 `<run> merged (#N); cleaned up.`; a PR closed without merging gets one notice and needs
-`phil clean <run>` to remove it. A check that fails unexpectedly (not just "not merged yet
-either") is logged to the chat's `phil.log`, not printed, and retried next time.
+`phil clean <run>` to remove it; a PR closed and later reopened isn't checked again. A merge is
+only cleaned up if the PR's head is still the run's branch, and the remote branch is deleted
+only while it still points at the PR's head commit (otherwise it's left alone, with a warning).
+A check that fails (gh offline, not logged in, a surprise) is never printed and is retried next
+time; it's logged to the `phil` logger, which the chat writes to its `phil.log` — the plain CLI
+commands have no log file, so there it goes nowhere.
 
 `phil clean <run>` removes the run's worktree, local branch, checkpoints, and scratch files,
 keeping `summary.md`, `open_issues.json`, and the run's telemetry rows in `phil.db` (`--purge`
