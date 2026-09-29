@@ -99,6 +99,14 @@ class RunWatcher:
         finally:
             conn.close()
 
+    def rearm(self) -> None:
+        """Re-post the current escalation if the run is still paused with no worker at the next poll.
+
+        The chat calls this after spawning a resume worker: a worker that exits before claiming the
+        row leaves the same escalation in place, and the chat must ask its question again.
+        """
+        self._paused_ts = None
+
     def _tick(self) -> None:
         try:
             self.poll_once()

@@ -61,6 +61,16 @@ class Planner:
             self._calls += 1
             return self._calls
 
+    def counters(self) -> tuple[int, int]:
+        """(calls, version) so far — saved with the chat so a reopened chat keeps numbering from here."""
+        with self._lock:
+            return self._calls, self.version
+
+    def restore(self, calls: int, version: int) -> None:
+        """Continue numbering agent calls and plan versions after a reopened chat's earlier ones."""
+        with self._lock:
+            self._calls, self.version = max(self._calls, calls), max(self.version, version)
+
     def _next_version(self) -> int:
         with self._lock:
             self.version += 1

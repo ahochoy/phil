@@ -128,3 +128,18 @@ def test_thread_start_and_stop(calc_repo):
     watcher._thread.join(timeout=5)  # the thread ends by itself after run_done
     assert watcher.done
     watcher.stop()
+
+
+def test_rearm_reposts_a_pause_still_waiting_after_a_resume_attempt(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    update_run(conn, run_id, state="escalated")
+    events.append("escalation", escalation={"summary": "x", "options": ["abort"]})
+    watcher.poll_once()
+    watcher.poll_once()
+    assert kinds(posted).count("run_paused") == 1
+    watcher.rearm()  # a resume worker was spawned but exited before claiming the row
+    watcher.poll_once()
+    assert kinds(posted).count("run_paused") == 2
+    watcher.poll_once()
+    assert kinds(posted).count("run_paused") == 2

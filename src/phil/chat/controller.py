@@ -82,6 +82,8 @@ class ChatController:
         sleep: Callable[[float], None] | None = None,
         watcher_factory: Callable[[str], object] | None = None,
         resume: bool = False,
+        worker_alive: Callable[[object], bool] = is_worker_alive,
+        worker_starting: Callable[[object], bool] = worker_starting,
     ) -> None:
         self.info, self.config, self.conn, self.console, self.io = info, config, conn, console, io
         # None means "resolve HEAD when a run is actually started" (_start), not at chat start,
@@ -119,6 +121,10 @@ class ChatController:
         )
         self._watcher = None  # follows the chat's run; a daemon thread (the worker is independent)
         self._pause: dict | None = None  # the pending escalation: {"summary", "options", ...}
+        # The pause was answered and a resume worker spawned; the question comes back if the worker
+        # exits without taking the run (the watcher re-posts the same escalation).
+        self._answer_sent = False
+        self._worker_alive, self._worker_starting = worker_alive, worker_starting
         self._lost = False  # the watcher saw the worker stop responding
         self._btw_calls = 0
         self._resume = resume
@@ -219,7 +225,7 @@ class ChatController:
 
     def _prompt(self) -> str:
         if self.stage == "paused" and self._pause is not None:
-            return f"{self._pause['summary']} — {' / '.join(self._options())} › "
+            return f"{self._pause.get('summary', '')} — {' / '.join(self._options())} › "
         return PROMPTS.get(self.stage, "you › ")
 
     def _save(self) -> None:
@@ -228,9 +234,10 @@ class ChatController:
             stage = self.stage
             if stage == "confirm_replace":
                 stage = self._parent_stage
-            elif stage == "edit":
-                stage = "approval"
+            elif stage == "edit" or (stage == "planning" and self._revising and self._draft is not None):
+                stage = "approval"  # a reopened chat returns to the draft being revised
             draft = self._draft
+            planner_calls, planner_version = self.planner.counters()
             self.session.save_state(
                 {
                     "stage": stage,
@@ -241,6 +248,13 @@ class ChatController:
                     "run_id": self._run_id,
                     "base_sha": self._base_sha,
                     "done_seen": self._done_seen,
+                    # Agent-call numbers name the chat's artifacts; a reopened chat continues from them.
+                    "counters": {
+                        "intake": self._intake_calls,
+                        "planner_calls": planner_calls,
+                        "planner_version": planner_version,
+                        "btw": self._btw_calls,
+                    },
                 }
             )
         except Exception:
@@ -367,8 +381,13 @@ class ChatController:
 
     def _begin_goal(self, text: str) -> None:
         if self._run_id is not None:
-            # A new goal replaces a failed or stopped run the chat was offering to /resume
-            # (`phil resume <id>` still continues it).
+            # A new goal replaces a failed or stopped run the chat was offering to /resume.
+            record = get_run(self.conn, self._run_id)
+            rid = escape(self._run_id)
+            state = escape(record.state) if record else "is"
+            self.console.print(
+                f"[phil.muted]Run {rid} is left as {state}; `phil resume {rid}` still continues it.[/]"
+            )
             self._forget_run()
         self._next_generation()
         self._reset_goal()
@@ -612,7 +631,7 @@ class ChatController:
 
     def _forget_run(self) -> None:
         self._stop_watcher()
-        self._run_id, self._lost, self._pause = None, False, None
+        self._run_id, self._lost, self._pause, self._answer_sent = None, False, None, False
         self.state.set_run(None)
         self.state.set_paused(False)
 
@@ -641,7 +660,12 @@ class ChatController:
 
     def _on_run_paused(self, data: dict) -> None:
         escalation = data["escalation"]
-        self._pause = escalation
+        if self._answer_sent:
+            log = ProjectPaths(self.info.slug).run_dir(self._run_id) / "logs" / "worker.log"
+            self.console.print(
+                f"[phil.warn]The worker exited without resuming the run; see {escape(str(log))}[/]"
+            )
+        self._pause, self._answer_sent = escalation, False
         self.state.set_paused(True)
         self._safe_note("run_paused", run_id=self._run_id, escalation=escalation)
         self.console.print(
@@ -651,8 +675,8 @@ class ChatController:
             self._set_stage("paused")
 
     def _on_run_resumed(self, data: dict) -> None:
-        # Answered here (the pause is already cleared) or elsewhere (drop the pending question).
-        self._pause = None
+        # Answered here (the resume worker took the run) or elsewhere (drop the pending question).
+        self._pause, self._answer_sent = None, False
         self.state.set_paused(False)
         self.console.print(f"[phil.muted]{escape(self._run_id)} resumed.[/]")
         if self.stage in ("paused", "hint"):
@@ -660,26 +684,28 @@ class ChatController:
 
     def _pause_answer(self, text: str) -> None:
         options = self._options()
-        if text not in options:
+        choice = {option.lower(): option for option in options}.get(text.lower())
+        if choice is None:
             self.console.print(f"Answer one of: {escape(', '.join(options))}")
             return
-        if text == "retry":
+        if choice == "retry":
             self._set_stage("hint")
             return
-        self._resume_run({"action": text})
+        self._resume_run({"action": choice})
 
     def _hint(self, text: str) -> None:
         self._resume_run({"action": "retry"} | ({"hint": text} if text else {}))
 
     def _worker_active(self, record) -> bool:
-        return is_worker_alive(record) or worker_starting(run_events(ProjectPaths(self.info.slug), record.run_id))
+        events = run_events(ProjectPaths(self.info.slug), record.run_id)
+        return self._worker_alive(record) or self._worker_starting(events)
 
     def _resume_run(self, decision: dict) -> None:
         """Answer the pause: spawn a resume worker, unless the run already moved on."""
         run_id = self._run_id
         record = get_run(self.conn, run_id)
         if record is None or record.state != "escalated" or self._worker_active(record):
-            self._pause = None
+            self._pause, self._answer_sent = None, False
             self.state.set_paused(False)
             self._set_stage("running")
             self.console.print("[phil.muted]The run moved on; nothing to answer.[/]")
@@ -695,26 +721,38 @@ class ChatController:
                 "Try /answer again.[/]"
             )
             return
-        self._pause = None
+        # Keep the question until the worker takes the run: if it exits first, the watcher re-posts it.
+        self._answer_sent = True
         self.state.set_paused(False)
         self._set_stage("running")
+        rearm = getattr(self._watcher, "rearm", None)
+        if rearm is not None:
+            rearm()
         self.console.print(f"Resuming [phil.id]{escape(run_id)}[/] with {escape(decision['action'])}.")
 
     def _on_run_done(self, data: dict) -> None:
+        # Settle the chat first, so a notice that fails to print can't leave it following a finished run.
         self._stop_watcher()
         self.state.set_run(None)
         self.state.set_paused(False)
-        self._pause, self._lost = None, False
-        run_id, state = self._run_id, data["state"]
+        self._pause, self._lost, self._answer_sent = None, False, False
+        run_id, state = self._run_id, data.get("state", "")
+        self._safe_note("run_done", run_id=run_id, state=state)
+        if state not in ("failed", "stopped"):  # failed/stopped keep the run id for /resume
+            self._done_seen = True
+            self._run_id = None
+            self._reset_goal()  # the chat takes its next goal
+        self._set_stage("idle")
+        self._run_notice(run_id, state, data)
+
+    def _run_notice(self, run_id: str, state: str, data: dict) -> None:
         rid = escape(run_id)
         summary = f"[phil.muted]Summary: {escape(str(data.get('summary', '')))}[/]"
         attention = data.get("needs_attention")
-        self._safe_note("run_done", run_id=run_id, state=state)
         if state in ("failed", "stopped"):
             detail = f": {escape(attention)}" if attention else "."
             self.console.print(f"[phil.warn]Run {rid} {escape(state)}{detail}[/]")
             self.console.print("Continue it with /resume.")
-            self._set_stage("idle")  # the run id is kept for /resume
             return
         if state == "completed":
             tokens, cost = data.get("tokens", 0), data.get("cost_usd", 0.0)
@@ -729,10 +767,6 @@ class ChatController:
         else:
             self.console.print(f"Run {rid} was {escape(state)}.")
             self.console.print(summary)
-        self._done_seen = True
-        self._run_id = None
-        self._reset_goal()  # the chat takes its next goal
-        self._set_stage("idle")
 
     def _on_worker_lost(self, data: dict) -> None:
         self._lost = True
@@ -741,15 +775,15 @@ class ChatController:
         )
 
     def _on_watch_error(self, data: dict) -> None:
-        self._stop_watcher()
+        # The watcher keeps polling and posts this once per failure streak; it recovers on its own.
         rid = escape(self._run_id)
         self.console.print(
-            f"[phil.muted]Live updates for {rid} stopped ({escape(str(data.get('error', '')))}). "
-            f"Follow it with `phil attach {rid}`.[/]"
+            f"[phil.muted]Live updates for {rid} are failing ({escape(str(data.get('error', '')))}); retrying. "
+            f"`phil attach {rid}` also works.[/]"
         )
 
     def _answer_command(self) -> None:
-        if self._pause is not None and self.stage in RUN_STAGES:
+        if self._pause is not None and not self._answer_sent and self.stage in RUN_STAGES:
             self._set_stage("paused")
         else:
             self.console.print("Nothing needs you right now.")
@@ -845,7 +879,11 @@ class ChatController:
                 critique=PlanCritique.model_validate(saved["critique"]),
                 version=saved.get("version") or 1,
             )
-            self.planner.version = self._draft.version  # a revision after reopening is the next version
+        counters = saved.get("counters") or {}
+        self._intake_calls = max(self._intake_calls, int(counters.get("intake", 0)))
+        self._btw_calls = max(self._btw_calls, int(counters.get("btw", 0)))
+        version = max(int(counters.get("planner_version", 0)), self._draft.version if self._draft else 0)
+        self.planner.restore(int(counters.get("planner_calls", 0)), version)
         self._safe_note("reopened")
         title = f": {escape(goal.objective)}" if goal else "."
         self.console.print(f"[phil.brand]Reopened {escape(self.session.id)}[/]{title}")
@@ -854,7 +892,7 @@ class ChatController:
             self._set_stage("running")
             self.console.print(f"[phil.muted]Following run {escape(self._run_id)}.[/]")
             self._follow()
-        elif stage == "approval" and self._draft is not None:
+        elif stage in ("approval", "planning", "edit") and self._draft is not None:
             self._set_stage("approval")
             self._show_plan(self._draft)
         else:

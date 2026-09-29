@@ -189,7 +189,8 @@ def test_completion_notice_then_next_goal(calc_repo):
     assert f"Summary:{summary}" in "".join(text.split())  # the long path may wrap
     assert seen["view"] == (None, False, None)
     assert prompts[3] == "you › "
-    assert "Goal: Add multiply" in text and "Plan MUL v2" in text  # plan versions count per chat and "Plan dropped." in text
+    assert "Goal: Add multiply" in text and "Plan dropped." in text
+    assert "Plan MUL v2" in text  # plan versions count per chat
     state = json.loads((session_dir(calc_repo) / "state.json").read_text())
     assert state["run_id"] is None and state["done_seen"] is True and state["stage"] == "idle"
 
@@ -244,17 +245,16 @@ def test_resume_while_the_run_is_healthy_does_nothing(calc_repo):
     assert [mode for _, mode, _ in spawned] == ["start"]
 
 
-def test_watch_error_points_at_attach(calc_repo):
-    seen = {}
+def test_watch_error_warns_and_keeps_watching(calc_repo):
     text, spawned, runs, *_ = run_chat(
         calc_repo,
-        ["add subtract", "y", post("watch_error", error="OSError: disk gone"), peek(seen, "w", lambda c: c._watcher)],
+        ["add subtract", "y", post("watch_error", error="OSError: disk gone"), to_state("completed", tasks_done=1)],
         FULL_SCRIPT,
     )
     run_id = runs[0].run_id
-    assert "Live updates for" in text and "OSError: disk gone" in text
-    assert f"phil attach {run_id}" in text.split("Live updates for")[1]
-    assert seen["w"] is None
+    flat = " ".join(text.split())
+    assert f"Live updates for {run_id} are failing (OSError: disk gone); retrying. `phil attach {run_id}` also works." in flat
+    assert f"✓ Run {run_id} completed" in text  # the watcher kept polling and delivered the ending
 
 
 def test_btw_answers_during_planning(calc_repo):
@@ -440,3 +440,150 @@ def test_a_revision_after_reopening_is_the_next_version(calc_repo):
         calc_repo, ["edit", "two tasks", "n"], {"architect": [plan(n=2)], "critic": [critique()]}
     )
     assert "Plan CALC v1 · 1 task" in text and "Plan CALC v2 · 2 tasks" in text
+
+
+def test_resume_worker_that_exits_without_resuming_re_asks(calc_repo):
+    # run_chat's spawn only records the call: like a resume worker that exits before claiming the row,
+    # the row stays escalated with no worker alive or starting.
+    seen = {}
+
+    def poll(controller):
+        seen["before"] = (controller.stage, controller.state.view().paused)
+        controller._watcher.poll_once()
+        return WAKE
+
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo, ["add subtract", "y", escalate(), "skip", "/answer", poll, "abort"], FULL_SCRIPT
+    )
+    run_id = runs[0].run_id
+    assert seen["before"] == ("running", False)  # the answer was sent; nothing is asked meanwhile
+    assert "Nothing needs you right now." in text  # /answer while the answer is in flight
+    flat = "".join(text.split())
+    log = ProjectPaths(resolve_repo(calc_repo).slug).run_dir(run_id) / "logs" / "worker.log"
+    assert f"Theworkerexitedwithoutresumingtherun;see{log}" in flat
+    assert prompts[-2:] == [PAUSE_PROMPT, "you › "]
+    assert [(m, d) for _, m, d in spawned] == [
+        ("start", None), ("resume", {"action": "skip"}), ("resume", {"action": "abort"})
+    ]
+
+
+def test_pause_answers_are_case_insensitive(calc_repo):
+    text, spawned, runs, *_ = run_chat(calc_repo, ["add subtract", "y", escalate(), "Skip"], FULL_SCRIPT)
+    assert (runs[0].run_id, "resume", {"action": "skip"}) in spawned
+
+
+def test_prompt_survives_an_escalation_without_a_summary(calc_repo):
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo, ["add subtract", "y", post("run_paused", escalation={"options": ["abort"]}), "abort"], FULL_SCRIPT
+    )
+    assert prompts[3] == " — abort › "
+
+
+def test_an_active_worker_blocks_answering_and_resume(calc_repo):
+    text, spawned, runs, *_ = run_chat(
+        calc_repo,
+        ["add subtract", "y", escalate(), "skip", post("worker_lost"), "/resume"],
+        FULL_SCRIPT,
+        worker_alive=lambda record: True,
+    )
+    assert "The run moved on; nothing to answer." in text
+    assert "Nothing to resume." in text
+    assert [mode for _, mode, _ in spawned] == ["start"]
+
+
+def test_resume_is_blocked_while_a_worker_is_starting(calc_repo):
+    text, spawned, runs, *_ = run_chat(
+        calc_repo,
+        ["add subtract", "y", to_state("failed", needs_attention="boom"), "/resume"],
+        FULL_SCRIPT,
+        worker_starting=lambda events: True,
+    )
+    assert "Nothing to resume." in text
+    assert [mode for _, mode, _ in spawned] == ["start"]
+
+
+def test_a_failing_completion_notice_still_ends_the_run(calc_repo):
+    seen = {}
+    bad = {"state": "completed", "tasks_done": 1, "tasks_total": 1, "tokens": "lots", "cost_usd": 0.0,
+           "needs_attention": None, "summary": "s.md"}
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["add subtract", "y", peek(seen, "w", lambda c: c._watcher), post("run_done", **bad),
+         peek(seen, "after", lambda c: (c.stage, c._run_id, c._done_seen))],
+        FULL_SCRIPT,
+    )
+    assert "couldn't finish that" in text
+    assert seen["w"].stopped and seen["after"] == ("idle", None, True)
+
+
+def test_new_goal_after_a_failed_run_says_it_is_left(calc_repo):
+    text, spawned, runs, *_ = run_chat(
+        calc_repo,
+        ["add subtract", "y", to_state("failed", needs_attention="boom"), "add multiply", "n"],
+        {
+            "intake": [goal(), goal("Add multiply")],
+            "architect": [plan(), plan(keyword="MUL")],
+            "critic": [critique(), critique()],
+        },
+    )
+    run_id = runs[0].run_id
+    assert f"Run {run_id} is left as failed; `phil resume {run_id}` still continues it." in text
+    assert "Goal: Add multiply" in text
+
+
+def test_run_finished_while_closed_is_shown_once_on_reopen(calc_repo):
+    first_text, spawned, runs, *_ = run_chat(calc_repo, ["add subtract", "y"], FULL_SCRIPT)
+    run_id = runs[0].run_id
+    info = resolve_repo(calc_repo)
+    conn = connect(ProjectPaths(info.slug).db_path)
+    update_run(conn, run_id, state="running")
+    update_run(conn, run_id, state="completed", tasks_done=1)
+
+    def poll(controller):
+        controller._watcher.poll_once()
+        return WAKE
+
+    text, *_ = reopen(calc_repo, [poll])
+    assert text.count(f"✓ Run {run_id} completed") == 1
+    state = json.loads((session_dir(calc_repo) / "state.json").read_text())
+    assert state["done_seen"] is True and state["run_id"] is None and state["stage"] == "idle"
+    again, *_ = reopen(calc_repo, [])
+    assert "completed" not in again and "Following run" not in again
+
+
+def artifact_files(directory):
+    return {p.relative_to(directory): p.read_bytes() for p in directory.rglob("*") if p.is_file()
+            and "tree" not in p.relative_to(directory).parts and p.name not in ("state.json", "transcript.jsonl")}
+
+
+def test_reopen_restores_the_agent_call_counters(calc_repo):
+    run_chat(calc_repo, ["add subtract"], FULL_SCRIPT)
+    directory = session_dir(calc_repo)
+    before = artifact_files(directory)
+    state = json.loads((directory / "state.json").read_text())
+    assert state["counters"] == {"intake": 1, "planner_calls": 1, "planner_version": 1, "btw": 0}
+    text, *_ = reopen(
+        calc_repo, ["/btw hi", "edit", "two tasks", "n"],
+        {"architect": [plan(n=2)], "critic": [critique()], "btw": [Brief(headline="hello")]},
+    )
+    after = artifact_files(directory)
+    assert {k: after[k] for k in before} == before  # nothing written before the reopen was overwritten
+    new = {str(k) for k in set(after) - set(before)}
+    assert any("architect-c2" in name for name in new) and any("critic-c2" in name for name in new)
+    assert any("btw" in name for name in new)
+    assert json.loads((directory / "state.json").read_text())["counters"]["planner_calls"] == 2
+
+
+def test_reopen_during_a_revision_returns_to_approval(calc_repo):
+    submit, run_next, pending = deferred()
+    run_chat(
+        calc_repo, ["add subtract", run_next, run_next, "edit", "two tasks"], FULL_SCRIPT, submit=submit
+    )  # EOF while the revision is pending
+    state = json.loads((session_dir(calc_repo) / "state.json").read_text())
+    assert state["stage"] == "approval" and state["plan"]["keyword"] == "CALC"
+    # An older chat may have saved the revision's own stage: it reopens at approval too.
+    state["stage"] = "planning"
+    (session_dir(calc_repo) / "state.json").write_text(json.dumps(state))
+    text, spawned, runs, factory, prompts = reopen(calc_repo, ["y"])
+    assert "Plan CALC v1 · 1 task" in text
+    assert prompts[0] == "Approve? [y / edit / n] › " and len(runs) == 1
