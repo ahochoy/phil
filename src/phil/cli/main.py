@@ -4,6 +4,7 @@ import os
 import shutil
 import signal
 import sqlite3
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,8 +55,12 @@ def root(
     base: str | None = typer.Option(
         None, "--base", help="Chat only: start the chat's runs from this ref instead of HEAD."
     ),
+    resume_chat: str | None = typer.Option(
+        None, "--resume", help="Reopen a chat by id (see the list shown by `phil`)."
+    ),
+    new: bool = typer.Option(False, "--new", help="Start a new chat without listing open ones."),
 ) -> None:
-    ctx.obj = {"repo": repo, "base": base}
+    ctx.obj = {"repo": repo, "base": base, "resume": resume_chat, "new": new}
     if ctx.invoked_subcommand is None:
         _chat(ctx)
 
@@ -81,9 +86,54 @@ def _require_api_keys(config: PhilConfig, roles: tuple[str, ...]) -> None:
         raise typer.Exit(1)
 
 
-def _chat(ctx: typer.Context) -> None:
-    from phil.chat.controller import HELP, ChatController, ChatIO
+def _is_tty() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
+
+def _terminal(toolbar):
+    """The live terminal IO (patched in tests, where CliRunner has no real terminal)."""
+    from phil.chat.terminal import TerminalIO
+
+    return TerminalIO(toolbar)
+
+
+def _open_chat_line(n: int, chat) -> str:
+    objective = escape(chat.objective) if chat.objective else "[phil.muted](no goal)[/]"
+    if chat.run_id:
+        status = f"run {escape(chat.run_id)} {escape(chat.run_state or 'unknown')}"
+    else:
+        status = "plan waiting for approval"
+    return f"{n}. [phil.id]{escape(chat.id)}[/] · {objective} · {status}"
+
+
+def _choose_open_chat(out, chats, ask) -> str | None:
+    """List open chats and ask which to reopen; None starts a new chat."""
+    out.print("Open chats:")
+    for n, chat in enumerate(chats, 1):
+        out.print(_open_chat_line(n, chat))
+    while True:
+        try:
+            answer = ask("Reopen one? [number / Enter for a new chat] › ")
+        except EOFError:
+            raise typer.Exit(0) from None
+        answer = answer.strip()
+        if not answer:
+            return None
+        if answer.isdigit() and 1 <= int(answer) <= len(chats):
+            return chats[int(answer) - 1].id
+        out.print(f"[phil.error]choose 1–{len(chats)}, or press Enter for a new chat[/]")
+
+
+def _chat(ctx: typer.Context) -> None:
+    from phil.chat.controller import HELP, ChatController
+    from phil.chat.session import ChatSession, list_open_chats
+    from phil.chat.terminal import LineIO
+    from phil.ui.toolbar import render_toolbar
+
+    resume_id, new = ctx.obj.get("resume"), ctx.obj.get("new", False)
+    if resume_id is not None and new:
+        console.print("[phil.error]choose --resume or --new, not both[/]")
+        raise typer.Exit(1)
     info, conn = _open_project(ctx)
     try:
         config = load_config(info.root)
@@ -99,6 +149,14 @@ def _chat(ctx: typer.Context) -> None:
         raise typer.Exit(1)
     # The chat starts runs too, and their worker inherits this environment.
     _require_api_keys(config, CHAT_ROLES + RUN_ROLES)
+    paths = ProjectPaths(info.slug)
+    session = None
+    if resume_id is not None:
+        try:
+            session = ChatSession.open(paths, resume_id)
+        except (ValueError, FileNotFoundError) as exc:
+            console.print(f"[phil.error]cannot reopen: {escape(str(exc))}[/]")
+            raise typer.Exit(1) from exc
     base = ctx.obj.get("base")
     base_sha: str | None
     if base is not None:
@@ -112,39 +170,56 @@ def _chat(ctx: typer.Context) -> None:
     else:
         base_sha, base_label = None, info.branch or "detached"
         header_sha = info.head_sha
-    console.print(
+    tty = _is_tty()
+    # Under patch_stdout, stdout is a proxy; force colour so Rich keeps emitting it.
+    out = make_console(force_terminal=True) if tty else console
+    out.print(
         f"[phil.brand]Phil[/] · {escape(info.root.name)} · base: {escape(base_label)} @ {escape(header_sha[:7])}"
     )
     if base is None and info.dirty_files:
         count = len(info.dirty_files)
-        console.print(
+        out.print(
             f"[phil.warn]⚠ {count} uncommitted file{'s' if count != 1 else ''} — not included in runs[/]"
         )
     parked_count = len(list_parked(conn))
     if parked_count:
-        console.print(f"[phil.muted]{parked_count} parked[/]")
-    console.print(f"[phil.muted]{escape(HELP)}[/]")
-
-    def ask(prompt: str) -> str | None:
-        try:
-            return console.input(f"[phil.user]{escape(prompt)}[/]")
-        except EOFError:
-            return None
-
-    io = ChatIO(ask=ask, spawn=lambda root, run_id, mode, decision=None: spawn_worker(root, run_id, mode, decision))
+        out.print(f"[phil.muted]{parked_count} parked[/]")
+    if session is None and not new and tty:
+        chats = list_open_chats(paths, conn)
+        if chats:
+            chosen = _choose_open_chat(out, chats, lambda prompt: out.input(f"[phil.user]{escape(prompt)}[/]"))
+            if chosen is not None:
+                session = ChatSession.open(paths, chosen)
+    out.print(f"[phil.muted]{escape(HELP)}[/]")
     try:
         factory = _factory_from_env()
     except Exception as exc:
-        console.print(
+        out.print(
             f"[phil.error]cannot load PHIL_AGENT_FACTORY: {escape(type(exc).__name__)}: {escape(str(exc))}[/]"
         )
         raise typer.Exit(1) from exc
+
+    controller = None
+
+    def toolbar() -> str:
+        if controller is None:
+            return ""
+        return render_toolbar(controller.state.view(), time.time(), width=terminal.width())
+
+    terminal = _terminal(toolbar) if tty else LineIO(out)
     try:
-        controller = ChatController(info, config, conn, console, io, factory=factory, base_sha=base_sha)
-    except GitError as exc:
-        console.print(f"[phil.error]{escape(str(exc))}[/]")
-        raise typer.Exit(1) from exc
-    controller.run()
+        io = terminal.chat_io(lambda root, run_id, mode, decision=None: spawn_worker(root, run_id, mode, decision))
+        try:
+            controller = ChatController(
+                info, config, conn, out, io, factory=factory, base_sha=base_sha, session=session,
+                resume=session is not None,
+            )
+        except GitError as exc:
+            out.print(f"[phil.error]{escape(str(exc))}[/]")
+            raise typer.Exit(1) from exc
+        terminal.run(controller.run)
+    finally:
+        terminal.close()
 
 
 @app.command()
