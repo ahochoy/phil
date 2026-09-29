@@ -25,3 +25,9 @@ def test_critic_returns_a_valid_critique(tmp_path):
     assert isinstance(result, PlanCritique)
     [row] = [dict(r) for r in conn.execute("SELECT * FROM telemetry WHERE outcome = 'ok'")]
     assert row["input_tokens"] > 0
+    # 4c: the collector sees the real model call (not just the returned messages), and its cost
+    # is either reported by the provider or estimated from the cached OpenRouter price list.
+    assert row["model_calls"] >= 1
+    assert row["cost_source"] in ("reported", "estimated")
+    calls = [dict(r) for r in conn.execute("SELECT * FROM calls WHERE telemetry_id = ?", (row["id"],))]
+    assert len(calls) >= 1

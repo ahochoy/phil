@@ -38,6 +38,7 @@
 - **Run summary** (`summary.md`): a `## Usage` section — totals plus one line per layer/role (calls, tokens in/out, cost, tool calls).
 - **`phil show <run>`**: run header (keyword, state, base..branch, tasks done), tasks with status, the usage breakdown table (layer, role, calls, model calls, tokens in/out, cost, tool calls, retries), open issues (deduplicated), and numbered detail refs: summary, worker log, test logs, reviewer/tester outputs, packets (most recent first, capped). `phil show <run> <n>` prints ref *n* in full.
 - **Chat:** `/show` = `phil show` for the chat's run; `/more <n>` expands ref *n* from the most recent notice that listed refs (completion notice, `/btw` answer details, `/show`). The toolbar shows the chat's running cost (`$0.42` / `~$0.42`), refreshed when jobs finish and on each run progress event.
+  - **Implementation note:** a `/btw` answer's refs are model-written paths, so `/more` only opens them inside that answer's own read-only repo snapshot (never the live working tree, and never a path escaping the snapshot via `..`, an absolute path, `~`, or a symlink); refs Phil listed itself (`/show`, a completion notice) are opened directly, since they already name a file under the run's own directory.
 - **Budget warning:** when a run's tokens or cost first reach `[run] warn_at` (default 0.8) of the limits, the engine appends one `budget_warning` event (tokens, cost, limits); the chat's watcher posts it and the chat prints `r-7f3a has used 80% of its budget ($1.61 of $2.00).` `phil attach` renders it too.
 
 ### 3.3 Reliability

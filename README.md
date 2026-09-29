@@ -18,8 +18,16 @@ The prompt stays usable while a goal is being planned or a run works in the back
 - If the run needs your input, the chat flags it right away (`⏸ <run> needs you: …`) and asks
   at the next idle prompt; jump to it any time with `/answer`.
 - Ask a side question while work continues with `/btw <question>` — read-only, it never changes
-  the plan or the run.
+  the plan or the run; its answer can reference files, opened by number with `/more <n>` (only
+  from that answer's read-only repo snapshot — never the live working tree).
 - If a run failed or was stopped, continue it with `/resume`.
+- `/show` prints the chat's run: tasks, a usage table, open issues, and numbered details.
+  `/more <n>` expands one detail from the most recent listing (`/show`, a `/btw` answer, or the
+  run's completion notice) — the full text of a log, packet, or agent output.
+- `/park <note>` sets an idea aside instead of acting on it now; `phil parked` lists the parking
+  lot, and its open count shows at chat start and in the toolbar.
+- The toolbar shows the chat's running cost (its own agent calls plus its runs'), e.g. `$0.42`
+  reported by the provider or `~$0.42` estimated from a cached price list (see Observability).
 - `/runs` lists runs, `/help` shows the commands, `/quit` (or Ctrl-D) leaves the chat — a run
   left running keeps going in the background.
 
@@ -28,6 +36,42 @@ Reopen a chat later:
     phil                      # lists this repo's open chats; pick a number or press Enter for a new one
     phil --resume <chat-id>   # reopen a specific chat directly
     phil --new                # skip the list and start a new chat
+
+## Observability
+
+Every model call is counted, including calls made inside a deep agent's own sub-agents — not
+just the top-level ones. `phil runs` shows accurate tokens and cost per run; `phil show <run>`
+breaks it down by layer and role (calls, model calls, tokens in/out, cost, tool calls, retries),
+lists open issues, and numbers the run's details (worker log, test logs, reviewer/tester output,
+packets); `phil show <run> <n>` prints one detail in full (`/more <n>` does the same in the chat).
+
+Cost markers, wherever a cost is shown:
+
+- `$0.42` — the provider reported the cost.
+- `~$0.42` — no reported cost; computed from tokens × the model's published price.
+- `$0.42?` or `$?` — some part of the cost couldn't be priced (a call's model isn't in the price
+  list): `$?` when the computed total is exactly zero, `?` appended to the formatted amount when
+  there's a nonzero total from other calls alongside the unpriced one.
+
+Estimated costs come from OpenRouter's public price list (`GET
+https://openrouter.ai/api/v1/models`, no key needed), cached under `~/.phil/cache/` for a day.
+Only `openrouter:<model>` models are priced this way; a model configured under a different
+provider prefix always shows as reported or unknown, never estimated.
+
+A run pauses at 100% of its `[run] max_tokens` / `max_cost_usd` limits as before, and now warns
+once at `[run] warn_at` (default `0.8`, i.e. 80%) of whichever limit it's closer to; the chat and
+`phil attach` print the warning (e.g. `r-7f3a has used 80% of its budget ($1.61 of $2.00).`).
+
+Model calls time out after `[run] model_timeout_s` (default `180`) and Phil's own retry policy
+runs instead of the provider SDK's: a timeout gets 2 tries total (a stuck provider otherwise
+costs one full timeout per attempt), other transient errors (rate limits, 5xx, a 200 response
+carrying a transient error code) keep the usual 3.
+
+```toml
+[run]
+model_timeout_s = 180
+warn_at = 0.8
+```
 
 ## Development
 

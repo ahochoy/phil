@@ -808,6 +808,7 @@ class ChatController:
         self._pause, self._lost, self._answer_sent = None, False, False
         run_id, state = self._run_id, data.get("state", "")
         self._safe_note("run_done", run_id=run_id, state=state)
+        self._refresh_parked()  # workers may have parked items during the run
         if state not in ("failed", "stopped"):  # failed/stopped keep the run id for /resume
             self._done_seen = True
             self._run_id = None
@@ -1108,7 +1109,7 @@ def _inside_snapshot(tree: Path | None, raw: str) -> Path | None:
     try:
         root = tree.resolve(strict=True)
         candidate = (root / relative).resolve()
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return None
     if not candidate.is_relative_to(root) or not candidate.is_file():
         return None

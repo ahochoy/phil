@@ -749,6 +749,48 @@ def test_btw_details_without_a_snapshot_are_refused(calc_repo):
     assert REFUSED in text and "def add" not in text
 
 
+def test_more_refuses_a_ref_with_an_embedded_nul_byte(calc_repo):
+    # `Path.resolve()` raises ValueError ("embedded null character in path") for this, rather
+    # than OSError/RuntimeError; `_inside_snapshot` must treat it as "not in the snapshot" too.
+    from phil.contracts import Ref
+
+    brief = Brief(headline="add is in calc.py", details=[Ref(label="bad", path="calc.py\x00evil")])
+    text, *_ = run_chat(
+        calc_repo, ["add subtract", "/btw where is add?", "/more 1", "n"], {**FULL_SCRIPT, "btw": [brief]}
+    )
+    assert REFUSED in text and "def add" not in text
+
+
+def test_parked_count_refreshes_when_the_run_finishes(calc_repo):
+    # A worker can park items (`SelfCheck.out_of_scope`) during the run; the toolbar's count,
+    # last refreshed at chat/run start, must pick those up when the run ends too.
+    from phil.contracts import Ref
+    from phil.store.parked import park
+
+    seen = {}
+
+    def worker_parks(controller):
+        paths, run_id, conn = _run(controller)
+        park(
+            conn, raised_by="implementer", note="a worker parked this", why_not_now="out of scope",
+            source=Ref(label="implement output", path=""), run_id=run_id,
+        )
+        return WAKE
+
+    text, spawned, runs, *_ = run_chat(
+        calc_repo,
+        [
+            "add subtract", "y",
+            peek(seen, "before", lambda c: c.state.view().parked),
+            worker_parks,
+            to_state("completed", tasks_done=1),
+            peek(seen, "after", lambda c: c.state.view().parked),
+        ],
+        FULL_SCRIPT,
+    )
+    assert seen == {"before": 0, "after": 1}
+
+
 def test_park_updates_the_parked_count(calc_repo):
     seen = {}
     run_chat(

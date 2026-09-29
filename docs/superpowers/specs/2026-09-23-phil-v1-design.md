@@ -391,6 +391,15 @@ Verbose agents bury the essential point. Phil separates what is **stored** (ever
 ## 11. Observability and eval hooks (hooks only in v1)
 
 - **Telemetry:** `invoke_agent` writes one row per call to the `telemetry` table: `run_id, layer, node, role, model, attempt, packet_tokens, input_tokens, output_tokens, latency_ms, cost_usd, outcome` (`ok | invalid | evidence_fail | error`). `phil runs <id> --usage` renders totals by layer and role. `present()` also records the token size of the source contracts versus the rendered `Brief`, so the interface layer's compression is measurable. External exporters (OpenTelemetry, Langfuse) are future work.
+
+  As of plan 4c (`docs/superpowers/specs/2026-09-28-phil-04c-observability-design.md`), this is
+  built out: a `UsageCollector` callback counts every model call (including a deep agent's own
+  sub-agent calls) and tool call; cost is the provider's reported figure or, failing that, an
+  estimate from a cached OpenRouter price list (`~`), or unknown (`?`); `telemetry` gained
+  `chat_id`, `model_calls`, `tool_calls`, `retries`, `cost_source`, and a per-call `calls` table;
+  `phil runs`, run summaries, `phil show <run>`, the chat toolbar (`/show`, `/more`) and budget
+  warnings (`[run] warn_at`) all render from these totals; model calls get a configurable timeout
+  (`[run] model_timeout_s`) and Phil's own retries replace the provider SDK's.
 - **Evals:** v1 guarantees that any `AgentSpec` can be invoked standalone with a packet loaded from disk, and that contract validation and evidence checks are standalone functions. Saved packets and outputs are fixtures. An eval runner (`phil eval <role> --model X`) is future work.
 
 ## 12. Testing Phil

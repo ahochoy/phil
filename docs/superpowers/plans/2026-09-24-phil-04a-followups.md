@@ -33,15 +33,31 @@ Implementation note (superseded by the 4b design's decisions): a `prompt_toolkit
 
 ## Plan 4c — carried items
 
-Moved from plan 4b's scope (see the 4b design's §7 "Out of scope"):
+Moved from plan 4b's scope (see the 4b design's §7 "Out of scope"). **Status: done in plan 4c**,
+except the lean architect (kept deferred below). Design:
+`docs/superpowers/specs/2026-09-28-phil-04c-observability-design.md`.
 
-- Token/cost accuracy: usage callback and cost reconciliation.
-- Tool-call telemetry.
-- OpenRouter SDK timeout, and treating a 200-with-error response as transient.
-- `phil show` / `/more`.
-- `/park`.
-- `open_issues` dedup and summary cleanup (carried from 03b, still open).
-- Consider a lean read-only architect: now that it reads a snapshot, the deep harness mostly adds tokens.
+- Token/cost accuracy: usage callback and cost reconciliation. **Done** — `UsageCollector`
+  (`phil.agents.collector`) counts every model call via LangChain callbacks, including a deep
+  agent's own sub-agent calls; cost is reported → estimated (`PriceBook`, OpenRouter's public
+  price list, cached a day) → unknown, weakest source wins per agent call.
+- Tool-call telemetry. **Done** — the collector counts tool starts by name (excluding the
+  structured-output tool); `telemetry.tool_calls` and `phil show`'s usage table render them.
+- OpenRouter SDK timeout, and treating a 200-with-error response as transient. **Done** —
+  `phil.agents.factory.chat_model` sets a per-provider timeout kwarg (`[run] model_timeout_s`,
+  converted to each provider's unit) and disables the provider SDK's own retries;
+  `phil.agents.retry.is_transient` recognizes a 200 response carrying a transient error code, and
+  `is_timeout` gives a timeout only 2 tries total (other transient errors keep 3).
+- `phil show` / `/more`. **Done** — `phil show <run> [n]` (CLI) and `/show` / `/more <n>` (chat),
+  `phil.ui.show_view`.
+- `/park`. **Done** — `/park <note>` in the chat, `phil parked` lists the parking lot.
+- `open_issues` dedup and summary cleanup (carried from 03b, still open). **Done** — issues are
+  deduplicated by (task id, normalized note) keeping the highest severity; notes are rendered on
+  one line (newlines collapsed, markdown stripped, length capped).
+- Consider a lean read-only architect: now that it reads a snapshot, the deep harness mostly adds
+  tokens. **Still deferred** — intake, critic and reviewer already moved to the lean harness
+  (`AgentSpec(..., harness="lean")`, no tools) in earlier work; the architect still uses the deep
+  harness. Revisit in a later plan.
 
 ## Before a public release
 
