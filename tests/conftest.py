@@ -13,6 +13,17 @@ def phil_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture(autouse=True)
+def no_price_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Tests must never touch the network: a price book built without an injected fetch
+    # (e.g. the process-wide default) fails loudly instead of downloading prices.
+    def refuse() -> dict:
+        raise AssertionError("tests must not fetch prices from the network")
+
+    monkeypatch.setattr("phil.agents.pricing._default_fetch", refuse)
+    monkeypatch.setattr("phil.agents.invoke._default_prices", None)
+
+
+@pytest.fixture(autouse=True)
 def isolated_git_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Tests must not pick up the machine's own global/system git config (e.g. a real
     # gpg.format=ssh signing key), or they could sign test commits with the user's real key.

@@ -31,10 +31,13 @@ def call_with_retry(
     sleep: Callable[[float], None],
     attempts: int = 3,
     base_delay: float = 1.0,
-) -> dict:
+    config: dict | None = None,
+) -> tuple[dict, int]:
+    """Invoke ``agent`` with transient-error retries; returns ``(result, retries)``."""
     for index in range(attempts):
         try:
-            return agent.invoke(payload)
+            result = agent.invoke(payload) if config is None else agent.invoke(payload, config=config)
+            return result, index
         except Exception as exc:
             if not is_transient(exc) or index == attempts - 1:
                 raise

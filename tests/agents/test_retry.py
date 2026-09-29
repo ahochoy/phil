@@ -25,9 +25,10 @@ def test_is_transient():
 def test_retries_transient_errors_with_backoff():
     delays: list[float] = []
     agent = FakeAgent([HTTPError(429), HTTPError(503), "done"])
-    result = call_with_retry(agent, {"messages": []}, sleep=delays.append)
+    result, retries = call_with_retry(agent, {"messages": []}, sleep=delays.append)
     assert result["structured_response"] == "done"
     assert delays == [1.0, 2.0]
+    assert retries == 2
 
 
 def test_gives_up_after_attempts():
@@ -70,3 +71,30 @@ def test_real_httpx_transport_errors_are_transient(exc):
 
 def test_permanent_httpx_errors_are_not_transient():
     assert not is_transient(httpx.UnsupportedProtocol("ftp"))
+
+
+def test_no_retries_reports_zero():
+    result, retries = call_with_retry(FakeAgent(["done"]), {"messages": []}, sleep=lambda _: None)
+    assert (result["structured_response"], retries) == ("done", 0)
+
+
+def test_passes_config_to_the_agent_only_when_given():
+    seen: list = []
+
+    class Recorder:
+        def invoke(self, payload, config=None):
+            seen.append(config)
+            return {"messages": []}
+
+    call_with_retry(Recorder(), {"messages": []}, sleep=lambda _: None)
+    call_with_retry(Recorder(), {"messages": []}, sleep=lambda _: None, config={"callbacks": []})
+    assert seen == [None, {"callbacks": []}]
+
+
+def test_invoke_agent_records_retry_count(config, conn, artifacts, critic_packet):
+    factory = FakeAgentFactory([HTTPError(429), HTTPError(503), critique()])
+    ctx = AgentContext(
+        config=config, conn=conn, layer="run", artifacts=artifacts, factory=factory, sleep=lambda _: None
+    )
+    invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+    assert [row["retries"] for row in conn.execute("SELECT retries FROM telemetry")] == [2]

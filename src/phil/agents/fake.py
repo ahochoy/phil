@@ -30,7 +30,7 @@ class FakeAgent:
         self.usage = usage
         self.calls: list[dict] = []
 
-    def invoke(self, payload: dict) -> dict:
+    def invoke(self, payload: dict, config: dict | None = None) -> dict:
         if not self.outputs:
             raise AssertionError(f"FakeAgent has no scripted output left (call {len(self.calls)})")
         self.calls.append(payload)
@@ -70,7 +70,7 @@ class _ScriptedAgent:
         self.workdir = workdir
         self.tools = tools
 
-    def invoke(self, payload: dict) -> dict:
+    def invoke(self, payload: dict, config: dict | None = None) -> dict:
         script = self.factory.scripts.setdefault(self.role, [])
         if not script:
             raise AssertionError(f"no scripted output left for {self.role}")
