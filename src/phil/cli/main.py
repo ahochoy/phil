@@ -530,6 +530,38 @@ def diff(ctx: typer.Context, run_id: str) -> None:
         raise typer.Exit(1) from exc
 
 
+@app.command("show")
+def show_command(
+    ctx: typer.Context,
+    run_id: str,
+    n: int | None = typer.Argument(None, help="Print detail #N in full instead of the overview."),
+) -> None:
+    """Show a run's tasks, usage, open issues, and numbered details."""
+    from phil.ui.show_view import render_show, show_refs
+
+    info, conn = _open_project(ctx)
+    _require_run(conn, run_id)
+    paths = ProjectPaths(info.slug)
+    if n is None:
+        render_show(console, conn, paths, run_id)
+        return
+    refs = show_refs(paths, run_id)
+    if n < 1 or n > len(refs):
+        console.print(f"[phil.error]No detail #{n} for {escape(run_id)}.[/]")
+        raise typer.Exit(1)
+    path = Path(refs[n - 1].path)
+    text = path.read_text()
+    if path.suffix == ".json":
+        try:
+            text = json.dumps(json.loads(text), indent=2, default=repr)
+        except json.JSONDecodeError:
+            pass
+    lines = text.splitlines()
+    if len(lines) > 2000:
+        text = "\n".join(lines[:2000]) + f"\n… ({len(lines) - 2000} more lines not shown)"
+    typer.echo(text)
+
+
 @app.command()
 def clean(
     ctx: typer.Context,
