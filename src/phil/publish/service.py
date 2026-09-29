@@ -114,7 +114,7 @@ def _due(record: RunRecord, now: datetime, min_interval_s: float) -> bool:
 
 
 def _clean_merged(
-    info: RepoInfo, conn: sqlite3.Connection, record: RunRecord, publisher: Publisher, head_oid: str | None
+    info: RepoInfo, conn: sqlite3.Connection, record: RunRecord, publisher: Publisher, head_oid: str
 ) -> PrChange:
     number = record.pr_number
     assert number is not None
@@ -195,7 +195,7 @@ def sweep_prs(
             changes.append(PrChange(record.run_id, number, "cleanup_failed", detail))
             continue
         try:
-            changes.append(_clean_merged(info, conn, record, publisher, pr.head_oid or None))
+            changes.append(_clean_merged(info, conn, record, publisher, pr.head_oid))  # empty oid: the branch is left alone
         except Exception as exc:  # one run's failure must not stop the sweep (the chat runs it unattended)
             changes.append(PrChange(record.run_id, number, "cleanup_failed", f"{type(exc).__name__}: {exc}"))
     return changes

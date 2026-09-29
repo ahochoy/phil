@@ -154,3 +154,22 @@ def test_a_failing_sweep_does_not_reach_the_last_resort_handler(calc_repo, monke
 
     assert result.exit_code == 0, result.output
     assert last_resort == []
+
+
+def test_a_sweep_warning_prints_no_traceback(calc_repo, monkeypatch):
+    import logging
+
+    record, paths, fake = _published(calc_repo)
+
+    def pr_info(url):
+        raise RuntimeError("gh output changed")  # the sweep logs this at warning with a traceback
+
+    fake.pr_info = pr_info
+    monkeypatch.setattr("phil.publish.publisher.make_publisher", lambda root: fake)
+    monkeypatch.setattr(logging.root, "handlers", [])  # as outside pytest: only the last-resort handler
+
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "runs"])
+
+    assert result.exit_code == 0, result.output
+    assert "Traceback" not in result.stderr
+    assert "gh output changed" not in result.output

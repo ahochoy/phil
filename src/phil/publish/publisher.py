@@ -10,7 +10,8 @@ from typing import Protocol
 
 from phil.git import GitError, git
 
-GH_TIMEOUT_S = 60
+GH_TIMEOUT_S = 60  # gh calls and `git ls-remote`
+GIT_PUSH_TIMEOUT_S = 600  # `git push` (publishing, and deleting the remote branch) can move a lot of data
 _PR_NUMBER = re.compile(r"/pull/(\d+)")
 
 
@@ -50,14 +51,26 @@ def _last_line(result: subprocess.CompletedProcess) -> str:
     return detail[-1] if detail else "no output"
 
 
-def unattended_env() -> dict[str, str]:
+def unattended_env(repo_root: Path) -> dict[str, str]:
     """The environment for gh and network git: never prompt on the terminal (Phil may be running
-    unattended in the chat), so a missing credential fails fast instead of hanging."""
+    unattended in the chat), so a missing credential fails fast instead of hanging.
+
+    Batch-mode ssh is only a default: a user's own `GIT_SSH_COMMAND`, `GIT_SSH` or the repo's
+    `core.sshCommand` (e.g. a per-account key) is left in charge.
+    """
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GH_PROMPT_DISABLED"] = "1"
-    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    if not (env.get("GIT_SSH_COMMAND") or env.get("GIT_SSH") or _core_ssh_command(repo_root)):
+        env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
     return env
+
+
+def _core_ssh_command(repo_root: Path) -> str:
+    try:
+        return git(repo_root, "config", "core.sshCommand").strip()
+    except GitError:  # unset (exit 1), or no git: nothing configured
+        return ""
 
 
 class GhPublisher:
@@ -74,11 +87,14 @@ class GhPublisher:
         self._git_runner = git_runner or self._run
 
     def _run(self, args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
+        timeout = GIT_PUSH_TIMEOUT_S if args[:2] == ["git", "push"] else GH_TIMEOUT_S
         try:
+            # A new session has no controlling terminal: nothing (ssh, a credential helper) can
+            # prompt on it, whatever the user configured.
             return subprocess.run(args, cwd=self.repo_root, input=stdin, capture_output=True, text=True,
-                                  timeout=GH_TIMEOUT_S, env=unattended_env())
+                                  timeout=timeout, env=unattended_env(self.repo_root), start_new_session=True)
         except subprocess.TimeoutExpired as exc:
-            raise PublishError(f"`{' '.join(args[:3])}` timed out after {GH_TIMEOUT_S}s") from exc
+            raise PublishError(f"`{' '.join(args[:3])}` timed out after {timeout}s") from exc
         except OSError as exc:
             raise PublishError(f"could not run {args[0]}: {exc}") from exc
 
@@ -144,7 +160,8 @@ class GhPublisher:
         """Delete `origin/<branch>` if it still points at `expected_oid` (any commit when None).
 
         Returns True if the branch is gone (deleted, or absent already) and False if it now
-        points at another commit and was left alone.
+        points at another commit and was left alone. An empty `expected_oid` matches nothing, so
+        the branch is left alone.
         """
         ref = f"refs/heads/{branch}"
         try:
@@ -165,8 +182,9 @@ class FakePublisher:
     """Test double: records calls; `fail` maps a method name to the PublishError message it raises.
 
     `states`/`heads`/`oids` are keyed by PR number (a PR's head defaults to the branch it was
-    created from, its oid to ""); `remote_oids` maps a branch to the commit origin has for it
-    (absent: whatever we expect); `existing` maps a branch to the PR `find_pr` returns.
+    created from, its oid to the number as 40 hex digits); `remote_oids` maps a branch to the
+    commit origin has for it (absent: whatever we expect; an expected "" never matches, as in
+    `GhPublisher`); `existing` maps a branch to the PR `find_pr` returns.
     """
 
     unavailable: str | None = None
@@ -212,13 +230,14 @@ class FakePublisher:
         match = _PR_NUMBER.search(url)
         assert match is not None, url
         number = int(match.group(1))
-        return PrInfo(self.states.get(number, "open"), self.heads.get(number, ""), self.oids.get(number, ""))
+        return PrInfo(self.states.get(number, "open"), self.heads.get(number, ""),
+                      self.oids.get(number, f"{number:040x}"))
 
     def delete_remote_branch(self, branch: str, expected_oid: str | None) -> bool:
         self.calls.append(("delete_remote_branch", branch, expected_oid))
         self._maybe_fail("delete_remote_branch")
         remote = self.remote_oids.get(branch)
-        if remote is not None and expected_oid is not None and remote != expected_oid:
+        if expected_oid == "" or (remote is not None and expected_oid is not None and remote != expected_oid):
             return False
         self.deleted.append(branch)
         return True

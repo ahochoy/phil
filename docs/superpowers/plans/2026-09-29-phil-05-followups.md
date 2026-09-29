@@ -45,6 +45,15 @@ the two items below), `2026-09-28-phil-04c-followups.md`.
   below cause an order-dependent `fixture 'calc_repo' not found` under some collection orders;
   do the hoisting as the first task of the next plan, before it grows more tests on them.
 
+- **Head-mismatch runs are re-reported every sweep.** A merged PR whose head isn't the run's
+  branch stays `pr_state = "merged"`, `cleanup_failed`, so every sweep calls `gh` again and the
+  chat monitor re-reports it every 5 minutes. Give it a one-time notice or a terminal state.
+- **`find_pr` swallows gh errors.** `GhPublisher.find_pr` returns None on any gh or parse failure
+  with no trace; log the failure at info (under `phil.publish`) before returning None.
+- **An adopted PR isn't verified as ours.** When `create_pr` says the PR already exists,
+  `publish_run` records whatever `find_pr(branch)` returns; compare its `headRefOid` with the
+  local branch tip before adopting it.
+
 ## Review minors
 
 - **PR jobs share the chat's 3 job slots.** `phil.chat.terminal.MAX_JOBS = 3`

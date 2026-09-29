@@ -187,8 +187,11 @@ def test_a_failing_git_runner_is_a_publish_error(git_repo: Path):
 
 def captured_run(monkeypatch, result=None, exc=None):
     seen = {}
+    real_run = subprocess.run
 
     def fake_run(args, **kwargs):
+        if args[:2] == ["git", "config"]:  # reading the repo's own settings: let it through
+            return real_run(args, **kwargs)
         seen["args"], seen["kwargs"] = args, kwargs
         if exc is not None:
             raise exc
@@ -200,13 +203,15 @@ def captured_run(monkeypatch, result=None, exc=None):
 
 def test_git_commands_run_with_no_prompts_and_a_timeout(git_repo: Path, monkeypatch):
     monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.delenv("GIT_SSH", raising=False)
     seen = captured_run(monkeypatch)
 
     GhPublisher(git_repo).push("phil/r-0001")
 
     kwargs = seen["kwargs"]
     assert seen["args"][:2] == ["git", "push"]
-    assert kwargs["timeout"] == publishing.GH_TIMEOUT_S
+    assert kwargs["timeout"] == publishing.GIT_PUSH_TIMEOUT_S == 600
+    assert kwargs["start_new_session"] is True
     assert kwargs["cwd"] == git_repo
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
     assert kwargs["env"]["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
@@ -222,6 +227,59 @@ def test_a_user_git_ssh_command_is_kept(git_repo: Path, monkeypatch):
     assert seen["kwargs"]["env"]["GIT_SSH_COMMAND"] == "ssh -i ~/.ssh/work"
 
 
+def test_a_user_git_ssh_is_not_overridden(git_repo: Path, monkeypatch):
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.setenv("GIT_SSH", "/usr/local/bin/my-ssh")
+    seen = captured_run(monkeypatch)
+
+    GhPublisher(git_repo).push("phil/r-0001")
+
+    assert "GIT_SSH_COMMAND" not in seen["kwargs"]["env"]
+    assert seen["kwargs"]["env"]["GIT_SSH"] == "/usr/local/bin/my-ssh"
+
+
+def test_a_repo_core_ssh_command_is_not_overridden(git_repo: Path, monkeypatch):
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.delenv("GIT_SSH", raising=False)
+    run_git(git_repo, "config", "core.sshCommand", "ssh -i ~/.ssh/work")
+    seen = captured_run(monkeypatch)
+
+    GhPublisher(git_repo).push("phil/r-0001")
+
+    assert "GIT_SSH_COMMAND" not in seen["kwargs"]["env"]
+
+
+def test_ls_remote_and_gh_keep_the_short_timeout(git_repo: Path, monkeypatch):
+    seen = captured_run(monkeypatch)
+
+    GhPublisher(git_repo).delete_remote_branch("phil/r-0001", None)  # ls-remote finds nothing
+
+    assert seen["args"][:2] == ["git", "ls-remote"]
+    assert seen["kwargs"]["timeout"] == publishing.GH_TIMEOUT_S
+    assert seen["kwargs"]["start_new_session"] is True
+
+
+def test_deleting_a_remote_branch_uses_the_push_timeout(git_repo: Path, monkeypatch):
+    oid = "a" * 40
+    seen = captured_run(monkeypatch, result=completed(["git"], out=f"{oid}\trefs/heads/phil/r-0001\n"))
+
+    assert GhPublisher(git_repo).delete_remote_branch("phil/r-0001", oid) is True
+
+    assert seen["args"][:2] == ["git", "push"]
+    assert seen["kwargs"]["timeout"] == publishing.GIT_PUSH_TIMEOUT_S
+
+
+def test_an_empty_expected_oid_never_deletes(git_repo: Path, tmp_path: Path):
+    remote = with_remote(git_repo, tmp_path)
+    run_git(git_repo, "branch", "phil/r-0001")
+    pub = GhPublisher(git_repo, runner=Runner([]))
+    pub.push("phil/r-0001")
+
+    assert pub.delete_remote_branch("phil/r-0001", "") is False
+
+    assert run_git(remote, "branch", "--list", "phil/r-0001").strip() == "phil/r-0001"
+
+
 def test_gh_runs_with_prompts_disabled(git_repo: Path, monkeypatch):
     seen = captured_run(monkeypatch, result=completed(["gh"], out=URL + "\n"))
 
@@ -231,6 +289,7 @@ def test_gh_runs_with_prompts_disabled(git_repo: Path, monkeypatch):
     assert seen["args"][:3] == ["gh", "pr", "create"]
     assert (env["GH_PROMPT_DISABLED"], env["GIT_TERMINAL_PROMPT"]) == ("1", "0")
     assert seen["kwargs"]["timeout"] == publishing.GH_TIMEOUT_S
+    assert seen["kwargs"]["start_new_session"] is True
 
 
 def test_a_git_timeout_is_a_publish_error(git_repo: Path, monkeypatch):
@@ -253,7 +312,7 @@ def test_fake_publisher_records_and_fails_on_demand():
         fake.push("phil/r-0001")
     pr = fake.create_pr(branch="b", base="main", title="T", body="B")
     assert pr.number == 12
-    assert fake.pr_info(pr.url) == PrInfo("merged", "b", "")
+    assert fake.pr_info(pr.url) == PrInfo("merged", "b", f"{12:040x}")
 
 
 def test_tests_never_get_the_real_gh(git_repo: Path):

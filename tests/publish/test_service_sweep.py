@@ -322,3 +322,18 @@ def test_a_run_cleaned_by_hand_is_marked_merged_without_learnings_or_cleanup(cal
     fake.calls.clear()
     assert sweep_prs(info, conn, fake, force=True) == []
     assert fake.calls == []
+
+
+def test_a_pr_with_no_head_oid_leaves_the_remote_branch_alone(calc_repo):
+    info, conn, record, paths, fake = published_run(calc_repo)
+    fake.states[12] = "merged"
+    fake.oids[12] = ""  # gh reported an empty headRefOid
+
+    changes = sweep_prs(info, conn, fake)
+
+    assert ("delete_remote_branch", record.branch, "") in fake.calls
+    assert changes == [
+        PrChange(record.run_id, 12, "warning", f"origin/{record.branch} now points elsewhere; left it alone")
+    ]
+    assert fake.deleted == []
+    assert get_run(conn, record.run_id).state == "cleaned"
