@@ -1,6 +1,8 @@
+import re
 from typing import Any, TypedDict
 
 from phil.contracts import Issue, Plan, Task
+from phil.store.telemetry import Totals, UsageLine, format_cost
 
 
 class RunState(TypedDict, total=False):
@@ -111,11 +113,89 @@ def issues_to_tasks(plan: Plan, issues: list[Issue], source: str) -> Plan:
     return plan.model_copy(update={"tasks": [*plan.tasks, *new_tasks]})
 
 
-def _issue_line(issue: dict[str, Any]) -> str:
+_LEADING_HEADING_RE = re.compile(r"^#+\s*")
+_LEADING_LIST_RE = re.compile(r"^(?:[-*+]|\d+\.)\s+")
+# `**bold**`/`*italic*` are stripped anywhere; the underscore forms (`__bold__`/`_italic_`) only
+# where they aren't part of a word (CommonMark's intraword-emphasis rule for underscores), so a
+# plain identifier like `test_add_strings` or `__init__` survives untouched.
+_BOLD_STAR_RE = re.compile(r"\*\*(.+?)\*\*")
+_BOLD_UNDERSCORE_RE = re.compile(r"(?<!\w)__(\S(?:.*?\S)?)__(?!\w)")
+_ITALIC_STAR_RE = re.compile(r"(?<!\*)\*([^*\n]+?)\*(?!\*)")
+_ITALIC_UNDERSCORE_RE = re.compile(r"(?<!\w)_(\S(?:.*?\S)?)_(?!\w)")
+_SEVERITY_RANK = {"blocker": 0, "major": 1, "minor": 2}
+
+
+def clean_note(text: str, *, limit: int = 200) -> str:
+    """Render a note as one plain-text line: newlines/whitespace collapsed, markdown emphasis,
+    backticks and leading `#`/list markers stripped, capped to `limit` chars with an `…`."""
+    collapsed = " ".join(text.split())
+    collapsed = _LEADING_HEADING_RE.sub("", collapsed)
+    collapsed = _LEADING_LIST_RE.sub("", collapsed)
+    collapsed = _BOLD_STAR_RE.sub(r"\1", collapsed)
+    collapsed = _BOLD_UNDERSCORE_RE.sub(r"\1", collapsed)
+    collapsed = _ITALIC_STAR_RE.sub(r"\1", collapsed)
+    collapsed = _ITALIC_UNDERSCORE_RE.sub(r"\1", collapsed)
+    collapsed = collapsed.replace("`", "").strip()
+    if len(collapsed) > limit:
+        collapsed = collapsed[: limit - 1].rstrip() + "…"
+    return collapsed
+
+
+def dedupe_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate by (task_id, cleaned note lower-cased), keeping the highest severity seen
+    for that key and the note cleaned to one line; stable order of first appearance."""
+    order: list[tuple[Any, str]] = []
+    best: dict[tuple[Any, str], dict[str, Any]] = {}
+    for issue in issues:
+        cleaned_note = clean_note(issue["note"])
+        key = (issue.get("task_id"), cleaned_note.lower())
+        candidate = {**issue, "note": cleaned_note}
+        current = best.get(key)
+        if current is None:
+            order.append(key)
+            best[key] = candidate
+        elif _SEVERITY_RANK[candidate["severity"]] < _SEVERITY_RANK[current["severity"]]:
+            best[key] = candidate
+    return [best[key] for key in order]
+
+
+def issue_line(issue: dict[str, Any]) -> str:
     location = ""
     if issue.get("file"):
         location = f" [{issue['file']}" + (f":{issue['line']}" if issue.get("line") else "") + "]"
     return f"- ({issue['severity']}) {issue['note']}{location}"
+
+
+def task_lines(plan: Plan) -> list[str]:
+    lines = []
+    for task in plan.tasks:
+        mark = "x" if task.status == "DONE" else " "
+        suffix = "" if task.status in ("DONE", "TODO") else f" ({task.status})"
+        lines.append(f"- [{mark}] {task.id} {task.description}{suffix}")
+    return lines
+
+
+def _totals_suffix(source: str) -> str:
+    if source == "estimated":
+        return " (estimated)"
+    if source == "unknown":
+        return " (partly unknown)"
+    return ""
+
+
+def _usage_line(line: UsageLine) -> str:
+    calls_word = "call" if line.calls == 1 else "calls"
+    model_word = "model call" if line.model_calls == 1 else "model calls"
+    text = (
+        f"- {line.layer}/{line.role}: {line.calls} {calls_word} ({line.model_calls} {model_word}) · "
+        f"{line.input_tokens:,} in / {line.output_tokens:,} out · {format_cost(line.cost_usd, line.cost_source)}"
+    )
+    if line.tool_calls:
+        tools = ", ".join(f"{name}×{count}" for name, count in line.tool_calls.items())
+        text += f" · tools: {tools}"
+    if line.retries:
+        text += f" · retries: {line.retries}"
+    return text
 
 
 def render_summary(
@@ -127,6 +207,8 @@ def render_summary(
     base_sha: str,
     head_sha: str,
     open_issues: list[dict[str, Any]],
+    usage: list[UsageLine] | None = None,
+    totals: Totals | None = None,
 ) -> str:
     lines = [
         f"# Run {run_id} · {plan.keyword}",
@@ -134,11 +216,17 @@ def render_summary(
         f"Status: {status} · branch {branch} · {base_sha[:8]}..{head_sha[:8]}",
         "",
         "## Tasks",
+        *task_lines(plan),
+        "",
+        "## Open issues",
     ]
-    for task in plan.tasks:
-        mark = "x" if task.status == "DONE" else " "
-        suffix = "" if task.status in ("DONE", "TODO") else f" ({task.status})"
-        lines.append(f"- [{mark}] {task.id} {task.description}{suffix}")
-    lines += ["", "## Open issues"]
-    lines += [_issue_line(issue) for issue in open_issues] or ["- (none)"]
+    lines += [issue_line(issue) for issue in dedupe_issues(open_issues)] or ["- (none)"]
+    if totals is not None:
+        lines += [
+            "",
+            "## Usage",
+            f"Total: {totals.tokens:,} tokens · {format_cost(totals.cost_usd, totals.cost_source)}"
+            f"{_totals_suffix(totals.cost_source)}",
+        ]
+        lines += [_usage_line(line) for line in usage or []]
     return "\n".join(lines) + "\n"

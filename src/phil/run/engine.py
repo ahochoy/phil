@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import time
 from collections.abc import Callable
@@ -16,11 +17,11 @@ from phil.contracts import ImplementInput, Issue, ReviewInput, TesterInput, Test
 from phil.git import GitError, branch_for
 from phil.packets import PacketTooLarge, build_packet
 from phil.run.gates import is_test_path, run_tests, snapshot_tests, verify_green, verify_red
-from phil.run.state import RunState, issues_to_tasks, load_plan, next_todo, render_summary, with_task_status
+from phil.run.state import RunState, dedupe_issues, issues_to_tasks, load_plan, next_todo, render_summary, with_task_status
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.events import EventLog
 from phil.store.runs import update_run
-from phil.store.telemetry import run_usage
+from phil.store.telemetry import run_usage, usage_by_role
 from phil.workspace.worktree import WorktreeManager
 
 
@@ -528,6 +529,9 @@ class RunEngine:
                 Issue(severity="major", note=f"still failing: {failure}").model_dump()
                 for failure in final.new_failures_vs_baseline
             ]
+        open_issues = dedupe_issues(open_issues)
+        totals = run_usage(self.deps.conn, self.deps.run_id)
+        usage = usage_by_role(self.deps.conn, self.deps.run_id)
         summary = render_summary(
             run_id=self.deps.run_id,
             plan=plan,
@@ -536,7 +540,10 @@ class RunEngine:
             base_sha=state["base_sha"],
             head_sha=self.worktrees.head(self.deps.worktree),
             open_issues=open_issues,
+            usage=usage,
+            totals=totals,
         )
         self.deps.artifacts.write_text("summary.md", summary)
+        self.deps.artifacts.write_text("open_issues.json", json.dumps(open_issues, indent=2, default=repr))
         self._update_run(state=status, current_node="finish", needs_attention=None)
         return {"status": status, "open_issues": open_issues}

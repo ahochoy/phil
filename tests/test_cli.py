@@ -12,6 +12,7 @@ from phil.store.db import connect
 from phil.store.parked import park
 from phil.store.paths import ProjectPaths
 from phil.store.runs import create_run
+from phil.store.telemetry import TelemetryRow, record
 
 runner = CliRunner()
 
@@ -41,6 +42,22 @@ def test_runs_lists_runs(git_repo):
     assert "r-7f3a" in result.output
     assert "MAPS" in result.output
     assert "0/5" in result.output
+
+
+def test_runs_shows_an_estimated_cost_marker(git_repo):
+    conn = _conn_for(git_repo)
+    create_run(conn, run_id="r-7f3a", keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=1)
+    record(
+        conn,
+        TelemetryRow(
+            run_id="r-7f3a", layer="run", node="implement", role="implementer", model="m", attempt=1,
+            packet_tokens=10, input_tokens=100, output_tokens=20, latency_ms=10, cost_usd=0.41,
+            outcome="ok", cost_source="estimated",
+        ),
+    )
+    result = runner.invoke(app, ["--repo", str(git_repo), "runs"])
+    assert result.exit_code == 0
+    assert "~$0.41" in result.output
 
 
 def test_runs_escapes_state_markup(git_repo):
