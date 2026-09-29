@@ -2,6 +2,7 @@ import json
 
 from phil.agents.fake import ScriptedAgentFactory
 from phil.chat.controller import WAKE, ChatController, ChatIO
+from phil.chat.watcher import RunWatcher
 from phil.config import PhilConfig
 from phil.repo import resolve_repo
 from phil.store.artifacts import ArtifactStore
@@ -11,6 +12,20 @@ from phil.store.runs import list_runs
 from phil.ui.theme import make_console
 from tests.chat.conftest import critique, goal, plan
 from tests.helpers import MODELS_TOML, TEST_MODELS, run_git
+
+
+class ManualWatcher(RunWatcher):
+    """A RunWatcher whose `start` records the call instead of starting a polling thread."""
+
+    started = False
+    stopped = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+        super().stop()
 
 
 def run_chat(repo, answers, scripts, config=None, submit=None, wake=None, **kw):
@@ -36,6 +51,13 @@ def run_chat(repo, answers, scripts, config=None, submit=None, wake=None, **kw):
         io.wake = lambda: wake(holder["controller"])
     factory = ScriptedAgentFactory(scripts)
     config = config or PhilConfig(models=TEST_MODELS)
+    # The run watcher is never started as a thread: scripts drive `controller._watcher.poll_once()`.
+    kw.setdefault(
+        "watcher_factory",
+        lambda run_id: ManualWatcher(
+            ProjectPaths(info.slug), run_id, holder["controller"].post, alive=lambda r: False, starting=lambda e: False
+        ),
+    )
     controller = ChatController(info, config, conn, console, io, factory=factory, **kw)
     holder["controller"] = controller
     controller.run()
