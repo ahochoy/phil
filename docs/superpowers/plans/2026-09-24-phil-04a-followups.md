@@ -8,7 +8,28 @@ Findings from plan 4a's task reviews and final review that were deliberately def
 - **One launch gate.** `phil.chat.approval.launch_problems` (run-role models + test command equal to `[project] test_cmd` or allowed by `[shell] allow`) guards every path that starts a run: the chat's approval and `phil run`. The worker runs the test command without the allowlist, so a new launch path must call it too.
 - **Escape TOML section names in rich markup.** Rich treats `[models]` as a style tag and drops it; wrap literal section names in `escape(...)`.
 
-## Plan 4b
+## Plan 4b — chat ergonomics (user feedback from the first live chat, 2026-09-28)
+
+**Verdict:** wording is fine; the chat feels mechanical, transactional and disconnected. Principles: communicative, not chatty; always obvious what Phil is doing (status indicators, affordances); never an extra step to answer a basic question.
+
+What happened:
+1. While planning, the only feedback was the static word "Planning…" — nothing showed work in progress.
+2. After approval the run went to the background and the chat lost track of it. Following it meant opening a second terminal and running `phil attach`.
+3. When the run needed an approval, it had to be answered in that second terminal, not in the chat where the work started.
+4. Approve-then-wait felt transactional; there was no sense of being able to keep working while the run proceeds.
+
+Changes to make:
+- **Live progress for every step:** an animated status with elapsed time for intake, architect, critic and revisions (e.g. "Architect drafting · 12s"), replacing static text.
+- **Runs belong to the chat that started them:** a run records the chat session that launched it. The chat shows a live status line for its runs (node, task n/m, elapsed) while you keep typing.
+- **Pauses come back to the chat:** when one of the chat's runs escalates (attempts exhausted, command approval, commit failure, budget), the chat surfaces the question and options right away and resumes the run with the answer — no second terminal. `phil attach` still works from anywhere.
+- **Keep working meanwhile:** the prompt stays usable while runs proceed; a new goal can be planned and started alongside.
+- **Completion notice:** when a chat's run finishes, say so in the chat with the outcome, tasks done, open issues, and the next action (`phil diff`, summary path).
+- **In-chat commands:** `/attach <id>` (stream a run inline), `/runs` listing this chat's runs first.
+- **Separate windows stay separate:** each chat window only surfaces its own runs' progress and questions.
+
+Implementation note: this needs input and background updates at the same time. Likely a `prompt_toolkit` prompt session (bottom toolbar + `patch_stdout`) with a background thread tailing each run's `events.jsonl`, reusing `phil.cli.attach`'s event rendering and escalation answering. Decide this in the 4b design before the other 4b items, since `Brief`/`present()` and `/more` render into the same surface.
+
+## Plan 4b — carried items
 
 - Everything in the 03b follow-ups "Plan 4" section not done in 4a: usage callback and cost reconciliation, tool-call telemetry, OpenRouter SDK timeout, 200-with-error as transient, `Brief`/`present()` for free-form replies, `phil show` / `/more`, `/park`, `open_issues` dedup and summary cleanup.
 - Consider a lean read-only architect: now that it reads a snapshot, the deep harness mostly adds tokens.
