@@ -12,6 +12,7 @@ from pathlib import Path
 MODELS_URL = "https://openrouter.ai/api/v1/models"
 CACHE_MAX_AGE_S = 24 * 3600
 RETRY_AFTER_FAILURE_S = 10 * 60  # cool-down before retrying a fetch that failed with no cache to fall back on
+MAX_RESPONSE_BYTES = 20 * 1024 * 1024  # the model list is a few MB; refuse anything absurd
 
 
 @dataclass(frozen=True)
@@ -22,7 +23,20 @@ class Price:
 
 def _default_fetch() -> dict:
     with urllib.request.urlopen(MODELS_URL, timeout=10) as response:  # noqa: S310 - fixed, known host
-        return json.loads(response.read())
+        body = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise ValueError(f"OpenRouter model list too large (over {MAX_RESPONSE_BYTES} bytes)")
+    return json.loads(body)
+
+
+def _well_formed(data: object) -> bool:
+    """The model-list shape the parser relies on: ``{"data": [{...}, ...]}``. Anything else (an
+    error page, a changed API) counts as no data: never cached, never parsed."""
+    return (
+        isinstance(data, dict)
+        and isinstance(data.get("data"), list)
+        and all(isinstance(entry, dict) for entry in data["data"])
+    )
 
 
 class PriceBook:
@@ -70,14 +84,16 @@ class PriceBook:
         envelope = self._read_cache_envelope()
         if envelope is None:
             return None
-        age = self._clock() - envelope.get("fetched_at", 0)
-        if age >= self._max_age_s:
+        fetched_at = envelope.get("fetched_at", 0) if isinstance(envelope, dict) else 0
+        if not isinstance(fetched_at, (int, float)) or self._clock() - fetched_at >= self._max_age_s:
             return None
-        return envelope.get("data")
+        data = envelope.get("data")
+        return data if _well_formed(data) else None
 
     def _read_stale_cache(self) -> dict | None:
         envelope = self._read_cache_envelope()
-        return envelope.get("data") if envelope is not None else None
+        data = envelope.get("data") if isinstance(envelope, dict) else None
+        return data if _well_formed(data) else None
 
     def _parse(self, data: dict) -> dict[str, Price]:
         prices: dict[str, Price] = {}
@@ -87,9 +103,12 @@ class PriceBook:
             if not model_id or "prompt" not in pricing or "completion" not in pricing:
                 continue
             try:
-                prices[model_id] = Price(prompt=float(pricing["prompt"]), completion=float(pricing["completion"]))
+                price = Price(prompt=float(pricing["prompt"]), completion=float(pricing["completion"]))
             except (TypeError, ValueError):
                 continue
+            if price.prompt < 0 or price.completion < 0:
+                continue  # OpenRouter's "-1" sentinel for router models (e.g. openrouter/auto)
+            prices[model_id] = price
         return prices
 
     def _load(self) -> None:
@@ -102,6 +121,8 @@ class PriceBook:
             try:
                 fetched = self._fetch()
             except Exception:
+                fetched = None
+            if not _well_formed(fetched):
                 fetched = None
             if fetched is not None:
                 data = fetched

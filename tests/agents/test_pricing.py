@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from phil.agents.pricing import RETRY_AFTER_FAILURE_S, Price, PriceBook
+from phil.agents.pricing import _default_fetch as real_default_fetch  # before the autouse guard swaps it
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "openrouter-models.json").read_text())
 
@@ -84,3 +85,68 @@ def test_retries_after_a_cooldown_when_a_first_fetch_fails_with_no_cache(tmp_pat
     # Prices are now loaded for good; no further retries are needed.
     assert b.estimate("openrouter:openai/gpt-6-sol", 1000, 100) == pytest.approx(0.003)
     assert calls == [1, 2]
+
+
+def test_negative_prices_are_skipped(tmp_path):
+    # OpenRouter lists router models (e.g. openrouter/auto) with "-1" prices: a sentinel, not a
+    # refund per token.
+    data = {"data": [
+        {"id": "openrouter/auto", "pricing": {"prompt": "-1", "completion": "-1"}},
+        {"id": "x/half", "pricing": {"prompt": "0.000001", "completion": "-1"}},
+        {"id": "x/free", "pricing": {"prompt": "0", "completion": "0"}},
+    ]}
+    b = book(tmp_path, fetch=lambda: data)
+    assert b.price("openrouter:openrouter/auto") is None
+    assert b.price("openrouter:x/half") is None
+    assert b.price("openrouter:x/free") == Price(prompt=0.0, completion=0.0)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [[], "nope", {"data": "nope"}, {"data": {"id": "x"}}, {"data": [1, "two"]}, {"nodata": []}],
+)
+def test_a_malformed_fetch_is_no_data_and_not_cached(tmp_path, bad):
+    b = book(tmp_path, fetch=lambda: bad)
+    assert b.price("openrouter:openai/gpt-6-sol") is None
+    assert not (tmp_path / "models.json").exists()
+
+
+def test_a_malformed_fetch_falls_back_to_the_stale_cache(tmp_path):
+    book(tmp_path).price("openrouter:openai/gpt-6-sol")  # writes the cache
+    later = book(tmp_path, fetch=lambda: {"data": "nope"}, now=1_000_000.0 + 2 * 86400)
+    assert later.price("openrouter:openai/gpt-6-sol") is not None
+
+
+def test_a_malformed_cache_is_ignored(tmp_path):
+    (tmp_path / "models.json").write_text(json.dumps({"fetched_at": 1_000_000.0, "data": {"data": "nope"}}))
+    assert book(tmp_path).price("openrouter:openai/gpt-6-sol") is not None  # refetched instead
+
+
+def test_the_default_fetch_caps_the_response_size(monkeypatch):
+    from phil.agents import pricing
+
+    class Response:
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+            self.asked: list[int] = []
+
+        def read(self, size: int = -1) -> bytes:
+            self.asked.append(size)
+            return self.body if size < 0 else self.body[:size]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    big = Response(b" " * (pricing.MAX_RESPONSE_BYTES + 10))
+    monkeypatch.setattr(pricing.urllib.request, "urlopen", lambda url, timeout: big)
+    with pytest.raises(ValueError, match="too large"):
+        real_default_fetch()
+    assert big.asked == [pricing.MAX_RESPONSE_BYTES + 1]
+
+    small = Response(b'{"data": []}')
+    monkeypatch.setattr(pricing.urllib.request, "urlopen", lambda url, timeout: small)
+    assert real_default_fetch() == {"data": []}
+    assert pricing.MAX_RESPONSE_BYTES == 20 * 1024 * 1024
