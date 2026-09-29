@@ -35,12 +35,15 @@ def _ask(io_, prompt: str = "you › "):
     return box["result"]
 
 
-def _wake_when_prompting(terminal: TerminalIO) -> threading.Thread:
+def _wake_when_prompting(terminal: TerminalIO, typed: str = "") -> threading.Thread:
+    """Wake the prompt once it's running and (when `typed` is given) holds the typed text."""
+
     def poke() -> None:
         deadline = time.monotonic() + TIMEOUT
-        while not terminal.prompting and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            if terminal.prompting and (not typed or typed in terminal.session.app.current_buffer.text):
+                break
             time.sleep(0.01)
-        time.sleep(0.05)
         terminal.wake()
 
     thread = threading.Thread(target=poke, daemon=True)
@@ -61,7 +64,7 @@ def test_terminal_io_prompt_wake_keeps_typed_text_and_eof():
             thread.join(TIMEOUT)
 
             pipe.send_text("half")
-            thread = _wake_when_prompting(terminal)
+            thread = _wake_when_prompting(terminal, typed="half")
             assert _ask(io_) is WAKE
             thread.join(TIMEOUT)
             assert terminal._carried == "half"
@@ -210,3 +213,71 @@ def test_line_io_reads_lines_and_eof(monkeypatch):
     io_.wake()  # no-op
     assert line.run(lambda: 7) == 7
     line.close()
+
+
+def _until(predicate, what: str) -> None:
+    deadline = time.monotonic() + TIMEOUT
+    while not predicate():
+        if time.monotonic() > deadline:
+            pytest.fail(f"timed out waiting for {what}")
+        time.sleep(0.01)
+
+
+def test_a_chat_runs_real_jobs_through_submit_post_and_wake(calc_repo):
+    """End to end on real threads: jobs run via TerminalIO.submit, post events, and wake the prompt."""
+    from phil.agents.fake import ScriptedAgentFactory
+    from phil.chat.controller import ChatController
+    from phil.config import PhilConfig
+    from phil.repo import resolve_repo
+    from phil.store.db import connect
+    from phil.store.paths import ProjectPaths
+    from phil.ui.theme import make_console
+    from tests.chat.conftest import critique, goal, plan
+    from tests.chat.test_controller import ManualWatcher
+    from tests.helpers import TEST_MODELS
+
+    info = resolve_repo(calc_repo)
+    console = make_console(record=True, width=120)
+    spawned: list = []
+    box: dict = {}
+    with create_pipe_input() as pipe:
+        terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
+        io_ = terminal.chat_io(lambda root, run_id, mode, decision=None: spawned.append((run_id, mode)))
+
+        def chat() -> None:
+            # The controller (and its connection) live on this thread, as they would on the main one.
+            conn = connect(ProjectPaths(info.slug).db_path)
+            try:
+                controller = ChatController(
+                    info, PhilConfig(models=TEST_MODELS), conn, console, io_,
+                    factory=ScriptedAgentFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]}),
+                    watcher_factory=lambda run_id: ManualWatcher(
+                        ProjectPaths(info.slug), run_id, box["controller"].post,
+                        alive=lambda r: False, starting=lambda e: False,
+                    ),
+                )
+                box["controller"] = controller
+                controller.run()
+            except BaseException as exc:  # surfaced below
+                box["error"] = exc
+
+        thread = threading.Thread(target=chat, daemon=True)
+        thread.start()
+        try:
+            _until(lambda: "controller" in box and terminal.prompting, "the first prompt")
+            pipe.send_text("add subtract\n")
+            _until(lambda: box["controller"].stage == "approval" or "error" in box, "the plan")
+            pipe.send_text("y\n")
+            _until(lambda: spawned or "error" in box, "the run to start")
+            _until(lambda: terminal.prompting, "the running prompt")
+            pipe.send_text("\x04")
+            thread.join(TIMEOUT)
+            assert not thread.is_alive(), "the chat did not end"
+        finally:
+            terminal.close()
+    if "error" in box:
+        raise box["error"]
+    text = console.export_text()
+    assert "Phil couldn't finish that" not in text, text
+    assert "Plan CALC v1" in text
+    assert spawned and spawned[0][1] == "start"

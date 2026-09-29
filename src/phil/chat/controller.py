@@ -4,7 +4,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from rich.console import Console
@@ -24,6 +24,7 @@ from phil.config import ConfigError, PhilConfig, load_config
 from phil.contracts import Goal, Plan, PlanCritique, RunStatus
 from phil.repo import RepoInfo, resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, worker_starting
+from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
@@ -86,6 +87,8 @@ class ChatController:
         worker_starting: Callable[[object], bool] = worker_starting,
     ) -> None:
         self.info, self.config, self.conn, self.console, self.io = info, config, conn, console, io
+        # `conn` belongs to the main thread; each job opens its own connection to this database.
+        self._db_path = ProjectPaths(info.slug).db_path
         # None means "resolve HEAD when a run is actually started" (_start), not at chat start,
         # so a long-running chat starts its run from the commit current at approval time.
         self._explicit_base_sha = base_sha
@@ -137,19 +140,34 @@ class ChatController:
         self.io.wake()
 
     def _job(
-        self, kind: str, fn: Callable[[], dict], *, generation: int | None = None, failed: str = "job_failed"
+        self,
+        kind: str,
+        fn: Callable[[AgentContext], dict],
+        *,
+        generation: int | None = None,
+        failed: str = "job_failed",
     ) -> None:
         """Run `fn` through io.submit; it reports only by posting `kind` (or `failed`) events.
 
+        `fn` gets the job's own AgentContext: a SQLite connection can't cross threads, so each job opens
+        one on its thread (agent telemetry and parking write through it) and closes it when done.
         Goal jobs carry the current goal generation; side jobs (/btw) pass -1 so they're never stale.
         """
         generation = self._generation if generation is None else generation
 
         def work() -> None:
+            conn = None
             try:
-                event = ChatEvent(kind, fn(), generation)
+                conn = connect(self._db_path)
+                event = ChatEvent(kind, fn(replace(self.ctx, conn=conn)), generation)
             except Exception as exc:
                 event = ChatEvent(failed, {"job": kind, "error": f"{type(exc).__name__}: {exc}"}, generation)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
             # Clear the step before posting: once posted, the main loop may start the next job and its step.
             self._step(None, generation)
             self.post(event)
@@ -400,9 +418,9 @@ class ChatController:
         call, generation = self._intake_calls, self._generation
         self._step("intake", generation)
 
-        def fn() -> dict:
+        def fn(ctx: AgentContext) -> dict:
             goal = intake(
-                self.ctx, message, overview=self.overview, previous=previous, answers=answers or [], call=call
+                ctx, message, overview=self.overview, previous=previous, answers=answers or [], call=call
             )
             return {"goal": goal}
 
@@ -438,10 +456,11 @@ class ChatController:
         self._set_stage("planning")
         generation = self._generation
 
-        def fn() -> dict:
+        def fn(ctx: AgentContext) -> dict:
             self._step("snapshot", generation)
             tree = self._snapshot(generation)
-            return {"draft": self.planner.draft(goal, tree, on_step=lambda step: self._step(step, generation))}
+            on_step = lambda step: self._step(step, generation)  # noqa: E731
+            return {"draft": self.planner.draft(goal, tree, on_step=on_step, ctx=ctx)}
 
         self._job("plan_ready", fn)
 
@@ -532,11 +551,11 @@ class ChatController:
         self._set_stage("planning")
         generation = self._generation
 
-        def fn() -> dict:
+        def fn(ctx: AgentContext) -> dict:
             self._step("snapshot", generation)
             tree = self._snapshot(generation)
             revised = self.planner.revise(
-                goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation)
+                goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation), ctx=ctx
             )
             return {"draft": revised}
 
@@ -821,13 +840,13 @@ class ChatController:
         call = self._btw_calls
         self.state.add_btw(1)
 
-        def fn() -> dict:
+        def fn(ctx: AgentContext) -> dict:
             tree = None
             if goal is not None:
                 sha = base or self._explicit_base_sha or resolve_repo(self.info.root).head_sha
                 tree = export_tree(self.info.root, sha, self.session.dir / "tree" / f"{sha[:12]}-btw{call}")
             brief = ask_btw(
-                self.ctx, question, goal=goal, plan=plan, run=run, recent_events=recent,
+                ctx, question, goal=goal, plan=plan, run=run, recent_events=recent,
                 pending_question=pending, tree=tree, call=call,
             )
             return {"brief": brief, "question": question}
