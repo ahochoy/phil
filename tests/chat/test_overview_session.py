@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import pytest
+
 from phil.chat.overview import repo_overview
 from phil.chat.session import ChatSession, list_open_chats
 from phil.contracts import Goal
@@ -50,6 +52,20 @@ def test_state_round_trip_and_open(git_repo):
     session.save_state({"stage": "approval", "goal": {"objective": "x"}})
     again = ChatSession.open(paths, session.id)
     assert again.load_state()["stage"] == "approval"
+
+
+@pytest.mark.parametrize("chat_id", ["../../etc", "/tmp", "c-1/.."])
+def test_open_rejects_ids_that_are_not_a_chat_id(git_repo, chat_id):
+    paths = ProjectPaths(resolve_repo(git_repo).slug)
+    with pytest.raises(ValueError):
+        ChatSession.open(paths, chat_id)
+
+
+def test_open_accepts_a_valid_chat_id(git_repo):
+    paths = ProjectPaths(resolve_repo(git_repo).slug)
+    session = ChatSession.create(paths, now=lambda: datetime(2026, 9, 28, 12, 0, 0))
+    again = ChatSession.open(paths, session.id)
+    assert again.id == session.id
 
 
 def test_list_open_chats(git_repo):

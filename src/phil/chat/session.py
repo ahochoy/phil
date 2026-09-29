@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
 
 STATE_FILE = "state.json"
+CHAT_ID_RE = re.compile(r"^c-\d{8}-\d{6}(-\d+)?$")
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,8 @@ class ChatSession:
 
     @classmethod
     def open(cls, paths: ProjectPaths, chat_id: str) -> "ChatSession":
+        if not CHAT_ID_RE.match(chat_id):
+            raise ValueError(f"not a chat id: {chat_id!r}")
         directory = paths.project_dir / "chats" / chat_id
         if not directory.is_dir():
             raise FileNotFoundError(f"no chat {chat_id}")
