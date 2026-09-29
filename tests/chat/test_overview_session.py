@@ -68,6 +68,16 @@ def test_open_accepts_a_valid_chat_id(git_repo):
     assert again.id == session.id
 
 
+def test_list_open_chats_skips_stray_directories_that_are_not_chat_ids(git_repo):
+    paths = ProjectPaths(resolve_repo(git_repo).slug)
+    conn = connect(paths.db_path)
+    approving = ChatSession.create(paths, now=lambda: datetime(2026, 9, 28, 12, 0, 0))
+    approving.save_state({"stage": "approval", "goal": {"objective": "Add pow"}, "plan": {"keyword": "POW"}})
+    (paths.project_dir / "chats" / "notes").mkdir(parents=True)
+    chats = list_open_chats(paths, conn)
+    assert [c.id for c in chats] == [approving.id]
+
+
 def test_list_open_chats(git_repo):
     paths = ProjectPaths(resolve_repo(git_repo).slug)
     conn = connect(paths.db_path)

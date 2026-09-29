@@ -82,7 +82,7 @@ def list_open_chats(paths: ProjectPaths, conn: sqlite3.Connection) -> list[ChatS
         return []
     found: list[ChatSummary] = []
     for directory in sorted(chats.iterdir(), key=lambda d: d.name, reverse=True):
-        if not directory.is_dir():
+        if not directory.is_dir() or not CHAT_ID_RE.match(directory.name):
             continue
         state = ChatSession.open(paths, directory.name).load_state()
         run_id = state.get("run_id")
