@@ -68,6 +68,11 @@ MIGRATIONS: list[str] = [
     "cost_source TEXT NOT NULL,"
     "created_at TEXT NOT NULL"
     ")",
+    "ALTER TABLE runs ADD COLUMN base_branch TEXT",
+    "ALTER TABLE runs ADD COLUMN pr_url TEXT",
+    "ALTER TABLE runs ADD COLUMN pr_number INTEGER",
+    "ALTER TABLE runs ADD COLUMN pr_state TEXT",
+    "ALTER TABLE runs ADD COLUMN pr_checked_at TEXT",
 ]
 
 

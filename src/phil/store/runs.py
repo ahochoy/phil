@@ -33,6 +33,11 @@ _UPDATABLE = {
     "pid",
     "heartbeat_at",
     "needs_attention",
+    "base_branch",
+    "pr_url",
+    "pr_number",
+    "pr_state",
+    "pr_checked_at",
 }
 
 
@@ -54,6 +59,11 @@ class RunRecord:
     created_at: str
     updated_at: str
     chat_id: str | None = None
+    base_branch: str | None = None
+    pr_url: str | None = None
+    pr_number: int | None = None
+    pr_state: str | None = None
+    pr_checked_at: str | None = None
 
 
 def new_run_id(conn: sqlite3.Connection) -> str:
@@ -73,13 +83,14 @@ def create_run(
     tasks_total: int,
     story_ref: str | None = None,
     chat_id: str | None = None,
+    base_branch: str | None = None,
 ) -> RunRecord:
     branch = branch_for(run_id)
     now = utcnow()
     conn.execute(
         "INSERT INTO runs (run_id, keyword, base_sha, branch, worktree, state, tasks_total,"
-        " story_ref, created_at, updated_at, chat_id) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
-        (run_id, keyword, base_sha, branch, str(worktree), tasks_total, story_ref, now, now, chat_id),
+        " story_ref, created_at, updated_at, chat_id, base_branch) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
+        (run_id, keyword, base_sha, branch, str(worktree), tasks_total, story_ref, now, now, chat_id, base_branch),
     )
     run = get_run(conn, run_id)
     assert run is not None
