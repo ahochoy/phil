@@ -1,10 +1,14 @@
 from datetime import datetime
 
+import pytest
+
 from phil.chat.overview import repo_overview
-from phil.chat.session import ChatSession
+from phil.chat.session import ChatSession, list_open_chats
 from phil.contracts import Goal
 from phil.repo import resolve_repo
+from phil.store.db import connect
 from phil.store.paths import ProjectPaths
+from phil.store.runs import create_run
 from tests.helpers import run_git
 
 
@@ -39,3 +43,100 @@ def test_session_records_raw_text_and_contracts(git_repo):
     assert events[1]["contract"]["objective"] == "Add a map"
     again = ChatSession.create(paths, now=lambda: datetime(2026, 9, 24, 12, 0, 0))
     assert again.id == "c-20260924-120000-2"
+
+
+def test_state_round_trip_and_open(git_repo):
+    paths = ProjectPaths(resolve_repo(git_repo).slug)
+    session = ChatSession.create(paths)
+    assert session.load_state() == {}
+    session.save_state({"stage": "approval", "goal": {"objective": "x"}})
+    again = ChatSession.open(paths, session.id)
+    assert again.load_state()["stage"] == "approval"
+
+
+@pytest.mark.parametrize("chat_id", ["../../etc", "/tmp", "c-1/.."])
+def test_open_rejects_ids_that_are_not_a_chat_id(git_repo, chat_id):
+    paths = ProjectPaths(resolve_repo(git_repo).slug)
+    with pytest.raises(ValueError):
+        ChatSession.open(paths, chat_id)
+
+
+def test_open_accepts_a_valid_chat_id(git_repo):
+    paths = ProjectPaths(resolve_repo(git_repo).slug)
+    session = ChatSession.create(paths, now=lambda: datetime(2026, 9, 28, 12, 0, 0))
+    again = ChatSession.open(paths, session.id)
+    assert again.id == session.id
+
+
+def test_list_open_chats_skips_stray_directories_that_are_not_chat_ids(git_repo):
+    paths = ProjectPaths(resolve_repo(git_repo).slug)
+    conn = connect(paths.db_path)
+    approving = ChatSession.create(paths, now=lambda: datetime(2026, 9, 28, 12, 0, 0))
+    approving.save_state({"stage": "approval", "goal": {"objective": "Add pow"}, "plan": {"keyword": "POW"}})
+    (paths.project_dir / "chats" / "notes").mkdir(parents=True)
+    chats = list_open_chats(paths, conn)
+    assert [c.id for c in chats] == [approving.id]
+
+
+def test_list_open_chats(git_repo):
+    paths = ProjectPaths(resolve_repo(git_repo).slug)
+    conn = connect(paths.db_path)
+    running = ChatSession.create(paths, now=lambda: datetime(2026, 9, 28, 10, 0, 0))
+    create_run(conn, run_id="r-0001", keyword="CALC", base_sha="abc", worktree=paths.worktree_dir("r-0001"), tasks_total=1, chat_id=running.id)
+    running.save_state({"stage": "running", "goal": {"objective": "Add divide"}, "run_id": "r-0001", "done_seen": False})
+    finished = ChatSession.create(paths, now=lambda: datetime(2026, 9, 28, 11, 0, 0))
+    finished.save_state({"stage": "idle", "goal": {"objective": "Old"}, "run_id": "r-0001", "done_seen": True})
+    approving = ChatSession.create(paths, now=lambda: datetime(2026, 9, 28, 12, 0, 0))
+    approving.save_state({"stage": "approval", "goal": {"objective": "Add pow"}, "plan": {"keyword": "POW"}})
+    ChatSession.create(paths, now=lambda: datetime(2026, 9, 28, 13, 0, 0))  # empty chat, never had a goal
+    chats = list_open_chats(paths, conn)
+    assert [c.id for c in chats] == [approving.id, running.id]
+    assert chats[1].objective == "Add divide" and chats[1].run_state == "pending"
+
+
+def _dead_pid() -> int:
+    import subprocess
+    import sys
+
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait()
+    return process.pid
+
+
+def test_chat_lock_refuses_a_live_holder_and_takes_over_a_stale_one(git_repo):
+    import os
+
+    from phil.chat.session import ChatLocked
+
+    paths = ProjectPaths(resolve_repo(git_repo).slug)
+    session = ChatSession.create(paths)
+    lock = session.dir / "chat.lock"
+    lock.write_text(str(os.getppid()))  # another live process
+    with pytest.raises(ChatLocked) as caught:
+        session.lock()
+    assert caught.value.pid == os.getppid()
+    assert lock.read_text().strip() == str(os.getppid())
+    lock.write_text(str(_dead_pid()))
+    session.lock()
+    assert lock.read_text().strip() == str(os.getpid())
+    session.lock()  # our own lock: fine
+    session.unlock()
+    assert not lock.exists()
+    lock.write_text(str(os.getppid()))
+    session.unlock()  # never removes another process's lock
+    assert lock.exists()
+
+
+def test_list_open_chats_marks_chats_open_elsewhere(git_repo):
+    import os
+
+    paths = ProjectPaths(resolve_repo(git_repo).slug)
+    conn = connect(paths.db_path)
+    elsewhere = ChatSession.create(paths, now=lambda: datetime(2026, 9, 28, 12, 0, 0))
+    elsewhere.save_state({"stage": "approval", "goal": {"objective": "Add pow"}, "plan": {"keyword": "POW"}})
+    (elsewhere.dir / "chat.lock").write_text(str(os.getppid()))
+    stale = ChatSession.create(paths, now=lambda: datetime(2026, 9, 28, 11, 0, 0))
+    stale.save_state({"stage": "approval", "goal": {"objective": "Add mod"}, "plan": {"keyword": "MOD"}})
+    (stale.dir / "chat.lock").write_text(str(_dead_pid()))
+    chats = list_open_chats(paths, conn)
+    assert [(c.id, c.open_elsewhere) for c in chats] == [(elsewhere.id, True), (stale.id, False)]

@@ -16,6 +16,7 @@ dependencies = [
     # pydantic <2.13, so this holds openrouter at 0.10.x until it lifts the cap.
     "pydantic>=2.13",
     "langgraph-checkpoint-sqlite>=3.1.1",
+    "prompt-toolkit>=3.0.53",
 ]
 
 [project.scripts]

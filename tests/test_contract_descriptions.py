@@ -3,9 +3,11 @@ import pytest
 from phil.contracts import (
     ALL_CONTRACTS,
     ArchitectInput,
+    BtwInput,
     CriticInput,
     Goal,
     ImplementInput,
+    IntakeInput,
     Plan,
     PlanCritique,
     ReviewInput,
@@ -59,5 +61,5 @@ def test_input_contracts_construct():
 
 
 def test_input_contracts_are_exported_for_schemas():
-    for model in (ArchitectInput, CriticInput, ImplementInput, TesterInput, ReviewInput):
+    for model in (ArchitectInput, CriticInput, ImplementInput, TesterInput, ReviewInput, IntakeInput, BtwInput):
         assert model in ALL_CONTRACTS

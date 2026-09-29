@@ -58,3 +58,30 @@ def test_architect_reads_the_given_tree(chat_ctx, tmp_path):
     first = planner.draft(goal(), tmp_path / "a")
     planner.revise(goal(), first, "more", tmp_path / "b")
     assert seen == [tmp_path / "a", tmp_path / "b"]
+
+
+def test_planner_reports_steps(chat_ctx, tmp_path):
+    factory = ScriptedAgentFactory({
+        "architect": [plan(n=1), plan(n=2)],
+        "critic": [critique("revise", [issue("too big")]), critique()],
+    })
+    steps = []
+    Planner(chat_ctx(factory), "overview").draft(goal(), tmp_path, on_step=steps.append)
+    assert steps == ["architect", "critic", "revise", "critic"]
+
+
+def test_a_cycle_keeps_its_call_number_when_another_cycle_interleaves(chat_ctx, tmp_path):
+    # Worker threads can run two goals' cycles at once; each critic call must match its own architect call.
+    nested = {}
+
+    def architect(turn):
+        if not nested:
+            nested["draft"] = planner.draft(goal(), tmp_path)  # another cycle runs mid-call
+        return plan()
+
+    ctx = chat_ctx(ScriptedAgentFactory({"architect": [architect, plan()], "critic": [critique(), critique()]}))
+    planner = Planner(ctx, "overview")
+    outer = planner.draft(goal(), tmp_path)
+    rows = ctx.conn.execute("SELECT node, call FROM telemetry ORDER BY rowid").fetchall()
+    assert sorted(tuple(r) for r in rows) == [("architect", 1), ("architect", 2), ("critic", 1), ("critic", 2)]
+    assert {outer.version, nested["draft"].version} == {1, 2}

@@ -53,6 +53,7 @@ class RunRecord:
     story_ref: str | None
     created_at: str
     updated_at: str
+    chat_id: str | None = None
 
 
 def new_run_id(conn: sqlite3.Connection) -> str:
@@ -71,13 +72,14 @@ def create_run(
     worktree: Path,
     tasks_total: int,
     story_ref: str | None = None,
+    chat_id: str | None = None,
 ) -> RunRecord:
     branch = branch_for(run_id)
     now = utcnow()
     conn.execute(
         "INSERT INTO runs (run_id, keyword, base_sha, branch, worktree, state, tasks_total,"
-        " story_ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
-        (run_id, keyword, base_sha, branch, str(worktree), tasks_total, story_ref, now, now),
+        " story_ref, created_at, updated_at, chat_id) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+        (run_id, keyword, base_sha, branch, str(worktree), tasks_total, story_ref, now, now, chat_id),
     )
     run = get_run(conn, run_id)
     assert run is not None

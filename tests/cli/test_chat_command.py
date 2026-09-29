@@ -1,3 +1,5 @@
+import re
+
 from typer.testing import CliRunner
 
 from phil.cli import main as cli
@@ -63,3 +65,188 @@ def test_chat_requires_the_provider_api_key(calc_repo, monkeypatch):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
     assert result.exit_code == 1
     assert "OPENROUTER_API_KEY is not set" in result.output
+
+
+def _approved_chat(calc_repo, monkeypatch) -> str:
+    """Run a scripted chat to an approved, started run; return its chat id."""
+    monkeypatch.setenv("PHIL_AGENT_FACTORY", "tests.chat.chat_scenarios:factory")
+    monkeypatch.setenv("PHIL_TEST_SCENARIO", "approve")
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="add subtract\ny\n")
+    assert result.exit_code == 0, result.output
+    [chat] = (ProjectPaths(resolve_repo(calc_repo).slug).project_dir / "chats").iterdir()
+    return chat.name
+
+
+def test_resume_an_unknown_chat(calc_repo):
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "--resume", "c-nope"], input="")
+    assert result.exit_code == 1
+    assert "c-nope" in result.output
+    missing = runner.invoke(cli.app, ["--repo", str(calc_repo), "--resume", "c-20260101-000000"], input="")
+    assert missing.exit_code == 1
+    assert "c-20260101-000000" in missing.output
+
+
+def test_resume_reopens_a_chat(calc_repo, monkeypatch):
+    chat_id = _approved_chat(calc_repo, monkeypatch)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "--resume", chat_id], input="")
+    assert result.exit_code == 0, result.output
+    assert f"Reopened {chat_id}" in result.output
+
+
+def _plain(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
+class _FakeTerminal:
+    """Stands in for TerminalIO under CliRunner (no real terminal): line IO plus a toolbar probe."""
+
+    def __init__(self, toolbar):
+        from phil.chat.terminal import LineIO
+
+        self.toolbar = toolbar
+        self.line = LineIO(cli.console)
+        self.closed = False
+        made.append(self)
+
+    def width(self) -> int:
+        return 80
+
+    def chat_io(self, spawn):
+        return self.line.chat_io(spawn)
+
+    def run(self, fn):
+        fn()
+        self.toolbar_text = self.toolbar()
+
+    def close(self):
+        self.closed = True
+
+
+made: list[_FakeTerminal] = []
+
+
+def test_tty_lists_open_chats_and_reopens_one(calc_repo, monkeypatch):
+    chat_id = _approved_chat(calc_repo, monkeypatch)
+    monkeypatch.setattr(cli, "_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_terminal", _FakeTerminal)
+    made.clear()
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="1\n")
+    assert result.exit_code == 0, result.output
+    output = _plain(result.output)  # a TTY chat forces colour
+    assert f"1. {chat_id} · " in output
+    assert " · run r-" in output
+    assert f"Reopened {chat_id}" in output
+    [terminal] = made
+    assert terminal.closed
+    assert terminal.toolbar_text  # rendered from the controller's state
+
+
+def test_tty_enter_starts_a_new_chat_and_new_skips_the_list(calc_repo, monkeypatch):
+    chat_id = _approved_chat(calc_repo, monkeypatch)
+    monkeypatch.setattr(cli, "_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_terminal", _FakeTerminal)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="7\n\n")
+    assert result.exit_code == 0, result.output
+    output = _plain(result.output)
+    assert "choose 1–1" in output
+    assert "Reopened" not in output
+    fresh = runner.invoke(cli.app, ["--repo", str(calc_repo), "--new"], input="")
+    assert fresh.exit_code == 0, fresh.output
+    assert chat_id not in fresh.output
+    assert "Open chats" not in fresh.output
+
+
+def test_root_help_documents_resume_and_new():
+    result = runner.invoke(cli.app, ["--help"], env={"COLUMNS": "200"})
+    assert "Reopen a chat by id" in result.output
+    assert "Start a new chat without listing open ones" in result.output
+
+
+def test_eof_at_the_reopen_prompt_exits_cleanly(calc_repo, monkeypatch):
+    _approved_chat(calc_repo, monkeypatch)
+    monkeypatch.setattr(cli, "_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_terminal", _FakeTerminal)
+    made.clear()
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
+    assert result.exit_code == 0, result.output  # EOF (Ctrl-D) at "Reopen one?" quits: no chat starts
+    assert "Reopen one?" in _plain(result.output)
+    assert made == []
+
+
+def test_a_listed_chat_that_vanished_exits_cleanly(calc_repo, monkeypatch):
+    from phil.chat import session as chat_session
+    from phil.chat.session import ChatSummary
+
+    gone = ChatSummary("c-20260101-000000", "old goal", "running", "r-gone", "running")
+    monkeypatch.setattr(chat_session, "list_open_chats", lambda paths, conn: [gone])
+    monkeypatch.setattr(cli, "_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_terminal", _FakeTerminal)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="1\n")
+    assert result.exit_code == 1
+    assert "cannot reopen" in _plain(result.output)
+    assert "c-20260101-000000" in _plain(result.output)
+
+
+def test_only_decimal_digits_choose_a_chat(calc_repo, monkeypatch):
+    _approved_chat(calc_repo, monkeypatch)
+    monkeypatch.setattr(cli, "_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_terminal", _FakeTerminal)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="¹\n\n")
+    assert result.exit_code == 0, result.output
+    assert "choose 1–1" in _plain(result.output)
+    assert "Reopened" not in _plain(result.output)
+
+
+def test_a_chat_open_in_another_window_is_refused(calc_repo, monkeypatch):
+    import os
+
+    chat_id = _approved_chat(calc_repo, monkeypatch)
+    lock = ProjectPaths(resolve_repo(calc_repo).slug).project_dir / "chats" / chat_id / "chat.lock"
+    assert not lock.exists()  # released when the first chat ended
+    lock.write_text(str(os.getppid()))
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "--resume", chat_id], input="")
+    assert result.exit_code == 1
+    assert f"Chat {chat_id} is already open in another window (pid {os.getppid()})." in " ".join(result.output.split())
+    assert "Reopened" not in result.output
+
+
+def test_a_stale_chat_lock_is_taken_over_and_released(calc_repo, monkeypatch):
+    import subprocess
+    import sys
+
+    chat_id = _approved_chat(calc_repo, monkeypatch)
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait()
+    lock = ProjectPaths(resolve_repo(calc_repo).slug).project_dir / "chats" / chat_id / "chat.lock"
+    lock.write_text(str(process.pid))
+    seen = {}
+    from phil.chat.controller import ChatController
+
+    original = ChatController.run
+
+    def run(self):
+        seen["lock"] = lock.read_text().strip()
+        seen["propagate"] = __import__("logging").getLogger("phil").propagate
+        return original(self)
+
+    monkeypatch.setattr(ChatController, "run", run)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "--resume", chat_id], input="")
+    assert result.exit_code == 0, result.output
+    assert seen == {"lock": str(__import__("os").getpid()), "propagate": False}
+    assert not lock.exists()
+
+
+def test_the_open_chats_list_marks_chats_open_elsewhere(calc_repo, monkeypatch):
+    import os
+
+    chat_id = _approved_chat(calc_repo, monkeypatch)
+    lock = ProjectPaths(resolve_repo(calc_repo).slug).project_dir / "chats" / chat_id / "chat.lock"
+    lock.write_text(str(os.getppid()))
+    monkeypatch.setattr(cli, "_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_terminal", _FakeTerminal)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="1\n")
+    output = " ".join(_plain(result.output).split())
+    assert f"1. {chat_id} · " in output and "open elsewhere" in output
+    assert result.exit_code == 1
+    assert "already open in another window" in output

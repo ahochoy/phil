@@ -163,6 +163,13 @@ def test_claim_run_from_resumable_states(conn, state):
     assert claim_run(conn, "r-0001", 111, "2026-01-01T00:00:00+00:00") is True
 
 
+def test_runs_record_the_chat_that_started_them(conn):
+    create_run(conn, run_id="r-0001", keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=1, chat_id="c-1")
+    create_run(conn, run_id="r-0002", keyword="MAPS", base_sha="abc", worktree=Path("/wt2"), tasks_total=1)
+    assert get_run(conn, "r-0001").chat_id == "c-1"
+    assert get_run(conn, "r-0002").chat_id is None
+
+
 def test_release_run_only_clears_its_own_pid(conn):
     make(conn)
     update_run(conn, "r-0001", state="running", pid=222)

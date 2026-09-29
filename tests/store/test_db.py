@@ -28,6 +28,12 @@ def test_legacy_unversioned_database_upgrades(tmp_path):
     assert user_version(conn) == len(MIGRATIONS)
 
 
+def test_runs_table_has_chat_id_column(tmp_path):
+    conn = connect(tmp_path / "phil.db")
+    columns = [row["name"] for row in conn.execute("PRAGMA table_info(runs)")]
+    assert "chat_id" in columns
+
+
 def test_new_migration_applies_once(tmp_path, monkeypatch):
     path = tmp_path / "phil.db"
     connect(path)

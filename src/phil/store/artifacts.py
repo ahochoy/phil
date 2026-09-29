@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -24,6 +25,8 @@ def artifact_name(node: str, task_id: str | None, attempt: int) -> str:
 class ArtifactStore:
     def __init__(self, run_dir: Path) -> None:
         self.run_dir = run_dir
+        # Chat jobs on different threads share one store; one call's lines stay together.
+        self._append_lock = threading.Lock()
 
     def _file(self, relative: str) -> Path:
         rel_path = Path(relative)
@@ -59,7 +62,7 @@ class ArtifactStore:
 
     def append_assumptions(self, *, node: str, task_id: str | None, assumptions: list[str]) -> None:
         path = self._file("assumptions.jsonl")
-        with path.open("a") as handle:
+        with self._append_lock, path.open("a") as handle:
             for assumption in assumptions:
                 entry = {"node": node, "task_id": task_id, "assumption": assumption, "status": "open"}
                 handle.write(json.dumps(entry) + "\n")

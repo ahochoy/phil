@@ -64,16 +64,24 @@ you › add a map section that shows listings on a map
 phil › Plan MAPS (5 tasks) — critic flagged 1 gap → revised: …
        Approve? [y / edit / n]
 you › y
-phil › Run r-7f3a started in background. Ctrl-D to detach; `phil attach r-7f3a` to watch.
+phil › Run r-7f3a started in the background from a1b2c3d. This chat follows it; from another
+       window use `phil attach r-7f3a`.
+[bottom toolbar: r-7f3a · CALC 1/2 · implement · 3m]
 
 $ phil runs
 r-7f3a  MAPS  4/5 done  tester running   12.4k tok  $0.08
-$ phil attach r-7f3a      # stream progress, answer escalations and shell approvals
+$ phil attach r-7f3a      # stream progress, answer escalations and shell approvals, from any window
 $ phil diff r-7f3a        # git diff <base>...phil/r-7f3a
 $ phil resume r-7f3a      # continue a crashed worker from its last checkpoint
 $ phil stop r-7f3a
 $ phil clean r-7f3a       # remove worktree and branch
 ```
+
+As of plan 4b (`docs/superpowers/specs/2026-09-28-phil-04b-live-chat-design.md`), the chat above
+is live rather than blocking: one chat carries one goal at a time through to its run; a bottom
+toolbar shows the current step or the run's progress; a run's pauses are surfaced and answered
+right there (`/answer`); `/btw <question>` asks a read-only side question while work continues;
+and a chat can be reopened (`phil` lists open chats, `phil --resume <chat>`, `phil --new`).
 
 **Terminal presentation:** all output goes through a single `ui/` module using a Rich `Theme` with semantic style names (`phil.agent`, `phil.gate.pass`, `phil.cost`, …). No hard-coded colors elsewhere. A branded look and feel is future work and should only require changing this module.
 
@@ -267,7 +275,9 @@ Code drives the conversation; models assist (decided 2026-09-24 after the first 
 3. **Approve:** the plan is rendered by code (bounded view; the test command is shown in full), with the effective test command, a warning when it differs from `phil.toml` or would be rejected, and the git signing/hooks note. `y`/`yes`, `edit`, or `n`: `edit` sends the user's feedback to the architect as a critique and re-plans. At `y`, `phil.toml` is re-read and the run is refused with a reason (the chat stays at the approval prompt) unless every run role has a model and the test command equals `[project] test_cmd` or is allowed by `[shell] allow`. Approval is recorded by code from the user's literal answer, never inferred by a model.
 4. **Start:** with no `--base`, the run starts from HEAD at approval time (not chat start); `prepare_run` + a detached `phil _worker <run-id>`; the chat prints the run id, its base commit, and the `phil attach` hint. If the worker fails to start, the chat prints the run id and `phil resume <id>`. `phil run <plan.json>` applies the same launch checks (run models, test command).
 
-Slash commands: `/runs`, `/help`, `/quit`. Every turn is stored in `chats/<session>/transcript.jsonl` (raw text unchanged, next to each contract). Free-form answers from a model through `Brief`/`present()`, `/more`, and `/park` arrive in plan 4b.
+Slash commands: `/runs`, `/btw <question>`, `/answer`, `/resume`, `/help`, `/quit`. Every turn is stored in `chats/<session>/transcript.jsonl` (raw text unchanged, next to each contract). `phil show` / `/more` and `/park` remain future work (plan 4c).
+
+**Live chat (plan 4b):** `docs/superpowers/specs/2026-09-28-phil-04b-live-chat-design.md` amends this section: one chat carries one goal at a time (a `prompt_toolkit` prompt with a bottom toolbar, driven by worker threads and an event queue); a run's pauses are flagged immediately and asked in the chat, answered with `/answer`; `/btw <question>` answers a read-only side question (goal, plan, run status, recent events, pending pause — never changes the plan or the run) while work continues; and a chat can be reopened (`phil` lists open chats in the repo, `phil --resume <chat>` reopens one directly, `phil --new` starts fresh).
 
 ## 7. Run graph
 

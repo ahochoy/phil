@@ -8,7 +8,7 @@ from phil.contracts import Plan, PlanCritique, Review, TaskResult, TesterReport
 
 def test_registry_covers_chat_and_run_roles():
     # Check registered agent names
-    assert set(SPECS) == {"intake", "architect", "critic", "implementer", "tester", "reviewer"}
+    assert set(SPECS) == {"intake", "architect", "critic", "implementer", "tester", "reviewer", "btw"}
     # Check that agents reference the correct roles
     agent_roles = {spec.role for spec in SPECS.values()}
     assert agent_roles == set(CHAT_ROLES) | set(RUN_ROLES)

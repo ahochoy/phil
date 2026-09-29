@@ -14,7 +14,7 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, create_run, new_run_id
 
 
-def prepare_run(info: RepoInfo, plan: Plan, base_sha: str) -> RunRecord:
+def prepare_run(info: RepoInfo, plan: Plan, base_sha: str, *, chat_id: str | None = None) -> RunRecord:
     paths = ProjectPaths(info.slug)
     conn = connect(paths.db_path)
     try:
@@ -28,6 +28,7 @@ def prepare_run(info: RepoInfo, plan: Plan, base_sha: str) -> RunRecord:
             worktree=paths.worktree_dir(run_id),
             tasks_total=len(plan.tasks),
             story_ref=plan.story_ref,
+            chat_id=chat_id,
         )
     finally:
         conn.close()
@@ -89,8 +90,21 @@ def worker_starting(events: EventLog) -> bool:
     event = events.latest("spawn")
     if event is None:
         return False
+    pid = event["pid"]
+    # A worker whose Popen was discarded (the long-lived chat never waits on it) exits into a
+    # zombie: `os.kill(pid, 0)` alone still succeeds for it, so check for a since-exited child
+    # first. This also reaps it, clearing the zombie.
     try:
-        os.kill(event["pid"], 0)
+        reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        pass  # not our child (already reaped, or never was) — fall back to os.kill below
+    else:
+        if reaped_pid == pid:
+            return False  # it had exited; we just reaped it
+        # (0, 0): still running
+        return True
+    try:
+        os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
