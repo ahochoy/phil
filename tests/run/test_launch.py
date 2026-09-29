@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -126,6 +127,27 @@ def test_worker_starting_with_a_reaped_pid(calc_repo):
     done = subprocess.Popen([sys.executable, "-c", "pass"])
     done.wait()
     events.append("spawn", pid=done.pid, mode="start")
+    assert not worker_starting(events)
+
+
+def _wait_until_zombie(pid: int, deadline: float) -> bool:
+    """Poll `ps` (which never reaps) until the OS reports `pid` as a zombie, or the deadline passes."""
+    while time.monotonic() < deadline:
+        result = subprocess.run(["ps", "-o", "state=", "-p", str(pid)], capture_output=True, text=True)
+        if result.stdout.strip().startswith("Z"):
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_worker_starting_treats_an_unreaped_zombie_as_not_starting(calc_repo):
+    # A worker the chat spawned and never waited on: it exits but stays a zombie, so
+    # `os.kill(pid, 0)` alone (the old implementation) would wrongly keep reading it as alive.
+    info, record = new_run(calc_repo)
+    events = run_events(ProjectPaths(info.slug), record.run_id)
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    events.append("spawn", pid=proc.pid, mode="start")
+    assert _wait_until_zombie(proc.pid, time.monotonic() + 5.0), "child never became a zombie"
     assert not worker_starting(events)
 
 

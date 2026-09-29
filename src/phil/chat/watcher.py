@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -11,7 +12,15 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
 from phil.store.telemetry import run_totals
 
-ENDED = ("completed", "aborted", "cleaned", "failed", "stopped")
+logger = logging.getLogger(__name__)
+
+# These end the run outright, regardless of any worker.
+ENDED_UNCONDITIONALLY = ("completed", "aborted", "cleaned")
+# These only end the watch once no worker is alive or starting a resume for it — a `/resume`
+# just kicked off can still see the row's stale `failed`/`stopped` state for a moment.
+ENDED_IF_IDLE = ("failed", "stopped")
+
+CONSECUTIVE_FAILURES_BEFORE_REPORT = 5
 
 
 class RunWatcher:
@@ -39,6 +48,8 @@ class RunWatcher:
         self._paused = False
         self._idle_since: float | None = None
         self._lost_posted = False
+        self._consecutive_failures = 0
+        self._error_posted = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -67,7 +78,8 @@ class RunWatcher:
             elif self._paused:
                 self._paused = False
                 self.post(ChatEvent("run_resumed", {}))
-            if record.state in ENDED:
+            ended = record.state in ENDED_UNCONDITIONALLY or (record.state in ENDED_IF_IDLE and not active)
+            if ended:
                 tokens, cost = run_totals(conn, self.run_id)
                 self.done = True
                 self.post(ChatEvent("run_done", {
@@ -87,12 +99,22 @@ class RunWatcher:
         finally:
             conn.close()
 
+    def _tick(self) -> None:
+        try:
+            self.poll_once()
+        except Exception as exc:  # a transient read error must not kill the watch
+            self._consecutive_failures += 1
+            logger.warning("run watcher poll failed for run %s", self.run_id, exc_info=True)
+            if self._consecutive_failures >= CONSECUTIVE_FAILURES_BEFORE_REPORT and not self._error_posted:
+                self._error_posted = True
+                self.post(ChatEvent("watch_error", {"error": f"{type(exc).__name__}: {exc}"}))
+        else:
+            self._consecutive_failures = 0
+            self._error_posted = False
+
     def _run(self) -> None:
         while not self._stop.is_set() and not self.done:
-            try:
-                self.poll_once()
-            except Exception:  # a transient read error must not kill the watch
-                pass
+            self._tick()
             self._stop.wait(self.interval_s)
 
     def start(self) -> None:

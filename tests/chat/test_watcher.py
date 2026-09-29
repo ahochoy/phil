@@ -1,3 +1,5 @@
+import logging
+
 from phil.chat.watcher import RunWatcher
 from phil.repo import resolve_repo
 from phil.run.launch import prepare_run
@@ -77,6 +79,45 @@ def test_failed_run_ends_the_watch(calc_repo):
     update_run(conn, run_id, state="failed", needs_attention="worker failed: boom")
     watcher.poll_once()
     assert posted[-1].kind == "run_done" and posted[-1].data["needs_attention"] == "worker failed: boom"
+
+
+def test_failed_run_stays_open_while_a_resume_worker_is_starting(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo, starting=lambda e: True)
+    update_run(conn, run_id, state="running")
+    update_run(conn, run_id, state="failed", needs_attention="worker failed: boom")
+    watcher.poll_once()
+    assert "run_done" not in kinds(posted)
+    assert not watcher.done
+    watcher.starting = lambda e: False
+    watcher.poll_once()
+    assert kinds(posted)[-1] == "run_done"
+    assert watcher.done
+
+
+def test_watch_error_posted_after_five_consecutive_failures(calc_repo, monkeypatch, caplog):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+
+    def boom():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(watcher, "poll_once", boom)
+    with caplog.at_level(logging.WARNING):
+        for _ in range(5):
+            watcher._tick()
+    assert kinds(posted).count("watch_error") == 1
+    assert posted[-1].data["error"] == "RuntimeError: boom"
+    assert any(record.exc_info for record in caplog.records)
+
+    watcher._tick()
+    assert kinds(posted).count("watch_error") == 1  # still just once until a success
+
+    monkeypatch.setattr(watcher, "poll_once", lambda: None)
+    watcher._tick()  # a success resets the streak and re-arms the report
+
+    monkeypatch.setattr(watcher, "poll_once", boom)
+    for _ in range(5):
+        watcher._tick()
+    assert kinds(posted).count("watch_error") == 2
 
 
 def test_thread_start_and_stop(calc_repo):
