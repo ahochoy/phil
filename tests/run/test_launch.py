@@ -28,6 +28,12 @@ def new_run(repo):
     return info, prepare_run(info, calc_plan(), info.head_sha)
 
 
+def test_prepare_run_records_the_chat(calc_repo):
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha, chat_id="c-20260928-120000")
+    assert record.chat_id == "c-20260928-120000"
+
+
 def test_worker_command_shape(tmp_path):
     command = worker_command(tmp_path, "r-0001", "resume", {"action": "retry"})
     assert command[:4] == [sys.executable, "-P", "-m", "phil"]

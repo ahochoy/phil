@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS parked (
 MIGRATIONS: list[str] = [
     SCHEMA,
     "ALTER TABLE telemetry ADD COLUMN call INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE runs ADD COLUMN chat_id TEXT",
 ]
 
 

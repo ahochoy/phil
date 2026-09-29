@@ -14,7 +14,7 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, create_run, new_run_id
 
 
-def prepare_run(info: RepoInfo, plan: Plan, base_sha: str) -> RunRecord:
+def prepare_run(info: RepoInfo, plan: Plan, base_sha: str, *, chat_id: str | None = None) -> RunRecord:
     paths = ProjectPaths(info.slug)
     conn = connect(paths.db_path)
     try:
@@ -28,6 +28,7 @@ def prepare_run(info: RepoInfo, plan: Plan, base_sha: str) -> RunRecord:
             worktree=paths.worktree_dir(run_id),
             tasks_total=len(plan.tasks),
             story_ref=plan.story_ref,
+            chat_id=chat_id,
         )
     finally:
         conn.close()
