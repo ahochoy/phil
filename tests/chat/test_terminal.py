@@ -1,23 +1,49 @@
+import io
 import threading
 import time
 
+import pytest
+from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.console import Console
 
 from phil.chat.controller import WAKE
 from phil.chat.terminal import LineIO, TerminalIO
 
+TIMEOUT = 5.0
+
+
+def _ask(io_, prompt: str = "you › "):
+    """Call `ask` on a helper thread and fail (instead of hanging) if it never returns."""
+    box: dict = {}
+
+    def target() -> None:
+        try:
+            box["result"] = io_.ask(prompt)
+        except BaseException as exc:  # surfaced below
+            box["error"] = exc
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(TIMEOUT)
+    if thread.is_alive():
+        pytest.fail("ask did not return (a lost wake?)")
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+
 
 def _wake_when_prompting(terminal: TerminalIO) -> threading.Thread:
     def poke() -> None:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + TIMEOUT
         while not terminal.prompting and time.monotonic() < deadline:
             time.sleep(0.01)
         time.sleep(0.05)
         terminal.wake()
 
-    thread = threading.Thread(target=poke)
+    thread = threading.Thread(target=poke, daemon=True)
     thread.start()
     return thread
 
@@ -25,24 +51,25 @@ def _wake_when_prompting(terminal: TerminalIO) -> threading.Thread:
 def test_terminal_io_prompt_wake_keeps_typed_text_and_eof():
     with create_pipe_input() as pipe:
         terminal = TerminalIO(lambda: "toolbar text", input=pipe, output=DummyOutput())
-        io = terminal.chat_io(lambda *a: None)
+        io_ = terminal.chat_io(lambda *a: None)
         try:
             pipe.send_text("hello\n")
-            assert io.ask("you › ") == "hello"
+            assert _ask(io_) == "hello"
 
             thread = _wake_when_prompting(terminal)
-            assert io.ask("you › ") is WAKE
-            thread.join()
+            assert _ask(io_) is WAKE
+            thread.join(TIMEOUT)
 
             pipe.send_text("half")
             thread = _wake_when_prompting(terminal)
-            assert io.ask("you › ") is WAKE
-            thread.join()
+            assert _ask(io_) is WAKE
+            thread.join(TIMEOUT)
+            assert terminal._carried == "half"
             pipe.send_text(" done\n")
-            assert io.ask("you › ") == "half done"  # typed text survives the wake
+            assert _ask(io_) == "half done"  # typed text survives the wake
 
             pipe.send_text("\x04")  # Ctrl-D on an empty line
-            assert io.ask("you › ") is None
+            assert _ask(io_) is None
         finally:
             terminal.close()
 
@@ -50,26 +77,102 @@ def test_terminal_io_prompt_wake_keeps_typed_text_and_eof():
 def test_a_wake_between_prompts_is_not_lost():
     with create_pipe_input() as pipe:
         terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
-        io = terminal.chat_io(lambda *a: None)
+        io_ = terminal.chat_io(lambda *a: None)
         try:
-            io.wake()  # no prompt active: remembered for the next ask
-            assert io.ask("you › ") is WAKE
+            io_.wake()  # no prompt active: remembered for the next ask
+            assert _ask(io_) is WAKE
             pipe.send_text("x\n")
-            assert io.ask("you › ") == "x"
+            assert _ask(io_) == "x"
         finally:
             terminal.close()
 
 
-def test_terminal_io_runs_jobs_on_worker_threads():
+def test_a_wake_during_pre_run_is_not_lost():
     with create_pipe_input() as pipe:
         terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
-        io = terminal.chat_io(lambda *a: None)
-        seen: list[str] = []
-        done = threading.Event()
-        io.submit(lambda: (seen.append(threading.current_thread().name), done.set()))
-        assert done.wait(5)
+        io_ = terminal.chat_io(lambda *a: None)
+        original = terminal._started
+
+        def started_with_a_wake() -> None:
+            terminal.wake()  # arrives while the prompt is starting, before it's marked active
+            original()
+
+        terminal._started = started_with_a_wake
+        try:
+            assert _ask(io_) is WAKE
+        finally:
+            terminal.close()
+
+
+def test_woken_prompts_leave_no_lines_but_submitted_ones_stay():
+    buffer = io.StringIO()
+    output = Vt100_Output(buffer, lambda: Size(rows=24, columns=80), term="xterm", enable_cpr=False)
+    with create_pipe_input() as pipe:
+        terminal = TerminalIO(lambda: "", input=pipe, output=output)
+        io_ = terminal.chat_io(lambda *a: None)
+        try:
+            for _ in range(3):
+                thread = _wake_when_prompting(terminal)
+                assert _ask(io_) is WAKE
+                thread.join(TIMEOUT)
+            assert "\r\n" not in buffer.getvalue()
+            pipe.send_text("kept\n")
+            assert _ask(io_) == "kept"
+            assert "\r\n" in buffer.getvalue()
+        finally:
+            terminal.close()
+
+
+def test_terminal_io_runs_jobs_on_daemon_threads_and_close_does_not_wait():
+    with create_pipe_input() as pipe:
+        terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
+        io_ = terminal.chat_io(lambda *a: None)
+        release = threading.Event()
+        seen: list[threading.Thread] = []
+        started = threading.Event()
+
+        def blocking() -> None:
+            seen.append(threading.current_thread())
+            started.set()
+            release.wait(TIMEOUT)
+
+        io_.submit(blocking)
+        assert started.wait(TIMEOUT)
+        begin = time.monotonic()
         terminal.close()
-        assert seen[0].startswith("phil-chat")
+        assert time.monotonic() - begin < 1.0
+        assert seen[0].daemon and seen[0].name.startswith("phil-chat")
+        release.set()
+
+
+def test_at_most_three_jobs_run_at_once():
+    with create_pipe_input() as pipe:
+        terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
+        io_ = terminal.chat_io(lambda *a: None)
+        release = threading.Event()
+        lock = threading.Lock()
+        running, peak, finished = [0], [0], threading.Semaphore(0)
+
+        def job() -> None:
+            with lock:
+                running[0] += 1
+                peak[0] = max(peak[0], running[0])
+            release.wait(TIMEOUT)
+            with lock:
+                running[0] -= 1
+            finished.release()
+
+        begin = time.monotonic()
+        for _ in range(5):
+            io_.submit(job)
+        assert time.monotonic() - begin < 1.0  # submit never blocks the main thread
+        time.sleep(0.2)
+        assert peak[0] == 3
+        release.set()
+        for _ in range(5):
+            assert finished.acquire(timeout=TIMEOUT)
+        assert peak[0] == 3
+        terminal.close()
 
 
 def test_a_failing_toolbar_does_not_break_the_prompt():
@@ -78,10 +181,10 @@ def test_a_failing_toolbar_does_not_break_the_prompt():
 
     with create_pipe_input() as pipe:
         terminal = TerminalIO(broken, input=pipe, output=DummyOutput())
-        io = terminal.chat_io(lambda *a: None)
+        io_ = terminal.chat_io(lambda *a: None)
         try:
             pipe.send_text("ok\n")
-            assert io.ask("› ") == "ok"
+            assert _ask(io_, "› ") == "ok"
         finally:
             terminal.close()
 
@@ -98,12 +201,12 @@ def test_line_io_reads_lines_and_eof(monkeypatch):
 
     monkeypatch.setattr(console, "input", fake_input)
     line = LineIO(console)
-    io = line.chat_io(lambda *a: None)
-    assert io.ask("› ") == "hi"
-    assert io.ask("› ") is None
+    io_ = line.chat_io(lambda *a: None)
+    assert io_.ask("› ") == "hi"
+    assert io_.ask("› ") is None
     ran: list[int] = []
-    io.submit(lambda: ran.append(1))  # inline
+    io_.submit(lambda: ran.append(1))  # inline
     assert ran == [1]
-    io.wake()  # no-op
+    io_.wake()  # no-op
     assert line.run(lambda: 7) == 7
     line.close()

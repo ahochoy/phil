@@ -119,9 +119,17 @@ def _choose_open_chat(out, chats, ask) -> str | None:
         answer = answer.strip()
         if not answer:
             return None
-        if answer.isdigit() and 1 <= int(answer) <= len(chats):
+        if answer.isdecimal() and 1 <= int(answer) <= len(chats):
             return chats[int(answer) - 1].id
         out.print(f"[phil.error]choose 1–{len(chats)}, or press Enter for a new chat[/]")
+
+
+def _reopen_chat(session_cls, paths: ProjectPaths, chat_id: str):
+    try:
+        return session_cls.open(paths, chat_id)
+    except (ValueError, FileNotFoundError) as exc:
+        console.print(f"[phil.error]cannot reopen: {escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
 
 
 def _chat(ctx: typer.Context) -> None:
@@ -150,13 +158,7 @@ def _chat(ctx: typer.Context) -> None:
     # The chat starts runs too, and their worker inherits this environment.
     _require_api_keys(config, CHAT_ROLES + RUN_ROLES)
     paths = ProjectPaths(info.slug)
-    session = None
-    if resume_id is not None:
-        try:
-            session = ChatSession.open(paths, resume_id)
-        except (ValueError, FileNotFoundError) as exc:
-            console.print(f"[phil.error]cannot reopen: {escape(str(exc))}[/]")
-            raise typer.Exit(1) from exc
+    session = _reopen_chat(ChatSession, paths, resume_id) if resume_id is not None else None
     base = ctx.obj.get("base")
     base_sha: str | None
     if base is not None:
@@ -189,7 +191,7 @@ def _chat(ctx: typer.Context) -> None:
         if chats:
             chosen = _choose_open_chat(out, chats, lambda prompt: out.input(f"[phil.user]{escape(prompt)}[/]"))
             if chosen is not None:
-                session = ChatSession.open(paths, chosen)
+                session = _reopen_chat(ChatSession, paths, chosen)
     out.print(f"[phil.muted]{escape(HELP)}[/]")
     try:
         factory = _factory_from_env()

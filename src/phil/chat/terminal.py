@@ -5,7 +5,7 @@ This is the only module that imports prompt_toolkit; `phil.cli.main` imports it 
 
 import threading
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+import itertools
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,7 @@ from rich.markup import escape
 
 from phil.chat.controller import WAKE, ChatIO
 
+MAX_JOBS = 3
 Spawn = Callable[[Path, str, str, dict | None], object]
 
 
@@ -59,7 +60,10 @@ class TerminalIO:
         self._active = False  # a prompt is running (between its pre_run and its return)
         self._wake_pending = False
         self._carried = ""  # the text typed into a prompt that a wake interrupted
-        self._pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="phil-chat")
+        # Jobs run on daemon threads, at most MAX_JOBS at once: they only post events and the chat is
+        # saved as it goes, so one still waiting on a model call can be abandoned when the chat exits.
+        self._slots = threading.Semaphore(MAX_JOBS)
+        self._job_numbers = itertools.count(1)
 
     @property
     def prompting(self) -> bool:
@@ -97,6 +101,7 @@ class TerminalIO:
         finally:
             with self._lock:
                 self._active = False
+            self.session.app.erase_when_done = False  # a submitted line stays in the scrollback
 
     def _started(self) -> None:
         # Runs on the prompt's event loop once the app is running (its future is set).
@@ -111,6 +116,7 @@ class TerminalIO:
         if app.future is None or app.future.done():
             return  # the prompt already finished (the user pressed Enter first)
         self._carried = app.current_buffer.text
+        app.erase_when_done = True  # the prompt comes straight back; leave no stale line behind
         app.exit(result=WAKE)
 
     def wake(self) -> None:
@@ -125,8 +131,16 @@ class TerminalIO:
             with self._lock:
                 self._wake_pending = True
 
-    def submit(self, job: Callable[[], None]) -> object:
-        return self._pool.submit(job)
+    def submit(self, job: Callable[[], None]) -> threading.Thread:
+        """Start `job` on a daemon thread; it waits for a free slot there, so this never blocks."""
+
+        def work() -> None:
+            with self._slots:
+                job()
+
+        thread = threading.Thread(target=work, name=f"phil-chat-{next(self._job_numbers)}", daemon=True)
+        thread.start()
+        return thread
 
     def run(self, fn: Callable[[], Any]) -> Any:
         """Run the chat with stdout patched so output from the main thread prints above the prompt."""
@@ -134,4 +148,4 @@ class TerminalIO:
             return fn()
 
     def close(self) -> None:
-        self._pool.shutdown(wait=False, cancel_futures=True)
+        pass  # job threads are daemons: nothing to join, and exit never waits on a model call

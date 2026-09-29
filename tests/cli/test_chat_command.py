@@ -161,3 +161,38 @@ def test_root_help_documents_resume_and_new():
     result = runner.invoke(cli.app, ["--help"], env={"COLUMNS": "200"})
     assert "Reopen a chat by id" in result.output
     assert "Start a new chat without listing open ones" in result.output
+
+
+def test_eof_at_the_reopen_prompt_exits_cleanly(calc_repo, monkeypatch):
+    _approved_chat(calc_repo, monkeypatch)
+    monkeypatch.setattr(cli, "_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_terminal", _FakeTerminal)
+    made.clear()
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
+    assert result.exit_code == 0, result.output  # EOF (Ctrl-D) at "Reopen one?" quits: no chat starts
+    assert "Reopen one?" in _plain(result.output)
+    assert made == []
+
+
+def test_a_listed_chat_that_vanished_exits_cleanly(calc_repo, monkeypatch):
+    from phil.chat import session as chat_session
+    from phil.chat.session import ChatSummary
+
+    gone = ChatSummary("c-20260101-000000", "old goal", "running", "r-gone", "running")
+    monkeypatch.setattr(chat_session, "list_open_chats", lambda paths, conn: [gone])
+    monkeypatch.setattr(cli, "_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_terminal", _FakeTerminal)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="1\n")
+    assert result.exit_code == 1
+    assert "cannot reopen" in _plain(result.output)
+    assert "c-20260101-000000" in _plain(result.output)
+
+
+def test_only_decimal_digits_choose_a_chat(calc_repo, monkeypatch):
+    _approved_chat(calc_repo, monkeypatch)
+    monkeypatch.setattr(cli, "_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_terminal", _FakeTerminal)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="¹\n\n")
+    assert result.exit_code == 0, result.output
+    assert "choose 1–1" in _plain(result.output)
+    assert "Reopened" not in _plain(result.output)
