@@ -61,7 +61,11 @@ class GhPublisher:
     def available(self) -> str | None:
         if self._which("gh") is None:
             return "gh is not installed (https://cli.github.com), so Phil can't open pull requests"
-        if self._runner(["gh", "auth", "status"], None).returncode != 0:
+        try:
+            status = self._runner(["gh", "auth", "status"], None)
+        except PublishError as exc:
+            return str(exc)
+        if status.returncode != 0:
             return "gh is not logged in; run `gh auth login`"
         try:
             git(self.repo_root, "remote", "get-url", "origin")

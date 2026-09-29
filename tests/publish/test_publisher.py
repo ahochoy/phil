@@ -38,6 +38,14 @@ def test_available_needs_an_origin_remote(git_repo: Path):
     assert "origin" in pub.available()
 
 
+def test_available_never_raises_when_the_runner_itself_fails(git_repo: Path):
+    def timed_out(args, stdin=None):
+        raise PublishError("gh timed out")
+
+    pub = GhPublisher(git_repo, runner=timed_out, which=lambda name: "/usr/bin/gh")
+    assert "gh timed out" in pub.available()
+
+
 def test_available_when_everything_is_set_up(git_repo: Path, tmp_path: Path):
     remote = tmp_path / "remote.git"
     run_git(tmp_path, "init", "--bare", str(remote))

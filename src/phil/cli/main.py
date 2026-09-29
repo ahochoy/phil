@@ -585,3 +585,25 @@ def clean(
         raise typer.Exit(1) from exc
     kept = "" if purge else " (kept summary.md and open_issues.json)"
     console.print(f"Cleaned [phil.id]{escape(run_id)}[/]{kept}.")
+
+
+@app.command("pr")
+def pr_command(
+    ctx: typer.Context,
+    run_id: str,
+    base: str | None = typer.Option(None, "--base", help="Base branch for the pull request."),
+) -> None:
+    """Push a completed run's branch and open its pull request."""
+    from phil.publish import publisher as publishing
+    from phil.publish.publisher import PublishError
+    from phil.publish.service import PublishRefused, publish_run
+
+    info, conn = _open_project(ctx)
+    record = _require_run(conn, run_id)
+    publisher = publishing.make_publisher(info.root)
+    try:
+        record = publish_run(info, conn, record, publisher, base=base)
+    except (PublishRefused, PublishError) as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    console.print(f"Opened PR #{record.pr_number}: {escape(record.pr_url)}")
