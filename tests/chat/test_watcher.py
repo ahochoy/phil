@@ -120,6 +120,34 @@ def test_watch_error_posted_after_five_consecutive_failures(calc_repo, monkeypat
     assert kinds(posted).count("watch_error") == 2
 
 
+def test_budget_warning_posted_once_per_event(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    events.append(
+        "budget_warning", tokens=600, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0, cost_source="reported"
+    )
+    watcher.poll_once()
+    watcher.poll_once()
+    assert kinds(posted).count("budget_warning") == 1
+    warning = [e for e in posted if e.kind == "budget_warning"][0]
+    assert warning.data == {
+        "tokens": 600, "cost_usd": 0.0, "max_tokens": 700, "max_cost_usd": 2.0, "cost_source": "reported",
+    }
+    events.append(
+        "budget_warning", tokens=650, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0, cost_source="reported"
+    )
+    watcher.poll_once()
+    assert kinds(posted).count("budget_warning") == 2
+
+
+def test_run_progress_carries_tokens_cost_and_cost_source(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo, alive=lambda r: True)
+    update_run(conn, run_id, state="running", current_node="implement")
+    watcher.poll_once()
+    progress = [e for e in posted if e.kind == "run_progress"][0]
+    assert (progress.data["tokens"], progress.data["cost_usd"], progress.data["cost_source"]) == (0, 0.0, "reported")
+
+
 def test_thread_start_and_stop(calc_repo):
     paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo, interval_s=0.01)
     watcher.start()

@@ -9,7 +9,7 @@ from langchain_openrouter import ChatOpenRouter
 from phil.agents.fake import FakeAgent, FakeAgentFactory
 from phil.agents.invoke import AgentContext, invoke_agent
 from phil.agents.registry import get_spec
-from phil.agents.retry import call_with_retry, is_transient
+from phil.agents.retry import call_with_retry, is_timeout, is_transient
 from tests.agents.conftest import critique
 
 
@@ -95,6 +95,32 @@ def test_gives_up_after_attempts():
     agent = FakeAgent([HTTPError(429), HTTPError(429), HTTPError(429)])
     with pytest.raises(HTTPError):
         call_with_retry(agent, {"messages": []}, sleep=lambda _: None)
+
+
+def test_is_timeout_recognises_timeout_classes_only():
+    assert is_timeout(TimeoutError())
+    assert is_timeout(httpx.ReadTimeout("slow"))
+    assert is_timeout(httpx.ConnectTimeout("slow"))
+    assert is_timeout(openrouter_service_unavailable()) is False  # transient, but not a timeout
+    assert is_timeout(HTTPError(429)) is False
+    assert is_timeout(ValueError("bad")) is False
+
+
+def test_a_timeout_gets_at_most_two_tries_total():
+    delays: list[float] = []
+    agent = FakeAgent([TimeoutError(), TimeoutError(), "never"])
+    with pytest.raises(TimeoutError):
+        call_with_retry(agent, {"messages": []}, sleep=delays.append)
+    assert delays == [1.0]  # one retry only, not the usual 3 attempts
+
+
+def test_a_timeout_can_still_succeed_on_its_one_retry():
+    delays: list[float] = []
+    agent = FakeAgent([httpx.ReadTimeout("slow"), "done"])
+    result, retries = call_with_retry(agent, {"messages": []}, sleep=delays.append)
+    assert result["structured_response"] == "done"
+    assert retries == 1
+    assert delays == [1.0]
 
 
 def test_does_not_retry_permanent_errors():

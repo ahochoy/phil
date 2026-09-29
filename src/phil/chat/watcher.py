@@ -10,7 +10,7 @@ from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
-from phil.store.telemetry import run_totals
+from phil.store.telemetry import run_totals, run_usage
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,7 @@ class RunWatcher:
         self._paused = False
         self._idle_since: float | None = None
         self._lost_posted = False
+        self._budget_warning_ts: str | None = None
         self._consecutive_failures = 0
         self._error_posted = False
         self._stop = threading.Event()
@@ -65,10 +66,17 @@ class RunWatcher:
             if snapshot != self._last:
                 self._last = snapshot
                 started = datetime.fromisoformat(record.created_at).timestamp()
+                totals = run_usage(conn, self.run_id)
                 self.post(ChatEvent("run_progress", {
                     "node": record.current_node, "state": record.state, "tasks_done": record.tasks_done,
                     "tasks_total": record.tasks_total, "keyword": record.keyword, "started": started,
+                    "tokens": totals.tokens, "cost_usd": totals.cost_usd, "cost_source": totals.cost_source,
                 }))
+            latest_warning = self.events.latest("budget_warning")
+            if latest_warning and latest_warning.get("ts") != self._budget_warning_ts:
+                self._budget_warning_ts = latest_warning.get("ts")
+                data = {k: v for k, v in latest_warning.items() if k not in ("kind", "ts")}
+                self.post(ChatEvent("budget_warning", data))
             active = self.alive(record) or self.starting(self.events)
             if record.state == "escalated":
                 latest = self.events.latest("escalation")

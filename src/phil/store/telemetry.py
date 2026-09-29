@@ -31,6 +31,20 @@ def format_cost(cost: float, source: CostSource) -> str:
     return formatted
 
 
+def budget_warning_line(
+    run_id: str, *, tokens: int, cost_usd: float, max_tokens: int, max_cost_usd: float, cost_source: CostSource
+) -> str:
+    """The line the chat and `phil attach` print for a `budget_warning` event: whichever of
+    tokens or cost is the one that crossed `warn_at` (the larger fraction of its limit)."""
+    token_frac = tokens / max_tokens if max_tokens else 0.0
+    cost_frac = cost_usd / max_cost_usd if max_cost_usd else 0.0
+    if token_frac >= cost_frac:
+        pct = round(token_frac * 100)
+        return f"{run_id} has used {pct}% of its budget ({tokens:,} of {max_tokens:,} tokens)."
+    pct = round(cost_frac * 100)
+    return f"{run_id} has used {pct}% of its budget ({format_cost(cost_usd, cost_source)} of ${max_cost_usd:.2f})."
+
+
 class TelemetryRow(BaseModel):
     run_id: str | None
     layer: Literal["chat", "run"]

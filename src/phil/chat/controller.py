@@ -28,7 +28,7 @@ from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
-from phil.store.telemetry import run_totals
+from phil.store.telemetry import budget_warning_line, run_totals
 from phil.ui.brief_view import render_brief
 from phil.ui.plan_view import _clip, render_goal, render_plan
 from phil.ui.runs_view import render_runs
@@ -50,7 +50,7 @@ PROMPTS = {
 TRANSCRIPT_STAGES = {"idle": "goal", "intake": "goal", "planning": "goal", "running": "goal", "questions": "answers"}
 GOAL_JOB_STAGES = ("intake", "planning")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
-RUN_EVENTS = ("run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error")
+RUN_EVENTS = ("run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning")
 RECENT_EVENTS = 10  # run events a /btw answer sees
 
 
@@ -690,6 +690,10 @@ class ChatController:
                 started=data.get("started", 0.0),
             )
         )
+
+    def _on_budget_warning(self, data: dict) -> None:
+        line = budget_warning_line(self._run_id, **data)
+        self.console.print(f"[phil.warn]{escape(line)}[/]")
 
     def _on_run_paused(self, data: dict) -> None:
         escalation = data["escalation"]

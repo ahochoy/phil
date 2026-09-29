@@ -16,6 +16,7 @@ from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
+from phil.store.telemetry import budget_warning_line
 from tests.chat.conftest import critique, goal, plan
 from tests.chat.test_controller import FULL_SCRIPT, deferred, run_chat, session_dir
 
@@ -42,6 +43,19 @@ def escalate(summary="CALC-001 failed 3 attempts", options=("retry", "skip", "ab
         paths, run_id, conn = _run(controller)
         set_state(controller, "escalated", needs_attention=summary)
         run_events(paths, run_id).append("escalation", escalation={"summary": summary, "options": list(options)})
+        controller._watcher.poll_once()
+        return WAKE
+
+    return step
+
+
+def budget_warn(tokens=600, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0, cost_source="reported"):
+    def step(controller):
+        paths, run_id, conn = _run(controller)
+        run_events(paths, run_id).append(
+            "budget_warning", tokens=tokens, cost_usd=cost_usd, max_tokens=max_tokens,
+            max_cost_usd=max_cost_usd, cost_source=cost_source,
+        )
         controller._watcher.poll_once()
         return WAKE
 
@@ -140,6 +154,17 @@ def test_answer_command_returns_to_the_pending_question(calc_repo):
     assert "Nothing needs you right now." in text
     assert prompts[4:7] == [PAUSE_PROMPT, "you › ", PAUSE_PROMPT]  # Ctrl-C backs out; /answer returns
     assert (runs[0].run_id, "resume", {"action": "skip"}) in spawned
+
+
+def test_budget_warning_is_printed(calc_repo):
+    text, spawned, runs, *_ = run_chat(
+        calc_repo, ["add subtract", "y", budget_warn(), to_state("completed", tasks_done=1)], FULL_SCRIPT
+    )
+    run_id = runs[0].run_id
+    expected = budget_warning_line(
+        run_id, tokens=600, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0, cost_source="reported"
+    )
+    assert expected in text
 
 
 def test_progress_goes_to_the_toolbar(calc_repo):

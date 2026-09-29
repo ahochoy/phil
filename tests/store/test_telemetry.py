@@ -10,6 +10,7 @@ from phil.store.telemetry import (
     CallRow,
     TelemetryRow,
     Totals,
+    budget_warning_line,
     chat_usage,
     format_cost,
     record,
@@ -94,3 +95,24 @@ def test_weakest_and_format_cost():
     assert format_cost(0.4212, "estimated") == "~$0.42"
     assert format_cost(0.0, "unknown") == "$?"
     assert format_cost(0.4212, "unknown") == "$0.42?"
+
+
+def test_budget_warning_line_uses_the_cost_variant_when_cost_is_the_larger_fraction():
+    line = budget_warning_line(
+        "r-7f3a", tokens=0, cost_usd=1.61, max_tokens=400_000, max_cost_usd=2.0, cost_source="reported"
+    )
+    assert line == "r-7f3a has used 80% of its budget ($1.61 of $2.00)."
+
+
+def test_budget_warning_line_uses_the_tokens_variant_when_tokens_is_the_larger_fraction():
+    line = budget_warning_line(
+        "r-7f3a", tokens=320_000, cost_usd=0.0, max_tokens=400_000, max_cost_usd=2.0, cost_source="reported"
+    )
+    assert line == "r-7f3a has used 80% of its budget (320,000 of 400,000 tokens)."
+
+
+def test_budget_warning_line_shows_an_estimated_cost_with_its_marker():
+    line = budget_warning_line(
+        "r-7f3a", tokens=0, cost_usd=1.61, max_tokens=400_000, max_cost_usd=2.0, cost_source="estimated"
+    )
+    assert line == "r-7f3a has used 80% of its budget (~$1.61 of $2.00)."

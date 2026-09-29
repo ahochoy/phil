@@ -20,7 +20,7 @@ from phil.run.state import RunState, issues_to_tasks, load_plan, next_todo, rend
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.events import EventLog
 from phil.store.runs import update_run
-from phil.store.telemetry import run_totals
+from phil.store.telemetry import run_usage
 from phil.workspace.worktree import WorktreeManager
 
 
@@ -138,18 +138,39 @@ class RunEngine:
     def _first_stderr_line(exc: GitError) -> str:
         return next((line.strip() for line in exc.stderr.splitlines() if line.strip()), "") or str(exc)
 
-    def _budget_escalation(self, state: RunState, node: str) -> dict | None:
-        tokens, cost = run_totals(self.deps.conn, self.deps.run_id)
+    def _budget_check(self, state: RunState, node: str) -> tuple[dict, dict | None]:
+        """The budget guard for a node: (update to merge into its result, escalation or None).
+
+        Warning and escalation are independent: a call that jumps straight past both thresholds
+        emits the warning and still escalates. The warning fires at most once per limit — the flag
+        lives in the checkpointed state and is reset when `continue` raises the limits.
+        """
+        totals = run_usage(self.deps.conn, self.deps.run_id)
+        tokens, cost = totals.tokens, totals.cost_usd
         max_tokens = state.get("budget_limit_tokens") or self.deps.config.run.max_tokens
         max_cost = state.get("budget_limit_cost") or self.deps.config.run.max_cost_usd
+        warn_at = self.deps.config.run.warn_at
+        warned: dict = {}
+        if not state.get("budget_warned") and (tokens >= warn_at * max_tokens or cost >= warn_at * max_cost):
+            warned = {"budget_warned": True}
+            if self.deps.events is not None:
+                self.deps.events.append(
+                    "budget_warning",
+                    tokens=tokens,
+                    cost_usd=cost,
+                    max_tokens=max_tokens,
+                    max_cost_usd=max_cost,
+                    cost_source=totals.cost_source,
+                )
         if tokens < max_tokens and cost < max_cost:
-            return None
-        return {
+            return warned, None
+        escalation = {
             "reason": "budget",
             "options": ["continue", "abort"],
             "resume_to": node,
             "summary": f"run used {tokens} tokens (${cost:.2f}); limit {max_tokens} tokens / ${max_cost:.2f}",
         }
+        return warned, escalation
 
     # --- nodes -------------------------------------------------------------
 
@@ -189,8 +210,9 @@ class RunEngine:
         }
 
     def implement(self, state: RunState) -> dict:
-        if (escalation := self._budget_escalation(state, "implement")) is not None:
-            return {"escalation": escalation}
+        budget_warn, escalation = self._budget_check(state, "implement")
+        if escalation is not None:
+            return {**budget_warn, "escalation": escalation}
         if state["phase"] == "red":
             self.worktrees.reset_to(self.deps.worktree, state["task_base_sha"])
         else:
@@ -237,7 +259,7 @@ class RunEngine:
                 "options": ["approve", "deny", "abort"],
                 "summary": f"{task.id} needs approval for: {', '.join(log.denied)}",
             }
-        return update
+        return {**budget_warn, **update}
 
     def route_after_implement(self, state: RunState) -> str:
         return "escalate" if state.get("escalation") else "verify"
@@ -330,12 +352,13 @@ class RunEngine:
             hint = f"Not approved: {', '.join(escalation['commands'])}. Do not use them."
             return {**cleared, "denied": [], "hint": hint, "next": "verify"}
         if action == "continue":
-            tokens, cost = run_totals(self.deps.conn, self.deps.run_id)
+            totals = run_usage(self.deps.conn, self.deps.run_id)
             limits = self.deps.config.run
             return {
                 **cleared,
-                "budget_limit_tokens": tokens + limits.max_tokens,
-                "budget_limit_cost": cost + limits.max_cost_usd,
+                "budget_limit_tokens": totals.tokens + limits.max_tokens,
+                "budget_limit_cost": totals.cost_usd + limits.max_cost_usd,
+                "budget_warned": False,
                 "next": escalation["resume_to"],
             }
         return {**cleared, "status": "aborted", "next": "finish"}
@@ -428,14 +451,16 @@ class RunEngine:
         }
 
     def tester(self, state: RunState) -> dict:
-        if (escalation := self._budget_escalation(state, "tester")) is not None:
-            return {"escalation": escalation}
-        return {**self._run_tester(state, state["base_sha"], "tester"), "tester_done": True}
+        budget_warn, escalation = self._budget_check(state, "tester")
+        if escalation is not None:
+            return {**budget_warn, "escalation": escalation}
+        return {**budget_warn, **self._run_tester(state, state["base_sha"], "tester"), "tester_done": True}
 
     def tester_task(self, state: RunState) -> dict:
-        if (escalation := self._budget_escalation(state, "tester_task")) is not None:
-            return {"escalation": escalation}
-        return self._run_tester(state, state["task_base_sha"], "tester_task")
+        budget_warn, escalation = self._budget_check(state, "tester_task")
+        if escalation is not None:
+            return {**budget_warn, "escalation": escalation}
+        return {**budget_warn, **self._run_tester(state, state["task_base_sha"], "tester_task")}
 
     def route_after_tester(self, state: RunState) -> str:
         return "escalate" if state.get("escalation") else "pick_task"
@@ -448,8 +473,9 @@ class RunEngine:
         return "tester_task" if audit else "pick_task"
 
     def review(self, state: RunState) -> dict:
-        if (escalation := self._budget_escalation(state, "review")) is not None:
-            return {"escalation": escalation}
+        budget_warn, escalation = self._budget_check(state, "review")
+        if escalation is not None:
+            return {**budget_warn, "escalation": escalation}
         plan = load_plan(state)
         worktree = self.deps.worktree
         seq = state.get("call_seq", 0) + 1
@@ -474,17 +500,17 @@ class RunEngine:
                 "problems": problems,
                 "summary": "reviewer did not return a valid review",
             }
-            return {"call_seq": seq, "escalation": escalation}
+            return {**budget_warn, "call_seq": seq, "escalation": escalation}
         blocking = [issue for issue in verdict.issues if issue.severity in ("blocker", "major")]
         minor = [issue for issue in verdict.issues if issue.severity == "minor"]
         if verdict.verdict == "changes" and blocking and rounds < self.deps.config.run.max_review_rounds:
             plan = issues_to_tasks(plan, blocking, "review")
             return {
-                "plan": plan.model_dump(), "call_seq": seq, "review_rounds": rounds,
+                **budget_warn, "plan": plan.model_dump(), "call_seq": seq, "review_rounds": rounds,
                 "open_issues": [*carried, *(issue.model_dump() for issue in minor)], "next": "pick_task",
             }
         return {
-            "call_seq": seq, "review_rounds": rounds,
+            **budget_warn, "call_seq": seq, "review_rounds": rounds,
             "open_issues": [*carried, *(issue.model_dump() for issue in verdict.issues)], "next": "finish",
         }
 
