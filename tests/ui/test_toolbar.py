@@ -32,8 +32,9 @@ def test_width_drops_lower_priority_segments_then_truncates():
     from rich.cells import cell_len
 
     run = RunView("r-7f3a", "CALC", "implement", 1, 2, started=0.0)
-    view = ToolbarView(stage="paused", step="btw", step_started=0.0, run=run, paused=True, btw_pending=3)
+    view = ToolbarView(stage="paused", step="critic", step_started=0.0, run=run, paused=True, btw_pending=3)
     full = render_toolbar(view, now=5.0)
+    assert "Critic reviewing" in full and "/btw ×3" in full
     assert render_toolbar(view, now=5.0, width=200) == full
     narrow = render_toolbar(view, now=5.0, width=40)
     assert cell_len(narrow) < 40

@@ -94,3 +94,43 @@ def test_artifact_name_rejects_path_like_components(bad):
         artifact_name(bad, "MAPS-001", 1)
     with pytest.raises(ValueError):
         artifact_name("implement", bad, 1)
+
+
+def test_concurrent_append_assumptions_never_interleave(tmp_path, monkeypatch):
+    import threading
+    import time
+
+    import phil.store.artifacts as artifacts
+
+    real_dumps = json.dumps
+
+    def slow_dumps(*a, **k):  # hand the GIL to another appender between one call's lines
+        time.sleep(0.002)
+        return real_dumps(*a, **k)
+
+    real_open = artifacts.Path.open
+
+    def line_buffered(self, mode="r", *a, **k):  # each line reaches the file on its own write
+        return real_open(self, mode, 1, *a[1:], **k) if mode == "a" else real_open(self, mode, *a, **k)
+
+    monkeypatch.setattr(artifacts.json, "dumps", slow_dumps)
+    monkeypatch.setattr(artifacts.Path, "open", line_buffered)
+    store = ArtifactStore(tmp_path)
+    big = "x" * 200
+    barrier = threading.Barrier(6)
+
+    def append(n: int) -> None:
+        barrier.wait()
+        for i in range(5):
+            store.append_assumptions(node=f"n{n}", task_id=None, assumptions=[f"{n}-{i}-a{big}", f"{n}-{i}-b{big}"])
+
+    threads = [threading.Thread(target=append, args=(n,)) for n in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    entries = store.read_assumptions()  # every line parses
+    assert len(entries) == 6 * 5 * 2
+    labels = [e["assumption"].split("x", 1)[0] for e in entries]
+    for a, b in zip(labels[::2], labels[1::2]):  # each call's lines stay together
+        assert a.endswith("a") and b == a[:-1] + "b", labels

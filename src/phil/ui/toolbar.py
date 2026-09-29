@@ -10,8 +10,7 @@ STEP_LABELS = {
     "architect": "Architect drafting",
     "revise": "Architect revising",
     "critic": "Critic reviewing",
-    "btw": "Answering /btw",
-}
+}  # /btw has no step: in-flight /btw questions show as `/btw ×N`
 
 
 def elapsed(seconds: float) -> str:
@@ -44,7 +43,7 @@ def render_toolbar(view: ToolbarView, now: float, width: int | None = None) -> s
         )
     if view.paused and view.run:
         parts.append((3, f"⏸ {view.run.run_id} needs you (/answer)"))
-    if view.btw_pending and view.step != "btw":
+    if view.btw_pending:
         parts.append((0, f"/btw ×{view.btw_pending}"))
     if not parts:
         return _fit("Phil · type a goal, or /help", width)

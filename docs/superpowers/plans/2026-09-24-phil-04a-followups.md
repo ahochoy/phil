@@ -21,7 +21,7 @@ What happened:
 4. Approve-then-wait felt transactional; there was no sense of being able to keep working while the run proceeds.
 
 Changes made:
-- **Live progress for every step: done.** The bottom toolbar (`ui/toolbar.py`) shows a spinner and elapsed time for intake, snapshot, architect, critic, revision and `/btw` steps (e.g. "Architect drafting · 12s"), replacing static text.
+- **Live progress for every step: done.** The bottom toolbar (`ui/toolbar.py`) shows a spinner and elapsed time for the intake, snapshot, architect, critic and revision steps (e.g. "Architect drafting · 12s"), replacing static text; `/btw` questions still being answered show as a count (`/btw ×N`) rather than a step.
 - **Runs belong to the chat that started them: done.** `runs.chat_id` records the chat that launched a run (`prepare_run(..., chat_id=)`). The toolbar shows a live status line for the chat's own run (node, task n/m, elapsed) while the prompt stays usable.
 - **Pauses come back to the chat: done.** A `run_paused` event prints the question immediately and flags the toolbar; the chat asks it at the next idle prompt or on `/answer`, and resumes the run with the answer (spawning a resume worker) — no second terminal needed. `phil attach` still works from anywhere.
 - **Keep working meanwhile: done.** The prompt keeps accepting input while a goal job or a run proceeds; typing a new goal while one is in flight asks `Replace the current goal? [y/n]`.
