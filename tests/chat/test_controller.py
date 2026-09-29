@@ -543,7 +543,7 @@ def test_state_json_tracks_the_stage(calc_repo):
     assert state["base_sha"] == runs[0].base_sha and state["version"] == 1 and state["done_seen"] is False
 
 
-def test_state_json_write_failure_is_silent(calc_repo, monkeypatch):
+def test_state_json_write_failure_warns_once_and_the_chat_goes_on(calc_repo, monkeypatch):
     from phil.chat.session import ChatSession
 
     def boom(self, data):
@@ -551,7 +551,7 @@ def test_state_json_write_failure_is_silent(calc_repo, monkeypatch):
 
     monkeypatch.setattr(ChatSession, "save_state", boom)
     text, spawned, runs, *_ = run_chat(calc_repo, ["add subtract", "y"], FULL_SCRIPT)
-    assert len(runs) == 1 and "disk full" not in text
+    assert len(runs) == 1 and text.count("Couldn't save the chat state: OSError: disk full") == 1
 
 
 def ctrl_c(controller):

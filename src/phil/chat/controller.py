@@ -131,6 +131,7 @@ class ChatController:
         self._lost = False  # the watcher saw the worker stop responding
         self._btw_calls = 0
         self._resume = resume
+        self._write_warned = False  # a failed state/transcript write was reported
 
     # --- events and jobs -------------------------------------------------------------------------
 
@@ -265,6 +266,7 @@ class ChatController:
                     "version": draft.version if draft else None,
                     "run_id": self._run_id,
                     "base_sha": self._base_sha,
+                    "explicit_base_sha": self._explicit_base_sha,  # `--base`; None follows HEAD
                     "done_seen": self._done_seen,
                     # Agent-call numbers name the chat's artifacts; a reopened chat continues from them.
                     "counters": {
@@ -274,6 +276,18 @@ class ChatController:
                         "btw": self._btw_calls,
                     },
                 }
+            )
+        except Exception as exc:
+            self._write_failed(exc)
+
+    def _write_failed(self, exc: Exception) -> None:
+        """A state or transcript write failed: say so once per chat, never interrupt it."""
+        if self._write_warned:
+            return
+        self._write_warned = True
+        try:
+            self.console.print(
+                f"[phil.muted]Couldn't save the chat state: {escape(f'{type(exc).__name__}: {exc}')}[/]"
             )
         except Exception:
             pass
@@ -375,8 +389,8 @@ class ChatController:
             self._set_stage("approval")
             self.console.print("[phil.muted]Cancelled the revision.[/]")
             self._show_plan(self._draft)
-        elif self.stage in GOAL_JOB_STAGES:
-            self._next_generation()  # the in-flight result is dropped when it lands
+        elif self.stage in (*GOAL_JOB_STAGES, "questions"):
+            self._next_generation()  # an in-flight result is dropped when it lands
             self.state.set_cancelling(True)
             self._reset_goal()
             self._set_stage("idle")
@@ -616,8 +630,8 @@ class ChatController:
         """Record a transcript note without letting a logging failure crash the REPL."""
         try:
             self.session.note(kind, **data)
-        except Exception:
-            pass
+        except Exception as exc:
+            self._write_failed(exc)
 
     def _record_draft(self, draft: PlanDraft) -> None:
         self.session.contract("plan", draft.plan)
@@ -885,25 +899,55 @@ class ChatController:
     # --- reopening -------------------------------------------------------------------------------
 
     def _reopen(self) -> None:
-        """Rebuild the chat from state.json: follow its run, or return to its plan's approval."""
+        """Rebuild the chat from state.json: follow its run, or return to its plan's approval.
+
+        A saved part that doesn't validate (hand-edited or from a broken write) isn't trusted: the
+        chat warns, keeps the valid agent-call counters and base, and starts idle.
+        """
         saved = self.session.load_state()
-        goal = Goal.model_validate(saved["goal"]) if saved.get("goal") else None
-        self._goal = goal
-        self._goal_text = goal.objective if goal else ""
-        self._run_id, self._base_sha = saved.get("run_id"), saved.get("base_sha")
-        self._done_seen = bool(saved.get("done_seen", False))
-        if saved.get("plan") and saved.get("critique"):
-            self._draft = PlanDraft(
-                plan=Plan.model_validate(saved["plan"]),
-                critique=PlanCritique.model_validate(saved["critique"]),
-                version=saved.get("version") or 1,
-            )
+        bad = not isinstance(saved, dict)
+        saved = saved if not bad else {}
+        goal = draft = None
+        try:
+            goal = Goal.model_validate(saved["goal"]) if saved.get("goal") else None
+        except Exception:
+            bad = True
+        try:
+            if saved.get("plan") and saved.get("critique"):
+                draft = PlanDraft(
+                    plan=Plan.model_validate(saved["plan"]),
+                    critique=PlanCritique.model_validate(saved["critique"]),
+                    version=_count(saved.get("version")) or 1,
+                )
+        except Exception:
+            bad = True
+        run_id, base_sha = saved.get("run_id"), saved.get("base_sha")
+        if not all(value is None or isinstance(value, str) for value in (run_id, base_sha)):
+            bad, run_id, base_sha = True, None, None
         counters = saved.get("counters") or {}
-        self._intake_calls = max(self._intake_calls, int(counters.get("intake", 0)))
-        self._btw_calls = max(self._btw_calls, int(counters.get("btw", 0)))
-        version = max(int(counters.get("planner_version", 0)), self._draft.version if self._draft else 0)
-        self.planner.restore(int(counters.get("planner_calls", 0)), version)
+        if not isinstance(counters, dict):
+            bad, counters = True, {}
+        values = {key: _count(counters.get(key, 0)) for key in ("intake", "btw", "planner_calls", "planner_version")}
+        bad = bad or None in values.values()
+        values = {key: value or 0 for key, value in values.items()}
+        self._restore_base(saved)
+        self._intake_calls = max(self._intake_calls, values["intake"])
+        self._btw_calls = max(self._btw_calls, values["btw"])
+        version = max(values["planner_version"], draft.version if draft and not bad else 0)
+        self.planner.restore(values["planner_calls"], version)
         self._safe_note("reopened")
+        if bad:
+            self.console.print(f"[phil.brand]Reopened {escape(self.session.id)}[/].")
+            self.console.print(
+                "[phil.muted]This chat's saved state couldn't be fully restored; starting fresh.[/]"
+            )
+            self._reset_goal()
+            self._set_stage("idle")
+            return
+        self._goal, self._draft = goal, draft
+        self._goal_text = goal.objective if goal else ""
+        self._run_id, self._base_sha = run_id, base_sha
+        self._done_seen = bool(saved.get("done_seen", False))
         title = f": {escape(goal.objective)}" if goal else "."
         self.console.print(f"[phil.brand]Reopened {escape(self.session.id)}[/]{title}")
         stage = saved.get("stage", "idle")
@@ -921,6 +965,28 @@ class ChatController:
                 self.console.print(
                     "The chat was closed before a plan was ready; send the goal again or type a new one."
                 )
+
+    def _restore_base(self, saved: dict) -> None:
+        """The chat keeps the base it was opened with; a different --base on reopen is ignored."""
+        if "explicit_base_sha" not in saved:
+            return  # saved before the base was kept: use this session's
+        kept = saved["explicit_base_sha"]
+        if kept is not None and not isinstance(kept, str):
+            return
+        given = self._explicit_base_sha
+        if given is not None and given != kept:
+            label = kept[:7] if kept else "HEAD"
+            self.console.print(
+                f"[phil.muted]This chat keeps its base {escape(label)}; --base {escape(given[:7])} is ignored.[/]"
+            )
+        self._explicit_base_sha = kept
+
+
+def _count(value: object) -> int | None:
+    """A saved counter: a non-negative int, else None (bools and strings aren't counters)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def _short_event(event: dict) -> str:
