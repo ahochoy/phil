@@ -35,6 +35,10 @@ Reopen a chat later:
     uv run pytest
     uv run phil --version
 
+To use `phil` from any repo, install it as an editable tool. Reinstall after dependencies change (code changes are picked up automatically):
+
+    uv tool install --editable ~/Code/phil --force
+
 The original LangGraph prototype is kept in `prototype/` for reference and is not part of the package.
 
 Live tests call a real model through OpenRouter and are skipped by default:
