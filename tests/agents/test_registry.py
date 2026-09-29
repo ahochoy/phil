@@ -2,13 +2,16 @@ import pytest
 
 from phil.agents.registry import SPECS, get_spec
 from phil.agents.spec import load_prompt
-from phil.config import ROLES
+from phil.config import CHAT_ROLES, RUN_ROLES
 from phil.contracts import Plan, PlanCritique, Review, TaskResult, TesterReport
 
 
-def test_registry_covers_run_roles():
-    assert set(SPECS) == {"architect", "critic", "implementer", "tester", "reviewer"}
-    assert all(spec.role in ROLES for spec in SPECS.values())
+def test_registry_covers_chat_and_run_roles():
+    # Check registered agent names
+    assert set(SPECS) == {"intake", "architect", "critic", "implementer", "tester", "reviewer"}
+    # Check that agents reference the correct roles
+    agent_roles = {spec.role for spec in SPECS.values()}
+    assert agent_roles == set(CHAT_ROLES) | set(RUN_ROLES)
 
 
 @pytest.mark.parametrize(
@@ -38,12 +41,19 @@ def test_prompts_load_with_shared_block(name):
     assert "## Self-check (required)" in prompt
 
 
+def test_intake_prompt_loads():
+    # lean agent, so no self-check requirement
+    prompt = load_prompt(get_spec("intake"))
+    assert prompt.startswith("# ")
+    assert "# Role: Intake" in prompt
+
+
 def test_unknown_spec_raises():
     with pytest.raises(KeyError):
         get_spec("wizard")
 
 
-def test_only_judging_roles_use_the_lean_harness():
+def test_only_judging_and_intake_roles_use_the_lean_harness():
     lean = {name for name, spec in SPECS.items() if spec.harness == "lean"}
-    assert lean == {"critic", "reviewer"}
+    assert lean == {"intake", "critic", "reviewer"}
     assert all(not SPECS[name].tools and not SPECS[name].writes_files for name in lean)

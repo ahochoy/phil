@@ -11,10 +11,10 @@ from pathlib import Path
 import typer
 from pydantic import ValidationError
 from rich.markup import escape
-from rich.table import Table
 
 from phil import __version__
-from phil.config import RUN_ROLES, ConfigError, load_config
+from phil.chat.approval import git_policy_note, launch_problems
+from phil.config import CHAT_ROLES, RUN_ROLES, ConfigError, PhilConfig, load_config
 from phil.contracts import Plan
 from phil.contracts.schema import export_schemas
 from phil.git import GitError, git
@@ -24,8 +24,8 @@ from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
-from phil.store.runs import get_run, list_runs, update_run
-from phil.store.telemetry import run_totals
+from phil.store.runs import get_run, update_run
+from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
 from phil.workspace.worktree import Worktree, WorktreeManager
 
@@ -51,10 +51,13 @@ def root(
         False, "--version", callback=_print_version, is_eager=True, help="Show version and exit."
     ),
     repo: Path | None = typer.Option(None, "--repo", help="Target repository (default: current directory)."),
+    base: str | None = typer.Option(
+        None, "--base", help="Chat only: start the chat's runs from this ref instead of HEAD."
+    ),
 ) -> None:
-    ctx.obj = {"repo": repo}
+    ctx.obj = {"repo": repo, "base": base}
     if ctx.invoked_subcommand is None:
-        console.print("[phil.muted]Chat mode is not implemented yet. Try `phil runs`.[/]")
+        _chat(ctx)
 
 
 def _open_project(ctx: typer.Context) -> tuple[RepoInfo, sqlite3.Connection]:
@@ -67,32 +70,88 @@ def _open_project(ctx: typer.Context) -> tuple[RepoInfo, sqlite3.Connection]:
     return info, connect(ProjectPaths(info.slug).db_path)
 
 
-def _format_tokens(tokens: int) -> str:
-    return f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
+def _require_api_keys(config: PhilConfig, roles: tuple[str, ...]) -> None:
+    missing = config.missing_keys(roles, os.environ)
+    if missing:
+        for key in missing:
+            console.print(
+                f"[phil.error]{escape(key)} is not set. Export it in this shell before running phil "
+                "(the models in phil.toml need it).[/]"
+            )
+        raise typer.Exit(1)
+
+
+def _chat(ctx: typer.Context) -> None:
+    from phil.chat.controller import HELP, ChatController, ChatIO
+
+    info, conn = _open_project(ctx)
+    try:
+        config = load_config(info.root)
+    except ConfigError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    missing = config.missing_models(CHAT_ROLES)
+    if missing:
+        console.print(
+            f"[phil.error]phil.toml sets no model for: {escape(', '.join(missing))}. "
+            f'Add them under {escape("[models]")}, e.g. orchestrator = "openrouter:openai/gpt-6-luna".[/]'
+        )
+        raise typer.Exit(1)
+    # The chat starts runs too, and their worker inherits this environment.
+    _require_api_keys(config, CHAT_ROLES + RUN_ROLES)
+    base = ctx.obj.get("base")
+    base_sha: str | None
+    if base is not None:
+        try:
+            base_sha = git(info.root, "rev-parse", f"{base}^{{commit}}").strip()
+        except GitError as exc:
+            console.print(f"[phil.error]{escape(str(exc))}[/]")
+            raise typer.Exit(1) from exc
+        base_label = base
+        header_sha = base_sha
+    else:
+        base_sha, base_label = None, info.branch or "detached"
+        header_sha = info.head_sha
+    console.print(
+        f"[phil.brand]Phil[/] · {escape(info.root.name)} · base: {escape(base_label)} @ {escape(header_sha[:7])}"
+    )
+    if base is None and info.dirty_files:
+        count = len(info.dirty_files)
+        console.print(
+            f"[phil.warn]⚠ {count} uncommitted file{'s' if count != 1 else ''} — not included in runs[/]"
+        )
+    parked_count = len(list_parked(conn))
+    if parked_count:
+        console.print(f"[phil.muted]{parked_count} parked[/]")
+    console.print(f"[phil.muted]{escape(HELP)}[/]")
+
+    def ask(prompt: str) -> str | None:
+        try:
+            return console.input(f"[phil.user]{escape(prompt)}[/]")
+        except EOFError:
+            return None
+
+    io = ChatIO(ask=ask, spawn=lambda root, run_id, mode: spawn_worker(root, run_id, mode))
+    try:
+        factory = _factory_from_env()
+    except Exception as exc:
+        console.print(
+            f"[phil.error]cannot load PHIL_AGENT_FACTORY: {escape(type(exc).__name__)}: {escape(str(exc))}[/]"
+        )
+        raise typer.Exit(1) from exc
+    try:
+        controller = ChatController(info, config, conn, console, io, factory=factory, base_sha=base_sha)
+    except GitError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    controller.run()
 
 
 @app.command()
 def runs(ctx: typer.Context) -> None:
     """List runs for the current repository."""
     _, conn = _open_project(ctx)
-    records = list_runs(conn)
-    if not records:
-        console.print("[phil.muted]No runs yet.[/]")
-        return
-    table = Table(box=None, pad_edge=False)
-    for column in ("run", "plan", "done", "state", "tokens", "cost"):
-        table.add_column(column, style="phil.muted", no_wrap=True)
-    for run in records:
-        tokens, cost = run_totals(conn, run.run_id)
-        table.add_row(
-            f"[phil.id]{escape(run.run_id)}[/]",
-            escape(run.keyword),
-            f"{run.tasks_done}/{run.tasks_total}",
-            escape(run.state),
-            _format_tokens(tokens),
-            f"[phil.cost]${cost:.2f}[/]",
-        )
-    console.print(table)
+    render_runs(console, conn)
 
 
 @app.command()
@@ -144,16 +203,12 @@ def run_plan(
     except ConfigError as exc:
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
-    if not (plan.test_cmd or config.project.test_cmd):
-        console.print("[phil.error]plan has no test_cmd and phil.toml sets no [project] test_cmd[/]")
+    problems = launch_problems(plan, config)
+    if problems:
+        for problem in problems:
+            console.print(f"[phil.error]{escape(problem)}.[/]")
         raise typer.Exit(1)
-    missing = config.missing_models(RUN_ROLES)
-    if missing:
-        console.print(
-            f"[phil.error]phil.toml sets no model for: {escape(', '.join(missing))}. "
-            'Add them under [models], e.g. implementer = "openrouter:openai/gpt-6-sol".[/]'
-        )
-        raise typer.Exit(1)
+    _require_api_keys(config, RUN_ROLES)
     if base is not None:
         try:
             base_sha = git(info.root, "rev-parse", f"{base}^{{commit}}").strip()
@@ -168,8 +223,9 @@ def run_plan(
                 f"[phil.warn]⚠ {count} uncommitted file{'s' if count != 1 else ''} not included "
                 f"(the run starts from {base_sha[:8]})[/]"
             )
-    if config.git.sign_commits is not False or config.git.run_hooks:
-        console.print("[phil.muted]Commit signing or hooks are on; a failing signature or hook will pause the run.[/]")
+    note = git_policy_note(config)
+    if note:
+        console.print(f"[phil.muted]{escape(note)}[/]")
     factory = None
     if foreground:
         try:

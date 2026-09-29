@@ -100,3 +100,15 @@ def test_invalid_sign_commits_is_rejected(tmp_path):
     (tmp_path / "phil.toml").write_text('[git]\nsign_commits = "sometimes"\n')
     with pytest.raises(ConfigError):
         load_config(tmp_path)
+
+
+def test_missing_keys_names_the_env_var_for_each_provider(tmp_path):
+    (tmp_path / "phil.toml").write_text(
+        '[models]\nimplementer = "openrouter:openai/gpt-6-sol"\ntester = "openrouter:openai/gpt-6-luna"\n'
+        'reviewer = "anthropic:claude-sonnet-5"\ncritic = "local:llama"\n'
+    )
+    config = load_config(tmp_path)
+    roles = ("implementer", "tester", "reviewer", "critic", "architect")
+    assert config.missing_keys(roles, environ={}) == ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"]
+    assert config.missing_keys(roles, environ={"OPENROUTER_API_KEY": "x", "ANTHROPIC_API_KEY": "y"}) == []
+    assert config.missing_keys(roles, environ={"OPENROUTER_API_KEY": ""}) == ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"]

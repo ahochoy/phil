@@ -86,7 +86,7 @@ def test_lean_roles_use_plain_create_agent(tmp_path, monkeypatch):
     assert build_agent(spec, "m", tmp_path, []) == "lean-agent"
     assert captured["model"] == "m"
     assert captured["tools"] == []
-    assert captured["response_format"] is spec.out_contract
+    assert captured["response_format"].schema is spec.out_contract
     assert captured["system_prompt"] == load_prompt(spec)
 
 
@@ -103,10 +103,30 @@ def test_deep_roles_use_deepagents_with_permissions(tmp_path, monkeypatch):
     spec = get_spec("architect")
     assert build_agent(spec, "m", tmp_path, []) == "deep-agent"
     assert captured["permissions"]
-    assert captured["response_format"] is spec.out_contract
+    assert captured["response_format"].schema is spec.out_contract
 
 
 def test_lean_harness_rejects_tools(tmp_path):
     spec = replace(get_spec("critic"), tools=("shell",))
     with pytest.raises(ValueError, match="lean"):
         build_agent(spec, "m", tmp_path, [])
+
+
+@pytest.mark.parametrize("name", ["critic", "architect"])
+def test_agents_use_tool_calling_for_structured_output(name, tmp_path, monkeypatch):
+    # Provider-native JSON-schema output (ProviderStrategy) is auto-selected for some model names
+    # and is rejected by some providers; a tool call works across providers.
+    from langchain.agents.structured_output import ToolStrategy
+
+    captured = {}
+
+    def fake(*args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("langchain.agents.create_agent", fake)
+    monkeypatch.setattr("deepagents.create_deep_agent", fake)
+    spec = get_spec(name)
+    build_agent(spec, "openrouter:openai/gpt-6-luna", tmp_path, [])
+    assert isinstance(captured["response_format"], ToolStrategy)
+    assert captured["response_format"].schema is spec.out_contract

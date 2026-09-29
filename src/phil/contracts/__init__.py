@@ -1,6 +1,6 @@
 from phil.contracts.base import Contract, Part
 from phil.contracts.common import Claim, Issue, SelfCheck
-from phil.contracts.inputs import ArchitectInput, CriticInput, ImplementInput, ReviewInput, TesterInput
+from phil.contracts.inputs import ArchitectInput, CriticInput, ImplementInput, IntakeInput, ReviewInput, TesterInput
 from phil.contracts.interface import Brief, Decision, Goal, ParkedItem, Ref, RunStatus
 from phil.contracts.planning import Plan, PlanCritique, Task
 from phil.contracts.results import Review, TaskResult, TesterReport, TestReport
@@ -19,6 +19,7 @@ ALL_CONTRACTS: list[type[Contract]] = [
     ArchitectInput,
     CriticInput,
     ImplementInput,
+    IntakeInput,
     TesterInput,
     ReviewInput,
 ]
@@ -33,6 +34,7 @@ __all__ = [
     "Decision",
     "Goal",
     "ImplementInput",
+    "IntakeInput",
     "Issue",
     "ParkedItem",
     "Part",

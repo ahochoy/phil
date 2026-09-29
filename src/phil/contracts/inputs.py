@@ -20,6 +20,13 @@ class CriticInput(Contract):
     plan: Plan
 
 
+class IntakeInput(Contract):
+    message: str
+    previous_goal: Goal | None = None
+    answers: list[str] = []
+    repo_overview: str = ""
+
+
 class ImplementInput(Contract):
     task: Task
     phase: Literal["red", "green"]

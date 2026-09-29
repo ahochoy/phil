@@ -89,7 +89,7 @@ Two layers:
 ```
 phil/
   cli/          typer app: phil (chat), runs, attach, resume, stop, diff, clean, show, parked, _worker
-  chat/         orchestrator agent and its tools
+  chat/         controller, intake, planning pipeline
   interface/    ingest() and present(): the only paths between the human and the agents
   contracts/    Pydantic models — single source of truth for agent I/O
   agents/       AgentSpec + registry; invoke_agent()
@@ -260,18 +260,14 @@ JSON Schema for every contract is exported by `phil schema` so non-Python client
 
 ## 6. Chat layer
 
-The orchestrator is a deep agent on a strong model with these tools:
+Code drives the conversation; models assist (decided 2026-09-24 after the first live runs showed models skipping their tools). `ChatController` runs a fixed flow:
 
-- `read_repo`, `grep_repo`: read-only access to the original repo.
-- `plan(goal, notes) -> Plan`: runs architect → plan critic → architect revision (at most 1 revision round). Returns the plan with critic notes.
-- `start_run(plan)`: only allowed once the user has approved the plan in chat. Approval is recorded by code (the REPL's `y` handler), not inferred by the model.
-- `run_status(id)`, `list_runs()`: return `RunStatus` only.
+1. **Intake:** the user's message becomes a `Goal` via the `intake` agent (role `orchestrator`, lean, no tools). Its `open_questions` are asked (at most 2 rounds; `go` skips).
+2. **Plan:** `architect` (reads a read-only snapshot of the base commit's tracked files, exported with `git archive` into the chat session and deleted when the chat ends — never the working tree, so untracked or ignored files such as local credentials are never sent) → `critic` → at most one `architect` revision when the critic says `revise`. The final critique's notes and issues become `Plan.critic_notes`.
+3. **Approve:** the plan is rendered by code (bounded view; the test command is shown in full), with the effective test command, a warning when it differs from `phil.toml` or would be rejected, and the git signing/hooks note. `y`/`yes`, `edit`, or `n`: `edit` sends the user's feedback to the architect as a critique and re-plans. At `y`, `phil.toml` is re-read and the run is refused with a reason (the chat stays at the approval prompt) unless every run role has a model and the test command equals `[project] test_cmd` or is allowed by `[shell] allow`. Approval is recorded by code from the user's literal answer, never inferred by a model.
+4. **Start:** with no `--base`, the run starts from HEAD at approval time (not chat start); `prepare_run` + a detached `phil _worker <run-id>`; the chat prints the run id, its base commit, and the `phil attach` hint. If the worker fails to start, the chat prints the run id and `phil resume <id>`. `phil run <plan.json>` applies the same launch checks (run models, test command).
 
-The orchestrator never receives diffs, test output, or implementer reasoning unless it explicitly reads an artifact on the user's request.
-
-User messages reach the orchestrator through `ingest()`, and the orchestrator's replies are `Brief` contracts rendered by `present()` (section 9a).
-
-`start_run` spawns a detached worker process `phil _worker <run-id>` and returns immediately.
+Slash commands: `/runs`, `/help`, `/quit`. Every turn is stored in `chats/<session>/transcript.jsonl` (raw text unchanged, next to each contract). Free-form answers from a model through `Brief`/`present()`, `/more`, and `/park` arrive in plan 4b.
 
 ## 7. Run graph
 
@@ -364,7 +360,7 @@ Rules:
 
 Verbose agents bury the essential point. Phil separates what is **stored** (everything, in full) from what is **shown** (layered, bounded).
 
-- **`ingest(raw) -> Goal | Feedback`:** user messages are normalized into contracts by the orchestrator. The raw text is stored unchanged next to the contract. The user sees the normalized `Goal` at plan approval, so nuance lost in normalization is caught before any work starts. No token-dropping compression (such as LLMLingua) is applied to user intent.
+- **`ingest(raw) -> Goal | Feedback`:** the `intake` agent produces a `Goal` from the user's message. The raw text is stored unchanged next to the contract. The user sees the normalized `Goal` at plan approval, so nuance lost in normalization is caught before any work starts. No token-dropping compression (such as LLMLingua) is applied to user intent. Feedback during approval goes to the architect as a critique.
 - **`present(contract | RunStatus) -> Brief`:** everything shown to the user from agents is a `Brief`. Its field limits are validated like any contract; an over-long reply is rejected and retried, not displayed.
 - **Progressive disclosure:** a `Brief` carries `Ref`s instead of inlined detail. `phil show <ref>` (or `/more <n>` in chat) expands one: full test log, reviewer reasoning, an agent's packet, a diff.
 - **Parking lot:** anything raised that is not the current work becomes a `ParkedItem` instead of being acted on or lost. Sources: `SelfCheck.out_of_scope` from any agent, and the user via `/park <note>`. Items persist per project across runs (`parked` table in `phil.db`), are listed by `phil parked`, and their open count shows in the status line. In spec #2 they can be promoted to roadmap stories.

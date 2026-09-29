@@ -4,6 +4,13 @@ Phil is a CLI coding agent built around explicit contracts between agents, manag
 
 Design: `docs/superpowers/specs/2026-09-23-phil-v1-design.md`
 
+## Usage
+
+Plan and start work from a chat in your repo (set models first — see phil.toml):
+
+    cd your-repo
+    phil                     # type a goal; approve the plan with y / edit / n
+
 ## Development
 
     uv sync
