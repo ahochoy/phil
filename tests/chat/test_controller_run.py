@@ -707,15 +707,60 @@ def test_show_and_more_after_a_run(calc_repo):
     assert text.count("- [x] CALC-001 [done]") == 2  # /more 1 and /show's task list
 
 
-def test_more_expands_btw_details(calc_repo):
+REFUSED = "That detail isn't a file in the repo snapshot; not opening it."
+
+
+def test_more_expands_btw_details_only_from_the_snapshot(calc_repo, tmp_path):
     from phil.contracts import Ref
 
-    calc = str(calc_repo / "calc.py")
-    brief = Brief(headline="add is in calc.py", details=[Ref(label="calc", path=calc)])
-    text, *_ = run_chat(calc_repo, ["/btw where is add?", "/more 1", "/more 2"], {"btw": [brief]})
+    outside = tmp_path / "secret.txt"
+    outside.write_text("TOP SECRET")
+
+    def btw_agent(turn):
+        (calc_repo / "calc.py").write_text("LIVE EDIT\n")  # the live tree is never read
+        (turn.workdir / "link").symlink_to(outside)
+        return Brief(headline="add is in calc.py", details=[
+            Ref(label="calc", path="calc.py"),
+            Ref(label="key", path="~/.ssh/id_rsa"),
+            Ref(label="hosts", path="/etc/hosts"),
+            Ref(label="up", path="../../outside"),
+            Ref(label="link", path="link"),
+            Ref(label="abs", path=str(outside)),
+        ])
+
+    text, *_ = run_chat(
+        calc_repo,
+        ["add subtract", "/btw where is add?", "/more 1", "/more 2", "/more 3", "/more 4", "/more 5", "/more 6",
+         "/more 7", "n"],
+        {**FULL_SCRIPT, "btw": [btw_agent]},
+    )
     assert "→ 1 calc:" in text
-    assert "def add(a, b):" in text
-    assert "No detail #2. Use /show to list them." in text
+    assert "def add(a, b):" in text and "LIVE EDIT" not in text
+    assert text.count(REFUSED) == 5
+    assert "TOP SECRET" not in text
+    assert "No detail #7. Use /show to list them." in text
+
+
+def test_btw_details_without_a_snapshot_are_refused(calc_repo):
+    from phil.contracts import Ref
+
+    brief = Brief(headline="add is in calc.py", details=[Ref(label="calc", path="calc.py")])
+    text, *_ = run_chat(calc_repo, ["/btw where is add?", "/more 1"], {"btw": [brief]})
+    assert REFUSED in text and "def add" not in text
+
+
+def test_park_updates_the_parked_count(calc_repo):
+    seen = {}
+    run_chat(
+        calc_repo,
+        [peek(seen, "before", lambda c: c.state.view().parked), "/park one", "/park two",
+         peek(seen, "after", lambda c: c.state.view().parked)],
+        {},
+    )
+    assert seen == {"before": 0, "after": 2}
+    seen.clear()
+    run_chat(calc_repo, [peek(seen, "start", lambda c: c.state.view().parked)], {})  # counted at chat start
+    assert seen == {"start": 2}
 
 
 def test_help_lists_the_new_commands(calc_repo):

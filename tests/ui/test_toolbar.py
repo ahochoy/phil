@@ -54,3 +54,14 @@ def test_cost_segment_is_shown_and_dropped_first():
     width = cell_len(full)  # one cell short: the cost goes first, /btw stays
     narrow = render_toolbar(view, now=5.0, width=width)
     assert "~$1.50" not in narrow and "/btw ×1" in narrow
+
+
+def test_parked_count_is_shown_and_dropped_before_the_cost():
+    from rich.cells import cell_len
+
+    assert render_toolbar(ToolbarView(parked=3), now=0.0) == "Phil · type a goal, or /help  │  3 parked"
+    view = ToolbarView(parked=2, cost=(0.5, "reported"))
+    full = render_toolbar(view, now=0.0)
+    assert full == "Phil · type a goal, or /help  │  $0.50  │  2 parked"
+    narrow = render_toolbar(view, now=0.0, width=cell_len(full))
+    assert "parked" not in narrow and "$0.50" in narrow

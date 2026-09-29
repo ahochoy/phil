@@ -49,7 +49,9 @@ def render_toolbar(view: ToolbarView, now: float, width: int | None = None) -> s
     if not parts:
         parts.append((4, "Phil · type a goal, or /help"))
     if view.cost is not None:
-        parts.append((-1, format_cost(*view.cost)))  # dropped first on a narrow terminal
+        parts.append((-1, format_cost(*view.cost)))  # dropped early on a narrow terminal
+    if view.parked:
+        parts.append((-2, f"{view.parked} parked"))  # dropped first
     if width is not None:
         limit = width - 1
         while len(parts) > 1 and cell_len(SEPARATOR.join(text for _, text in parts)) > limit:

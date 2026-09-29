@@ -28,7 +28,7 @@ from phil.run.launch import is_worker_alive, prepare_run, worker_starting
 from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
-from phil.store.parked import park
+from phil.store.parked import open_count, park
 from phil.store.runs import get_run, list_runs
 from phil.store.telemetry import budget_warning_line, chat_usage, run_totals
 from phil.ui.brief_view import render_brief
@@ -58,6 +58,7 @@ RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
 RUN_EVENTS = ("run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning")
 RECENT_EVENTS = 10  # run events a /btw answer sees
 NOTICE_REFS = 3  # details a completion notice lists
+NOT_IN_SNAPSHOT = "That detail isn't a file in the repo snapshot; not opening it."
 
 
 @dataclass
@@ -140,6 +141,10 @@ class ChatController:
         self._resume = resume
         self._write_warned = False  # a failed state/transcript write was reported
         self._last_refs: list[Ref] = []  # what /more <n> expands: the last /show, completion notice or /btw details
+        # /btw details are model-written paths: they're opened only inside that answer's repo snapshot
+        # (`_refs_tree`, None if it had none), never from the live tree or anywhere else on disk.
+        self._refs_from_btw = False
+        self._refs_tree: Path | None = None
 
     # --- events and jobs -------------------------------------------------------------------------
 
@@ -319,6 +324,7 @@ class ChatController:
             if self._resume:
                 self._reopen()
             self._refresh_cost()
+            self._refresh_parked()
             self._loop()
         finally:
             self._stop_watcher()
@@ -839,7 +845,7 @@ class ChatController:
         refs = show_refs(ProjectPaths(self.info.slug), run_id)[:NOTICE_REFS]
         if not refs:
             return
-        self._last_refs = refs
+        self._set_refs(refs)
         self.console.print("[phil.muted]Details (/more <n> prints one, /show lists all):[/]")
         for number, ref in enumerate(refs, start=1):
             self.console.print(f"  [phil.id]{number}[/] {escape(ref.label)}")
@@ -883,6 +889,15 @@ class ChatController:
 
     # --- /show, /more, /park ----------------------------------------------------------------------
 
+    def _set_refs(self, refs: list[Ref], *, btw_tree: Path | None = None, from_btw: bool = False) -> None:
+        self._last_refs, self._refs_from_btw, self._refs_tree = list(refs), from_btw, btw_tree
+
+    def _refresh_parked(self) -> None:
+        try:
+            self.state.set_parked(open_count(self.conn))
+        except Exception:
+            pass  # the toolbar keeps the last count
+
     def _chat_run(self) -> str | None:
         """The run this chat follows, else the last run it started."""
         if self._run_id is not None:
@@ -895,7 +910,7 @@ class ChatController:
         if run_id is None or get_run(self.conn, run_id) is None:
             self.console.print("No run to show yet.")
             return
-        self._last_refs = render_show(self.console, self.conn, ProjectPaths(self.info.slug), run_id)
+        self._set_refs(render_show(self.console, self.conn, ProjectPaths(self.info.slug), run_id))
 
     def _more_command(self, arg: str) -> None:
         if not arg.isdigit():
@@ -905,7 +920,14 @@ class ChatController:
         if not 1 <= n <= len(self._last_refs):
             self.console.print(f"No detail #{n}. Use /show to list them.")
             return
-        path = Path(self._last_refs[n - 1].path)
+        ref = self._last_refs[n - 1]
+        if self._refs_from_btw:
+            path = _inside_snapshot(self._refs_tree, ref.path)
+            if path is None:
+                self.console.print(NOT_IN_SNAPSHOT)
+                return
+        else:
+            path = Path(ref.path)  # Phil's own listing: files under the run's directory
         try:
             text = detail_text(path)
         except (OSError, UnicodeDecodeError) as exc:
@@ -926,6 +948,7 @@ class ChatController:
             run_id=self._run_id,
         )
         self._safe_note("parked", id=item.id, note=note)
+        self._refresh_parked()
         self.console.print(f"Parked [phil.id]{escape(item.id)}[/].")
 
     # --- /btw ------------------------------------------------------------------------------------
@@ -953,7 +976,7 @@ class ChatController:
                 ctx, question, goal=goal, plan=plan, run=run, recent_events=recent,
                 pending_question=pending, tree=tree, call=call,
             )
-            return {"brief": brief, "question": question}
+            return {"brief": brief, "question": question, "tree": tree}
 
         self._job("btw_answer", fn, generation=-1, failed="btw_failed")
 
@@ -981,7 +1004,7 @@ class ChatController:
         self.console.print("[phil.muted]btw ›[/]")
         render_brief(self.console, brief, numbered=True)
         if brief.details:
-            self._last_refs = list(brief.details)
+            self._set_refs(brief.details, btw_tree=data.get("tree"), from_btw=True)
 
     def _on_btw_failed(self, data: dict) -> None:
         self.state.add_btw(-1)
@@ -1072,6 +1095,24 @@ class ChatController:
                 f"[phil.muted]This chat keeps its base {escape(label)}; --base {escape(given[:7])} is ignored.[/]"
             )
         self._explicit_base_sha = kept
+
+
+def _inside_snapshot(tree: Path | None, raw: str) -> Path | None:
+    """A /btw detail path as a file inside its repo snapshot, or None: absolute and `~` paths,
+    `..` escapes and symlinks resolving outside the snapshot are all refused."""
+    if tree is None or not raw or raw.startswith("~"):
+        return None
+    relative = Path(raw)
+    if relative.is_absolute():
+        return None
+    try:
+        root = tree.resolve(strict=True)
+        candidate = (root / relative).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        return None
+    return candidate
 
 
 def _count(value: object) -> int | None:
