@@ -45,12 +45,13 @@ def test_diff_shows_the_run_changes(calc_repo):
     assert "def subtract" in result.output
 
 
-def test_clean_keeps_only_the_summary(calc_repo):
+def test_clean_keeps_the_summary_and_open_issues(calc_repo):
     info, record, paths = finished_run(calc_repo)
+    run_dir = paths.run_dir(record.run_id)
+    (run_dir / "open_issues.json").write_text("[]")
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "clean", record.run_id])
     assert result.exit_code == 0, result.output
-    run_dir = paths.run_dir(record.run_id)
-    assert [p.name for p in run_dir.iterdir()] == ["summary.md"]
+    assert sorted(p.name for p in run_dir.iterdir()) == ["open_issues.json", "summary.md"]
     assert not paths.worktree_dir(record.run_id).exists()
     assert run_git(calc_repo, "branch", "--list", record.branch).strip() == ""
     assert run_git(calc_repo, "for-each-ref", f"refs/phil/{record.run_id}/").strip() == ""
@@ -146,17 +147,20 @@ def test_clean_reports_a_worktree_removal_failure(calc_repo, monkeypatch):
 
 def test_clean_reports_a_worktree_prune_failure(calc_repo, monkeypatch):
     from phil.git import GitError
+    from phil.run import cleanup
 
     info, record, paths = finished_run(calc_repo)
     shutil.rmtree(paths.worktree_dir(record.run_id))
-    real_git = cli.git
+    real_git = cleanup.git
 
     def git(root, *args):
         if args[:2] == ("worktree", "prune"):
             raise GitError(["git", *args], 1, "fatal: prune failed")
         return real_git(root, *args)
 
-    monkeypatch.setattr(cli, "git", git)
+    # The prune call now lives in `phil.run.cleanup` (moved out of the CLI as part of
+    # `clean_run`), so the patch target moved with it.
+    monkeypatch.setattr(cleanup, "git", git)
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "clean", record.run_id])
     assert result.exit_code == 1
     assert "prune failed" in result.output

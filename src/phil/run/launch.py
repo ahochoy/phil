@@ -29,6 +29,7 @@ def prepare_run(info: RepoInfo, plan: Plan, base_sha: str, *, chat_id: str | Non
             tasks_total=len(plan.tasks),
             story_ref=plan.story_ref,
             chat_id=chat_id,
+            base_branch=info.branch,
         )
     finally:
         conn.close()

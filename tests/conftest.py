@@ -65,6 +65,17 @@ def isolated_git_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
+@pytest.fixture(autouse=True)
+def no_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Tests must never reach GitHub: the default publisher is an unavailable fake. Tests that
+    # publish patch `phil.publish.publisher.make_publisher` (or pass a FakePublisher) themselves.
+    from phil.publish.publisher import FakePublisher
+
+    monkeypatch.setattr(
+        "phil.publish.publisher.make_publisher", lambda repo_root: FakePublisher(unavailable="gh is disabled in tests")
+    )
+
+
 @pytest.fixture
 def git_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "target"

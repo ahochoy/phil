@@ -12,6 +12,14 @@ def _format_tokens(tokens: int) -> str:
     return f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
 
 
+def _pr_marker(run) -> str:
+    if run.pr_number is None:
+        return ""
+    if run.pr_state in ("merged", "closed"):
+        return f" · {run.pr_state} #{run.pr_number}"
+    return f" · PR #{run.pr_number}"
+
+
 def render_runs(console: Console, conn: sqlite3.Connection) -> None:
     """Print the `run  plan  done  state  tokens  cost` table, or "No runs yet."."""
     records = list_runs(conn)
@@ -27,7 +35,7 @@ def render_runs(console: Console, conn: sqlite3.Connection) -> None:
             f"[phil.id]{escape(run.run_id)}[/]",
             escape(run.keyword),
             f"{run.tasks_done}/{run.tasks_total}",
-            escape(run.state),
+            escape(run.state + _pr_marker(run)),
             _format_tokens(totals.tokens),
             f"[phil.cost]{escape(format_cost(totals.cost_usd, totals.cost_source))}[/]",
         )

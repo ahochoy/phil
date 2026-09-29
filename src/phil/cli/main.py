@@ -1,7 +1,7 @@
 import importlib
 import json
+import logging
 import os
-import shutil
 import signal
 import sqlite3
 import sys
@@ -28,7 +28,11 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
 from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
-from phil.workspace.worktree import Worktree, WorktreeManager
+
+logger = logging.getLogger(__name__)
+# Background sweep failures are logged for developers, never printed: without a handler here,
+# Python's last-resort handler would write them to stderr. They still propagate to `phil`.
+logger.addHandler(logging.NullHandler())
 
 app = typer.Typer(add_completion=False, help="Phil: a contract-driven coding agent.")
 console = make_console()
@@ -241,10 +245,32 @@ def _run_chat(info, config, conn, out, tty, factory, base_sha, session, resume: 
         terminal.close()
 
 
+def _print_pr_changes(changes) -> None:
+    from phil.publish.service import change_line
+
+    for change in changes:
+        style = "phil.muted" if change.kind == "merged" else "phil.warn"
+        console.print(f"[{style}]{escape(change_line(change))}[/]")
+
+
+def _sweep_quietly(info: RepoInfo, conn: sqlite3.Connection) -> None:
+    """Notice merged/closed pull requests; never let a failure here break the command."""
+    try:
+        from phil.publish import publisher as publishing
+        from phil.publish.service import sweep_prs
+
+        changes = sweep_prs(info, conn, publishing.make_publisher(info.root))
+    except Exception:  # never printed or fatal (see the NullHandler on `logger`)
+        logger.warning("pull request sweep failed", exc_info=True)
+        return
+    _print_pr_changes(changes)
+
+
 @app.command()
 def runs(ctx: typer.Context) -> None:
     """List runs for the current repository."""
-    _, conn = _open_project(ctx)
+    info, conn = _open_project(ctx)
+    _sweep_quietly(info, conn)
     render_runs(console, conn)
 
 
@@ -544,6 +570,7 @@ def show_command(
     _require_run(conn, run_id)
     paths = ProjectPaths(info.slug)
     if n is None:
+        _sweep_quietly(info, conn)
         render_show(console, conn, paths, run_id)
         return
     refs = show_refs(paths, run_id)
@@ -562,13 +589,20 @@ def show_command(
 @app.command()
 def clean(
     ctx: typer.Context,
-    run_id: str,
+    run_id: str | None = typer.Argument(None, help="The run to clean up."),
     purge: bool = typer.Option(False, "--purge", help="Also delete the run summary."),
+    merged: bool = typer.Option(False, "--merged", help="Clean up every run whose pull request has merged."),
 ) -> None:
     """Remove a finished run's worktree, branch, checkpoints, and scratch files."""
-    from phil.run.checkpoint import open_checkpointer
+    from phil.run.cleanup import CleanError, clean_run
 
+    if (run_id is None) == (not merged):
+        console.print("[phil.error]Usage: phil clean <run-id> or phil clean --merged[/]")
+        raise typer.Exit(2)
     info, conn = _open_project(ctx)
+    if run_id is None:
+        _clean_merged(info, conn)
+        return
     record = _require_run(conn, run_id)
     if record.state in ("pending", "running", "escalated"):
         console.print(
@@ -580,45 +614,48 @@ def clean(
     if is_worker_alive(record) or worker_starting(run_events(paths, run_id)):
         console.print(f"[phil.error]{escape(run_id)} has a worker running; stop it first[/]")
         raise typer.Exit(1)
-    manager = WorktreeManager(info.root)
-    worktree = Path(record.worktree)
     try:
-        if worktree.exists():
-            manager.remove(Worktree(worktree, record.branch, record.base_sha), delete_branch=False)
-        else:
-            git(info.root, "worktree", "prune")
-    except GitError as exc:
+        clean_run(info, conn, record, purge=purge)
+    except CleanError as exc:
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
-    try:
-        git(info.root, "show-ref", "--verify", "--quiet", f"refs/heads/{record.branch}")
-        branch_exists = True
-    except GitError:
-        branch_exists = False
-    if branch_exists:
-        try:
-            git(info.root, "branch", "-D", record.branch)
-        except GitError as exc:
-            console.print(f"[phil.error]{escape(str(exc))}[/]")
-            raise typer.Exit(1) from exc
-    manager.delete_refs(f"refs/phil/{run_id}/")
-    saver = open_checkpointer(paths.db_path)
-    try:
-        saver.delete_thread(run_id)
-    finally:
-        saver.conn.close()
-    run_dir = paths.run_dir(run_id)
-    if run_dir.exists():
-        if purge:
-            shutil.rmtree(run_dir)
-        else:
-            for child in run_dir.iterdir():
-                if child.name == "summary.md":
-                    continue
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
-    update_run(conn, run_id, state="cleaned", needs_attention=None)
-    kept = "" if purge else " (kept summary.md)"
+    kept = "" if purge else " (kept summary.md and open_issues.json)"
     console.print(f"Cleaned [phil.id]{escape(run_id)}[/]{kept}.")
+
+
+def _clean_merged(info: RepoInfo, conn: sqlite3.Connection) -> None:
+    from phil.publish import publisher as publishing
+    from phil.publish.service import sweep_prs
+
+    publisher = publishing.make_publisher(info.root)
+    reason = publisher.available()
+    if reason is not None:
+        console.print(f"[phil.error]{escape(reason)}[/]")
+        raise typer.Exit(1)
+    changes = sweep_prs(info, conn, publisher, force=True)
+    if not changes:
+        console.print("No merged pull requests to clean up.")
+        return
+    _print_pr_changes(changes)
+
+
+@app.command("pr")
+def pr_command(
+    ctx: typer.Context,
+    run_id: str,
+    base: str | None = typer.Option(None, "--base", help="Base branch for the pull request."),
+) -> None:
+    """Push a completed run's branch and open its pull request."""
+    from phil.publish import publisher as publishing
+    from phil.publish.publisher import PublishError
+    from phil.publish.service import PublishRefused, publish_run
+
+    info, conn = _open_project(ctx)
+    record = _require_run(conn, run_id)
+    publisher = publishing.make_publisher(info.root)
+    try:
+        record = publish_run(info, conn, record, publisher, base=base)
+    except (PublishRefused, PublishError) as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    console.print(f"Opened PR #{record.pr_number}: {escape(record.pr_url)}")

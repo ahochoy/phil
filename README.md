@@ -37,6 +37,46 @@ Reopen a chat later:
     phil --resume <chat-id>   # reopen a specific chat directly
     phil --new                # skip the list and start a new chat
 
+## Pull requests and cleanup
+
+Needs the `gh` CLI installed and logged in (`gh auth login`) and an `origin` remote. Without
+either, `phil pr` and `phil clean --merged` say what's missing and exit 1; the chat's own
+checks just skip.
+
+When a run completes, the chat asks `Open a PR for <run> → <base>?`. Answer `y` to push
+`phil/<run-id>` and open the pull request; anything else declines (printing `phil pr <run>` as
+the way to open one later) and, unless it's blank/`n`/`no`, is kept and used to start the next
+goal. Open a PR for any completed run directly, any time, with:
+
+    phil pr <run-id> [--base <branch>]
+
+The PR body lays out any action still needed, what changed (the plan's description and tasks),
+and how it was verified: a tests line (no new failures against the base, or how many are still
+failing), the number of tester reports, and the newest reviewer verdict. If the repo has a PR
+template, it is appended under `## Template`, unfilled.
+
+The chat notices a merge on its own — each run's open PR is checked at most once every 5
+minutes — and `phil runs` / `phil show <run>` check too whenever you run them. A merge prints
+`<run> merged (#N); cleaned up.`; a PR closed without merging gets one notice and needs
+`phil clean <run>` to remove it; a PR closed and later reopened isn't checked again. A merge is
+only cleaned up if the PR's head is still the run's branch, and the remote branch is deleted
+only while it still points at the PR's head commit (otherwise it's left alone, with a warning).
+A check that fails (gh offline, not logged in, a surprise) is never printed and is retried next
+time; it's logged to the `phil` logger, which the chat writes to its `phil.log` — the plain CLI
+commands have no log file, so there it goes nowhere.
+
+`phil clean <run>` removes the run's worktree, local branch, checkpoints, and scratch files,
+keeping `summary.md`, `open_issues.json`, and the run's telemetry rows in `phil.db` (`--purge`
+also removes `summary.md`/`open_issues.json`). It leaves the remote branch alone — that's only
+deleted after a merge, whether the chat noticed it or you ran:
+
+    phil clean --merged      # clean up every run whose pull request has merged
+
+A merge cleanup also appends one entry to `~/.phil/projects/<slug>/learnings.md` (created on
+first use): the run's goal, confirmed/unconfirmed assumptions, and up to 5 reviewer notes in
+the same `- (severity) note [file:line]` format `phil show` uses for open issues. Nothing in
+Phil reads this file yet — it's a plain log for you.
+
 ## Observability
 
 Every model call is counted, including calls made inside a deep agent's own sub-agents — not
