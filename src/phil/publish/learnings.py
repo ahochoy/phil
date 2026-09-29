@@ -4,6 +4,7 @@ Kept free of langgraph/langchain/deepagents at module import time (see
 `implementer-common.md`), even though the modules used here are all safe to import eagerly.
 """
 
+import fcntl
 from pathlib import Path
 
 from phil.publish.pr_body import newest_output, pr_title
@@ -56,17 +57,24 @@ def append_learnings(paths: ProjectPaths, entry: str, run_id: str) -> bool:
     """Append `entry` to the project's `learnings.md`, creating it with its header if needed.
 
     Does nothing (and returns False) if a line starting `## <run_id> ` is already present.
+    The file is only ever appended to, under an exclusive lock, so concurrent sweeps (the
+    chat's monitor and `phil runs` in another terminal) can neither lose nor duplicate entries.
     """
     path = paths.project_dir / "learnings.md"
     marker = f"## {run_id} "
-    if path.exists():
-        existing = path.read_text()
-        if any(line.startswith(marker) for line in existing.splitlines()):
-            return False
-        if not existing.endswith("\n"):
-            existing += "\n"
-        path.write_text(existing + "\n" + entry)
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"# Phil learnings — {paths.slug}\n\n{entry}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+", encoding="utf-8", errors="replace") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            handle.seek(0)
+            existing = handle.read()
+            if any(line.startswith(marker) for line in existing.splitlines()):
+                return False
+            if not existing:
+                handle.write(f"# Phil learnings — {paths.slug}\n\n{entry}")
+            else:
+                handle.write(("" if existing.endswith("\n") else "\n") + "\n" + entry)
+            handle.flush()
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
     return True

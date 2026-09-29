@@ -140,3 +140,62 @@ def test_append_learnings_is_idempotent_for_an_existing_run_id(tmp_path, monkeyp
 
     assert append_learnings(paths, entry, "r-7f3a") is False
     assert (paths.project_dir / "learnings.md").read_text() == before
+
+
+def test_append_learnings_keeps_existing_content_and_never_rewrites_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    paths = ProjectPaths("calc-abc123")
+    run_dir = make_run_dir(tmp_path)
+    path = paths.project_dir / "learnings.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("# my own notes\n\nsomething I wrote by hand")
+    writes = []
+    real_write_text = Path.write_text
+    monkeypatch.setattr(Path, "write_text", lambda self, *a, **k: writes.append(self) or real_write_text(self, *a, **k))
+
+    entry = learnings_entry(record=make_record(), run_dir=run_dir, today="2026-09-29")
+    assert append_learnings(paths, entry, "r-7f3a") is True
+
+    text = path.read_text()
+    assert text.startswith("# my own notes\n\nsomething I wrote by hand\n\n## r-7f3a ")
+    assert text.count("# Phil learnings") == 0
+    assert writes == []  # appended, never truncated and rewritten
+
+
+def test_append_learnings_writes_the_header_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    paths = ProjectPaths("calc-abc123")
+    run_dir = make_run_dir(tmp_path)
+    for run_id in ("r-0001", "r-0002", "r-0001"):
+        append_learnings(paths, learnings_entry(record=make_record(run_id), run_dir=run_dir, today="2026-09-29"), run_id)
+
+    text = (paths.project_dir / "learnings.md").read_text()
+    assert text.count("# Phil learnings") == 1
+    assert text.count("## r-0001 ") == 1
+    assert text.count("## r-0002 ") == 1
+
+
+def test_concurrent_appends_both_land(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    paths = ProjectPaths("calc-abc123")
+    run_dir = make_run_dir(tmp_path)
+    run_ids = [f"r-{n:04x}" for n in range(16)]
+    entries = {run_id: learnings_entry(record=make_record(run_id), run_dir=run_dir, today="2026-09-29")
+               for run_id in run_ids}
+    barrier = threading.Barrier(len(run_ids))
+
+    def append(run_id):
+        barrier.wait()
+        append_learnings(paths, entries[run_id], run_id)
+
+    threads = [threading.Thread(target=append, args=(run_id,)) for run_id in run_ids]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    text = (paths.project_dir / "learnings.md").read_text()
+    assert text.count("# Phil learnings") == 1
+    assert all(text.count(f"## {run_id} ") == 1 for run_id in run_ids)
