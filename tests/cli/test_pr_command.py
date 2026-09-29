@@ -113,3 +113,44 @@ def test_clean_refuses_a_run_id_with_merged(calc_repo):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "clean", "r-1234", "--merged"])
     assert result.exit_code == 2
     assert "phil clean <run-id> or phil clean --merged" in result.output
+
+
+def test_a_failing_sweep_is_logged_as_a_warning_and_never_printed(calc_repo, monkeypatch, caplog):
+    record, paths, fake = _published(calc_repo)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("sweep exploded")
+
+    monkeypatch.setattr("phil.publish.publisher.make_publisher", lambda root: fake)
+    monkeypatch.setattr("phil.publish.service.sweep_prs", boom)
+    with caplog.at_level("WARNING", logger="phil"):
+        result = runner.invoke(cli.app, ["--repo", str(calc_repo), "runs"])
+
+    assert result.exit_code == 0, result.output
+    assert "sweep exploded" not in result.output
+    assert any(r.levelname == "WARNING" and r.name.startswith("phil") and "sweep" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_a_failing_sweep_does_not_reach_the_last_resort_handler(calc_repo, monkeypatch):
+    import logging
+
+    record, paths, fake = _published(calc_repo)
+    last_resort = []
+
+    class Recorder(logging.Handler):
+        def emit(self, record):
+            last_resort.append(record)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("sweep exploded")
+
+    monkeypatch.setattr("phil.publish.publisher.make_publisher", lambda root: fake)
+    monkeypatch.setattr("phil.publish.service.sweep_prs", boom)
+    monkeypatch.setattr(logging.root, "handlers", [])  # as outside pytest: no handlers configured
+    monkeypatch.setattr(logging, "lastResort", Recorder(logging.WARNING))
+
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "runs"])
+
+    assert result.exit_code == 0, result.output
+    assert last_resort == []

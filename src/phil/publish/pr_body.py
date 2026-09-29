@@ -72,13 +72,17 @@ def pr_title(plan: Plan) -> str:
 
 
 def find_pr_template(repo_root: Path) -> str | None:
+    """The repo's PR template text (truncated), or None. A symlinked template is skipped: it
+    could point anywhere, and the text is posted to GitHub verbatim."""
     for candidate in _TEMPLATE_CANDIDATES:
         path = repo_root / candidate
-        if path.is_file():
-            text = path.read_text()
-            if len(text) > _TEMPLATE_LIMIT:
-                text = text[:_TEMPLATE_LIMIT]
-            return text
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        return text[:_TEMPLATE_LIMIT]
     return None
 
 

@@ -44,8 +44,11 @@ def publish_run(
 
     Raises `PublishRefused` (nothing done) for any of: the run isn't `completed`; it already
     has a PR; no base branch is known (pass `base`); or `publisher.available()` names a
-    reason. A `PublishError` from `publisher.push`/`create_pr` propagates unchanged and the
-    run row is left untouched (re-running is safe: `git push` of the same ref is idempotent).
+    reason. The title and body are rendered before anything is pushed. A `PublishError` from
+    `publisher.push`/`create_pr` propagates unchanged and the run row is left untouched
+    (re-running is safe: `git push` of the same ref is idempotent), except that if the PR
+    already exists (an earlier attempt opened it but never recorded it) it is looked up with
+    `publisher.find_pr` and recorded.
     """
     if record.state != "completed":
         raise PublishRefused(f"{record.run_id} is {record.state}; only a completed run can be published")
@@ -58,14 +61,22 @@ def publish_run(
     if reason is not None:
         raise PublishRefused(reason)
 
-    publisher.push(record.branch)
-
     run_dir = ProjectPaths(info.slug).run_dir(record.run_id)
     plan = ArtifactStore(run_dir).read_plan()
     totals = run_usage(conn, record.run_id)
     template = find_pr_template(info.root)
+    title = pr_title(plan)
     body = render_pr_body(run_id=record.run_id, run_dir=run_dir, totals=totals, template=template)
-    pull_request = publisher.create_pr(branch=record.branch, base=base_branch, title=pr_title(plan), body=body)
+
+    publisher.push(record.branch)
+    try:
+        pull_request = publisher.create_pr(branch=record.branch, base=base_branch, title=title, body=body)
+    except PublishError as exc:
+        # An earlier attempt opened it but didn't get to record it: adopt that PR.
+        existing = publisher.find_pr(record.branch) if "already exists" in str(exc).lower() else None
+        if existing is None:
+            raise
+        pull_request = existing
 
     return update_run(
         conn,

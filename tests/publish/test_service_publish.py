@@ -110,3 +110,47 @@ def test_publish_run_create_pr_failure_after_a_successful_push_leaves_pr_url_non
         publish_run(info, conn, record, fake)
     assert fake.pushed == [record.branch]
     assert get_run(conn, record.run_id).pr_url is None
+
+
+def test_publish_run_renders_the_body_before_pushing(calc_repo, monkeypatch):
+    info, record, paths = finished_run(calc_repo)
+    conn = connect(paths.db_path)
+    record = get_run(conn, record.run_id)
+    fake = FakePublisher()
+
+    def broken_body(**kwargs):
+        raise ValueError("bad plan")
+
+    monkeypatch.setattr("phil.publish.service.render_pr_body", broken_body)
+    with pytest.raises(ValueError, match="bad plan"):
+        publish_run(info, conn, record, fake)
+    assert fake.pushed == []
+
+
+def test_publish_run_records_a_pull_request_that_already_exists(calc_repo):
+    from phil.publish.publisher import PullRequest
+
+    info, record, paths = finished_run(calc_repo)
+    conn = connect(paths.db_path)
+    record = get_run(conn, record.run_id)
+    existing = PullRequest(7, "https://github.com/example/repo/pull/7")
+    fake = FakePublisher(
+        fail={"create_pr": "gh pr create failed: a pull request for branch \"x\" into branch \"main\" already exists"},
+        existing={record.branch: existing},
+    )
+
+    updated = publish_run(info, conn, record, fake)
+
+    assert (updated.pr_number, updated.pr_url, updated.pr_state) == (7, existing.url, "open")
+    assert ("find_pr", record.branch) in fake.calls
+
+
+def test_publish_run_other_create_failures_do_not_look_for_an_existing_pr(calc_repo):
+    info, record, paths = finished_run(calc_repo)
+    conn = connect(paths.db_path)
+    record = get_run(conn, record.run_id)
+    fake = FakePublisher(fail={"create_pr": "gh pr create failed: base branch not found"})
+
+    with pytest.raises(PublishError, match="base branch not found"):
+        publish_run(info, conn, record, fake)
+    assert not any(call[0] == "find_pr" for call in fake.calls)

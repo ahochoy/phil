@@ -30,6 +30,9 @@ from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
 
 logger = logging.getLogger(__name__)
+# Background sweep failures are logged for developers, never printed: without a handler here,
+# Python's last-resort handler would write them to stderr. They still propagate to `phil`.
+logger.addHandler(logging.NullHandler())
 
 app = typer.Typer(add_completion=False, help="Phil: a contract-driven coding agent.")
 console = make_console()
@@ -257,8 +260,8 @@ def _sweep_quietly(info: RepoInfo, conn: sqlite3.Connection) -> None:
         from phil.publish.service import sweep_prs
 
         changes = sweep_prs(info, conn, publishing.make_publisher(info.root))
-    except Exception:
-        logger.debug("pull request sweep failed", exc_info=True)
+    except Exception:  # never printed or fatal (see the NullHandler on `logger`)
+        logger.warning("pull request sweep failed", exc_info=True)
         return
     _print_pr_changes(changes)
 

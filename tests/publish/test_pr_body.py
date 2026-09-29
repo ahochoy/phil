@@ -151,3 +151,29 @@ def test_output_count_excludes_rejected_and_unreadable(tmp_path):
     (outputs / "tester-run-3.json").write_text("{")
     assert output_count(run_dir, "tester") == 2
     assert output_count(run_dir, "review") == 0
+
+
+def test_find_pr_template_skips_a_symlinked_template(tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("do not post me")
+    repo = tmp_path / "repo"
+    (repo / ".github").mkdir(parents=True)
+    (repo / ".github" / "pull_request_template.md").symlink_to(secret)
+    assert find_pr_template(repo) is None
+
+    (repo / "docs").mkdir()
+    (repo / "docs" / "pull_request_template.md").write_text("docs template")
+    assert find_pr_template(repo) == "docs template"
+
+
+def test_find_pr_template_tolerates_bad_bytes_and_unreadable_files(tmp_path):
+    (tmp_path / ".github").mkdir()
+    template = tmp_path / ".github" / "pull_request_template.md"
+    template.write_bytes(b"caf\xe9 checklist")
+    assert find_pr_template(tmp_path) == "caf\ufffd checklist"
+
+    template.chmod(0)
+    try:
+        assert find_pr_template(tmp_path) is None
+    finally:
+        template.chmod(0o644)
