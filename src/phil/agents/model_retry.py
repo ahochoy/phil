@@ -109,7 +109,7 @@ class PhilModelRetryMiddleware(AgentMiddleware):
                     raise
                 if tracker is not None:
                     tracker.retried()
-                    tracker.sleep(delay)
+                    await asyncio.to_thread(tracker.sleep, delay)  # a blocking sleep: keep it off the loop
                 else:
                     await asyncio.sleep(delay)
                 index += 1

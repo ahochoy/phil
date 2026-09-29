@@ -129,6 +129,26 @@ def test_a_non_transient_error_propagates_without_retry():
     assert delays == []
 
 
+def test_async_retry_sleeps_off_the_event_loop():
+    import asyncio
+
+    model = ScriptedChatModel(script=[HTTPError(503), usage(AIMessage(content="done"))])
+    agent = create_agent(model, tools=[], middleware=[PhilModelRetryMiddleware()])
+    sleep_threads: list[int] = []
+    tracker = ModelRetryTracker(sleep=lambda delay: sleep_threads.append(threading.get_ident()))
+
+    async def main() -> tuple[dict, int]:
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": "go"}]}, config={"configurable": {TRACKER_KEY: tracker}}
+        )
+        return result, threading.get_ident()
+
+    result, loop_thread = asyncio.run(main())
+    assert result["messages"][-1].content == "done"
+    assert tracker.retries == 1
+    assert len(sleep_threads) == 1 and sleep_threads[0] != loop_thread  # the blocking sleep ran in a worker thread
+
+
 def architect_packet():
     return build_packet("architect", ArchitectInput(goal=Goal(objective="Add subtract")), budget_tokens=4000)
 
@@ -221,3 +241,27 @@ def test_lean_agent_retries_its_model_call(config, conn, monkeypatch):
     assert invoke_agent(get_spec("critic"), packet, ctx, node="critic").verdict == "ok"
     assert len(model.received) == 2
     assert conn.execute("SELECT retries FROM telemetry").fetchone()["retries"] == 1
+
+
+def test_a_sub_agent_call_that_exhausts_its_retries_does_not_rerun_the_parent(config, conn, tmp_path, monkeypatch):
+    task_args = {"description": "list the files", "subagent_type": "general-purpose"}
+    model = ScriptedChatModel(
+        script=[
+            tool_call("task", task_args, "c1"),  # main agent delegates to the general-purpose sub-agent
+            HTTPError(503), HTTPError(503), HTTPError(503),  # the sub-agent's call fails 3 times
+            tool_call("task", task_args, "c2"),  # only reached if the whole agent were re-run
+            usage(AIMessage(content="calc.py")),
+            tool_call("Plan", PLAN_ARGS, "c3"),
+        ]
+    )
+    delays: list[float] = []
+    ctx = AgentContext(
+        config=config, conn=conn, layer="chat", workdir=tmp_path, factory=real_factory(model, monkeypatch), sleep=delays.append
+    )
+    with pytest.raises(HTTPError):
+        invoke_agent(get_spec("architect"), architect_packet(), ctx, node="architect")
+    assert len(model.received) == 4  # the parent's first call ran once; the sub-agent tried 3 times
+    assert len(model.script) == 3  # nothing after the sub-agent's failure was consumed
+    assert delays == [1.0, 2.0]
+    row = conn.execute("SELECT outcome, retries FROM telemetry").fetchone()
+    assert (row["outcome"], row["retries"]) == ("error", 2)
