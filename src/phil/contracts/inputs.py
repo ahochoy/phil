@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import Field
 
 from phil.contracts.base import Contract
-from phil.contracts.interface import Goal
+from phil.contracts.interface import Goal, RunStatus
 from phil.contracts.planning import Plan, PlanCritique, Task
 from phil.contracts.results import TestReport
 
@@ -49,3 +49,12 @@ class ReviewInput(Contract):
     diff: str
     final_report: TestReport
     open_assumptions: list[str] = Field(default_factory=list)
+
+
+class BtwInput(Contract):
+    question: str
+    goal: Goal | None = None
+    plan: Plan | None = None
+    run: RunStatus | None = None
+    recent_events: list[str] = []
+    pending_question: str | None = None

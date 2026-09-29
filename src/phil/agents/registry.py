@@ -1,6 +1,8 @@
 from phil.agents.spec import AgentSpec
 from phil.contracts import (
     ArchitectInput,
+    Brief,
+    BtwInput,
     CriticInput,
     Goal,
     ImplementInput,
@@ -23,6 +25,7 @@ SPECS: dict[str, AgentSpec] = {
     ),
     "tester": AgentSpec("tester", "tester", TesterInput, TesterReport, tools=("shell",), writes_files=True),
     "reviewer": AgentSpec("reviewer", "reviewer", ReviewInput, Review, harness="lean"),
+    "btw": AgentSpec("btw", "orchestrator", BtwInput, Brief, writes_files=False),
 }
 
 
