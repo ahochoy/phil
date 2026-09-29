@@ -115,13 +115,18 @@ def issues_to_tasks(plan: Plan, issues: list[Issue], source: str) -> Plan:
 
 _LEADING_HEADING_RE = re.compile(r"^#+\s*")
 _LEADING_LIST_RE = re.compile(r"^(?:[-*+]|\d+\.)\s+")
-# `**bold**`/`*italic*` are stripped anywhere; the underscore forms (`__bold__`/`_italic_`) only
-# where they aren't part of a word (CommonMark's intraword-emphasis rule for underscores), so a
-# plain identifier like `test_add_strings` or `__init__` survives untouched.
-_BOLD_STAR_RE = re.compile(r"\*\*(.+?)\*\*")
+# The underscore forms (`__bold__`/`_italic_`) are only stripped where they aren't part of a
+# word (CommonMark's intraword-emphasis rule for underscores), so a plain identifier like
+# `test_add_strings` or `__init__` survives untouched.
 _BOLD_UNDERSCORE_RE = re.compile(r"(?<!\w)__(\S(?:.*?\S)?)__(?!\w)")
-_ITALIC_STAR_RE = re.compile(r"(?<!\*)\*([^*\n]+?)\*(?!\*)")
 _ITALIC_UNDERSCORE_RE = re.compile(r"(?<!\w)_(\S(?:.*?\S)?)_(?!\w)")
+# The star forms (`**bold**`/`*italic*`) need a CommonMark-style flanking check too, or plain
+# arithmetic gets mangled (`3 * 4 * 5`, `x**2 and y**2 differ`): an opening `*`/`**` must not be
+# preceded by a word character and must be followed by a non-space; a closing one must be
+# preceded by a non-space and must not be followed by a word character. `(?<!\*)`/`(?!\*)` on
+# the single-star form additionally keep it from firing on one half of a `**` pair.
+_BOLD_STAR_RE = re.compile(r"(?<!\w)\*\*(?!\s)(.+?)(?<!\s)\*\*(?!\w)")
+_ITALIC_STAR_RE = re.compile(r"(?<!\*)(?<!\w)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)(?!\w)")
 _SEVERITY_RANK = {"blocker": 0, "major": 1, "minor": 2}
 
 

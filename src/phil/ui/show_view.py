@@ -79,7 +79,10 @@ def _open_issues(paths: ProjectPaths, run_id: str) -> list[dict] | None:
     path = paths.run_dir(run_id) / "open_issues.json"
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
 
 
 def _usage_table(usage: list[UsageLine]) -> Table:

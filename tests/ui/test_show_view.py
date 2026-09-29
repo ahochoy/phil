@@ -83,3 +83,12 @@ def test_render_show_reports_no_issues_recorded_for_an_older_run_without_the_jso
     console = make_console(record=True, width=160)
     render_show(console, conn, paths, record.run_id)
     assert "none recorded" in console.export_text()
+
+
+def test_render_show_reports_no_issues_recorded_for_a_malformed_json_file(calc_repo):
+    info, record, paths = finished_run(calc_repo)
+    (paths.run_dir(record.run_id) / "open_issues.json").write_text("{not valid json")
+    conn = connect(paths.db_path)
+    console = make_console(record=True, width=160)
+    render_show(console, conn, paths, record.run_id)
+    assert "none recorded" in console.export_text()

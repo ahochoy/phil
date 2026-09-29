@@ -85,6 +85,20 @@ def test_clean_note_strips_leading_heading_and_list_markers():
     assert clean_note("1. numbered item") == "numbered item"
 
 
+def test_clean_note_does_not_corrupt_arithmetic():
+    # A `*` flanked by spaces on both sides is not an emphasis delimiter (CommonMark requires
+    # the char right after an opening delimiter, and right before a closing one, to be
+    # non-space), so plain multiplication must survive untouched.
+    assert clean_note("3 * 4 * 5") == "3 * 4 * 5"
+    assert clean_note("expected 2 * 3 == 6") == "expected 2 * 3 == 6"
+
+
+def test_clean_note_does_not_corrupt_double_star_exponents():
+    # "x**2" is not bold (`**` isn't flanked as an opening delimiter: it's glued to the word
+    # `x` on one side), so it must survive untouched.
+    assert clean_note("x**2 and y**2 differ") == "x**2 and y**2 differ"
+
+
 def test_clean_note_leaves_underscored_identifiers_alone():
     # Intraword underscores (both flanks are word characters) are not markdown emphasis, so an
     # identifier like `test_add_strings` must survive untouched (CommonMark's own rule for `_`).

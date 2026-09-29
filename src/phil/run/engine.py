@@ -1,5 +1,7 @@
 import json
+import os
 import sqlite3
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -36,6 +38,23 @@ class RunDeps:
     factory: AgentFactory | None = None
     sleep: Callable[[float], None] = time.sleep
     events: EventLog | None = None
+
+
+def _write_json_atomic(path: Path, data: Any) -> None:
+    """Write `data` as JSON to `path` without ever leaving a partial file there: write to a
+    temp file in the same directory, then atomically rename it into place."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps(data, indent=2, default=repr))
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.remove(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 class RunEngine:
@@ -544,6 +563,6 @@ class RunEngine:
             totals=totals,
         )
         self.deps.artifacts.write_text("summary.md", summary)
-        self.deps.artifacts.write_text("open_issues.json", json.dumps(open_issues, indent=2, default=repr))
+        _write_json_atomic(self.deps.artifacts.run_dir / "open_issues.json", open_issues)
         self._update_run(state=status, current_node="finish", needs_attention=None)
         return {"status": status, "open_issues": open_issues}
