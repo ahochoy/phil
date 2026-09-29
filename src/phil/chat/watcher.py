@@ -48,11 +48,21 @@ class RunWatcher:
         self._paused = False
         self._idle_since: float | None = None
         self._lost_posted = False
-        self._budget_warning_ts: str | None = None
+        # Seeded from the log so a reopened/resumed chat's new watcher posts only the budget
+        # warnings written after it started, not the one the user was already shown.
+        self._budget_warning_ts: str | None = self._latest_budget_warning_ts()
         self._consecutive_failures = 0
         self._error_posted = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+
+    def _latest_budget_warning_ts(self) -> str | None:
+        try:
+            latest = self.events.latest("budget_warning")
+        except Exception:  # an unreadable log: poll_once reports it through its own error path
+            logger.debug("couldn't read the budget warnings for %s", self.run_id, exc_info=True)
+            return None
+        return latest.get("ts") if latest else None
 
     def poll_once(self) -> None:
         if self.done:
