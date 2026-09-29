@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -64,25 +64,42 @@ class Planner:
         packet = build_packet("critic", CriticInput(goal=goal, plan=plan), budget_tokens=_budget(self.ctx, "critic"))
         return invoke_agent(get_spec("critic"), packet, self.ctx, node="critic", call=self._calls)
 
-    def _cycle(self, goal: Goal, previous: Plan | None, critique: PlanCritique | None, tree: Path) -> PlanDraft:
+    def _cycle(
+        self,
+        goal: Goal,
+        previous: Plan | None,
+        critique: PlanCritique | None,
+        tree: Path,
+        on_step: Callable[[str], None] | None = None,
+    ) -> PlanDraft:
+        if on_step:
+            on_step("architect")
         plan = self._architect(goal, previous, critique, tree)
+        if on_step:
+            on_step("critic")
         review = self._critic(goal, plan)
         for _ in range(MAX_CRITIC_REVISIONS):
             if review.verdict != "revise":
                 break
+            if on_step:
+                on_step("revise")
             plan = self._architect(goal, plan, review, tree)
+            if on_step:
+                on_step("critic")
             review = self._critic(goal, plan)
         self.version += 1
         return PlanDraft(_with_notes(plan, review), review, self.version)
 
-    def draft(self, goal: Goal, tree: Path) -> PlanDraft:
-        return self._cycle(goal, None, None, tree)
+    def draft(self, goal: Goal, tree: Path, on_step: Callable[[str], None] | None = None) -> PlanDraft:
+        return self._cycle(goal, None, None, tree, on_step)
 
-    def revise(self, goal: Goal, draft: PlanDraft, feedback: str, tree: Path) -> PlanDraft:
+    def revise(
+        self, goal: Goal, draft: PlanDraft, feedback: str, tree: Path, on_step: Callable[[str], None] | None = None
+    ) -> PlanDraft:
         request = PlanCritique(
             verdict="revise",
             issues=[Issue(severity="major", note=f"User feedback: {feedback}")],
             notes=[],
             self_check=_empty_check(),
         )
-        return self._cycle(goal, draft.plan, request, tree)
+        return self._cycle(goal, draft.plan, request, tree, on_step)

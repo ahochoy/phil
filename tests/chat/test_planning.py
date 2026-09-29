@@ -58,3 +58,13 @@ def test_architect_reads_the_given_tree(chat_ctx, tmp_path):
     first = planner.draft(goal(), tmp_path / "a")
     planner.revise(goal(), first, "more", tmp_path / "b")
     assert seen == [tmp_path / "a", tmp_path / "b"]
+
+
+def test_planner_reports_steps(chat_ctx, tmp_path):
+    factory = ScriptedAgentFactory({
+        "architect": [plan(n=1), plan(n=2)],
+        "critic": [critique("revise", [issue("too big")]), critique()],
+    })
+    steps = []
+    Planner(chat_ctx(factory), "overview").draft(goal(), tmp_path, on_step=steps.append)
+    assert steps == ["architect", "critic", "revise", "critic"]
