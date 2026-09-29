@@ -726,19 +726,20 @@ def test_more_expands_btw_details_only_from_the_snapshot(calc_repo, tmp_path):
             Ref(label="up", path="../../outside"),
             Ref(label="link", path="link"),
             Ref(label="abs", path=str(outside)),
+            Ref(label="virtual", path="/calc.py"),  # deepagents' virtual path for calc.py
         ])
 
     text, *_ = run_chat(
         calc_repo,
         ["add subtract", "/btw where is add?", "/more 1", "/more 2", "/more 3", "/more 4", "/more 5", "/more 6",
-         "/more 7", "n"],
+         "/more 7", "/more 8", "n"],
         {**FULL_SCRIPT, "btw": [btw_agent]},
     )
     assert "→ 1 calc:" in text
-    assert "def add(a, b):" in text and "LIVE EDIT" not in text
+    assert text.count("def add(a, b):") == 2 and "LIVE EDIT" not in text  # /more 1 and /more 7
     assert text.count(REFUSED) == 5
     assert "TOP SECRET" not in text
-    assert "No detail #7. Use /show to list them." in text
+    assert "No detail #8. Use /show to list them." in text
 
 
 def test_btw_details_without_a_snapshot_are_refused(calc_repo):
@@ -809,3 +810,25 @@ def test_help_lists_the_new_commands(calc_repo):
     text, *_ = run_chat(calc_repo, ["/help"], {})
     text = " ".join(text.split())  # the help line wraps
     assert "/show" in text and "/more <n>" in text and "/park <note>" in text
+
+
+def test_inside_snapshot_reads_a_leading_slash_as_the_snapshot_root(tmp_path):
+    # The /btw agent reads the snapshot through deepagents' virtual filesystem, whose paths are
+    # absolute from the snapshot root ("/calc.py"); models copy those into Brief.details.
+    from phil.chat.controller import _inside_snapshot
+
+    tree = tmp_path / "snap"
+    (tree / "pkg").mkdir(parents=True)
+    (tree / "calc.py").write_text("def add(a, b): ...\n")
+    (tree / "pkg" / "mod.py").write_text("x = 1\n")
+    (tmp_path / "secret.txt").write_text("TOP SECRET")
+    root = tree.resolve()
+    assert _inside_snapshot(tree, "/calc.py") == root / "calc.py"
+    assert _inside_snapshot(tree, "//pkg/mod.py") == root / "pkg" / "mod.py"
+    assert _inside_snapshot(tree, "calc.py") == root / "calc.py"
+    assert _inside_snapshot(tree, "/etc/hosts") is None  # <snapshot>/etc/hosts: no such file
+    assert _inside_snapshot(tree, "/../secret.txt") is None
+    assert _inside_snapshot(tree, str(tmp_path / "secret.txt")) is None
+    assert _inside_snapshot(tree, "~/secret.txt") is None
+    assert _inside_snapshot(tree, "/calc.py\x00") is None
+    assert _inside_snapshot(tree, "/") is None

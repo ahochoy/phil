@@ -1099,12 +1099,16 @@ class ChatController:
 
 
 def _inside_snapshot(tree: Path | None, raw: str) -> Path | None:
-    """A /btw detail path as a file inside its repo snapshot, or None: absolute and `~` paths,
-    `..` escapes and symlinks resolving outside the snapshot are all refused."""
+    """A /btw detail path as a file inside its repo snapshot, or None.
+
+    The /btw agent reads the snapshot through deepagents' virtual filesystem, where `/` is the
+    snapshot root, so a leading `/` is read as the snapshot root too (`/calc.py` is the
+    snapshot's calc.py; `/etc/hosts` is `<snapshot>/etc/hosts`, which doesn't exist). `~`
+    paths, `..` escapes and symlinks resolving outside the snapshot are refused."""
     if tree is None or not raw or raw.startswith("~"):
         return None
-    relative = Path(raw)
-    if relative.is_absolute():
+    relative = Path(raw.lstrip("/"))
+    if relative.is_absolute():  # e.g. a Windows drive path
         return None
     try:
         root = tree.resolve(strict=True)
