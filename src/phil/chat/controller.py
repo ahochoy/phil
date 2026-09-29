@@ -197,7 +197,7 @@ class ChatController:
                     conn = connect(self._db_path)
                     event = ChatEvent(kind, fn(replace(self.ctx, conn=conn)), generation)
                 except Exception as exc:
-                    data = {"job": kind, "error": f"{type(exc).__name__}: {exc}", **(failed_data or {})}
+                    data = {**(failed_data or {}), "job": kind, "error": f"{type(exc).__name__}: {exc}"}
                     event = ChatEvent(failed, data, generation)
                 finally:
                     if conn is not None:

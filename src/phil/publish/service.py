@@ -4,13 +4,14 @@ Kept free of langgraph/langchain/deepagents at module import time (see
 `implementer-common.md`).
 """
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from phil.publish.learnings import append_learnings, learnings_entry
 from phil.publish.pr_body import find_pr_template, pr_title, render_pr_body
-from phil.publish.publisher import Publisher
+from phil.publish.publisher import Publisher, PublishError
 from phil.repo import RepoInfo
 from phil.run.cleanup import CleanError, clean_run
 from phil.run.launch import is_worker_alive, worker_starting
@@ -21,6 +22,8 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, get_run, list_runs, update_run
 from phil.store.telemetry import run_usage
 
+
+logger = logging.getLogger(__name__)  # under `phil`: the chat routes it to phil.log; never printed
 
 UNSETTLED = ("pending", "running", "escalated")  # a worker may own these runs; the sweep leaves them
 
@@ -163,7 +166,10 @@ def sweep_prs(
                 if state != "merged":
                     continue
                 record = update_run(conn, record.run_id, pr_state="merged")
-            except Exception:  # PublishError or a surprise: skip this run until the next sweep
+            except PublishError:  # gh failed: try again next sweep
+                continue
+            except Exception:  # a surprise: leave a trace in the log (the chat's phil.log) and move on
+                logger.warning("PR check for %s failed", record.run_id, exc_info=True)
                 continue
         try:
             changes.append(_clean_merged(info, conn, record, publisher))

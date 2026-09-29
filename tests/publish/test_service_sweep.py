@@ -208,6 +208,29 @@ def test_an_unexpected_error_is_a_failed_cleanup_and_the_sweep_goes_on(calc_repo
     assert (stored.pr_state, stored.state) == ("merged", "completed")
 
 
+def test_an_unexpected_pr_check_error_is_logged_and_the_sweep_goes_on(calc_repo, caplog):
+    info, conn, first, paths, fake = published_run(calc_repo)
+    second = finished_run(calc_repo)[1]
+    second = publish_run(info, conn, get_run(conn, second.run_id), fake)
+    update_run(conn, second.run_id, pr_checked_at="2000-01-01T00:00:00+00:00")
+    fake.states[13] = "merged"
+    real_pr_state = fake.pr_state
+
+    def pr_state(number):
+        if number == 12:
+            raise RuntimeError("gh output changed")
+        return real_pr_state(number)
+
+    fake.pr_state = pr_state
+    with caplog.at_level("WARNING", logger="phil.publish.service"):
+        changes = sweep_prs(info, conn, fake)
+
+    assert changes == [PrChange(second.run_id, 13, "merged")]
+    assert f"PR check for {first.run_id} failed" in caplog.text
+    assert "RuntimeError: gh output changed" in caplog.text
+    assert get_run(conn, first.run_id).pr_state == "open"
+
+
 def test_one_failing_run_does_not_stop_the_others(calc_repo, monkeypatch):
     import phil.publish.service as service
 
