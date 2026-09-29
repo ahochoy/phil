@@ -1,0 +1,142 @@
+from pathlib import Path
+
+from phil.publish.learnings import append_learnings, learnings_entry
+from phil.store.artifacts import ArtifactStore
+from phil.store.paths import ProjectPaths
+from phil.store.runs import RunRecord
+from tests.run.conftest import calc_plan
+
+
+def make_run_dir(tmp_path: Path) -> Path:
+    run_dir = tmp_path / "run"
+    ArtifactStore(run_dir).write_plan(calc_plan())
+    return run_dir
+
+
+def make_record(run_id: str = "r-7f3a", pr_number: int | None = 12) -> RunRecord:
+    return RunRecord(
+        run_id=run_id,
+        keyword="CALC",
+        base_sha="a" * 40,
+        branch=f"phil/{run_id}",
+        worktree="/tmp/does-not-matter",
+        state="completed",
+        current_node=None,
+        tasks_done=1,
+        tasks_total=1,
+        pid=None,
+        heartbeat_at=None,
+        needs_attention=None,
+        story_ref=None,
+        created_at="2026-09-29T00:00:00Z",
+        updated_at="2026-09-29T00:00:00Z",
+        pr_number=pr_number,
+    )
+
+
+def write_review(run_dir: Path, name: str, **fields) -> None:
+    data = {
+        "verdict": "approve",
+        "issues": [],
+        "assumption_resolutions": [],
+        "self_check": {"assumptions": [], "evidence": [], "risks": [], "unverified": [], "out_of_scope": []},
+    }
+    data.update(fields)
+    ArtifactStore(run_dir).write_json("outputs", name, data)
+
+
+def test_entry_reports_assumptions_and_deduplicated_reviewer_notes(tmp_path):
+    run_dir = make_run_dir(tmp_path)
+    write_review(
+        run_dir,
+        "review-run-1",
+        assumption_resolutions=["confirmed: a", "confirmed: b", "issue raised: y"],
+        issues=[
+            {"severity": "minor", "note": "rename helper", "task_id": "CALC-001"},
+            {"severity": "minor", "note": "rename helper", "task_id": "CALC-001"},
+            {"severity": "major", "note": "add a test", "task_id": "CALC-002"},
+        ],
+    )
+    entry = learnings_entry(record=make_record(), run_dir=run_dir, today="2026-09-29")
+
+    assert entry.startswith("## r-7f3a — 2026-09-29 — PR #12\n")
+    assert "Goal: CALC: Add arithmetic" in entry
+    assert "Assumptions confirmed: 2 · not confirmed: issue raised: y" in entry
+    assert entry.count("rename helper") == 1
+    assert "Reviewer notes:\n" in entry
+    assert "add a test" in entry
+
+
+def test_entry_caps_reviewer_notes_at_five(tmp_path):
+    run_dir = make_run_dir(tmp_path)
+    write_review(
+        run_dir,
+        "review-run-1",
+        issues=[{"severity": "minor", "note": f"note {i}", "task_id": f"CALC-{i:03d}"} for i in range(8)],
+    )
+    entry = learnings_entry(record=make_record(), run_dir=run_dir, today="2026-09-29")
+    notes_block = entry.split("Reviewer notes:\n", 1)[1]
+    assert notes_block.count("- (") == 5
+
+
+def test_entry_without_a_review_says_none_recorded(tmp_path):
+    run_dir = make_run_dir(tmp_path)
+    entry = learnings_entry(record=make_record(), run_dir=run_dir, today="2026-09-29")
+    assert "Assumptions: none recorded" in entry
+    assert "Reviewer notes: none" in entry
+
+
+def test_entry_omits_the_pr_number_when_absent(tmp_path):
+    run_dir = make_run_dir(tmp_path)
+    entry = learnings_entry(record=make_record(pr_number=None), run_dir=run_dir, today="2026-09-29")
+    assert entry.startswith("## r-7f3a — 2026-09-29\n")
+    assert "PR #" not in entry
+
+
+def test_entry_uses_a_placeholder_goal_when_the_plan_is_unreadable(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    entry = learnings_entry(record=make_record(), run_dir=run_dir, today="2026-09-29")
+    assert "Goal: (plan unavailable)" in entry
+
+
+def test_append_learnings_creates_the_file_with_a_header(tmp_path, monkeypatch):
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    paths = ProjectPaths("calc-abc123")
+    run_dir = make_run_dir(tmp_path)
+    entry = learnings_entry(record=make_record(), run_dir=run_dir, today="2026-09-29")
+
+    assert append_learnings(paths, entry, "r-7f3a") is True
+
+    text = (paths.project_dir / "learnings.md").read_text()
+    assert text.startswith("# Phil learnings — calc-abc123\n\n")
+    assert "## r-7f3a — 2026-09-29 — PR #12" in text
+
+
+def test_append_learnings_adds_a_second_entry_after_a_blank_line(tmp_path, monkeypatch):
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    paths = ProjectPaths("calc-abc123")
+    run_dir = make_run_dir(tmp_path)
+    first = learnings_entry(record=make_record("r-0001"), run_dir=run_dir, today="2026-09-29")
+    second = learnings_entry(record=make_record("r-0002"), run_dir=run_dir, today="2026-09-30")
+
+    append_learnings(paths, first, "r-0001")
+    append_learnings(paths, second, "r-0002")
+
+    text = (paths.project_dir / "learnings.md").read_text()
+    assert "## r-0001 — 2026-09-29" in text
+    assert "## r-0002 — 2026-09-30" in text
+    first_end = text.index("## r-0002")
+    assert text[:first_end].endswith("\n\n")
+
+
+def test_append_learnings_is_idempotent_for_an_existing_run_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    paths = ProjectPaths("calc-abc123")
+    run_dir = make_run_dir(tmp_path)
+    entry = learnings_entry(record=make_record(), run_dir=run_dir, today="2026-09-29")
+    append_learnings(paths, entry, "r-7f3a")
+    before = (paths.project_dir / "learnings.md").read_text()
+
+    assert append_learnings(paths, entry, "r-7f3a") is False
+    assert (paths.project_dir / "learnings.md").read_text() == before

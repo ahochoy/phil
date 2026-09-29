@@ -1,7 +1,6 @@
 import importlib
 import json
 import os
-import shutil
 import signal
 import sqlite3
 import sys
@@ -28,7 +27,6 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
 from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
-from phil.workspace.worktree import Worktree, WorktreeManager
 
 app = typer.Typer(add_completion=False, help="Phil: a contract-driven coding agent.")
 console = make_console()
@@ -566,7 +564,7 @@ def clean(
     purge: bool = typer.Option(False, "--purge", help="Also delete the run summary."),
 ) -> None:
     """Remove a finished run's worktree, branch, checkpoints, and scratch files."""
-    from phil.run.checkpoint import open_checkpointer
+    from phil.run.cleanup import CleanError, clean_run
 
     info, conn = _open_project(ctx)
     record = _require_run(conn, run_id)
@@ -580,45 +578,10 @@ def clean(
     if is_worker_alive(record) or worker_starting(run_events(paths, run_id)):
         console.print(f"[phil.error]{escape(run_id)} has a worker running; stop it first[/]")
         raise typer.Exit(1)
-    manager = WorktreeManager(info.root)
-    worktree = Path(record.worktree)
     try:
-        if worktree.exists():
-            manager.remove(Worktree(worktree, record.branch, record.base_sha), delete_branch=False)
-        else:
-            git(info.root, "worktree", "prune")
-    except GitError as exc:
+        clean_run(info, conn, record, purge=purge)
+    except CleanError as exc:
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
-    try:
-        git(info.root, "show-ref", "--verify", "--quiet", f"refs/heads/{record.branch}")
-        branch_exists = True
-    except GitError:
-        branch_exists = False
-    if branch_exists:
-        try:
-            git(info.root, "branch", "-D", record.branch)
-        except GitError as exc:
-            console.print(f"[phil.error]{escape(str(exc))}[/]")
-            raise typer.Exit(1) from exc
-    manager.delete_refs(f"refs/phil/{run_id}/")
-    saver = open_checkpointer(paths.db_path)
-    try:
-        saver.delete_thread(run_id)
-    finally:
-        saver.conn.close()
-    run_dir = paths.run_dir(run_id)
-    if run_dir.exists():
-        if purge:
-            shutil.rmtree(run_dir)
-        else:
-            for child in run_dir.iterdir():
-                if child.name == "summary.md":
-                    continue
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
-    update_run(conn, run_id, state="cleaned", needs_attention=None)
-    kept = "" if purge else " (kept summary.md)"
+    kept = "" if purge else " (kept summary.md and open_issues.json)"
     console.print(f"Cleaned [phil.id]{escape(run_id)}[/]{kept}.")
