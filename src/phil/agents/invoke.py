@@ -244,7 +244,9 @@ def invoke_agent(
     if "shell" in spec.tools and ctx.workdir is not None:
         tools.append(make_shell_tool(ctx.workdir, shell, log, ctx.artifacts, log_prefix=log_prefix))
     agent = _resolve_factory(ctx)(spec, model, ctx.workdir, tools, timeout_s=ctx.config.run.model_timeout_s)
-    from phil.agents.collector import UsageCollector  # lazy: keeps langchain out of module import
+    # lazy: keeps langchain out of module import
+    from phil.agents.collector import UsageCollector
+    from phil.agents.model_retry import TRACKER_KEY, ModelRetryTracker, model_call_retried
 
     messages: list[dict[str, str]] = [{"role": "user", "content": packet.render()}]
     problems: list[str] = []
@@ -265,12 +267,22 @@ def invoke_agent(
             sleeps.append(delay)
             ctx.sleep(delay)
 
+        # A failed model call is retried in place by the agent's model-retry middleware (sleeping
+        # through `counting_sleep`); `call_with_retry` re-runs the whole agent only for a transient
+        # error raised outside a wrapped model call (a fake agent, a summarisation call), never
+        # again for one the middleware already handled.
+        tracker = ModelRetryTracker(sleep=counting_sleep)
         try:
-            result, retries = call_with_retry(
-                agent, {"messages": payload_messages}, sleep=counting_sleep, config={"callbacks": [collector]}
+            result, _ = call_with_retry(
+                agent,
+                {"messages": payload_messages},
+                sleep=counting_sleep,
+                config={"callbacks": [collector], "configurable": {TRACKER_KEY: tracker}},
+                retryable=lambda exc: not model_call_retried(exc),
             )
+            retries = len(sleeps)  # each retry — per model call or whole agent — sleeps exactly once
         except Exception as exc:
-            retries = len(sleeps)  # each transient retry sleeps exactly once
+            retries = len(sleeps)
             if not _is_structured_output_parse_error(exc):
                 _record_error(
                     ctx,

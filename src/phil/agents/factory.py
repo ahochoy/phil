@@ -26,8 +26,8 @@ def _tool_strategy(spec: AgentSpec) -> Any:
 
 
 # Per-provider kwargs for `init_chat_model` that put a ceiling on every model call and turn off
-# the provider SDK's own retries (phil.agents.retry.call_with_retry does the retrying instead,
-# so it alone controls backoff and counts attempts). Units and the kwarg name that reaches the
+# the provider SDK's own retries (phil.agents.model_retry retries each failed model call
+# instead, so Phil alone controls backoff and counts attempts). Units and the kwarg name that reaches the
 # SDK differ by provider:
 #  - openrouter: `ChatOpenRouter.request_timeout` (alias `timeout`) is milliseconds, mapped to
 #    the SDK's `timeout_ms`.
@@ -70,11 +70,14 @@ def _build_lean_agent(spec: AgentSpec, model: str, tools: list[Callable[..., str
         raise ValueError(f"{spec.name} uses the lean harness, which does not support tools")
     from langchain.agents import create_agent
 
+    from phil.agents.model_retry import PhilModelRetryMiddleware
+
     return create_agent(
         chat_model(model, timeout_s),
         tools=[],
         system_prompt=load_prompt(spec),
         response_format=_tool_strategy(spec),
+        middleware=[PhilModelRetryMiddleware()],
     )
 
 
@@ -84,6 +87,8 @@ def _build_deep_agent(
     from deepagents import create_deep_agent
     from deepagents.backends.filesystem import FilesystemBackend
 
+    from phil.agents.model_retry import PhilModelRetryMiddleware
+
     backend = FilesystemBackend(root_dir=workdir, virtual_mode=True) if workdir is not None else None
     return create_deep_agent(
         model=chat_model(model, timeout_s),
@@ -92,4 +97,21 @@ def _build_deep_agent(
         backend=backend,
         permissions=filesystem_permissions(spec),
         response_format=_tool_strategy(spec),
+        middleware=[PhilModelRetryMiddleware()],
+        subagents=[_general_purpose_subagent()],
     )
+
+
+def _general_purpose_subagent() -> Any:
+    """deepagents' default general-purpose sub-agent, spelled out so it gets Phil's per-call
+    retry middleware: `create_deep_agent(middleware=...)` applies to the main agent only — the
+    auto-added general-purpose sub-agent inherits just the entries that replace one of its own
+    default middleware by name. Passing a spec named "general-purpose" replaces the default;
+    as a declarative spec it still gets deepagents' base stack (filesystem with the parent's
+    permissions, summarization, patch-tool-calls, prompt caching), the parent's model and
+    tools, and the default description and prompt."""
+    from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
+
+    from phil.agents.model_retry import PhilModelRetryMiddleware
+
+    return {**GENERAL_PURPOSE_SUBAGENT, "middleware": [PhilModelRetryMiddleware()]}

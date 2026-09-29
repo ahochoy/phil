@@ -90,6 +90,7 @@ def test_lean_roles_use_plain_create_agent(tmp_path, monkeypatch):
     assert captured["tools"] == []
     assert captured["response_format"].schema is spec.out_contract
     assert captured["system_prompt"] == load_prompt(spec)
+    assert [type(m).__name__ for m in captured["middleware"]] == ["PhilModelRetryMiddleware"]
 
 
 def test_deep_roles_use_deepagents_with_permissions(tmp_path, monkeypatch):
@@ -109,6 +110,14 @@ def test_deep_roles_use_deepagents_with_permissions(tmp_path, monkeypatch):
     assert captured["model"] is sentinel
     assert captured["permissions"]
     assert captured["response_format"].schema is spec.out_contract
+    assert [type(m).__name__ for m in captured["middleware"]] == ["PhilModelRetryMiddleware"]
+    # the general-purpose sub-agent doesn't inherit the parent's middleware: it is passed
+    # explicitly, with deepagents' default description and prompt, plus the retry middleware
+    from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
+
+    [general] = captured["subagents"]
+    assert {k: general[k] for k in GENERAL_PURPOSE_SUBAGENT} == GENERAL_PURPOSE_SUBAGENT
+    assert [type(m).__name__ for m in general["middleware"]] == ["PhilModelRetryMiddleware"]
 
 
 def test_lean_harness_rejects_tools(tmp_path):

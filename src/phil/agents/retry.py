@@ -2,7 +2,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-TRANSIENT_STATUS = {408, 409, 429, 500, 502, 503, 504}
+TRANSIENT_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}  # 529: Anthropic "overloaded"
 
 _TRANSIENT_HTTPX = {"TimeoutException", "NetworkError", "RemoteProtocolError"}
 
@@ -29,6 +29,13 @@ _TRANSIENT_OPENROUTER = {
 # transience decision falls back to the error payload's own `code`.
 _OPENROUTER_200_WITH_ERROR = re.compile(r"OpenRouter API returned an error:.*\(code:\s*(\d+)\)\s*$")
 
+# The anthropic and openai SDKs raise their own classes (not httpx's) for a request that timed
+# out or never connected; with the SDKs' own retries turned off (phil.agents.factory) these reach
+# Phil directly. `APITimeoutError` subclasses `APIConnectionError` in both SDKs.
+_SDK_MODULES = {"anthropic", "openai"}
+_TRANSIENT_SDK = {"APITimeoutError", "APIConnectionError"}
+_TIMEOUT_SDK = {"APITimeoutError"}
+
 # The subset of the transient classes above that specifically mean "the call timed out" rather
 # than some other transient failure (rate limit, 5xx, network reset). httpx.TimeoutException
 # covers ConnectTimeout/ReadTimeout/WriteTimeout/PoolTimeout via subclassing.
@@ -41,6 +48,10 @@ def _is_httpx_transient(exc: BaseException) -> bool:
         cls.__module__.split(".")[0] == "httpx" and cls.__name__ in _TRANSIENT_HTTPX
         for cls in type(exc).__mro__
     )
+
+
+def _matches(exc: BaseException, modules: set[str], names: set[str]) -> bool:
+    return any(cls.__module__.split(".")[0] in modules and cls.__name__ in names for cls in type(exc).__mro__)
 
 
 def _is_openrouter_transient(exc: BaseException) -> bool:
@@ -56,11 +67,10 @@ def is_timeout(exc: BaseException) -> bool:
     attempts: a stuck provider otherwise costs one `model_timeout_s` per attempt."""
     if isinstance(exc, TimeoutError):
         return True
-    if any(cls.__module__.split(".")[0] == "httpx" and cls.__name__ in _TIMEOUT_HTTPX for cls in type(exc).__mro__):
-        return True
-    return any(
-        cls.__module__.split(".")[0] == "openrouter" and cls.__name__ in _TIMEOUT_OPENROUTER
-        for cls in type(exc).__mro__
+    return (
+        _matches(exc, {"httpx"}, _TIMEOUT_HTTPX)
+        or _matches(exc, {"openrouter"}, _TIMEOUT_OPENROUTER)
+        or _matches(exc, _SDK_MODULES, _TIMEOUT_SDK)
     )
 
 
@@ -72,7 +82,7 @@ def _200_with_error_code(exc: BaseException) -> int | None:
 def is_transient(exc: BaseException) -> bool:
     if isinstance(exc, (TimeoutError, ConnectionError)):
         return True
-    if _is_httpx_transient(exc) or _is_openrouter_transient(exc):
+    if _is_httpx_transient(exc) or _is_openrouter_transient(exc) or _matches(exc, _SDK_MODULES, _TRANSIENT_SDK):
         return True
     status = getattr(exc, "status_code", None)
     if status is None:
@@ -86,30 +96,48 @@ def is_transient(exc: BaseException) -> bool:
     return False
 
 
+MODEL_CALL_ATTEMPTS = 3
+BASE_DELAY_S = 1.0
+
+
+def retry_delay(
+    exc: BaseException, index: int, *, attempts: int = MODEL_CALL_ATTEMPTS, base_delay: float = BASE_DELAY_S
+) -> float | None:
+    """Phil's retry policy for one failed try (``index`` is 0 for the first try): the backoff
+    to sleep before trying again, or None when ``exc`` must propagate.
+
+    Only transient errors are retried. A timeout gets at most 2 tries total regardless of
+    ``attempts``: a stuck provider otherwise costs one ``model_timeout_s`` per attempt. Other
+    transient errors (rate limits, 5xx, network resets) get the full ``attempts`` budget.
+    """
+    if not is_transient(exc):
+        return None
+    max_index = min(1, attempts - 1) if is_timeout(exc) else attempts - 1
+    if index >= max_index:
+        return None
+    return base_delay * 2**index
+
+
 def call_with_retry(
     agent: Any,
     payload: dict,
     *,
     sleep: Callable[[float], None],
-    attempts: int = 3,
-    base_delay: float = 1.0,
+    attempts: int = MODEL_CALL_ATTEMPTS,
+    base_delay: float = BASE_DELAY_S,
     config: dict | None = None,
+    retryable: Callable[[BaseException], bool] = lambda exc: True,
 ) -> tuple[dict, int]:
-    """Invoke ``agent`` with transient-error retries; returns ``(result, retries)``.
-
-    A timeout gets at most 2 tries total regardless of ``attempts``: a stuck provider otherwise
-    costs one ``model_timeout_s`` per attempt (up to ~3x that with the default ``attempts=3``).
-    Other transient errors (rate limits, 5xx, network resets) keep the full ``attempts`` budget.
-    """
+    """Invoke ``agent`` with transient-error retries (policy: `retry_delay`); returns
+    ``(result, retries)``. ``retryable`` can veto a retry for an error that is transient but
+    was already retried elsewhere (see `phil.agents.model_retry`)."""
     for index in range(attempts):
         try:
             result = agent.invoke(payload) if config is None else agent.invoke(payload, config=config)
             return result, index
         except Exception as exc:
-            if not is_transient(exc):
+            delay = retry_delay(exc, index, attempts=attempts, base_delay=base_delay) if retryable(exc) else None
+            if delay is None:
                 raise
-            max_index = 1 if is_timeout(exc) else attempts - 1
-            if index >= max_index:
-                raise
-            sleep(base_delay * 2**index)
+            sleep(delay)
     raise AssertionError("unreachable")

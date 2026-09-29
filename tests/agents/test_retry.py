@@ -184,3 +184,51 @@ def test_invoke_agent_records_retry_count(config, conn, artifacts, critic_packet
     )
     invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
     assert [row["retries"] for row in conn.execute("SELECT retries FROM telemetry")] == [2]
+
+
+def _anthropic_request() -> httpx.Request:
+    return httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+
+def test_anthropic_timeout_and_connection_errors_are_transient():
+    import anthropic
+
+    timeout = anthropic.APITimeoutError(request=_anthropic_request())
+    connection = anthropic.APIConnectionError(request=_anthropic_request())
+    assert is_transient(timeout)
+    assert is_timeout(timeout)
+    assert is_transient(connection)
+    assert not is_timeout(connection)
+
+
+def test_anthropic_overloaded_529_is_transient_but_not_a_timeout():
+    import anthropic
+
+    response = httpx.Response(529, request=_anthropic_request(), json={"error": {"type": "overloaded_error"}})
+    overloaded = anthropic.OverloadedError("Overloaded", response=response, body=None)
+    assert is_transient(overloaded)
+    assert not is_timeout(overloaded)
+
+
+def test_anthropic_permanent_status_errors_stay_permanent():
+    import anthropic
+
+    response = httpx.Response(400, request=_anthropic_request(), json={})
+    assert not is_transient(anthropic.BadRequestError("bad", response=response, body=None))
+
+
+def test_openai_timeout_and_connection_errors_are_transient():
+    openai = pytest.importorskip("openai")
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    timeout = openai.APITimeoutError(request=request)
+    connection = openai.APIConnectionError(request=request)
+    assert is_transient(timeout) and is_timeout(timeout)
+    assert is_transient(connection) and not is_timeout(connection)
+
+
+def test_a_timeout_with_a_single_attempt_is_raised_not_unreachable():
+    delays: list[float] = []
+    agent = FakeAgent([TimeoutError(), "never"])
+    with pytest.raises(TimeoutError):
+        call_with_retry(agent, {"messages": []}, sleep=delays.append, attempts=1)
+    assert delays == []
