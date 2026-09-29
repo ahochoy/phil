@@ -537,7 +537,8 @@ def show_command(
     n: int | None = typer.Argument(None, help="Print detail #N in full instead of the overview."),
 ) -> None:
     """Show a run's tasks, usage, open issues, and numbered details."""
-    from phil.ui.show_view import detail_text, render_show, show_refs
+    from phil.ui import show_view
+    from phil.ui.show_view import render_show, show_refs
 
     info, conn = _open_project(ctx)
     _require_run(conn, run_id)
@@ -549,7 +550,13 @@ def show_command(
     if n < 1 or n > len(refs):
         console.print(f"[phil.error]No detail #{n} for {escape(run_id)}.[/]")
         raise typer.Exit(1)
-    typer.echo(detail_text(Path(refs[n - 1].path)))
+    path = Path(refs[n - 1].path)
+    try:
+        text = show_view.detail_text(path)
+    except (OSError, UnicodeDecodeError) as exc:
+        console.print(f"[phil.error]Couldn't read {escape(str(path))}: {escape(type(exc).__name__)}[/]")
+        raise typer.Exit(1) from exc
+    typer.echo(text)
 
 
 @app.command()

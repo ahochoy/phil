@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -15,25 +16,41 @@ from phil.store.telemetry import UsageLine, format_cost, usage_by_role
 
 _MAX_PER_CATEGORY = 5
 _MAX_DETAIL_LINES = 2000
+MAX_DETAIL_CHARS = 200_000
+
+# C0 controls except tab and newline, DEL, and the C1 controls (U+0080–U+009F, e.g. U+009B, a
+# one-character CSI): printed raw they drive the terminal (clear it, retitle it, move the cursor).
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
 def detail_text(path: Path) -> str:
     """A detail file as plain text for `phil show RUN N` and the chat's `/more N`: JSON is
-    pretty-printed, and anything past 2000 lines is cut with a note."""
+    pretty-printed, terminal control characters are dropped, and anything past 2000 lines or
+    200,000 characters is cut with a note."""
     text = path.read_text()
     if path.suffix == ".json":
         try:
             text = json.dumps(json.loads(text), indent=2, default=repr)
         except json.JSONDecodeError:
             pass
+    text = _CONTROL.sub("", text)
     lines = text.splitlines()
     if len(lines) > _MAX_DETAIL_LINES:
         text = "\n".join(lines[:_MAX_DETAIL_LINES]) + f"\n… ({len(lines) - _MAX_DETAIL_LINES} more lines not shown)"
+    if len(text) > MAX_DETAIL_CHARS:
+        text = text[:MAX_DETAIL_CHARS] + f"\n… ({len(text) - MAX_DETAIL_CHARS} more characters not shown)"
     return text
 
 
 def _newest_first(paths: list[Path]) -> list[Path]:
-    return sorted(paths, key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+    """Newest first; a file deleted between the directory listing and its `stat()` is skipped."""
+    stamped: list[tuple[float, str, Path]] = []
+    for path in paths:
+        try:
+            stamped.append((path.stat().st_mtime, path.name, path))
+        except OSError:
+            continue
+    return [path for _, _, path in sorted(stamped, reverse=True)]
 
 
 def show_refs(paths: ProjectPaths, run_id: str) -> list[Ref]:

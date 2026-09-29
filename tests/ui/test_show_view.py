@@ -92,3 +92,45 @@ def test_render_show_reports_no_issues_recorded_for_a_malformed_json_file(calc_r
     console = make_console(record=True, width=160)
     render_show(console, conn, paths, record.run_id)
     assert "none recorded" in console.export_text()
+
+
+def test_show_refs_skips_a_file_deleted_between_listing_and_stat(calc_repo, monkeypatch):
+    from pathlib import Path
+
+    info, record, paths = finished_run(calc_repo)
+    logs_dir = paths.run_dir(record.run_id) / "logs"
+    (logs_dir / "gone.log").write_text("x\n")
+    real_stat = Path.stat
+
+    def stat(self, *args, **kwargs):
+        if self.name == "gone.log":
+            raise FileNotFoundError(self)
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    labels = [r.label for r in show_refs(paths, record.run_id)]
+    assert "test log gone" not in labels
+    assert labels[0] == "summary"
+
+
+def test_detail_text_caps_total_characters(tmp_path):
+    from phil.ui.show_view import MAX_DETAIL_CHARS, detail_text
+
+    path = tmp_path / "one-long-line.log"
+    path.write_text("x" * (MAX_DETAIL_CHARS + 500))
+    text = detail_text(path)
+    assert text.startswith("x" * MAX_DETAIL_CHARS)
+    assert "x" * (MAX_DETAIL_CHARS + 1) not in text
+    assert text.endswith("… (500 more characters not shown)")
+    assert MAX_DETAIL_CHARS == 200_000
+
+
+def test_detail_text_strips_terminal_control_characters(tmp_path):
+    from phil.ui.show_view import detail_text
+
+    path = tmp_path / "evil.log"
+    path.write_text("ok\tline\n\x1b]0;pwned\x07\x1b[2Jclear\r\nbell\x07 del\x7f c1\x9b31m end\n")
+    text = detail_text(path)
+    assert "\x1b" not in text and "\x07" not in text and "\r" not in text
+    assert "\x7f" not in text and "\x9b" not in text
+    assert text.splitlines() == ["ok\tline", "]0;pwned[2Jclear", "bell del c131m end"]

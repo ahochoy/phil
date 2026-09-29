@@ -62,3 +62,25 @@ def test_show_unknown_run_fails(calc_repo):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "show", "r-ffff"])
     assert result.exit_code == 1
     assert "unknown run" in result.output
+
+
+def test_show_n_strips_terminal_control_characters(calc_repo):
+    info, record, paths = finished_run(calc_repo)
+    (paths.run_dir(record.run_id) / "summary.md").write_text("# Summary\n\x1b[2J\x1b]0;pwned\x07done\n")
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "show", record.run_id, "1"])
+    assert result.exit_code == 0, result.output
+    assert "\x1b" not in result.output and "\x07" not in result.output
+    assert "[2J]0;pwneddone" in result.output
+
+
+def test_show_n_reports_a_detail_that_vanished(calc_repo, monkeypatch):
+    info, record, paths = finished_run(calc_repo)
+    from phil.ui import show_view
+
+    def vanished(path):
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(show_view, "detail_text", vanished)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "show", record.run_id, "1"])
+    assert result.exit_code == 1
+    assert "Couldn't read" in result.output
