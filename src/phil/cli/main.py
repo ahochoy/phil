@@ -103,7 +103,8 @@ def _open_chat_line(n: int, chat) -> str:
         status = f"run {escape(chat.run_id)} {escape(chat.run_state or 'unknown')}"
     else:
         status = "plan waiting for approval"
-    return f"{n}. [phil.id]{escape(chat.id)}[/] · {objective} · {status}"
+    elsewhere = " · [phil.warn]open elsewhere[/]" if chat.open_elsewhere else ""
+    return f"{n}. [phil.id]{escape(chat.id)}[/] · {objective} · {status}{elsewhere}"
 
 
 def _choose_open_chat(out, chats, ask) -> str | None:
@@ -133,10 +134,8 @@ def _reopen_chat(session_cls, paths: ProjectPaths, chat_id: str):
 
 
 def _chat(ctx: typer.Context) -> None:
-    from phil.chat.controller import HELP, ChatController
-    from phil.chat.session import ChatSession, list_open_chats
-    from phil.chat.terminal import LineIO
-    from phil.ui.toolbar import render_toolbar
+    from phil.chat.controller import HELP
+    from phil.chat.session import ChatLocked, ChatSession, chat_logging, list_open_chats
 
     resume_id, new = ctx.obj.get("resume"), ctx.obj.get("new", False)
     if resume_id is not None and new:
@@ -201,6 +200,25 @@ def _chat(ctx: typer.Context) -> None:
         )
         raise typer.Exit(1) from exc
 
+    resume = session is not None
+    session = session or ChatSession.create(paths)
+    try:
+        session.lock()  # one window per chat: two writers would overwrite each other's state
+    except ChatLocked as exc:
+        out.print(f"[phil.error]Chat {escape(session.id)} is already open in another window (pid {exc.pid}).[/]")
+        raise typer.Exit(1) from exc
+    try:
+        with chat_logging(session.dir):
+            _run_chat(info, config, conn, out, tty, factory, base_sha, session, resume)
+    finally:
+        session.unlock()
+
+
+def _run_chat(info, config, conn, out, tty, factory, base_sha, session, resume: bool) -> None:
+    from phil.chat.controller import ChatController
+    from phil.chat.terminal import LineIO
+    from phil.ui.toolbar import render_toolbar
+
     controller = None
 
     def toolbar() -> str:
@@ -213,8 +231,7 @@ def _chat(ctx: typer.Context) -> None:
         io = terminal.chat_io(lambda root, run_id, mode, decision=None: spawn_worker(root, run_id, mode, decision))
         try:
             controller = ChatController(
-                info, config, conn, out, io, factory=factory, base_sha=base_sha, session=session,
-                resume=session is not None,
+                info, config, conn, out, io, factory=factory, base_sha=base_sha, session=session, resume=resume,
             )
         except GitError as exc:
             out.print(f"[phil.error]{escape(str(exc))}[/]")

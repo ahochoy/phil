@@ -196,3 +196,57 @@ def test_only_decimal_digits_choose_a_chat(calc_repo, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "choose 1–1" in _plain(result.output)
     assert "Reopened" not in _plain(result.output)
+
+
+def test_a_chat_open_in_another_window_is_refused(calc_repo, monkeypatch):
+    import os
+
+    chat_id = _approved_chat(calc_repo, monkeypatch)
+    lock = ProjectPaths(resolve_repo(calc_repo).slug).project_dir / "chats" / chat_id / "chat.lock"
+    assert not lock.exists()  # released when the first chat ended
+    lock.write_text(str(os.getppid()))
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "--resume", chat_id], input="")
+    assert result.exit_code == 1
+    assert f"Chat {chat_id} is already open in another window (pid {os.getppid()})." in " ".join(result.output.split())
+    assert "Reopened" not in result.output
+
+
+def test_a_stale_chat_lock_is_taken_over_and_released(calc_repo, monkeypatch):
+    import subprocess
+    import sys
+
+    chat_id = _approved_chat(calc_repo, monkeypatch)
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait()
+    lock = ProjectPaths(resolve_repo(calc_repo).slug).project_dir / "chats" / chat_id / "chat.lock"
+    lock.write_text(str(process.pid))
+    seen = {}
+    from phil.chat.controller import ChatController
+
+    original = ChatController.run
+
+    def run(self):
+        seen["lock"] = lock.read_text().strip()
+        seen["propagate"] = __import__("logging").getLogger("phil").propagate
+        return original(self)
+
+    monkeypatch.setattr(ChatController, "run", run)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "--resume", chat_id], input="")
+    assert result.exit_code == 0, result.output
+    assert seen == {"lock": str(__import__("os").getpid()), "propagate": False}
+    assert not lock.exists()
+
+
+def test_the_open_chats_list_marks_chats_open_elsewhere(calc_repo, monkeypatch):
+    import os
+
+    chat_id = _approved_chat(calc_repo, monkeypatch)
+    lock = ProjectPaths(resolve_repo(calc_repo).slug).project_dir / "chats" / chat_id / "chat.lock"
+    lock.write_text(str(os.getppid()))
+    monkeypatch.setattr(cli, "_is_tty", lambda: True)
+    monkeypatch.setattr(cli, "_terminal", _FakeTerminal)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="1\n")
+    output = " ".join(_plain(result.output).split())
+    assert f"1. {chat_id} · " in output and "open elsewhere" in output
+    assert result.exit_code == 1
+    assert "already open in another window" in output
