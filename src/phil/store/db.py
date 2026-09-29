@@ -53,6 +53,21 @@ MIGRATIONS: list[str] = [
     SCHEMA,
     "ALTER TABLE telemetry ADD COLUMN call INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE runs ADD COLUMN chat_id TEXT",
+    "ALTER TABLE telemetry ADD COLUMN chat_id TEXT",
+    "ALTER TABLE telemetry ADD COLUMN model_calls INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE telemetry ADD COLUMN tool_calls TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE telemetry ADD COLUMN retries INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE telemetry ADD COLUMN cost_source TEXT NOT NULL DEFAULT 'reported'",
+    "CREATE TABLE IF NOT EXISTS calls ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "telemetry_id INTEGER NOT NULL,"
+    "model TEXT NOT NULL,"
+    "input_tokens INTEGER NOT NULL,"
+    "output_tokens INTEGER NOT NULL,"
+    "cost_usd REAL NOT NULL,"
+    "cost_source TEXT NOT NULL,"
+    "created_at TEXT NOT NULL"
+    ")",
 ]
 
 
