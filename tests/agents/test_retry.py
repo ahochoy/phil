@@ -232,3 +232,47 @@ def test_a_timeout_with_a_single_attempt_is_raised_not_unreachable():
     with pytest.raises(TimeoutError):
         call_with_retry(agent, {"messages": []}, sleep=delays.append, attempts=1)
     assert delays == []
+
+
+def test_langchain_core_model_errors_are_classified():
+    from langchain_core.exceptions import (
+        ModelAPIError,
+        ModelAuthenticationError,
+        ModelConnectionError,
+        ModelInvalidRequestError,
+        ModelRateLimitError,
+        ModelTimeoutError,
+    )
+
+    assert is_transient(ModelRateLimitError("slow down")) and not is_timeout(ModelRateLimitError("x"))
+    assert is_transient(ModelConnectionError("refused")) and not is_timeout(ModelConnectionError("x"))
+    assert is_transient(ModelTimeoutError("slow")) and is_timeout(ModelTimeoutError("slow"))
+    assert not is_transient(ModelAuthenticationError("bad key"))
+    assert not is_transient(ModelInvalidRequestError("bad request"))
+
+    class CodedAPIError(ModelAPIError):
+        def __init__(self, code: int | None) -> None:
+            super().__init__(code)
+            self.code = code
+
+    assert is_transient(CodedAPIError(503))
+    assert not is_transient(CodedAPIError(501))
+    assert not is_transient(CodedAPIError(None))  # no status to judge by
+
+    class ResponseAPIError(ModelAPIError):
+        def __init__(self, status: int) -> None:
+            super().__init__(status)
+            self.response = httpx.Response(status, request=httpx.Request("POST", "https://example.invalid"))
+
+    assert is_transient(ResponseAPIError(502))
+
+
+def test_google_genai_rate_limit_and_server_errors_are_transient():
+    chat_models = pytest.importorskip("langchain_google_genai.chat_models")
+
+    # langchain_google_genai raises GoogleRateLimitError(msg) for a 429: no status attribute at all
+    rate_limited = chat_models.GoogleRateLimitError("Error calling model 'gemini' (RESOURCE_EXHAUSTED): 429")
+    assert is_transient(rate_limited) and not is_timeout(rate_limited)
+    assert is_transient(chat_models.GoogleAPIError(503, {"error": {"code": 503, "status": "UNAVAILABLE"}}))
+    assert not is_transient(chat_models.GoogleAPIError(501, {"error": {"code": 501, "status": "UNIMPLEMENTED"}}))
+    assert not is_transient(chat_models.GoogleAuthenticationError("bad key"))

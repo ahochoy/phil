@@ -36,6 +36,14 @@ _SDK_MODULES = {"anthropic", "openai"}
 _TRANSIENT_SDK = {"APITimeoutError", "APIConnectionError"}
 _TIMEOUT_SDK = {"APITimeoutError"}
 
+# langchain_core's provider-neutral model errors (langchain_core.exceptions), which integrations
+# raise alongside their SDK's own types — langchain_google_genai raises a bare
+# `GoogleRateLimitError(msg)` for a 429, with no status attribute at all. Matched by class name so
+# this module needs no langchain import. `ModelAPIError` (a provider-reported server failure) is
+# transient only when its status says so (`_status` below): a 501 isn't worth retrying.
+_TRANSIENT_CORE = {"ModelRateLimitError", "ModelConnectionError", "ModelTimeoutError"}
+_TIMEOUT_CORE = {"ModelTimeoutError"}
+
 # The subset of the transient classes above that specifically mean "the call timed out" rather
 # than some other transient failure (rate limit, 5xx, network reset). httpx.TimeoutException
 # covers ConnectTimeout/ReadTimeout/WriteTimeout/PoolTimeout via subclassing.
@@ -71,6 +79,7 @@ def is_timeout(exc: BaseException) -> bool:
         _matches(exc, {"httpx"}, _TIMEOUT_HTTPX)
         or _matches(exc, {"openrouter"}, _TIMEOUT_OPENROUTER)
         or _matches(exc, _SDK_MODULES, _TIMEOUT_SDK)
+        or _matches(exc, {"langchain_core"}, _TIMEOUT_CORE)
     )
 
 
@@ -84,9 +93,14 @@ def is_transient(exc: BaseException) -> bool:
         return True
     if _is_httpx_transient(exc) or _is_openrouter_transient(exc) or _matches(exc, _SDK_MODULES, _TRANSIENT_SDK):
         return True
+    if _matches(exc, {"langchain_core"}, _TRANSIENT_CORE):
+        return True
     status = getattr(exc, "status_code", None)
     if status is None:
         status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is None and _matches(exc, {"langchain_core"}, {"ModelAPIError"}):
+        code = getattr(exc, "code", None)  # e.g. google.genai's APIError.code
+        status = code if isinstance(code, int) else None
     if status in TRANSIENT_STATUS:
         return True
     if status is None or status == 200:
