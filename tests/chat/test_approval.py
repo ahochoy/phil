@@ -92,15 +92,18 @@ def test_launch_problems():
     assert launch_problems(plan(), config()) == []
     missing_models = PhilConfig.model_validate({"models": {"orchestrator": "test:model"}})
     problems = launch_problems(plan(test_cmd="npm run build"), missing_models)
-    assert len(problems) == 1
-    assert "implementer, tester, reviewer" in problems[0] and "[models]" in problems[0]
+    assert problems == [
+        "No model for implementer (tier low). Set models.low in ~/.phil/config.toml or phil.toml.",
+        "No model for tester (tier low). Set models.low in ~/.phil/config.toml or phil.toml.",
+        "No model for reviewer (tier high). Set models.high in ~/.phil/config.toml or phil.toml.",
+    ]
 
 
 def test_launch_problems_still_flags_a_forbidden_test_cmd():
     missing_models = PhilConfig.model_validate({"models": {"orchestrator": "test:model"}})
     problems = launch_problems(plan(test_cmd="python -c 'print(1)'"), missing_models)
-    assert len(problems) == 2
-    assert "shell operators" in problems[1]
+    assert len(problems) == 4
+    assert "shell operators" in problems[-1]
 
 
 def check_plan(cmd: str):

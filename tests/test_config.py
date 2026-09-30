@@ -5,6 +5,7 @@ import pytest
 
 from phil.config import ConfigError, PhilConfig, effective_toml, global_config_path, load_config, parse_override
 from phil.store.paths import phil_home
+from tests.helpers import TEST_MODELS
 
 
 def test_missing_file_gives_defaults(tmp_path):
@@ -45,7 +46,7 @@ def test_models_must_be_set_per_role(tmp_path):
     (tmp_path / "phil.toml").write_text('[models]\nimplementer = "openrouter:cheap/model"\n')
     config = load_config(tmp_path)
     assert config.model_for("implementer") == "openrouter:cheap/model"
-    with pytest.raises(ConfigError, match=r'reviewer = "provider:model"'):
+    with pytest.raises(ConfigError, match=r"No model for reviewer \(tier high\)"):
         config.model_for("reviewer")
 
 
@@ -53,6 +54,59 @@ def test_missing_models_lists_unset_roles(tmp_path):
     (tmp_path / "phil.toml").write_text('[models]\nimplementer = "openrouter:cheap/model"\n')
     config = load_config(tmp_path)
     assert config.missing_models(("implementer", "tester", "reviewer")) == ["tester", "reviewer"]
+
+
+def test_high_and_low_tiers_resolve_the_default_roles(tmp_path):
+    (tmp_path / "phil.toml").write_text('[models]\nhigh = "openrouter:big/model"\nlow = "openrouter:small/model"\n')
+    config = load_config(tmp_path)
+    assert config.model_for("architect") == "openrouter:big/model"
+    assert config.model_for("implementer") == "openrouter:small/model"
+
+
+def test_a_role_key_beats_its_tier(tmp_path):
+    (tmp_path / "phil.toml").write_text(
+        '[models]\nhigh = "openrouter:big/model"\narchitect = "openrouter:special/model"\n'
+    )
+    config = load_config(tmp_path)
+    assert config.model_for("architect") == "openrouter:special/model"
+
+
+def test_tiers_table_remaps_a_role_to_another_tier(tmp_path):
+    (tmp_path / "phil.toml").write_text(
+        '[models]\nhigh = "openrouter:big/model"\nlow = "openrouter:small/model"\n'
+        '[tiers]\nimplementer = "high"\n'
+    )
+    config = load_config(tmp_path)
+    assert config.tier_for("implementer") == "high"
+    assert config.model_for("implementer") == "openrouter:big/model"
+
+
+def test_classifier_falls_back_to_low(tmp_path):
+    (tmp_path / "phil.toml").write_text('[models]\nlow = "openrouter:small/model"\n')
+    config = load_config(tmp_path)
+    assert config.tier_model("classifier") == "openrouter:small/model"
+
+
+def test_legacy_six_role_config_resolves_each_role_to_its_own_key(tmp_path):
+    lines = "".join(f'{role} = "openrouter:{role}/model"\n' for role in TEST_MODELS)
+    (tmp_path / "phil.toml").write_text("[models]\n" + lines)
+    config = load_config(tmp_path)
+    for role in TEST_MODELS:
+        assert config.model_for(role) == f"openrouter:{role}/model"
+
+
+def test_with_only_high_set_implementer_is_missing_with_low_tier_in_the_message(tmp_path):
+    (tmp_path / "phil.toml").write_text('[models]\nhigh = "openrouter:big/model"\n')
+    config = load_config(tmp_path)
+    assert config.missing_models(("implementer",)) == ["implementer"]
+    with pytest.raises(ConfigError, match=r"\(tier low\)"):
+        config.model_for("implementer")
+
+
+def test_unknown_tier_in_tiers_is_rejected(tmp_path):
+    (tmp_path / "phil.toml").write_text('[tiers]\nimplementer = "medium"\n')
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
 
 
 def test_sections_are_loaded(tmp_path):

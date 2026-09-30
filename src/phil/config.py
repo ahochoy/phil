@@ -9,6 +9,16 @@ from phil.store.paths import phil_home
 from phil.tomlw import dump_toml
 
 ROLES = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer")
+TIERS = ("high", "low", "classifier")
+# Tier each role resolves through when it has no model of its own (and [tiers] doesn't remap it).
+DEFAULT_TIERS: dict[str, str] = {
+    "architect": "high",
+    "critic": "high",
+    "reviewer": "high",
+    "orchestrator": "low",
+    "implementer": "low",
+    "tester": "low",
+}
 # API-key environment variable each model provider reads. Providers not listed (a local server,
 # a custom endpoint) are not checked.
 PROVIDER_KEYS = {
@@ -102,8 +112,10 @@ class ProjectConfig(_Section):
 
 
 class PhilConfig(_Section):
-    # No default model: each role's model is chosen explicitly in phil.toml.
+    # No default model: each role's model is chosen explicitly in phil.toml, or through a tier.
     models: dict[str, str] = {}
+    # Role -> tier, overriding DEFAULT_TIERS.
+    tiers: dict[str, str] = {}
     budget: dict[str, RoleBudget] = {}
     run: RunConfig = RunConfig()
     shell: ShellConfig = ShellConfig()
@@ -119,9 +131,22 @@ class PhilConfig(_Section):
     @field_validator("models")
     @classmethod
     def _validate_model_roles(cls, value: dict[str, str]) -> dict[str, str]:
-        unknown = sorted(set(value) - set(ROLES))
+        unknown = sorted(set(value) - set(ROLES) - set(TIERS))
         if unknown:
-            raise ValueError(f"Unknown role(s) in [models]: {unknown}. Valid roles: {list(ROLES)}")
+            raise ValueError(
+                f"Unknown key(s) in [models]: {unknown}. Valid roles: {list(ROLES)}, valid tiers: {list(TIERS)}"
+            )
+        return value
+
+    @field_validator("tiers")
+    @classmethod
+    def _validate_tiers(cls, value: dict[str, str]) -> dict[str, str]:
+        unknown_roles = sorted(set(value) - set(ROLES))
+        if unknown_roles:
+            raise ValueError(f"Unknown role(s) in [tiers]: {unknown_roles}. Valid roles: {list(ROLES)}")
+        unknown_tiers = sorted(set(value.values()) - set(TIERS))
+        if unknown_tiers:
+            raise ValueError(f"Unknown tier(s) in [tiers]: {unknown_tiers}. Valid tiers: {list(TIERS)}")
         return value
 
     @field_validator("budget")
@@ -132,21 +157,50 @@ class PhilConfig(_Section):
             raise ValueError(f"Unknown role(s) in [budget]: {unknown}. Valid roles: {list(ROLES)}")
         return value
 
+    def tier_for(self, role: str) -> str:
+        """The tier `role` resolves through: its `[tiers]` remap, else the default for that role."""
+        return self.tiers.get(role, DEFAULT_TIERS.get(role, "low"))
+
+    def tier_model(self, tier: str) -> str | None:
+        """The model set for `tier` under `[models]`, or `None` if it isn't set.
+
+        `classifier` falls back to the `low` model when it has none of its own."""
+        if tier in self.models:
+            return self.models[tier]
+        if tier == "classifier":
+            return self.models.get("low")
+        return None
+
     def model_for(self, role: str) -> str:
+        """The model for `role`: its own `[models]` key, else its tier's model. Raises if neither is set."""
         if role not in ROLES:
             raise ConfigError(f"Unknown role {role!r}. Valid roles: {list(ROLES)}")
-        if role not in self.models:
-            raise ConfigError(f'No model set for {role}. Add {role} = "provider:model" under [models] in phil.toml.')
-        return self.models[role]
+        if role in self.models:
+            return self.models[role]
+        tier = self.tier_for(role)
+        model = self.tier_model(tier)
+        if model is not None:
+            return model
+        raise ConfigError(f"No model for {role} (tier {tier}). Set models.{tier} in ~/.phil/config.toml or phil.toml.")
 
     def missing_models(self, roles: tuple[str, ...]) -> list[str]:
-        return [role for role in roles if role not in self.models]
+        missing = []
+        for role in roles:
+            try:
+                self.model_for(role)
+            except ConfigError:
+                missing.append(role)
+        return missing
 
     def missing_keys(self, roles: tuple[str, ...], environ: Mapping[str, str]) -> list[str]:
-        """API-key variables that the models set for `roles` need but `environ` lacks, in role order."""
+        """API-key variables that the models resolved for `roles` need but `environ` lacks, in role order."""
         missing: list[str] = []
         for role in roles:
-            provider = self.models.get(role, "").partition(":")[0]
+            try:
+                model = self.model_for(role)
+            except ConfigError:
+                continue  # missing_models reports an unset model; this only checks keys for a set one
+            provider = model.partition(":")[0]
             key = PROVIDER_KEYS.get(provider)
             if key and not environ.get(key) and key not in missing:
                 missing.append(key)

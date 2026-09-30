@@ -28,8 +28,9 @@ def test_chat_requires_chat_models(calc_repo):
     (calc_repo / "phil.toml").write_text('[models]\nimplementer = "test:model"\n')
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
     assert result.exit_code == 1
-    assert "orchestrator, architect, critic" in result.output
-    assert "[models]" in result.output
+    assert "No model for orchestrator (tier low)" in result.output
+    assert "No model for architect (tier high)" in result.output
+    assert "No model for critic (tier high)" in result.output
 
 
 def test_chat_warns_about_uncommitted_files(calc_repo):

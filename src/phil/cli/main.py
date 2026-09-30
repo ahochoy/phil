@@ -153,10 +153,11 @@ def _chat(ctx: typer.Context) -> None:
         raise typer.Exit(1) from exc
     missing = config.missing_models(CHAT_ROLES)
     if missing:
-        console.print(
-            f"[phil.error]phil.toml sets no model for: {escape(', '.join(missing))}. "
-            f'Add them under {escape("[models]")}, e.g. orchestrator = "openrouter:openai/gpt-6-luna".[/]'
-        )
+        for role in missing:
+            try:
+                config.model_for(role)
+            except ConfigError as exc:
+                console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1)
     # The chat starts runs too, and their worker inherits this environment.
     _require_api_keys(config, CHAT_ROLES + RUN_ROLES)

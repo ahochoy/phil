@@ -109,8 +109,9 @@ def test_missing_run_models_block_approval(calc_repo):
         calc_repo, ["add subtract", "y", "n"],
         {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
     )
-    assert "implementer, tester, reviewer" in text
-    assert "[models]" in text
+    assert "No model for implementer (tier low)" in text
+    assert "No model for tester (tier low)" in text
+    assert "No model for reviewer (tier high)" in text
     assert spawned == [] and runs == []
 
 
@@ -134,7 +135,7 @@ def test_approval_rereads_phil_toml(calc_repo):
     factory = ScriptedAgentFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
     ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory, start_pr_monitor=False).run()
     text = console.export_text()
-    assert "implementer, tester, reviewer" in text  # first y refused
+    assert "No model for implementer (tier low)" in text  # first y refused
     runs = list_runs(conn)
     assert [r.run_id for r in runs] == spawned and len(runs) == 1
 

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from phil.config import RUN_ROLES, PhilConfig
+from phil.config import RUN_ROLES, ConfigError, PhilConfig
 from phil.contracts import Plan
 from phil.repo_detect import detect_test_cmd
 from phil.workspace.shell import CONTAINMENT_DETAIL, ShellPolicy
@@ -80,9 +80,11 @@ def launch_problems(
     `root`, when given, is where a missing test command is detected from. `check_root` (default:
     `root`) is the tree check commands' paths must stay inside."""
     problems = []
-    missing = config.missing_models(RUN_ROLES)
-    if missing:
-        problems.append(f"phil.toml sets no model for: {', '.join(missing)}. Add them under [models]")
+    for role in config.missing_models(RUN_ROLES):
+        try:
+            config.model_for(role)
+        except ConfigError as exc:
+            problems.append(str(exc))
     problem = test_cmd_problem(plan, config, root)
     if problem:
         problems.append(problem)

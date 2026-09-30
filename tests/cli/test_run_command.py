@@ -78,8 +78,8 @@ def test_run_requires_models_for_the_run_roles(calc_repo, tmp_path, monkeypatch)
     (calc_repo / "phil.toml").write_text('[models]\nimplementer = "test:model"\n')
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path))])
     assert result.exit_code == 1
-    assert "tester, reviewer" in result.output
-    assert "[models]" in result.output
+    assert "No model for tester (tier low)" in result.output
+    assert "No model for reviewer (tier high)" in result.output
     assert runs_for(calc_repo) == []
 
 
