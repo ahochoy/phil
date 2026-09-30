@@ -48,3 +48,8 @@ Deferred items from implementing plan M2a ("layered config and models"). Plan:
   without error (it's a global Typer option) but silently ignores it, since those commands
   never call `_load_config`. Worth an explicit "not supported here" message, or wiring it
   through, rather than a silent no-op.
+
+## Final review nits
+
+- A test-command source note shows the global file's full path (e.g. `/Users/…/.phil/config.toml`). Display it as `~/.phil/config.toml`.
+- Lint isn't enforced: `ruff` isn't a dev dependency, and a one-off `uvx ruff` run reports about 427 existing findings (including import order in `tests/live/bench/harness.py`). Add ruff to the dev group, fix or baseline the findings, and run it in CI.
