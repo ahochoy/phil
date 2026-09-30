@@ -45,6 +45,12 @@ Deferred items from implementing plan 6a ("stop the waste"). Plan:
 - The implementer's diff is built fully in memory before the size cap is applied.
 - The first green-phase call carries the red phase's diff — brief-mandated, not a bug.
 - A test imports across a module boundary it shouldn't need to.
+- `files_read` is filled only from the file tools (read_file/ls/glob/grep). Reads through `run_shell` (`cat`, `rg`) aren't recorded; add read-only shell path arguments to `tool_paths`.
+
+## Findings as check tasks (final review)
+
+- In an all-check run that has a test command, a tester finding becomes a check task that borrows the plan's first `check_cmd`. The tester's failing test is already in the baseline, so the fix passes when the build passes, even if that test still fails. For tester findings in this case, the gate should require the finding's own test to pass.
+- The no-test-command branch of findings-as-check-tasks is unit-tested only; add an engine-level scripted test (mixed plan, empty `test_cmd`).
 
 ## Test-command detection and resume (Task 6)
 
