@@ -92,32 +92,57 @@ def _git_branch_mutates(rest: list[str]) -> bool:
     return False
 
 
-def _short_cluster_has(arg: str, letters: str) -> bool:
-    """Whether `arg` is a single-dash flag cluster (not a `--long` option) that contains any of
-    `letters` — catching e.g. `-Rn` or `-lL` as well as the bare flag on its own."""
-    return len(arg) > 1 and arg[0] == "-" and arg[1] != "-" and any(char in letters for char in arg[1:])
+def _is_short_cluster(arg: str) -> bool:
+    """Whether `arg` is a single-dash flag cluster: not a `--long` option, not a bare `-`."""
+    return len(arg) > 1 and arg[0] == "-" and arg[1] != "-"
+
+
+def _short_cluster_flags(arg: str, value_letters: str = "") -> str:
+    """The letters of a single-dash cluster that are actually parsed as flags — stopping at (and
+    including) the first letter in `value_letters`, since a value-taking flag's own attached
+    value is not more flags (`-eR`'s "R" is `-e`'s pattern, not a `-R` flag). Returns "" if `arg`
+    isn't a short cluster at all."""
+    if not _is_short_cluster(arg):
+        return ""
+    body = arg[1:]
+    for i, char in enumerate(body):
+        if char in value_letters:
+            return body[: i + 1]
+    return body
 
 
 # `rg --pre`/`--pre-glob` run an arbitrary preprocessor command on every searched file;
 # `--hostname-bin` (paired with `--hyperlink-format`) does too. `-L`/`--follow` walk symlinks out
-# of the worktree.
+# of the worktree. Value-taking short flags (rg --help): e f g m A B C t T M j r E — scanning
+# stops at the first one, so its attached value (e.g. `-eL`'s "L") isn't mistaken for `-L`.
+_RG_VALUE_LETTERS = "efgmABCtTMjrE"
 _RG_MUTATING_EXACT = {"--pre", "--pre-glob", "--hostname-bin", "--follow"}
 _RG_MUTATING_PREFIXES = ("--pre=", "--pre-glob=", "--hostname-bin=")
 
 
 def _rg_mutates(rest: list[str]) -> bool:
     return any(
-        arg in _RG_MUTATING_EXACT or arg.startswith(_RG_MUTATING_PREFIXES) or _short_cluster_has(arg, "L")
+        arg in _RG_MUTATING_EXACT
+        or arg.startswith(_RG_MUTATING_PREFIXES)
+        or "L" in _short_cluster_flags(arg, _RG_VALUE_LETTERS)
         for arg in rest
     )
 
 
 # `grep -R`/`--dereference-recursive` walks symlinks out of the worktree; lowercase `-r` doesn't.
+# BSD grep's `-S` does the same while recursing; `-O`/`-p` are refused alongside it per the
+# reviewer. Value-taking short flags: e f m A B C d D.
+_GREP_VALUE_LETTERS = "efmABCdD"
 _GREP_MUTATING_EXACT = {"--dereference-recursive"}
+_GREP_MUTATING_LETTERS = "RSOp"
 
 
 def _grep_mutates(rest: list[str]) -> bool:
-    return any(arg in _GREP_MUTATING_EXACT or _short_cluster_has(arg, "R") for arg in rest)
+    return any(
+        arg in _GREP_MUTATING_EXACT
+        or any(char in _GREP_MUTATING_LETTERS for char in _short_cluster_flags(arg, _GREP_VALUE_LETTERS))
+        for arg in rest
+    )
 
 
 # `ls -L`/`--dereference` shows (and so can be tricked into reading through) a symlink's target.
@@ -125,7 +150,7 @@ _LS_MUTATING_EXACT = {"--dereference"}
 
 
 def _ls_mutates(rest: list[str]) -> bool:
-    return any(arg in _LS_MUTATING_EXACT or _short_cluster_has(arg, "L") for arg in rest)
+    return any(arg in _LS_MUTATING_EXACT or "L" in _short_cluster_flags(arg) for arg in rest)
 
 
 _GENERIC_FORBIDDEN_DETAIL = "uses shell operators or risky flags"
@@ -154,6 +179,40 @@ def _read_only_mutates(argv: list[str], key: tuple[str, ...]) -> bool:
     if key == ("ls",):
         return _ls_mutates(rest)
     return False
+
+
+# For grep/rg, a search pattern given positionally (no -e/--regexp/-f/--file) can look like a
+# path (e.g. the regex "/api/") without being one — it's never resolved as a file. Only grep and
+# rg have this positional-pattern grammar, so only they get a pattern index to exclude.
+_PATTERN_VALUE_LETTERS = {("grep",): _GREP_VALUE_LETTERS, ("rg",): _RG_VALUE_LETTERS}
+
+
+def _has_pattern_flag(rest: list[str], value_letters: str) -> bool:
+    for arg in rest:
+        if arg in ("--regexp", "--file") or arg.startswith(("--regexp=", "--file=")):
+            return True
+        flags = _short_cluster_flags(arg, value_letters)
+        if "e" in flags or "f" in flags:
+            return True
+    return False
+
+
+def _first_positional_index(rest: list[str]) -> int | None:
+    for i, arg in enumerate(rest):
+        if not arg.startswith("-"):
+            return i
+    return None
+
+
+def _pattern_index_to_exclude(key: tuple[str, ...], rest: list[str]) -> int | None:
+    """The index within `rest` of the grep/rg search pattern, when it's given positionally rather
+    than via -e/-f — excluded from path containment. With -e/-f, the pattern isn't positional at
+    all, so every positional argument is a real path (a filename to search) and none is excluded;
+    -e/-f's own attached or separate value is still containment-checked as any flag value is."""
+    value_letters = _PATTERN_VALUE_LETTERS.get(key)
+    if value_letters is None or _has_pattern_flag(rest, value_letters):
+        return None
+    return _first_positional_index(rest)
 
 
 def _path_candidates(arg: str) -> list[str]:
@@ -265,7 +324,11 @@ class ShellPolicy:
                 return "forbidden", _GENERIC_FORBIDDEN_DETAIL
             if self.root is not None:
                 root = self.root.resolve()
-                for arg in argv[1:]:
+                rest = argv[1:]
+                pattern_index = _pattern_index_to_exclude(key, rest)
+                for i, arg in enumerate(rest):
+                    if i == pattern_index:
+                        continue
                     for candidate in _path_candidates(arg):
                         if _needs_containment_check(candidate, root) and _outside_root(candidate, root):
                             return "forbidden", _CONTAINMENT_DETAIL

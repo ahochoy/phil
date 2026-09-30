@@ -271,6 +271,30 @@ def test_grep_lowercase_recursive_is_allowed():
     assert ShellPolicy([]).is_allowed("grep -r x .")
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "grep -S x .",
+        "grep -rS x .",
+        "grep -rnS x .",
+        "grep -O x .",
+        "grep -rO x .",
+        "grep -p x .",
+        "grep -rp x .",
+    ],
+)
+def test_grep_bsd_symlink_flags_are_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+def test_grep_pattern_attached_to_dash_e_is_not_mistaken_for_more_flags():
+    assert ShellPolicy([]).is_allowed("grep -eR src")
+
+
+def test_rg_pattern_attached_to_dash_e_is_not_mistaken_for_more_flags():
+    assert ShellPolicy([]).is_allowed("rg -eL")
+
+
 @pytest.mark.parametrize("command", ["rg -L x .", "rg -Ln x .", "rg --follow x ."])
 def test_rg_follow_symlinks_is_forbidden(command):
     assert ShellPolicy([]).denial_reason(command) == "forbidden"
@@ -315,6 +339,21 @@ def test_containment_allows_harmless_flag_values(tmp_path):
     policy = ShellPolicy([], root=tmp_path)
     assert policy.is_allowed("git branch --sort=-committerdate")
     assert policy.is_allowed("git branch --format=%(refname)")
+
+
+def test_grep_rg_positional_pattern_is_excluded_from_path_containment(tmp_path):
+    policy = ShellPolicy([], root=tmp_path)
+    assert policy.is_allowed("grep -rn /api/ src")
+    assert policy.is_allowed("rg /etc/ src")
+
+
+def test_grep_rg_second_positional_is_still_a_real_path(tmp_path):
+    policy = ShellPolicy([], root=tmp_path)
+    assert policy.denial_reason("grep -rn foo /etc") == "forbidden"
+
+
+def test_grep_with_explicit_pattern_flag_treats_all_positionals_as_paths(tmp_path):
+    assert ShellPolicy([], root=tmp_path).denial_reason("grep -e foo /etc") == "forbidden"
 
 
 def test_symlink_escaping_the_worktree_is_forbidden(tmp_path):
