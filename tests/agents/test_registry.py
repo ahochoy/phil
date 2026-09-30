@@ -64,3 +64,16 @@ def test_tester_and_reviewer_prompts_cover_a_run_with_no_test_suite():
     assert "If `test_cmd` is empty, the project has no test suite" in tester
     reviewer = load_prompt(get_spec("reviewer"))
     assert "If `final_report.command` is empty, the project has no test suite" in reviewer
+
+
+@pytest.mark.parametrize("name", ["intake", "architect", "critic", "implementer", "tester", "reviewer", "btw"])
+def test_working_efficiently_block_reaches_every_agent(name):
+    prompt = load_prompt(get_spec(name))
+    assert "## Working efficiently" in prompt
+    assert "Explore with the file tools" in prompt
+
+
+def test_architect_prompt_has_task_sizing_rules():
+    prompt = load_prompt(get_spec("architect"))
+    assert "fewest tasks that keep each one independently verifiable" in prompt
+    assert "Don't split a change to mirror patterns" in prompt
