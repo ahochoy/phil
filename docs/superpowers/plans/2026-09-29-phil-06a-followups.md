@@ -8,8 +8,12 @@ Deferred items from implementing plan 6a ("stop the waste"). Plan:
 ## Benchmark harness (Task 1)
 
 - The usage query's `WHERE` clause duplicates `chat_usage`'s; consider sharing one query.
-- Intake is bypassed in the benchmark (the case's goal goes straight to the architect), so
+- Intake isn't run in the benchmark (the case's goal goes straight to the architect), so
   intake's calls are never counted in a benchmark record.
+- The benchmark doesn't mirror the chat's freezing of the test command at approval.
+- No benchmark case covers test-command detection or the no-test-suite path.
+- A check task runs both the test command and its `check_cmd` on every verify, so a site whose
+  tests also build does the build twice; no benchmark case measures that cost.
 - The benchmark's test helpers are imported from a conftest rather than a shared helpers module.
 
 ## Shell policy and evidence (Tasks 2 and 3)
@@ -28,22 +32,19 @@ Deferred items from implementing plan 6a ("stop the waste"). Plan:
 - A grep/rg pattern is over-refused as an outside path when its position in the argument list is
   ambiguous (for example a positional pattern that looks like a path).
 
-## Check-mode tasks (Task 4)
+## Gates and test output
 
-- Check-task progress messages still say "green phase" even though a check task has no red phase
-  to contrast with.
-- `verify_check` has no pure unit tests of its own; today it's covered only through the engine's
-  integration tests.
-- A `check_cmd` that writes build output (for example `dist/`) gets committed unless that output
-  is gitignored.
+- Only pytest output is parsed (`parse_failures`/`parse_counts` in `src/phil/run/gates.py`). With
+  another runner, a baseline that already fails makes red impossible (every failure reads as
+  `exit code N`, which the baseline already holds), and green's added-tests check is skipped (no
+  counts). Detection now reaches `npm test`, `go test` and `cargo test` more often, so this bites
+  more runs.
 
 ## Worklogs and attempts (Task 5)
 
-- The budget early-return path leaves `keep_worktree` set; checked safe, but not swept.
 - The implementer's diff is built fully in memory before the size cap is applied.
 - The first green-phase call carries the red phase's diff — brief-mandated, not a bug.
 - A test imports across a module boundary it shouldn't need to.
-- Duplicate adjacent comments on the approve path (`engine.py:476-480`).
 
 ## Test-command detection and resume (Task 6)
 

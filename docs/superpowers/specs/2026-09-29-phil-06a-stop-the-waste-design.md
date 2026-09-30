@@ -62,13 +62,15 @@ A one-tag change to an Astro site took about 50 minutes, 438 model calls and mor
   - Never plan a task whose only work is verification; put the check in the task that makes the change.
   - `check_cmd` is a single shell command, for example `npm run build`; the architect prefers commands the repo already defines.
 - **Critic** flags a `check` task that changes behaviour, and any verification-only task.
-- **Plan view** marks check tasks `(check: <cmd>)`. **Approval**: `check_cmd`s are validated against the shell policy like the test command, but read-only and plan-listed commands are allowed (§3.3).
+- **Plan view** marks check tasks `(check: <cmd>)`. **Approval**: `check_cmd`s are validated against the shell policy like the test command, but read-only and plan-listed commands are allowed (§3.3). A forbidden `check_cmd` (shell operators, a blocked flag) blocks approval, and so does a read-only one whose paths leave the tree (checked against the base commit's snapshot when one was exported, else the repo root).
+- **Run-time guard.** Before running a `check_cmd`, the engine checks it again with the shell policy rooted at the worktree. A forbidden command, or a read-only one that leaves the worktree, is refused without running and fails the gate.
+- **Review and tester findings.** In a run with no test command, or whose original tasks are all `check`, a finding becomes a `check` task using the plan's first `check_cmd`, since a `tdd` task could never pass red there. Other runs' findings stay `tdd`.
 
 ### 3.3 Read-only shell by default
 
 - `ShellPolicy` gains a built-in read-only set that is always allowed. It is separate from `[shell] allow` and not replaced by it:
-  - `ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`;
-  - `find` (refused when its arguments include `-exec`, `-execdir`, `-delete`, `-ok`, `-okdir`, `-fprint*`, or `-fls`);
+  - `ls`, `pwd`, `cat`, `head`, `tail`, `wc` (refused with `--files0-from`), `grep`, `rg`;
+  - `find` (refused when its arguments include `-exec`, `-execdir`, `-delete`, `-ok`, `-okdir`, `-fprint*`, `-fls`, or `-files0-from`);
   - `git status`, `git diff`, `git log`, `git show`, `git ls-files`, `git branch` (listing only: refused with `-d`, `-D`, `-m`, `-M`, `-c`, `-C`, or `--delete`).
 
   Arguments may be anything except the forbidden characters (unchanged: no pipes, chaining or redirects).
@@ -83,7 +85,7 @@ A one-tag change to an Astro site took about 50 minutes, 438 model calls and mor
 
 ### 3.5 Work summary between attempts
 
-- `TaskResult` gains a `worklog` object: `files_read` (paths), `files_changed` (paths), `notes` (at most 5 short strings: what was tried, what failed, what's next). The implementer fills it on every output.
+- `TaskResult` gains a `worklog` object: `files_changed` (paths) and `notes` (at most 5 short strings: what was tried, what failed, what's next). The implementer fills it on every output. The stored worklog adds `files_read` (paths), which the engine fills from the file tools' paths, repo-relative, for every attempt; the model never writes it.
 - The engine stores the latest worklog per task in run state (`worklogs[task_id]`). When an attempt fails to produce output (a rejection or crash), the engine builds a fallback worklog from the tool log: the `read_file` and `ls` paths from `UsageCollector` tool inputs, and the changed files from the worktree.
 - `ImplementInput` gains `worklog` (the previous attempt's) and `diff` (the task's current changes since its start SHA, capped by the packet budget). The implementer prompt says: continue from the worklog and diff; don't re-read files listed there unless you need their current contents.
 - An approval resume, a phase retry and a new phase of the same task all carry it.
@@ -98,7 +100,8 @@ A one-tag change to an Astro site took about 50 minutes, 438 model calls and mor
 
   The architect sees the detected command as a hint. The plan view shows the effective command and where it came from (plan, config, or detected).
 - **No test suite.** If nothing is detected and the plan's tasks are all `check`, the run may proceed with no test command: gates then run only the `check_cmd`s. A plan with any `tdd` task still needs a test command.
-- **Resume.** When the worker resumes a run, it compares the stored `test_cmd` with the current effective one: `phil.toml`'s `[project] test_cmd` if set, else the plan's. If they differ, the run switches to the new command. A `test_cmd_changed` event is written, and the chat and `phil attach` print `Using the updated test command: <cmd>.` The baseline is re-captured before the next gate.
+- **Resume.** The run records `phil.toml`'s `[project] test_cmd` at launch as `config_test_cmd`. When the worker resumes a run, it switches the test command only when `phil.toml`'s `[project] test_cmd` has changed since then; the new command then replaces the stored one. A `test_cmd_changed` event is written, and the chat and `phil attach` print `Using the updated test command: <cmd>.` The baseline is re-captured before the next gate.
+- **Rebaseline.** The new command runs in temporary detached worktrees, never on the run's own. The gate baseline (`baseline_failures`, and the passing and skipped counts) is measured at the run's committed HEAD, so failures the run already committed stay known; `initial_baseline` is measured at `base_sha`, as `setup` captured it.
 
 ### 3.7 Prompt tightening
 
