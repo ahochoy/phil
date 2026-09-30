@@ -90,7 +90,7 @@ def test_run_case_appends_one_complete_record(tmp_path, results, config):
     assert record["passed"] is True
     assert record["error"] is None
     assert (record["tasks"], record["modes"], record["expect_modes"]) == (1, ["tdd"], ["tdd"])
-    assert record["models"]["architect"] == "test:model"
+    assert record["models"]["architect"] == "ollama:test-model"
     # architect + critic in the chat, then red, green, tester and reviewer in the run
     assert record["calls"] == 6
     assert (record["tokens_in"], record["tokens_out"]) == (600, 120)
@@ -141,7 +141,7 @@ def test_run_case_writes_the_merged_config(tmp_path, results, config):
     run_case(case("py-multiply"), config, tmp_path / "work", factory=scripted())
     written = (tmp_path / "work" / "py-multiply" / "phil.toml").read_text()
     assert "max_tokens = 5000000" in written
-    assert 'architect = "test:model"' in written
+    assert 'architect = "ollama:test-model"' in written
 
 
 def test_a_run_that_does_not_finish_fails_the_case(tmp_path, results, config):

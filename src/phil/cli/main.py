@@ -80,13 +80,10 @@ def _open_project(ctx: typer.Context) -> tuple[RepoInfo, sqlite3.Connection]:
 
 
 def _require_api_keys(config: PhilConfig, roles: tuple[str, ...]) -> None:
-    missing = config.missing_keys(roles, os.environ)
-    if missing:
-        for key in missing:
-            console.print(
-                f"[phil.error]{escape(key)} is not set. Export it in this shell before running phil "
-                "(the models in phil.toml need it).[/]"
-            )
+    problems = config.missing_keys(roles, os.environ)
+    if problems:
+        for problem in problems:
+            console.print(f"[phil.error]{escape(problem)}[/]")
         raise typer.Exit(1)
 
 

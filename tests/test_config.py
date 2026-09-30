@@ -196,16 +196,55 @@ def test_invalid_sign_commits_is_rejected(tmp_path):
         load_config(tmp_path)
 
 
-def test_missing_keys_names_the_env_var_for_each_provider(tmp_path):
+def test_missing_keys_groups_roles_by_provider(tmp_path):
     (tmp_path / "phil.toml").write_text(
         '[models]\nimplementer = "openrouter:openai/gpt-6-sol"\ntester = "openrouter:openai/gpt-6-luna"\n'
-        'reviewer = "anthropic:claude-sonnet-5"\ncritic = "local:llama"\n'
+        'reviewer = "anthropic:claude-sonnet-5"\n'
     )
     config = load_config(tmp_path)
-    roles = ("implementer", "tester", "reviewer", "critic", "architect")
-    assert config.missing_keys(roles, environ={}) == ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"]
+    roles = ("implementer", "tester", "reviewer", "architect")
+    expected = [
+        "openrouter needs OPENROUTER_API_KEY (used by implementer, tester).",
+        "anthropic needs ANTHROPIC_API_KEY (used by reviewer).",
+    ]
+    assert config.missing_keys(roles, environ={}) == expected
+    assert config.missing_keys(roles, environ={"OPENROUTER_API_KEY": ""}) == expected
     assert config.missing_keys(roles, environ={"OPENROUTER_API_KEY": "x", "ANTHROPIC_API_KEY": "y"}) == []
-    assert config.missing_keys(roles, environ={"OPENROUTER_API_KEY": ""}) == ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"]
+
+
+def test_missing_keys_names_a_tier_model_by_its_provider_alias(tmp_path):
+    (tmp_path / "phil.toml").write_text('[models]\nhigh = "google_genai:gemini-2.5-pro"\n')
+    config = load_config(tmp_path)
+    assert config.missing_keys(("architect", "critic"), environ={}) == [
+        "google needs GOOGLE_API_KEY (used by architect, critic)."
+    ]
+
+
+def test_ollama_needs_no_key(tmp_path):
+    (tmp_path / "phil.toml").write_text('[models]\nlow = "ollama:qwen3:32b"\n')
+    assert load_config(tmp_path).missing_keys(("implementer", "tester"), environ={}) == []
+
+
+def test_a_custom_provider_key_is_checked(tmp_path):
+    (tmp_path / "phil.toml").write_text(
+        '[models]\nlow = "lab:llama"\n[providers.lab]\nkind = "openai"\napi_key_env = "LAB_KEY"\n'
+    )
+    config = load_config(tmp_path)
+    assert config.missing_keys(("implementer",), environ={}) == ["lab needs LAB_KEY (used by implementer)."]
+    assert config.missing_keys(("implementer",), environ={"LAB_KEY": "k"}) == []
+
+
+def test_missing_keys_reports_an_unknown_provider(tmp_path):
+    (tmp_path / "phil.toml").write_text(
+        '[models]\nhigh = "local:llama"\nimplementer = "nowhere:x"\ntester = "openrouter:openai/gpt-6-luna"\n'
+    )
+    config = load_config(tmp_path)
+    assert config.missing_keys(("architect", "critic", "implementer", "tester"), environ={}) == [
+        'Unknown provider "local" in high model "local:llama". Add [providers.local] to ~/.phil/config.toml or phil.toml.',
+        'Unknown provider "nowhere" in implementer model "nowhere:x". '
+        "Add [providers.nowhere] to ~/.phil/config.toml or phil.toml.",
+        "openrouter needs OPENROUTER_API_KEY (used by tester).",
+    ]
 
 
 def _write_global(text: str) -> Path:

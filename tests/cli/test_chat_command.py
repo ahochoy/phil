@@ -25,7 +25,7 @@ def test_phil_opens_the_chat_and_starts_a_run(calc_repo, monkeypatch):
 
 
 def test_chat_requires_chat_models(calc_repo):
-    (calc_repo / "phil.toml").write_text('[models]\nimplementer = "test:model"\n')
+    (calc_repo / "phil.toml").write_text('[models]\nimplementer = "ollama:test-model"\n')
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
     assert result.exit_code == 1
     assert "No model for orchestrator (tier low)" in result.output
@@ -65,7 +65,16 @@ def test_chat_requires_the_provider_api_key(calc_repo, monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
     assert result.exit_code == 1
-    assert "OPENROUTER_API_KEY is not set" in result.output
+    assert "openrouter needs OPENROUTER_API_KEY (used by" in result.output
+
+
+def test_chat_refuses_an_unknown_provider(calc_repo, monkeypatch):
+    (calc_repo / "phil.toml").write_text('[models]\nhigh = "nowhere:x"\nlow = "ollama:test-model"\n')
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
+    assert result.exit_code == 1
+    output = " ".join(result.output.split())
+    assert 'Unknown provider "nowhere" in high model "nowhere:x".' in output
+    assert "Add [providers.nowhere] to ~/.phil/config.toml or phil.toml." in output
 
 
 def _approved_chat(calc_repo, monkeypatch) -> str:

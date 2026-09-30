@@ -6,6 +6,7 @@ import pytest
 from deepagents.middleware.filesystem import _check_fs_permission
 
 from phil.agents.factory import build_agent, chat_model, filesystem_permissions
+from phil.agents.providers import BUILTIN_PROVIDERS, ProviderSpec
 from phil.agents.registry import get_spec
 from phil.agents.spec import load_prompt
 
@@ -83,7 +84,7 @@ def test_lean_roles_use_plain_create_agent(tmp_path, monkeypatch):
 
     monkeypatch.setattr(langchain.agents, "create_agent", fake_create_agent)
     monkeypatch.setattr(deepagents, "create_deep_agent", forbidden)
-    monkeypatch.setattr("phil.agents.factory.chat_model", lambda model, timeout_s: sentinel)
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda model, timeout_s, provider=None: sentinel)
     spec = get_spec("critic")
     assert build_agent(spec, "m", tmp_path, []) == "lean-agent"
     assert captured["model"] is sentinel
@@ -104,7 +105,7 @@ def test_deep_roles_use_deepagents_with_permissions(tmp_path, monkeypatch):
         return "deep-agent"
 
     monkeypatch.setattr(deepagents, "create_deep_agent", fake_create_deep_agent)
-    monkeypatch.setattr("phil.agents.factory.chat_model", lambda model, timeout_s: sentinel)
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda model, timeout_s, provider=None: sentinel)
     spec = get_spec("architect")
     assert build_agent(spec, "m", tmp_path, []) == "deep-agent"
     assert captured["model"] is sentinel
@@ -147,64 +148,49 @@ def test_agents_use_tool_calling_for_structured_output(name, tmp_path, monkeypat
     assert captured["response_format"].schema is spec.out_contract
 
 
-def test_build_agent_passes_timeout_s_to_chat_model(tmp_path, monkeypatch):
+def test_build_agent_passes_timeout_s_and_provider_to_chat_model(tmp_path, monkeypatch):
     import langchain.agents
 
-    seen: list[int] = []
+    seen: list[tuple] = []
 
     monkeypatch.setattr(langchain.agents, "create_agent", lambda *a, **kw: "lean-agent")
     monkeypatch.setattr(
-        "phil.agents.factory.chat_model", lambda model, timeout_s: (seen.append(timeout_s), object())[1]
+        "phil.agents.factory.chat_model",
+        lambda model, timeout_s, provider=None: (seen.append((timeout_s, provider)), object())[1],
     )
     spec = get_spec("critic")
-    build_agent(spec, "m", tmp_path, [], timeout_s=42)
+    lab = ProviderSpec("lab", "openai", "http://lab:8000/v1", None, None, None)
+    build_agent(spec, "lab:m", tmp_path, [], timeout_s=42, provider=lab)
     build_agent(spec, "m", tmp_path, [])
-    assert seen == [42, 180]
+    assert seen == [(42, lab), (180, None)]
 
 
-# --- plan 4c: model-call timeouts -----------------------------------------------------------
+# --- model construction goes through phil.agents.providers ---------------------------------
 
 
-def test_chat_model_selects_kwargs_per_provider(monkeypatch):
-    captured: list[tuple[str, dict]] = []
+def test_chat_model_builds_through_the_given_provider(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        "phil.agents.factory.build_chat_model",
+        lambda spec, name, timeout_s: (captured.append((spec, name, timeout_s)), "model-object")[1],
+    )
+    lab = ProviderSpec("lab", "openai", "http://lab:8000/v1", None, None, None)
+    assert chat_model("lab:qwen3:32b", 42, provider=lab) == "model-object"
+    assert captured == [(lab, "qwen3:32b", 42)]
 
-    def fake_init_chat_model(model, **kwargs):
-        captured.append((model, kwargs))
-        return "model-object"
 
-    monkeypatch.setattr("langchain.chat_models.init_chat_model", fake_init_chat_model)
-    assert chat_model("openrouter:openai/gpt-6-luna", 180) == "model-object"
-    assert captured[-1] == ("openrouter:openai/gpt-6-luna", {"timeout": 180_000, "max_retries": 0})
-    chat_model("openai:gpt-5-mini", 180)
-    assert captured[-1] == ("openai:gpt-5-mini", {"timeout": 180, "max_retries": 0})
-    chat_model("anthropic:claude-sonnet-5", 42)
-    assert captured[-1] == ("anthropic:claude-sonnet-5", {"timeout": 42, "max_retries": 0})
+def test_chat_model_without_a_provider_resolves_a_builtin(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        "phil.agents.factory.build_chat_model",
+        lambda spec, name, timeout_s: (captured.append((spec, name, timeout_s)), "model-object")[1],
+    )
     chat_model("google_genai:gemini-2.5-flash", 90)
-    assert captured[-1] == ("google_genai:gemini-2.5-flash", {"timeout": 90, "max_retries": 0})
-    chat_model("local:llama", 180)
-    assert captured[-1] == ("local:llama", {})
+    assert captured == [(BUILTIN_PROVIDERS["google"], "gemini-2.5-flash", 90)]
 
 
 def test_chat_model_openrouter_uses_millisecond_timeout_and_disables_sdk_retries(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-used")
     model = chat_model("openrouter:openai/gpt-6-luna", 180)
     assert model.request_timeout == 180_000
-    assert model.max_retries == 0
-
-
-def test_chat_model_anthropic_uses_second_timeout_and_disables_sdk_retries(monkeypatch):
-    # Stands in for the openai/anthropic/google_genai family: all three take `timeout` in
-    # seconds. langchain-anthropic is installed here; langchain-openai is not (see the skipped
-    # test below), but they share the same `init_chat_model(**kwargs)` contract.
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-used")
-    model = chat_model("anthropic:claude-haiku-4-5-20251001", 180)
-    assert model.default_request_timeout == 180
-    assert model.max_retries == 0
-
-
-def test_chat_model_openai_uses_second_timeout(monkeypatch):
-    pytest.importorskip("langchain_openai")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-used")
-    model = chat_model("openai:gpt-5-mini", 180)
-    assert model.request_timeout == 180
     assert model.max_retries == 0

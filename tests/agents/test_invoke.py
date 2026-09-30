@@ -156,7 +156,7 @@ def test_shell_log_prefix_matches_artifact_base_name(conn, artifacts, tmp_path):
     config = PhilConfig(shell=shell_config, models=TEST_MODELS)
     captured: dict = {}
 
-    def factory(spec, model, workdir, tools, *, timeout_s=180):
+    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None):
         captured["tools"] = tools
         return FakeAgent([TaskResult(phase="red", summary="s", files_changed=[], tests_added=[], self_check=self_check())])
 
@@ -234,7 +234,7 @@ class CallbackAgent:
 
 
 def accounting_context(config, conn, artifacts, agent, **overrides):
-    return context(config, conn, artifacts, lambda spec, model, workdir, tools, *, timeout_s=180: agent, **overrides)
+    return context(config, conn, artifacts, lambda spec, model, workdir, tools, *, timeout_s=180, provider=None: agent, **overrides)
 
 
 def calls_rows(conn):
@@ -325,7 +325,11 @@ def test_call_model_from_a_different_vendor_is_priced_as_itself_when_the_book_kn
     assert row["cost_usd"] == pytest.approx(0.000003 * 1000 + 0.000012 * 100)
 
 
-def test_unpriced_model_cost_is_unknown(config, conn, artifacts, critic_packet, tmp_path):
+UNPRICED_MODEL = "openai:gpt-5-mini"
+
+
+def test_unpriced_model_cost_is_unknown(conn, artifacts, critic_packet, tmp_path):
+    config = PhilConfig(models=TEST_MODELS | {"critic": UNPRICED_MODEL})
     agent = CallbackAgent([("llm", 50, 5, None, None), ("llm", 50, 5, 0.01, None)], critique())
     ctx = accounting_context(config, conn, artifacts, agent, prices=price_book(tmp_path))
     invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
@@ -333,8 +337,85 @@ def test_unpriced_model_cost_is_unknown(config, conn, artifacts, critic_packet, 
     assert row["cost_source"] == "unknown"
     assert row["cost_usd"] == pytest.approx(0.01)
     first, second = calls_rows(conn)
-    assert (first["cost_source"], first["cost_usd"], first["model"]) == ("unknown", 0.0, TEST_MODEL)
+    assert (first["cost_source"], first["cost_usd"], first["model"]) == ("unknown", 0.0, UNPRICED_MODEL)
     assert second["cost_source"] == "reported"
+
+
+def test_missing_cost_is_estimated_from_the_provider_prices(conn, artifacts, critic_packet, tmp_path):
+    config = PhilConfig.model_validate(
+        {
+            "models": TEST_MODELS | {"critic": "lab:llama"},
+            "providers": {"lab": {"kind": "openai", "input_per_mtok": 2.0, "output_per_mtok": 10.0}},
+        }
+    )
+    agent = CallbackAgent([("llm", 1000, 100, None, "llama"), ("llm", 1000, 100, 0.5, "llama")], critique())
+    ctx = accounting_context(config, conn, artifacts, agent, prices=no_fetch_price_book(tmp_path))
+    invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+    first, second = calls_rows(conn)
+    assert (first["cost_source"], first["cost_usd"]) == ("estimated", pytest.approx(1000 / 1e6 * 2.0 + 100 / 1e6 * 10.0))
+    assert (second["cost_source"], second["cost_usd"]) == ("reported", pytest.approx(0.5))  # a reported cost wins
+    [row] = telemetry(conn)
+    assert row["cost_source"] == "estimated"
+
+
+def test_a_provider_with_one_price_is_not_estimated(conn, artifacts, critic_packet, tmp_path):
+    config = PhilConfig.model_validate(
+        {"models": TEST_MODELS | {"critic": "lab:llama"}, "providers": {"lab": {"kind": "openai", "input_per_mtok": 2.0}}}
+    )
+    agent = CallbackAgent([("llm", 1000, 100, None, "llama")], critique())
+    invoke_agent(get_spec("critic"), critic_packet, accounting_context(config, conn, artifacts, agent), node="critic")
+    [row] = telemetry(conn)
+    assert (row["cost_source"], row["cost_usd"]) == ("unknown", 0.0)
+
+
+def test_ollama_calls_are_estimated_free(conn, artifacts, critic_packet, tmp_path):
+    config = PhilConfig(models=TEST_MODELS | {"critic": "ollama:qwen3:32b"})
+    agent = CallbackAgent([("llm", 1000, 100, None, "qwen3:32b")], critique())
+    ctx = accounting_context(config, conn, artifacts, agent, prices=no_fetch_price_book(tmp_path))
+    invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+    [row] = telemetry(conn)
+    assert (row["cost_source"], row["cost_usd"]) == ("estimated", 0.0)
+
+
+def test_openrouter_price_book_wins_over_provider_prices(conn, artifacts, critic_packet, tmp_path):
+    config = PhilConfig.model_validate(
+        {
+            "models": TEST_MODELS | {"critic": OPENROUTER_MODEL},
+            "providers": {"openrouter": {"input_per_mtok": 1000.0, "output_per_mtok": 1000.0}},
+        }
+    )
+    agent = CallbackAgent([("llm", 1000, 100, None, "openai/gpt-6-sol")], critique())
+    ctx = accounting_context(config, conn, artifacts, agent, prices=price_book(tmp_path))
+    invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+    [row] = telemetry(conn)
+    assert (row["cost_source"], row["cost_usd"]) == ("estimated", pytest.approx(0.003))
+
+
+def test_invoke_passes_the_resolved_provider_to_the_factory(conn, artifacts, critic_packet):
+    from phil.agents.providers import ProviderSpec
+
+    config = PhilConfig.model_validate(
+        {
+            "models": TEST_MODELS | {"critic": "lab:llama"},
+            "providers": {"lab": {"kind": "openai", "base_url": "http://lab:8000/v1"}},
+        }
+    )
+    seen = {}
+
+    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None):
+        seen.update(model=model, provider=provider)
+        return FakeAgent([critique()])
+
+    invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic")
+    assert seen == {"model": "lab:llama", "provider": ProviderSpec("lab", "openai", "http://lab:8000/v1", None, None, None)}
+
+
+def test_invoke_refuses_an_unknown_provider_naming_the_role(conn, artifacts, critic_packet):
+    from phil.agents.providers import UnknownProvider
+
+    config = PhilConfig(models=TEST_MODELS | {"critic": "nowhere:x"})
+    with pytest.raises(UnknownProvider, match='Unknown provider "nowhere" in critic model "nowhere:x"'):
+        invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, FakeAgentFactory([])), node="critic")
 
 
 def test_scripted_factory_falls_back_to_message_usage(config, conn, artifacts, critic_packet, tmp_path):

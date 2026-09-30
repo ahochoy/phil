@@ -19,15 +19,6 @@ DEFAULT_TIERS: dict[str, str] = {
     "implementer": "low",
     "tester": "low",
 }
-# API-key environment variable each model provider reads. Providers not listed (a local server,
-# a custom endpoint) are not checked.
-PROVIDER_KEYS = {
-    "openrouter": "OPENROUTER_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "google_genai": "GOOGLE_API_KEY",
-}
-
 # Roles the chat calls; `phil` checks these have models before the conversation starts.
 CHAT_ROLES = ("orchestrator", "architect", "critic")
 # Roles the run graph calls; `phil run` checks these have models before starting.
@@ -111,6 +102,17 @@ class ProjectConfig(_Section):
     ]
 
 
+class ProviderConfig(_Section):
+    """A `[providers.<name>]` entry: a custom provider, or field overrides for a built-in one.
+    API keys never live here, only the name of the environment variable that holds one."""
+
+    kind: Literal["openai", "anthropic", "google", "openrouter"] | None = None
+    base_url: str | None = None
+    api_key_env: str | None = None
+    input_per_mtok: float | None = None  # USD per million tokens
+    output_per_mtok: float | None = None
+
+
 class PhilConfig(_Section):
     # No default model: each role's model is chosen explicitly in phil.toml, or through a tier.
     models: dict[str, str] = {}
@@ -121,6 +123,7 @@ class PhilConfig(_Section):
     shell: ShellConfig = ShellConfig()
     project: ProjectConfig = ProjectConfig()
     git: GitConfig = GitConfig()
+    providers: dict[str, ProviderConfig] = {}
     # Dotted leaf path -> the layer that set it: "default", the global file's path, "phil.toml" or "--set".
     _sources: dict[str, str] = PrivateAttr(default_factory=dict)
 
@@ -147,6 +150,16 @@ class PhilConfig(_Section):
         unknown_tiers = sorted(set(value.values()) - set(TIERS))
         if unknown_tiers:
             raise ValueError(f"Unknown tier(s) in [tiers]: {unknown_tiers}. Valid tiers: {list(TIERS)}")
+        return value
+
+    @field_validator("providers")
+    @classmethod
+    def _validate_providers(cls, value: dict[str, ProviderConfig]) -> dict[str, ProviderConfig]:
+        from phil.agents.providers import is_known_provider
+
+        for name, entry in value.items():
+            if entry.kind is None and not is_known_provider(name):
+                raise ValueError(f"[providers.{name}] needs a kind: openai, anthropic, google or openrouter")
         return value
 
     @field_validator("budget")
@@ -202,19 +215,41 @@ class PhilConfig(_Section):
                 messages.append(str(exc))
         return messages
 
+    def model_owner(self, role: str) -> str:
+        """Where `role`'s model is set: the role itself, or the tier whose model it uses."""
+        if role in self.models:
+            return role
+        tier = self.tier_for(role)
+        if tier == "classifier" and "classifier" not in self.models:
+            return "low"
+        return tier
+
     def missing_keys(self, roles: tuple[str, ...], environ: Mapping[str, str]) -> list[str]:
-        """API-key variables that the models resolved for `roles` need but `environ` lacks, in role order."""
-        missing: list[str] = []
+        """What stops the models resolved for `roles` from being called, one message each, in role
+        order: an unknown provider, or a provider whose key variable `environ` lacks (with the roles
+        that use it). Unset models are `missing_models`' to report."""
+        from phil.agents.providers import UnknownProvider, provider_for_model
+
+        problems: dict[str, list[str] | None] = {}  # message key -> roles needing the key (None: unknown provider)
         for role in roles:
             try:
                 model = self.model_for(role)
             except ConfigError:
-                continue  # missing_models reports an unset model; this only checks keys for a set one
-            provider = model.partition(":")[0]
-            key = PROVIDER_KEYS.get(provider)
-            if key and not environ.get(key) and key not in missing:
-                missing.append(key)
-        return missing
+                continue
+            try:
+                provider = provider_for_model(self, model, self.model_owner(role))
+            except UnknownProvider as exc:
+                problems.setdefault(str(exc), None)
+                continue
+            env = provider.api_key_env
+            if env and not environ.get(env):
+                users = problems.setdefault(f"{provider.name} needs {env}", [])
+                if users is not None and role not in users:
+                    users.append(role)
+        return [
+            message if users is None else f"{message} (used by {', '.join(users)})."
+            for message, users in problems.items()
+        ]
 
     def budget_for(self, role: str) -> RoleBudget:
         default = RoleBudget(max_input_tokens=DEFAULT_BUDGETS.get(role, 12_000))

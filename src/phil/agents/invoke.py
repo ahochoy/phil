@@ -10,6 +10,7 @@ from pydantic import BaseModel, ValidationError
 
 from phil.agents.evidence import check_evidence
 from phil.agents.pricing import PriceBook, default_price_book
+from phil.agents.providers import ProviderSpec, estimate_cost, provider_for_model, split_model
 from phil.agents.retry import call_with_retry
 from phil.agents.spec import AgentSpec
 from phil.agents.tools import CommandLog, make_shell_tool
@@ -21,9 +22,9 @@ from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.parked import park
 from phil.store.telemetry import CallRow, CostSource, TelemetryRow, record, record_calls, weakest
 
-# `Callable[...]` can't express the `timeout_s` keyword-only parameter with its default;
-# real factories (build_agent) and scripted ones (ScriptedAgentFactory/FakeAgentFactory) all
-# accept it as `*, timeout_s: int = 180`.
+# `Callable[...]` can't express the keyword-only parameters; real factories (build_agent) and
+# scripted ones (ScriptedAgentFactory/FakeAgentFactory) all accept
+# `*, timeout_s: int = 180, provider: ProviderSpec | None = None` (the fakes ignore `provider`).
 AgentFactory = Callable[[AgentSpec, str, Path | None, list[Callable[..., str]]], Any]
 
 
@@ -96,17 +97,31 @@ def _pricing_models(configured: str, call_model: str | None) -> list[str]:
 
 
 def _estimate(
-    ctx: AgentContext, configured: str, call_model: str | None, input_tokens: int, output_tokens: int
+    ctx: AgentContext,
+    configured: str,
+    provider: ProviderSpec | None,
+    call_model: str | None,
+    input_tokens: int,
+    output_tokens: int,
 ) -> float | None:
-    prices = _price_book(ctx)
-    for name in _pricing_models(configured, call_model):
-        cost = prices.estimate(name, input_tokens, output_tokens)
-        if cost is not None:
-            return cost
+    """A call's cost with none reported: OpenRouter's price book for an OpenRouter-kind provider,
+    then the provider's own prices (`[providers.x]`, or Ollama's 0.0), else `None` (unknown)."""
+    if provider is None or provider.kind == "openrouter":
+        # The book knows models as `openrouter:<id>`, whatever the provider entry is called.
+        book_model = configured if provider is None else f"openrouter:{split_model(configured)[1]}"
+        prices = _price_book(ctx)
+        for name in _pricing_models(book_model, call_model):
+            cost = prices.estimate(name, input_tokens, output_tokens)
+            if cost is not None:
+                return cost
+    if provider is not None:
+        return estimate_cost(provider, input_tokens, output_tokens)
     return None
 
 
-def _usage(ctx: AgentContext, collector: Any, messages: list, configured: str) -> _Usage:
+def _usage(
+    ctx: AgentContext, collector: Any, messages: list, configured: str, provider: ProviderSpec | None = None
+) -> _Usage:
     """Callback totals win when the collector saw model calls; otherwise (scripted fakes) fall
     back to the usage on the returned messages."""
     tool_calls = dict(collector.tool_calls)
@@ -119,7 +134,9 @@ def _usage(ctx: AgentContext, collector: Any, messages: list, configured: str) -
         if model_call.reported_cost is not None:
             cost, source = model_call.reported_cost, "reported"
         else:
-            estimate = _estimate(ctx, configured, model_call.model, model_call.input_tokens, model_call.output_tokens)
+            estimate = _estimate(
+                ctx, configured, provider, model_call.model, model_call.input_tokens, model_call.output_tokens
+            )
             cost, source = (estimate, "estimated") if estimate is not None else (0.0, "unknown")
         rows.append(
             CallRow(
@@ -234,6 +251,7 @@ def invoke_agent(
             f"{spec.name} expects a {spec.in_contract.__name__} packet, got {packet.contract_type}"
         )
     model = ctx.config.model_for(spec.role)
+    provider = provider_for_model(ctx.config, model, ctx.config.model_owner(spec.role))
     log = ctx.command_log if ctx.command_log is not None else CommandLog()
     shell = ctx.config.shell
     effective_node = node if call == 1 else f"{node}-c{call}"
@@ -251,7 +269,9 @@ def invoke_agent(
                 approved=ctx.approved,
             )
         )
-    agent = _resolve_factory(ctx)(spec, model, ctx.workdir, tools, timeout_s=ctx.config.run.model_timeout_s)
+    agent = _resolve_factory(ctx)(
+        spec, model, ctx.workdir, tools, timeout_s=ctx.config.run.model_timeout_s, provider=provider
+    )
     # lazy: keeps langchain out of module import
     from phil.agents.collector import UsageCollector
     from phil.agents.model_retry import TRACKER_KEY, ModelRetryTracker, model_call_retried
@@ -301,7 +321,7 @@ def invoke_agent(
                     call=call,
                     packet=packet,
                     started=started,
-                    usage=_usage(ctx, collector, [], model),
+                    usage=_usage(ctx, collector, [], model, provider),
                     retries=retries,
                 )
                 raise
@@ -319,7 +339,7 @@ def invoke_agent(
             )
             if problems:
                 outcome = "evidence_fail"
-        usage = _usage(ctx, collector, result.get("messages", []), model)
+        usage = _usage(ctx, collector, result.get("messages", []), model, provider)
         _record_usage(
             ctx,
             TelemetryRow(

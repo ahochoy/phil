@@ -100,7 +100,7 @@ def test_edit_revises_the_plan(calc_repo):
     assert runs[0].tasks_total == 2
 
 
-CHAT_ONLY_TOML = "[models]\n" + "".join(f'{r} = "test:model"\n' for r in ("orchestrator", "architect", "critic"))
+CHAT_ONLY_TOML = "[models]\n" + "".join(f'{r} = "ollama:test-model"\n' for r in ("orchestrator", "architect", "critic"))
 
 
 def test_missing_run_models_block_approval(calc_repo):
