@@ -44,7 +44,7 @@ A one-tag change to an Astro site took about 50 minutes, 438 model calls and mor
   4. records a result.
 - **Result:** one JSON line appended to `~/.phil/bench/results.jsonl`. Fields: case, timestamp, Phil git sha, models by role, plan task count and modes, pass/fail, run state, minutes, and from telemetry (planning and run) calls, model calls, input and output tokens, cost with its source, and retries.
 - `python -m tests.live.bench.report` prints the last N results per case as a table: tokens, calls, minutes, cost, pass.
-- The benchmark is run once on `main` before the changes as a baseline, and again after.
+- The benchmark lands as the plan's first task, and the baseline is run at that commit, before any fix. It is run again after the plan.
 
 ### 3.2 `check`-mode tasks
 
@@ -79,8 +79,7 @@ A one-tag change to an Astro site took about 50 minutes, 438 model calls and mor
 ### 3.4 Evidence
 
 - `Claim.command` is described as "the exact shell command you ran, or the tool call you made (e.g. `read_file src/x.ts`, `grep 'egg' src/`)".
-- `check_evidence` checks only claims whose command's first word is a shell program (not one of the file-tool names `ls`, `read_file`, `glob`, `grep`, `write_file`, `edit_file`, `delete`, `task`). File-tool claims are accepted when the tool log shows that tool was called. `UsageCollector` already counts tool starts by name, so the check receives those names. A claimed tool that was never called is still a problem.
-- Shell claims are matched as today.
+- `check_evidence` accepts a claim when its command matches a shell command that was run (as today), or when its first word names a tool the agent called: the tool names come from `UsageCollector`'s tool counts, which are passed to the check. Otherwise the claim is still flagged. (`grep` can be either: a shell grep or the grep tool. Both are accepted if either happened.)
 
 ### 3.5 Work summary between attempts
 
@@ -115,4 +114,4 @@ A one-tag change to an Astro site took about 50 minutes, 438 model calls and mor
 ## 4. Testing
 
 - **Offline, with scripted agents.** Check-task engine flow (no red phase; `check_cmd` pass and fail; test files untouched); `Task` validation; the read-only shell set and its refusals (find `-exec`, `git branch -D`, paths outside the worktree); run-scoped allowances; evidence with file-tool claims; worklog storage, the fallback from the tool log, and its presence in the next packet; test-command detection per ecosystem; resume switching the test command (with an event); planning prompt and contract changes.
-- **Live, run by the user:** `uv run pytest -m bench`, run on `main` (baseline) and on the branch. Expected: each case passes; `site-meta-tag` and `site-typo` plan one `check` task with no red phase; `py-multiply` plans one `tdd` task; tokens and minutes drop sharply against the baseline.
+- **Live, run by the user:** `uv run pytest -m bench`, run at the benchmark commit (the baseline) and at the end of the branch. Expected: each case passes; `site-meta-tag` and `site-typo` plan one `check` task with no red phase; `py-multiply` plans one `tdd` task; tokens and minutes drop sharply against the baseline.
