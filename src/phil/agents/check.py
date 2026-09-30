@@ -1,4 +1,4 @@
-"""`phil models check`: one tiny real call per configured model, through the agent path Phil uses."""
+"""`phil models check`: one tiny real call per model a role uses, through the agent path Phil uses."""
 
 import json
 import os
@@ -50,17 +50,35 @@ class CheckResult:
     detail: str  # why it failed; empty when ok
 
 
-def check_targets(config: PhilConfig) -> list[tuple[str, list[str]]]:
-    """Each distinct model to check, with the labels that use it: every tier that has a model set,
-    then every role key under [models] (which overrides its tier), in first-seen order."""
-    labels: dict[str, list[str]] = {}
-    for tier in TIERS:
-        if tier in config.models:
-            labels.setdefault(config.models[tier], []).append(tier)
+def _role_labels(config: PhilConfig) -> dict[str, str]:
+    """Label -> model for each model some role resolves to: the tier the role uses, or
+    `role:<name>` when the role's own [models] key overrides its tier. Roles with no model are skipped."""
+    used: dict[str, str] = {}
     for role in ROLES:
-        if role in config.models:
-            labels.setdefault(config.models[role], []).append(f"role:{role}")
+        try:
+            model = config.model_for(role)
+        except ConfigError:
+            continue
+        used[f"role:{role}" if role in config.models else config.model_owner(role)] = model
+    return used
+
+
+def check_targets(config: PhilConfig) -> list[tuple[str, list[str]]]:
+    """Each distinct model some role resolves to, with the labels that use it: the tiers in tier
+    order, then the role keys under [models] (which override their tier), in first-seen order.
+    A tier no role uses isn't a target (see `unused_tiers`)."""
+    used = _role_labels(config)
+    labels: dict[str, list[str]] = {}
+    for label in (*TIERS, *(f"role:{role}" for role in ROLES)):
+        if label in used:
+            labels.setdefault(used[label], []).append(label)
     return list(labels.items())
+
+
+def unused_tiers(config: PhilConfig) -> list[tuple[str, str]]:
+    """(tier, model) for each tier set under [models] that no role maps to; it is not called."""
+    used = _role_labels(config)
+    return [(tier, config.models[tier]) for tier in TIERS if tier in config.models and tier not in used]
 
 
 def _first_line(text: str) -> str:
@@ -115,7 +133,7 @@ def check_models(
     repo_root: Path,
     clock: Callable[[], float] = time.monotonic,
 ) -> list[CheckResult]:
-    """One call per distinct configured model (see `check_targets`): a lean agent asked to return
+    """One call per distinct model a role resolves to (see `check_targets`): a lean agent asked to return
     `ModelCheck(ok=true, echo=<word>)`, with the configured timeout, one try and no retries. Its
     telemetry and artifacts go to a temporary directory, not the project's."""
     targets = check_targets(config)

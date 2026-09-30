@@ -416,8 +416,8 @@ def config_command(
 
 @models_app.command("check")
 def models_check(ctx: typer.Context) -> None:
-    """Make one tiny call to each configured model to check it returns structured output."""
-    from phil.agents.check import check_models
+    """Make one tiny call to each model a role uses to check it returns structured output."""
+    from phil.agents.check import check_models, unused_tiers
 
     info = _resolve(ctx)
     config = _load_config(info.root, ctx.obj.get("overrides", []))
@@ -429,7 +429,12 @@ def models_check(ctx: typer.Context) -> None:
         )
         raise typer.Exit(1) from exc
     results = check_models(config, factory=factory, repo_root=info.root)
+    unused = [
+        f"– {escape(tier)}  {escape(model)}  unused (no role maps to it)" for tier, model in unused_tiers(config)
+    ]
     if not results:
+        for line in unused:
+            console.print(line, soft_wrap=True, highlight=False)
         console.print(
             "[phil.error]No models configured. Set models.high and models.low in "
             f"{escape(str(global_config_path()))} or phil.toml.[/]",
@@ -441,6 +446,8 @@ def models_check(ctx: typer.Context) -> None:
             line = f"[phil.gate.pass]✓[/] {escape(result.label)}  {escape(result.model)}  {result.seconds:.1f}s"
         else:
             line = f"[phil.gate.fail]✗[/] {escape(result.label)}  {escape(result.model)}  {escape(result.detail)}"
+        console.print(line, soft_wrap=True, highlight=False)
+    for line in unused:  # not called, and not a failure
         console.print(line, soft_wrap=True, highlight=False)
     if not all(result.ok for result in results):
         raise typer.Exit(1)

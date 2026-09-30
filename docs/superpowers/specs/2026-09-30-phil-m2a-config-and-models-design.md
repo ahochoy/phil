@@ -117,11 +117,13 @@ A user entry with a built-in name overrides that provider's fields, for example 
 
 ### 3.4 Capability check
 
-`phil models check` runs, for each configured tier (and each overridden role), one tiny real call through the same agent path Phil uses. It uses a lean agent and a small structured-output contract, for example `{"ok": true, "echo": "<word>"}`.
+`phil models check` runs, for each distinct model that some role resolves to, one tiny real call through the same agent path Phil uses. Each model is labelled with the tier or tiers it serves (e.g. `high`), or `role:<name>` when a role's own key overrides its tier. It uses a lean agent and a small structured-output contract, for example `{"ok": true, "echo": "<word>"}`.
 
 It reports one line per model:
 - `✓ high  anthropic:claude-sonnet-5  1.8s`, or
 - `✗ low  openai:gpt-oss-120b  returned text instead of the required structured output: "<first 120 chars>"`.
+
+A tier set under `[models]` that no role maps to (for example a global `high` under a repo config that sets all six roles) isn't called. It is listed as `– high  <model>  unused (no role maps to it)` and doesn't count as a failure.
 
 Any failure exits non-zero. The command:
 - uses the configured timeout and no retries;

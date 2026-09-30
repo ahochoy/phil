@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 from phil.agents.check import CHECK_WORD, ModelCheck
 from phil.agents.fake import ScriptedAgentFactory
 from phil.cli import main as cli
+from phil.config import ROLES, global_config_path
 from phil.ui.theme import make_console
 
 runner = CliRunner()
@@ -71,3 +72,19 @@ def test_models_check_hints_when_no_models_are_configured(git_repo, monkeypatch)
     assert result.exit_code == 1
     assert "No models configured" in result.output
     assert "models.high" in result.output
+
+
+def test_models_check_skips_global_tiers_that_a_legacy_repo_config_overrides(git_repo, monkeypatch):
+    use(monkeypatch, ScriptedAgentFactory({"model_check": [OK]}))
+    global_config_path().parent.mkdir(parents=True, exist_ok=True)
+    global_config_path().write_text('[models]\nhigh = "ollama:big"\nlow = "ollama:small"\n')
+    (git_repo / "phil.toml").write_text("[models]\n" + "".join(f'{role} = "ollama:legacy"\n' for role in ROLES))
+    result = runner.invoke(cli.app, ["--repo", str(git_repo), "models", "check"])
+    assert result.exit_code == 0, result.output
+    lines = [re.sub(r"\d+\.\ds$", "<t>", line) for line in result.output.splitlines()]
+    labels = ", ".join(f"role:{role}" for role in ROLES)
+    assert lines == [
+        f"✓ {labels}  ollama:legacy  <t>",
+        "– high  ollama:big  unused (no role maps to it)",
+        "– low  ollama:small  unused (no role maps to it)",
+    ]
