@@ -161,3 +161,17 @@ def test_run_check_refuses_a_forbidden_command_without_running_it(tmp_path):
     assert not result.ok
     assert not marker.exists()
     assert "refused" in result.stderr
+
+
+def test_run_check_refuses_a_read_only_command_that_leaves_the_worktree(tmp_path):
+    result = run_check("cat /etc/hosts", tmp_path, shell=ShellConfig(), artifacts=None, name="check")
+    assert not result.ok
+    assert result.exit_code == 126
+    assert "stay inside the worktree" in result.stderr
+
+
+def test_run_check_runs_a_contained_read_only_command(tmp_path):
+    (tmp_path / "a.txt").write_text("hello\n")
+    result = run_check("cat a.txt", tmp_path, shell=ShellConfig(), artifacts=None, name="check")
+    assert result.ok
+    assert result.stdout == "hello\n"

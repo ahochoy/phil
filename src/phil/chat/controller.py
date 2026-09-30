@@ -616,7 +616,9 @@ class ChatController:
                 self._show_plan(draft)
                 return
             root = self._detection_root(draft.plan)
-            problems = launch_problems(draft.plan, self.config, root)
+            # Check commands' paths must stay inside the tree: the base commit's snapshot when it was
+            # exported for detection, else the repo itself.
+            problems = launch_problems(draft.plan, self.config, root, check_root=root or self.info.root)
             if problems:
                 for item in problems:
                     self.console.print(f"[phil.error]{escape(item)}.[/]")

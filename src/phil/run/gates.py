@@ -144,9 +144,10 @@ CHECK_OUTPUT_LINES = 20
 def run_check(check_cmd: str, worktree: Path, *, shell: ShellConfig, artifacts: ArtifactStore | None, name: str) -> ShellResult:
     """Run a check task's `check_cmd` in the worktree with the test runner's environment, logging its output.
 
-    A command the shell policy forbids outright (shell operators, risky flags) is refused without
-    running, even though plan validation should already have kept it out (spec §3.2)."""
-    detail = ShellPolicy(shell.allow).refusal_detail(check_cmd)
+    A command the shell policy forbids outright (shell operators, risky flags, or a read-only
+    command whose paths leave the worktree) is refused without running, even though plan
+    validation should already have kept it out (spec §3.2)."""
+    detail = ShellPolicy(shell.allow, root=worktree).refusal_detail(check_cmd)
     if detail is not None:
         return ShellResult(
             command=check_cmd,

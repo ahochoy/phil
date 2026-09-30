@@ -116,3 +116,18 @@ def test_launch_problems_rejects_a_forbidden_check_cmd():
 
 def test_launch_problems_accepts_a_check_cmd_off_the_allowlist():
     assert launch_problems(check_plan("npm run build"), config()) == []
+
+
+def test_launch_problems_rejects_a_check_cmd_that_reads_outside_the_repo(tmp_path):
+    problems = launch_problems(check_plan("cat /etc/hosts"), config(), tmp_path)
+    assert problems == ["check command 'cat /etc/hosts' reads outside the repo; check commands must stay inside the worktree"]
+
+
+def test_launch_problems_accepts_a_contained_read_only_check_cmd(tmp_path):
+    (tmp_path / "a.txt").write_text("x")
+    assert launch_problems(check_plan("grep -q x a.txt"), config(), tmp_path) == []
+
+
+def test_launch_problems_checks_containment_against_check_root_when_root_is_absent(tmp_path):
+    problems = launch_problems(check_plan("cat /etc/hosts"), config(), None, check_root=tmp_path)
+    assert len(problems) == 1 and "reads outside the repo" in problems[0]

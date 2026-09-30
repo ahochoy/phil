@@ -3,7 +3,7 @@ from pathlib import Path
 from phil.config import RUN_ROLES, PhilConfig
 from phil.contracts import Plan
 from phil.repo_detect import detect_test_cmd
-from phil.workspace.shell import ShellPolicy
+from phil.workspace.shell import CONTAINMENT_DETAIL, ShellPolicy
 
 GIT_POLICY_NOTE = "Commit signing or hooks are on; a failing signature or hook will pause the run."
 
@@ -47,15 +47,23 @@ test_cmd_problem.__test__ = False  # not a pytest test
 test_cmd_differs.__test__ = False
 
 
-def check_cmd_problems(plan: Plan, config: PhilConfig) -> list[str]:
-    """Forbidden check commands. Anything merely off [shell] allow is fine: the run allows each check_cmd."""
-    policy = ShellPolicy(config.shell.allow)
+def check_cmd_problems(plan: Plan, config: PhilConfig, root: Path | None = None) -> list[str]:
+    """Forbidden check commands. Anything merely off [shell] allow is fine: the run allows each check_cmd.
+
+    `root`, when given, is the tree the paths of a read-only check command must stay inside — the
+    run's worktree is a checkout of it, and the run refuses an out-of-tree one anyway."""
+    policy = ShellPolicy(config.shell.allow, root=root)
     cmds = dict.fromkeys(task.check_cmd for task in plan.tasks if task.check_cmd)
-    return [
-        f"check command {cmd!r} uses shell operators or a blocked command"
-        for cmd in cmds
-        if policy.denial_reason(cmd) == "forbidden"
-    ]
+    problems = []
+    for cmd in cmds:
+        detail = policy.refusal_detail(cmd)
+        if detail is None:
+            continue
+        if detail == CONTAINMENT_DETAIL:
+            problems.append(f"check command {cmd!r} reads outside the repo; check commands must stay inside the worktree")
+        else:
+            problems.append(f"check command {cmd!r} uses shell operators or a blocked command")
+    return problems
 
 
 def git_policy_note(config: PhilConfig) -> str | None:
@@ -64,10 +72,13 @@ def git_policy_note(config: PhilConfig) -> str | None:
     return None
 
 
-def launch_problems(plan: Plan, config: PhilConfig, root: Path | None = None) -> list[str]:
+def launch_problems(
+    plan: Plan, config: PhilConfig, root: Path | None = None, *, check_root: Path | None = None
+) -> list[str]:
     """Why a run of `plan` can't start under `config` (empty when it can). Callers escape before printing.
 
-    `root`, when given, is where a missing test command is detected from."""
+    `root`, when given, is where a missing test command is detected from. `check_root` (default:
+    `root`) is the tree check commands' paths must stay inside."""
     problems = []
     missing = config.missing_models(RUN_ROLES)
     if missing:
@@ -75,5 +86,5 @@ def launch_problems(plan: Plan, config: PhilConfig, root: Path | None = None) ->
     problem = test_cmd_problem(plan, config, root)
     if problem:
         problems.append(problem)
-    problems += check_cmd_problems(plan, config)
+    problems += check_cmd_problems(plan, config, check_root if check_root is not None else root)
     return problems
