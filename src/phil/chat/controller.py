@@ -13,7 +13,14 @@ from rich.markup import escape
 from rich.text import Text
 
 from phil.agents.invoke import AgentContext
-from phil.chat.approval import effective_test_cmd, git_policy_note, launch_problems, test_cmd_differs, test_cmd_problem
+from phil.chat.approval import (
+    effective_test_cmd,
+    git_policy_note,
+    launch_problems,
+    terminated,
+    test_cmd_differs,
+    test_cmd_problem,
+)
 from phil.chat.btw import ask_btw
 from phil.chat.events import ChatEvent
 from phil.chat.overview import repo_overview
@@ -621,7 +628,7 @@ class ChatController:
             problems = launch_problems(draft.plan, self.config, root, check_root=root or self.info.root)
             if problems:
                 for item in problems:
-                    self.console.print(f"[phil.error]{escape(item)}.[/]")
+                    self.console.print(f"[phil.error]{escape(terminated(item))}[/]")
                 self.console.print("[phil.muted]Fix phil.toml and answer y again, or use edit to change the plan.[/]")
                 self._show_plan(draft)
                 return

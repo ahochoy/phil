@@ -8,6 +8,7 @@ from phil.repo import resolve_repo
 from phil.store.db import connect
 from phil.store.paths import ProjectPaths
 from phil.store.runs import list_runs
+from phil.ui.theme import make_console
 from tests.helpers import MODELS_TOML, run_git
 from tests.run.conftest import TEST_CMD, calc_plan
 
@@ -80,6 +81,20 @@ def test_run_requires_models_for_the_run_roles(calc_repo, tmp_path, monkeypatch)
     assert result.exit_code == 1
     assert "No model for tester (tier low)" in result.output
     assert "No model for reviewer (tier high)" in result.output
+    assert runs_for(calc_repo) == []
+
+
+def test_run_prints_the_exact_missing_model_line(calc_repo, tmp_path, monkeypatch):
+    # A console this wide keeps the one line from wrapping, so the assertion can check it exactly
+    # (including that the message's own trailing period isn't doubled by the print site).
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "console", make_console(width=200))
+    (calc_repo / "phil.toml").write_text(
+        '[models]\nimplementer = "test:model"\ntester = "test:model"\n'
+    )
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path))])
+    assert result.exit_code == 1
+    assert result.output == "No model for reviewer (tier high). Set models.high in ~/.phil/config.toml or phil.toml.\n"
     assert runs_for(calc_repo) == []
 
 

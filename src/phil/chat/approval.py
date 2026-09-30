@@ -1,11 +1,16 @@
 from pathlib import Path
 
-from phil.config import RUN_ROLES, ConfigError, PhilConfig
+from phil.config import RUN_ROLES, PhilConfig
 from phil.contracts import Plan
 from phil.repo_detect import detect_test_cmd
 from phil.workspace.shell import CONTAINMENT_DETAIL, ShellPolicy
 
 GIT_POLICY_NOTE = "Commit signing or hooks are on; a failing signature or hook will pause the run."
+
+
+def terminated(text: str) -> str:
+    """`text` with a trailing period, without doubling one it already ends with."""
+    return text if text.endswith(".") else f"{text}."
 
 
 def effective_test_cmd(plan: Plan, config: PhilConfig, root: Path | None = None) -> tuple[str | None, str]:
@@ -75,16 +80,12 @@ def git_policy_note(config: PhilConfig) -> str | None:
 def launch_problems(
     plan: Plan, config: PhilConfig, root: Path | None = None, *, check_root: Path | None = None
 ) -> list[str]:
-    """Why a run of `plan` can't start under `config` (empty when it can). Callers escape before printing.
+    """Why a run of `plan` can't start under `config` (empty when it can). Callers escape before printing,
+    and should use `terminated()` rather than assuming a problem needs a trailing period added.
 
     `root`, when given, is where a missing test command is detected from. `check_root` (default:
     `root`) is the tree check commands' paths must stay inside."""
-    problems = []
-    for role in config.missing_models(RUN_ROLES):
-        try:
-            config.model_for(role)
-        except ConfigError as exc:
-            problems.append(str(exc))
+    problems = list(config.missing_model_messages(RUN_ROLES))
     problem = test_cmd_problem(plan, config, root)
     if problem:
         problems.append(problem)

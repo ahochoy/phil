@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from rich.markup import escape
 
 from phil import __version__
-from phil.chat.approval import git_policy_note, launch_problems
+from phil.chat.approval import git_policy_note, launch_problems, terminated
 from phil.config import CHAT_ROLES, RUN_ROLES, ConfigError, PhilConfig, load_config
 from phil.contracts import Plan
 from phil.contracts.schema import export_schemas
@@ -151,13 +151,10 @@ def _chat(ctx: typer.Context) -> None:
     except ConfigError as exc:
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
-    missing = config.missing_models(CHAT_ROLES)
+    missing = config.missing_model_messages(CHAT_ROLES)
     if missing:
-        for role in missing:
-            try:
-                config.model_for(role)
-            except ConfigError as exc:
-                console.print(f"[phil.error]{escape(str(exc))}[/]")
+        for message in missing:
+            console.print(f"[phil.error]{escape(message)}[/]")
         raise typer.Exit(1)
     # The chat starts runs too, and their worker inherits this environment.
     _require_api_keys(config, CHAT_ROLES + RUN_ROLES)
@@ -327,7 +324,7 @@ def run_plan(
     problems = launch_problems(plan, config, info.root)
     if problems:
         for problem in problems:
-            console.print(f"[phil.error]{escape(problem)}.[/]")
+            console.print(f"[phil.error]{escape(terminated(problem))}[/]")
         raise typer.Exit(1)
     _require_api_keys(config, RUN_ROLES)
     if base is not None:

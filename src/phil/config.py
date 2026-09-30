@@ -192,6 +192,16 @@ class PhilConfig(_Section):
                 missing.append(role)
         return missing
 
+    def missing_model_messages(self, roles: tuple[str, ...]) -> list[str]:
+        """The exact `model_for` error message for each of `roles` that has no resolved model."""
+        messages = []
+        for role in roles:
+            try:
+                self.model_for(role)
+            except ConfigError as exc:
+                messages.append(str(exc))
+        return messages
+
     def missing_keys(self, roles: tuple[str, ...], environ: Mapping[str, str]) -> list[str]:
         """API-key variables that the models resolved for `roles` need but `environ` lacks, in role order."""
         missing: list[str] = []

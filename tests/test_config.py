@@ -109,6 +109,17 @@ def test_unknown_tier_in_tiers_is_rejected(tmp_path):
         load_config(tmp_path)
 
 
+def test_tier_resolution_spans_the_global_and_repo_layers(tmp_path):
+    _write_global('[models]\nhigh = "openrouter:big/model"\nlow = "openrouter:small/model"\n')
+    (tmp_path / "phil.toml").write_text('[models]\narchitect = "openrouter:special/model"\n')
+    config = load_config(tmp_path)
+    # The repo's own role key wins over the global file's tier.
+    assert config.model_for("architect") == "openrouter:special/model"
+    # Roles with no role key of their own still resolve through the global file's tier models.
+    assert config.model_for("critic") == "openrouter:big/model"
+    assert config.model_for("implementer") == "openrouter:small/model"
+
+
 def test_sections_are_loaded(tmp_path):
     (tmp_path / "phil.toml").write_text(
         '[run]\ntester_mode = "task+run"\n'
