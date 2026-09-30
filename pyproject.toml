@@ -31,8 +31,11 @@ packages = ["src/phil"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["live: calls real LLM APIs (opt-in with -m live)"]
-addopts = "-m 'not live' -n auto"
+markers = [
+    "live: calls real LLM APIs (opt-in with -m live)",
+    "bench: runs the live benchmark (opt-in with -m bench)",
+]
+addopts = "-m 'not live and not bench' -n auto"
 
 [dependency-groups]
 dev = [

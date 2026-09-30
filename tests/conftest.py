@@ -6,14 +6,16 @@ from tests.helpers import run_git
 
 
 def _is_live(request: pytest.FixtureRequest) -> bool:
-    return request.node.get_closest_marker("live") is not None
+    """Live tests (`-m live`) and the benchmark (`-m bench`), both opt-in, call real models."""
+    return any(request.node.get_closest_marker(name) is not None for name in ("live", "bench"))
 
 
 @pytest.fixture(autouse=True)
 def phil_home(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     if _is_live(request):
-        # Live tests (opt-in, `-m live`) call real APIs: let the real default price book use
-        # its real cache under the real PHIL_HOME instead of refetching into a temp dir.
+        # Live tests and the benchmark call real APIs: let the real default price book use its
+        # real cache under the real PHIL_HOME instead of refetching into a temp dir. The
+        # benchmark's projects and results land there too, where the user can inspect them.
         from phil.store.paths import phil_home as real_phil_home
 
         return real_phil_home()
@@ -67,7 +69,8 @@ def isolated_git_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
 
 @pytest.fixture(autouse=True)
 def no_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Tests must never reach GitHub: the default publisher is an unavailable fake. Tests that
+    # Tests must never reach GitHub: the default publisher is an unavailable fake. This holds for
+    # live and benchmark tests too: none of them publishes, so none needs the real `gh`. Tests that
     # publish patch `phil.publish.publisher.make_publisher` (or pass a FakePublisher) themselves.
     from phil.publish.publisher import FakePublisher
 
