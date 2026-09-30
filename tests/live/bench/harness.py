@@ -33,6 +33,7 @@ from phil.store.db import connect
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
 from phil.store.telemetry import chat_usage
+from phil.tomlw import dump_toml
 from tests.live.bench.cases import FIXTURES, Case
 from tests.live.bench.report import results_path
 
@@ -64,30 +65,6 @@ def deep_merge(base: dict, override: dict) -> dict:
         else:
             merged[key] = value
     return merged
-
-
-def _toml_value(value: object) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return repr(value)
-    if isinstance(value, str):
-        return json.dumps(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
-    raise TypeError(f"cannot write {type(value).__name__} to phil.toml")
-
-
-def dump_toml(data: dict, prefix: str = "") -> str:
-    """Enough TOML for phil.toml: scalars, lists of scalars and nested tables."""
-    scalars = {k: v for k, v in data.items() if not isinstance(v, dict)}
-    tables = {k: v for k, v in data.items() if isinstance(v, dict)}
-    lines = [f"{json.dumps(k) if not k.isidentifier() else k} = {_toml_value(v)}" for k, v in scalars.items()]
-    out = "\n".join(lines) + ("\n" if lines else "")
-    for key, table in tables.items():
-        name = f"{prefix}.{key}" if prefix else key
-        out += f"\n[{name}]\n" + dump_toml(table, name)
-    return out
 
 
 def case_config(case: Case, user_config: dict) -> dict:

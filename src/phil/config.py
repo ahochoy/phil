@@ -1,9 +1,12 @@
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError, field_validator
+
+from phil.store.paths import phil_home
+from phil.tomlw import dump_toml
 
 ROLES = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer")
 # API-key environment variable each model provider reads. Providers not listed (a local server,
@@ -106,6 +109,12 @@ class PhilConfig(_Section):
     shell: ShellConfig = ShellConfig()
     project: ProjectConfig = ProjectConfig()
     git: GitConfig = GitConfig()
+    # Dotted leaf path -> the layer that set it: "default", the global file's path, "phil.toml" or "--set".
+    _sources: dict[str, str] = PrivateAttr(default_factory=dict)
+
+    @property
+    def sources(self) -> dict[str, str]:
+        return self._sources
 
     @field_validator("models")
     @classmethod
@@ -148,15 +157,110 @@ class PhilConfig(_Section):
         return self.budget.get(role, default)
 
 
-def load_config(repo_root: Path) -> PhilConfig:
-    path = repo_root / "phil.toml"
-    if not path.exists():
-        return PhilConfig()
+DEFAULT_SOURCE = "default"
+REPO_SOURCE = "phil.toml"
+SET_SOURCE = "--set"
+
+
+def global_config_path() -> Path:
+    return phil_home() / "config.toml"
+
+
+def parse_override(text: str) -> tuple[list[str], object]:
+    """`key.path=value` from `--set`: the value is parsed as TOML, else kept as the raw string."""
+    key, sep, value = text.partition("=")
+    path = key.strip().split(".")
+    if not sep or not key.strip() or any(not part.strip() for part in path):
+        raise ConfigError(f"--set expects key.path=value: {text}")
     try:
-        data = tomllib.loads(path.read_text())
+        parsed: object = tomllib.loads("v = " + value)["v"]
+    except tomllib.TOMLDecodeError:
+        parsed = value
+    return [part.strip() for part in path], parsed
+
+
+def _leaves(data: Mapping, prefix: tuple[str, ...] = ()) -> list[str]:
+    paths: list[str] = []
+    for key, value in data.items():
+        path = (*prefix, str(key))
+        if isinstance(value, Mapping):
+            paths.extend(_leaves(value, path))
+        else:
+            paths.append(".".join(path))
+    return paths
+
+
+def _merge(base: dict, layer: Mapping, source: str, sources: dict[str, str], prefix: tuple[str, ...] = ()) -> None:
+    """Merge `layer` into `base` in place: dicts merge recursively, anything else replaces."""
+    for key, value in layer.items():
+        path = ".".join((*prefix, key))
+        if isinstance(value, Mapping):
+            sources.pop(path, None)  # a table replaces a lower layer's leaf here; tables merge
+            if not isinstance(base.get(key), dict):
+                base[key] = {}
+            _merge(base[key], value, source, sources, (*prefix, key))
+        else:
+            # A leaf replaces whatever the lower layers set at or under this key.
+            for stale in [p for p in sources if p.startswith(path + ".")]:
+                del sources[stale]
+            base[key] = value
+            sources[path] = source
+
+
+def _read_layer(path: Path, label: str) -> dict:
+    try:
+        return tomllib.loads(path.read_text())
     except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"Invalid phil.toml: {exc}") from exc
+        raise ConfigError(f"Invalid {label}: {exc}") from exc
+
+
+def _precedence(source: str) -> int:
+    return {DEFAULT_SOURCE: 0, REPO_SOURCE: 2, SET_SOURCE: 3}.get(source, 1)  # any other source is the global file
+
+
+def _source_of(loc: tuple, sources: Mapping[str, str]) -> str:
+    """The layer that set the value at pydantic's `loc`, or the key that introduced it."""
+    parts = [str(part) for part in loc]
+    while parts:
+        path = ".".join(parts)
+        if path in sources:
+            return sources[path]
+        under = [src for leaf, src in sources.items() if leaf.startswith(path + ".")]
+        if under:
+            # A table-level failure (e.g. an unknown role in [models]): the highest layer under it.
+            return max(under, key=_precedence)
+        parts.pop()
+    return "config"
+
+
+def load_config(repo_root: Path, *, overrides: Sequence[str] = ()) -> PhilConfig:
+    """Settings in layers: defaults, then ~/.phil/config.toml, then the repo's phil.toml, then `--set`."""
+    parsed_overrides = [parse_override(text) for text in overrides]
+    merged: dict = {}
+    sources: dict[str, str] = dict.fromkeys(_leaves(PhilConfig().model_dump()), DEFAULT_SOURCE)
+    global_path = global_config_path()
+    if global_path.is_file():
+        _merge(merged, _read_layer(global_path, str(global_path)), str(global_path), sources)
+    repo_path = repo_root / "phil.toml"
+    if repo_path.is_file():
+        _merge(merged, _read_layer(repo_path, REPO_SOURCE), REPO_SOURCE, sources)
+    for path, value in parsed_overrides:
+        layer: object = value
+        for part in reversed(path):
+            layer = {part: layer}
+        _merge(merged, layer, SET_SOURCE, sources)  # type: ignore[arg-type]
     try:
-        return PhilConfig(**data)
+        config = PhilConfig(**merged)
     except ValidationError as exc:
-        raise ConfigError(f"Invalid phil.toml: {exc}") from exc
+        error = exc.errors()[0]
+        loc = ".".join(str(part) for part in error["loc"])
+        raise ConfigError(f"Invalid {_source_of(error['loc'], sources)}: {loc}: {error['msg']}") from exc
+    config._sources = sources
+    return config
+
+
+def effective_toml(config: PhilConfig) -> str:
+    """The merged settings as TOML, each leaf line ending `# from <source>`."""
+    data = config.model_dump()
+    comments = {leaf: f"from {config.sources.get(leaf, DEFAULT_SOURCE)}" for leaf in _leaves(data)}
+    return dump_toml(data, comments)

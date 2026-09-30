@@ -1,8 +1,10 @@
+import tomllib
 from pathlib import Path
 
 import pytest
 
-from phil.config import ConfigError, load_config
+from phil.config import ConfigError, PhilConfig, effective_toml, global_config_path, load_config, parse_override
+from phil.store.paths import phil_home
 
 
 def test_missing_file_gives_defaults(tmp_path):
@@ -139,3 +141,113 @@ def test_missing_keys_names_the_env_var_for_each_provider(tmp_path):
     assert config.missing_keys(roles, environ={}) == ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"]
     assert config.missing_keys(roles, environ={"OPENROUTER_API_KEY": "x", "ANTHROPIC_API_KEY": "y"}) == []
     assert config.missing_keys(roles, environ={"OPENROUTER_API_KEY": ""}) == ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"]
+
+
+def _write_global(text: str) -> Path:
+    path = phil_home() / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def test_global_config_path_is_under_phil_home():
+    assert global_config_path() == phil_home() / "config.toml"
+
+
+def test_global_values_apply_when_the_repo_has_no_phil_toml(tmp_path):
+    path = _write_global("[run]\nmax_cost_usd = 7.0\n")
+    config = load_config(tmp_path)
+    assert config.run.max_cost_usd == 7.0
+    assert config.sources["run.max_cost_usd"] == str(path)
+    assert config.sources["run.max_tokens"] == "default"
+
+
+def test_repo_overrides_global_key_by_key(tmp_path):
+    path = _write_global("[run]\nmax_cost_usd = 7.0\nwarn_at = 0.5\n")
+    (tmp_path / "phil.toml").write_text("[run]\nmax_cost_usd = 3.0\n")
+    config = load_config(tmp_path)
+    assert config.run.max_cost_usd == 3.0
+    assert config.sources["run.max_cost_usd"] == "phil.toml"
+    assert config.run.warn_at == 0.5
+    assert config.sources["run.warn_at"] == str(path)
+
+
+def test_lists_replace(tmp_path):
+    _write_global('[shell]\nallow = ["a"]\n')
+    (tmp_path / "phil.toml").write_text('[shell]\nallow = ["b"]\n')
+    config = load_config(tmp_path)
+    assert config.shell.allow == ["b"]
+    assert config.sources["shell.allow"] == "phil.toml"
+
+
+def test_set_wins_over_every_file(tmp_path):
+    _write_global("[run]\nmax_cost_usd = 7.0\n")
+    (tmp_path / "phil.toml").write_text("[run]\nmax_cost_usd = 3.0\n")
+    config = load_config(tmp_path, overrides=["run.max_cost_usd=5"])
+    assert config.run.max_cost_usd == 5.0
+    assert config.sources["run.max_cost_usd"] == "--set"
+
+
+def test_set_parses_toml_values_and_bare_strings(tmp_path):
+    assert parse_override("models.high=openrouter:x/y") == (["models", "high"], "openrouter:x/y")
+    assert parse_override("run.max_tokens=100") == (["run", "max_tokens"], 100)
+    assert parse_override('shell.allow=["ls"]') == (["shell", "allow"], ["ls"])
+    config = load_config(tmp_path, overrides=["run.max_tokens=100", 'shell.allow=["ls"]'])
+    assert config.run.max_tokens == 100
+    assert config.shell.allow == ["ls"]
+
+
+@pytest.mark.parametrize("text", ["run.max_cost_usd", "=5"])
+def test_set_without_equals_is_a_config_error(tmp_path, text):
+    with pytest.raises(ConfigError, match="--set expects key.path=value"):
+        parse_override(text)
+    with pytest.raises(ConfigError, match="--set expects key.path=value"):
+        load_config(tmp_path, overrides=[text])
+
+
+def test_set_unknown_path_names_set_in_the_error(tmp_path):
+    with pytest.raises(ConfigError, match=r"Invalid --set: run\.nope"):
+        load_config(tmp_path, overrides=["run.nope=1"])
+
+
+def test_invalid_global_file_names_the_file(tmp_path):
+    path = _write_global('[run]\nmax_cost_usd = "x"\n')
+    with pytest.raises(ConfigError) as info:
+        load_config(tmp_path)
+    assert f"Invalid {path}: run.max_cost_usd: " in str(info.value)
+
+
+def test_malformed_global_file_names_the_file(tmp_path):
+    path = _write_global("[run\n")
+    with pytest.raises(ConfigError, match="Invalid " + str(path).replace("\\", "\\\\")):
+        load_config(tmp_path)
+
+
+def test_unknown_role_in_the_global_file_names_the_file(tmp_path):
+    path = _write_global('[models]\nwizard = "openrouter:x/y"\n')
+    with pytest.raises(ConfigError) as info:
+        load_config(tmp_path)
+    assert f"Invalid {path}: models: " in str(info.value)
+    assert "wizard" in str(info.value)
+
+
+def test_invalid_repo_value_names_phil_toml(tmp_path):
+    _write_global("[run]\nmax_cost_usd = 7.0\n")
+    (tmp_path / "phil.toml").write_text('[run]\nmax_cost_usd = "x"\n')
+    with pytest.raises(ConfigError, match=r"Invalid phil\.toml: run\.max_cost_usd: "):
+        load_config(tmp_path)
+
+
+def test_effective_toml_marks_sources(tmp_path):
+    path = _write_global("[run]\nwarn_at = 0.5\n")
+    (tmp_path / "phil.toml").write_text('[run]\nmax_cost_usd = 3.0\n[models]\ncritic = "openrouter:x/y"\n')
+    config = load_config(tmp_path, overrides=["run.max_tokens=100"])
+    text = effective_toml(config)
+    assert "max_cost_usd = 3.0  # from phil.toml" in text
+    assert f"warn_at = 0.5  # from {path}" in text
+    assert "max_tokens = 100  # from --set" in text
+    assert "model_timeout_s = 180  # from default" in text
+    assert 'critic = "openrouter:x/y"  # from phil.toml' in text
+    # it is valid TOML that loads back to the same settings
+    reloaded = PhilConfig(**tomllib.loads(text))
+    assert reloaded.model_dump() == config.model_dump()
