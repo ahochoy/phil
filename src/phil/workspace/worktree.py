@@ -11,6 +11,11 @@ class Worktree:
     base_sha: str
 
 
+def rebaseline_path(worktree: Path) -> Path:
+    """The temporary worktree a run uses to re-capture its baseline after a test command switch."""
+    return worktree.parent / f"{worktree.name}-rebaseline"
+
+
 class WorktreeManager:
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = repo_root

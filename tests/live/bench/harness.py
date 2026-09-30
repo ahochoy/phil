@@ -175,7 +175,7 @@ def run_case(case: Case, config_path: Path, work: Path, *, factory: AgentFactory
         # Like the chat: the architect reads the base commit's tracked files, never the live tree.
         tree = export_tree(info.root, info.head_sha, chat_dir / "tree" / info.head_sha[:12])
         plan = Planner(ctx, repo_overview(info.root)).draft(Goal(objective=case.goal), tree=tree).plan
-        problems = launch_problems(plan, ctx.config)
+        problems = launch_problems(plan, ctx.config, tree)  # detects on the snapshot, as the chat does
         if problems:  # the chat would refuse to start this run
             refused, error = True, "; ".join(problems)
         else:

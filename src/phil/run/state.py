@@ -42,9 +42,14 @@ class RunState(TypedDict, total=False):
     worklogs: dict[str, dict]
     keep_worktree: bool
     rebaseline: bool
+    config_test_cmd: str | None
 
 
-def initial_state(run_id: str, plan: Plan, base_sha: str, test_cmd: str) -> RunState:
+def initial_state(
+    run_id: str, plan: Plan, base_sha: str, test_cmd: str, config_test_cmd: str | None = None
+) -> RunState:
+    """`config_test_cmd` is phil.toml's [project] test_cmd at launch: a resume switches the run's
+    command only when phil.toml has changed since."""
     return RunState(
         run_id=run_id,
         plan=plan.model_dump(),
@@ -82,6 +87,7 @@ def initial_state(run_id: str, plan: Plan, base_sha: str, test_cmd: str) -> RunS
         worklogs={},
         keep_worktree=False,
         rebaseline=False,
+        config_test_cmd=config_test_cmd,
     )
 
 

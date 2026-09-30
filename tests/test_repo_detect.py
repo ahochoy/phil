@@ -84,3 +84,8 @@ def test_go_wins_over_cargo(tmp_path):
     write(tmp_path, "go.mod")
     write(tmp_path, "Cargo.toml")
     assert detect_test_cmd(tmp_path) == "go test ./..."
+
+
+def test_a_real_test_script_that_mentions_the_placeholder_words_still_counts(tmp_path):
+    write(tmp_path, "package.json", json.dumps({"scripts": {"test": "node check.js --why 'no test specified yet'"}}))
+    assert detect_test_cmd(tmp_path) == "npm test"

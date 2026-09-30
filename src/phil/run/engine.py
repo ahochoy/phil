@@ -34,7 +34,7 @@ from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.events import EventLog
 from phil.store.runs import update_run
 from phil.store.telemetry import run_usage, usage_by_role
-from phil.workspace.worktree import WorktreeManager
+from phil.workspace.worktree import WorktreeManager, rebaseline_path
 
 
 @dataclass
@@ -157,25 +157,37 @@ class RunEngine:
     def _rebaseline(self, state: RunState) -> dict:
         """After a resume switched the test command, re-capture the baseline with it (once).
 
-        The new command runs on the run's base commit in a temporary detached worktree, so the
-        baseline describes the base, as `setup`'s did, not the run's work so far."""
+        The new command runs in temporary detached worktrees, never on the run's own (which may hold
+        the task's uncommitted work): at the run's committed HEAD for the running baseline, so
+        failures the run already committed (e.g. a tester's failing test) stay known, and at the
+        base commit for `initial_baseline`, as `setup` captured it. Equal commits run once."""
         if not state.get("rebaseline"):
             return {}
-        path = self.deps.worktree.parent / f"{self.deps.worktree.name}-rebaseline"
-        self._drop_worktree(path)  # a leftover from a worker that died mid-rebaseline
-        git(self.deps.repo_root, "worktree", "add", "--detach", str(path), state["base_sha"])
-        try:
-            name = artifact_name("rebaseline", None, state.get("call_seq", 0))
-            report = self._test({**state, "baseline_failures": []}, name, worktree=path)
-        finally:
-            self._drop_worktree(path)
+        if self.deps.events is not None:
+            self.deps.events.append("test_cmd_changed", cmd=state["test_cmd"])
+        seq = state.get("call_seq", 0)
+        head = self.worktrees.head(self.deps.worktree)
+        current = self._test_at(state, head, artifact_name("rebaseline", None, seq))
+        initial = current
+        if head != state["base_sha"]:
+            initial = self._test_at(state, state["base_sha"], artifact_name("rebaseline-base", None, seq))
         return {
-            "baseline_failures": report.failures,
-            "initial_baseline": report.failures,
-            "base_passed": report.passed_count,
-            "base_skipped": report.skipped_count,
+            "baseline_failures": current.failures,
+            "initial_baseline": initial.failures,
+            "base_passed": current.passed_count,
+            "base_skipped": current.skipped_count,
             "rebaseline": False,
         }
+
+    def _test_at(self, state: RunState, sha: str, name: str) -> TestReport:
+        """Run the tests on commit `sha` in a temporary detached worktree, removed afterwards."""
+        path = rebaseline_path(self.deps.worktree)
+        self._drop_worktree(path)  # a leftover from a worker that died mid-rebaseline
+        git(self.deps.repo_root, "worktree", "add", "--detach", str(path), sha)
+        try:
+            return self._test({**state, "baseline_failures": []}, name, worktree=path)
+        finally:
+            self._drop_worktree(path)
 
     def _drop_worktree(self, path: Path) -> None:
         try:

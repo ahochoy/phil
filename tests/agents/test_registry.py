@@ -57,3 +57,10 @@ def test_only_judging_and_intake_roles_use_the_lean_harness():
     lean = {name for name, spec in SPECS.items() if spec.harness == "lean"}
     assert lean == {"intake", "critic", "reviewer"}
     assert all(not SPECS[name].tools and not SPECS[name].writes_files for name in lean)
+
+
+def test_tester_and_reviewer_prompts_cover_a_run_with_no_test_suite():
+    tester = load_prompt(get_spec("tester"))
+    assert "If `test_cmd` is empty, the project has no test suite" in tester
+    reviewer = load_prompt(get_spec("reviewer"))
+    assert "If `final_report.command` is empty, the project has no test suite" in reviewer

@@ -601,6 +601,7 @@ class ChatController:
         try:
             return self._snapshot(self._generation)
         except Exception:
+            logger.warning("couldn't export the snapshot to detect a test command", exc_info=True)
             return None
 
     def _approval(self, answer: str) -> None:

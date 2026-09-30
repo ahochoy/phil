@@ -13,7 +13,7 @@ from phil.publish.publisher import Publisher, PublishError
 from phil.repo import RepoInfo
 from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, update_run
-from phil.workspace.worktree import Worktree, WorktreeManager
+from phil.workspace.worktree import Worktree, WorktreeManager, rebaseline_path
 
 _KEPT_FILES = {"summary.md", "open_issues.json"}
 
@@ -58,6 +58,7 @@ def clean_run(
             git(info.root, "worktree", "prune")
     except GitError as exc:
         raise CleanError(str(exc)) from exc
+    _remove_rebaseline_worktree(info.root, worktree)
 
     branch_exists = _branch_exists(info.root, record.branch)
     if branch_exists:
@@ -85,6 +86,22 @@ def clean_run(
             raise CleanError(str(exc)) from exc
         if not gone:
             raise CleanError(f"origin/{record.branch} now points elsewhere; left it alone")
+
+
+def _remove_rebaseline_worktree(root: Path, worktree: Path) -> None:
+    """Best effort: a worker that died mid-rebaseline can leave its temporary worktree behind."""
+    leftover = rebaseline_path(worktree)
+    if not leftover.exists():
+        return
+    try:
+        git(root, "worktree", "remove", "--force", str(leftover))
+    except GitError:
+        pass
+    shutil.rmtree(leftover, ignore_errors=True)
+    try:
+        git(root, "worktree", "prune")
+    except GitError:
+        pass
 
 
 def _branch_exists(root: Path, branch: str) -> bool:

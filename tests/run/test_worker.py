@@ -10,6 +10,7 @@ import pytest
 
 import phil.run.worker as worker_module
 from phil.agents.fake import ScriptedAgentFactory
+from phil.config import PhilConfig
 from phil.repo import resolve_repo
 from phil.run.checkpoint import open_checkpointer
 from phil.run.launch import prepare_run
@@ -357,3 +358,50 @@ def test_start_detects_the_test_command_when_none_is_set(calc_repo):
     record = prepare_run(info, calc_plan().model_copy(update={"test_cmd": None}), info.head_sha)
     assert run_worker(calc_repo, record.run_id, "start", factory=happy()).status == "completed"
     assert checkpointed(info, record.run_id)["test_cmd"] == "pytest"
+
+
+def test_an_approved_plan_command_that_differs_from_an_unchanged_phil_toml_stays(calc_repo):
+    set_project_test_cmd(calc_repo, "make check")  # set before launch; the plan's own command was approved
+    run_git(calc_repo, "add", "phil.toml")
+    run_git(calc_repo, "commit", "-m", "config")
+    info, record = escalated_run(calc_repo)
+    assert checkpointed(info, record.run_id)["config_test_cmd"] == "make check"
+    assert run_worker(calc_repo, record.run_id, "resume", {"action": "retry"}, factory=finishing()).status == "completed"
+    assert events_of(info, record.run_id, "test_cmd_changed") == []
+    assert checkpointed(info, record.run_id)["test_cmd"] == TEST_CMD
+
+
+def test_a_phil_toml_change_after_launch_switches_even_when_it_had_a_value(calc_repo):
+    set_project_test_cmd(calc_repo, "make check")
+    run_git(calc_repo, "add", "phil.toml")
+    run_git(calc_repo, "commit", "-m", "config")
+    info, record = escalated_run(calc_repo)
+    set_project_test_cmd(calc_repo, NEW_CMD)
+    assert run_worker(calc_repo, record.run_id, "resume", {"action": "retry"}, factory=finishing()).status == "completed"
+    assert [e["cmd"] for e in events_of(info, record.run_id, "test_cmd_changed")] == [NEW_CMD]
+    state = checkpointed(info, record.run_id)
+    assert (state["test_cmd"], state["config_test_cmd"]) == (NEW_CMD, NEW_CMD)
+
+
+def config_with(cmd):
+    return PhilConfig.model_validate({"project": {"test_cmd": cmd}} if cmd else {})
+
+
+def test_a_checkpoint_from_before_config_test_cmd_switches_only_for_a_plan_without_a_command():
+    legacy_with_plan_cmd = {"test_cmd": "pytest", "plan": {"test_cmd": "pytest"}}
+    assert worker_module._test_cmd_switch(legacy_with_plan_cmd, config_with("make check"), "r-1") is None
+    legacy_without = {"test_cmd": "pytest", "plan": {"test_cmd": None}}
+    assert worker_module._test_cmd_switch(legacy_without, config_with("make check"), "r-1") == {
+        "test_cmd": "make check", "rebaseline": True, "config_test_cmd": "make check",
+    }
+    assert worker_module._test_cmd_switch(legacy_without, config_with("pytest"), "r-1") is None
+    assert worker_module._test_cmd_switch(legacy_without, config_with(None), "r-1") is None
+
+
+def test_the_recorded_config_decides_the_switch():
+    values = {"test_cmd": "pytest -x", "plan": {"test_cmd": "pytest -x"}, "config_test_cmd": "pytest"}
+    assert worker_module._test_cmd_switch(values, config_with("pytest"), "r-1") is None
+    assert worker_module._test_cmd_switch(values, config_with(None), "r-1") is None
+    assert worker_module._test_cmd_switch(values, config_with("make test"), "r-1") == {
+        "test_cmd": "make test", "rebaseline": True, "config_test_cmd": "make test",
+    }

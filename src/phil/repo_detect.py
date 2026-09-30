@@ -5,7 +5,7 @@ from pathlib import Path
 
 PYTHON_MARKERS = ("pyproject.toml", "pytest.ini", "conftest.py")
 # `npm init` writes this script: it fails on purpose and runs no tests.
-NPM_PLACEHOLDER = "no test specified"
+NPM_PLACEHOLDER = 'echo "Error: no test specified" && exit 1'
 
 
 def _npm_test_script(root: Path) -> bool:
@@ -15,7 +15,7 @@ def _npm_test_script(root: Path) -> bool:
         return False
     scripts = data.get("scripts") if isinstance(data, dict) else None
     script = scripts.get("test") if isinstance(scripts, dict) else None
-    return isinstance(script, str) and bool(script.strip()) and NPM_PLACEHOLDER not in script
+    return isinstance(script, str) and bool(script.strip()) and script.strip() != NPM_PLACEHOLDER
 
 
 def detect_test_cmd(root: Path) -> str | None:
