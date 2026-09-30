@@ -7,7 +7,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from phil.run.launch import is_worker_alive, worker_starting
-from phil.store.events import EventLog
+from phil.store.events import EventLog, test_cmd_changed_line
 from phil.store.runs import RunRecord, get_run
 from phil.store.telemetry import budget_warning_line
 
@@ -45,6 +45,8 @@ def render_event(console: Console, event: dict, run_id: str = "") -> None:
     elif kind == "budget_warning":
         fields = {k: v for k, v in event.items() if k not in ("kind", "ts")}
         console.print(f"[phil.warn]{escape(budget_warning_line(run_id, **fields))}[/]")
+    elif kind == "test_cmd_changed":
+        console.print(f"[phil.warn]{escape(test_cmd_changed_line(str(event.get('cmd'))))}[/]")
 
 
 def _prompt(escalation: dict) -> str:

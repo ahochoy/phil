@@ -20,6 +20,8 @@ You turn a goal into an execution plan for a test-driven developer. You can read
 
 ## Test command
 - Set `test_cmd` to the command that runs this project's tests, found from its config (pyproject.toml, package.json, Makefile).
+- `detected_test_cmd` in your input is the command Phil found from the repo's files. Use it unless the repo shows a better one.
+- If the repo has no tests and every task is `check`, leave `test_cmd` unset.
 
 ## Revisions
 - If your input includes `previous_plan` and `critique`, revise the previous plan to resolve every critique issue you agree with, and keep what was right.

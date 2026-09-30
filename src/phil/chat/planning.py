@@ -7,6 +7,7 @@ from phil.agents.invoke import AgentContext, invoke_agent
 from phil.agents.registry import get_spec
 from phil.contracts import ArchitectInput, CriticInput, Goal, IntakeInput, Issue, Plan, PlanCritique, SelfCheck
 from phil.packets import build_packet
+from phil.repo_detect import detect_test_cmd
 
 MAX_CRITIC_REVISIONS = 1
 
@@ -79,7 +80,13 @@ class Planner:
     def _architect(
         self, ctx: AgentContext, goal: Goal, previous: Plan | None, critique: PlanCritique | None, tree: Path, call: int
     ) -> Plan:
-        contract = ArchitectInput(goal=goal, repo_overview=self.overview, previous_plan=previous, critique=critique)
+        contract = ArchitectInput(
+            goal=goal,
+            repo_overview=self.overview,
+            previous_plan=previous,
+            critique=critique,
+            detected_test_cmd=detect_test_cmd(tree),  # the snapshot is the tracked files the run will see
+        )
         packet = build_packet("architect", contract, budget_tokens=_budget(ctx, "architect"))
         return invoke_agent(get_spec("architect"), packet, replace(ctx, workdir=tree), node="architect", call=call)
 

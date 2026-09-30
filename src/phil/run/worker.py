@@ -8,15 +8,16 @@ from collections.abc import Callable
 from pathlib import Path
 
 from phil.agents.invoke import AgentFactory
-from phil.config import load_config
+from phil.config import PhilConfig, load_config
 from phil.repo import resolve_repo
+from phil.repo_detect import detect_test_cmd
 from phil.run import runner
 from phil.run.checkpoint import open_checkpointer
 from phil.run.engine import RunDeps, RunEngine
 from phil.run.launch import is_worker_alive
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect, utcnow
-from phil.store.events import run_events
+from phil.store.events import EventLog, run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import TRANSITIONS, claim_run, get_run, release_run, update_run
 from phil.workspace.shell import kill_active_groups
@@ -56,6 +57,27 @@ def _record_terminal_state(conn: sqlite3.Connection, run_id: str, state: str, ne
     if state == current.state or state in TRANSITIONS.get(current.state, set()):
         return update_run(conn, run_id, state=state, needs_attention=needs_attention).state
     return current.state
+
+
+def _detect(engine: RunEngine, base_sha: str) -> str | None:
+    """Detect the test command on the run's worktree (the base commit's tracked files), creating it
+    first if needed; `setup` then finds it in place."""
+    worktree = engine.deps.worktree
+    if not worktree.exists():
+        engine.worktrees.create(run_id=engine.deps.run_id, base_sha=base_sha, path=worktree)
+    return detect_test_cmd(worktree)
+
+
+def _test_cmd_switch(values: dict, config: PhilConfig, events: EventLog, run_id: str) -> dict | None:
+    """The state update that switches a continuing run to phil.toml's (or else the plan's) test
+    command when it differs from the one the run uses, or None. Writes the `test_cmd_changed` event."""
+    plan_cmd = (values.get("plan") or {}).get("test_cmd")
+    desired = config.project.test_cmd or plan_cmd
+    if not desired or desired == values.get("test_cmd"):
+        return None
+    events.append("test_cmd_changed", cmd=desired)
+    _logger.info("run %s: switching the test command from %r to %r", run_id, values.get("test_cmd"), desired)
+    return {"test_cmd": desired, "rebaseline": True}
 
 
 class Heartbeat:
@@ -147,11 +169,15 @@ def run_worker(
             outcome = runner.settle(engine, snapshot)
         elif not snapshot.values:
             plan = deps.artifacts.read_plan()
-            test_cmd = plan.test_cmd or config.project.test_cmd or ""
+            test_cmd = plan.test_cmd or config.project.test_cmd or _detect(engine, record.base_sha) or ""
             outcome = runner.start(engine, graph, plan=plan, base_sha=record.base_sha, test_cmd=test_cmd)
         elif mode == "resume":
-            outcome = runner.resume(engine, graph, decision or {})
+            switch = _test_cmd_switch(snapshot.values, config, events, run_id)
+            outcome = runner.resume(engine, graph, decision or {}, update=switch)
         else:
+            switch = _test_cmd_switch(snapshot.values, config, events, run_id)
+            if switch:
+                graph.update_state(runner.thread_config(run_id), switch)
             outcome = runner.continue_run(engine, graph)
         events.append("outcome", status=outcome.status)
         return outcome

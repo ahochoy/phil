@@ -308,6 +308,33 @@ def test_run_plan_json_uses_effective_test_cmd(calc_repo):
     assert stored.test_cmd == "uv run pytest -q"
 
 
+def test_a_detected_test_command_is_shown_and_frozen_into_the_run(calc_repo):
+    (calc_repo / "go.mod").write_text("module calc\n")
+    (calc_repo / "Cargo.toml").write_text("[package]\n")  # untracked: the snapshot never sees it
+    run_git(calc_repo, "add", "go.mod")
+    run_git(calc_repo, "commit", "-m", "go")
+    info = resolve_repo(calc_repo)
+    text, spawned, runs, *_ = run_chat(
+        calc_repo,
+        ["add subtract", "y"],
+        {"intake": [goal()], "architect": [plan(test_cmd=None)], "critic": [critique()]},
+    )
+    assert "Tests: go test ./... (detected)" in text
+    stored = ArtifactStore(ProjectPaths(info.slug).run_dir(runs[0].run_id)).read_plan()
+    assert stored.test_cmd == "go test ./..."
+
+
+def test_the_test_command_source_is_labelled(calc_repo):
+    (calc_repo / "phil.toml").write_text(MODELS_TOML + '[project]\ntest_cmd = "make check"\n')
+    text, *_ = run_chat(
+        calc_repo,
+        ["add subtract", "n"],
+        {"intake": [goal()], "architect": [plan(test_cmd=None)], "critic": [critique()]},
+        config=PhilConfig(models=TEST_MODELS, project={"test_cmd": "make check"}),
+    )
+    assert "Tests: make check (from phil.toml)" in text
+
+
 def session_dir(repo):
     [directory] = (ProjectPaths(resolve_repo(repo).slug).project_dir / "chats").iterdir()
     return directory

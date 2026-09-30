@@ -214,3 +214,23 @@ def test_a_budget_warning_from_before_the_watcher_started_is_not_reposted(calc_r
     )
     watcher.poll_once()
     assert [e.data["tokens"] for e in reopened if e.kind == "budget_warning"] == [690]
+
+
+def test_test_cmd_changed_is_posted_once_per_event(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    events.append("test_cmd_changed", cmd="make test")
+    watcher.poll_once()
+    watcher.poll_once()
+    changes = [e for e in posted if e.kind == "test_cmd_changed"]
+    assert [e.data for e in changes] == [{"cmd": "make test"}]
+
+
+def test_a_test_cmd_change_from_before_the_watcher_started_is_not_reposted(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    events.append("test_cmd_changed", cmd="make test")
+    reopened_posts = []
+    reopened = RunWatcher(paths, run_id, reopened_posts.append, alive=lambda r: True, starting=lambda e: False)
+    reopened.poll_once()
+    assert "test_cmd_changed" not in kinds(reopened_posts)

@@ -41,6 +41,7 @@ class RunState(TypedDict, total=False):
     commit_bypass: bool
     worklogs: dict[str, dict]
     keep_worktree: bool
+    rebaseline: bool
 
 
 def initial_state(run_id: str, plan: Plan, base_sha: str, test_cmd: str) -> RunState:
@@ -80,6 +81,7 @@ def initial_state(run_id: str, plan: Plan, base_sha: str, test_cmd: str) -> RunS
         commit_bypass=False,
         worklogs={},
         keep_worktree=False,
+        rebaseline=False,
     )
 
 

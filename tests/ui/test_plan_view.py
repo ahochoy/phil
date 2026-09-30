@@ -77,3 +77,20 @@ def test_render_plan_marks_check_tasks():
     text = text_of(render_plan, draft, test_cmd="uv run pytest -q", test_cmd_note=None, git_note=None)
     assert "CALC-002  Edit copy  (check: grep -q [b] x)" in text
     assert "Step 1  (check" not in text
+
+
+def test_render_plan_labels_where_the_test_command_came_from():
+    draft = PlanDraft(plan(test_cmd=None), critique("ok"), 1)
+    for source, label in (("plan", "(from the plan)"), ("config", "(from phil.toml)"), ("detected", "(detected)")):
+        text = text_of(
+            render_plan, draft, test_cmd="go test ./...", test_cmd_source=source, test_cmd_note=None, git_note=None
+        )
+        assert f"Tests: go test ./... {label}" in text
+
+
+def test_render_plan_without_a_test_command_for_an_all_check_plan():
+    task = Task(id="CALC-001", description="Edit copy", acceptance_criteria=["c"], verify="check", check_cmd="grep -q x a")
+    draft = PlanDraft(plan(test_cmd=None).model_copy(update={"tasks": [task]}), critique("ok"), 1)
+    text = text_of(render_plan, draft, test_cmd=None, test_cmd_source="none", test_cmd_note=None, git_note=None)
+    assert "Tests: none (check tasks only)" in text
+    assert "set test_cmd" not in text

@@ -85,3 +85,19 @@ def test_a_cycle_keeps_its_call_number_when_another_cycle_interleaves(chat_ctx, 
     rows = ctx.conn.execute("SELECT node, call FROM telemetry ORDER BY rowid").fetchall()
     assert sorted(tuple(r) for r in rows) == [("architect", 1), ("architect", 2), ("critic", 1), ("critic", 2)]
     assert {outer.version, nested["draft"].version} == {1, 2}
+
+
+def test_architect_gets_the_detected_test_command_as_a_hint(chat_ctx, tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'calc'\n")
+    (tmp_path / "uv.lock").write_text("")
+    factory = ScriptedAgentFactory({"architect": [plan()], "critic": [critique()]})
+    Planner(chat_ctx(factory), "overview").draft(goal(), tmp_path)
+    [architect] = [p for role, p in factory.calls if role == "architect"]
+    assert '"detected_test_cmd": "uv run pytest"' in str(architect)
+
+
+def test_architect_hint_is_null_when_nothing_is_detected(chat_ctx, tmp_path):
+    factory = ScriptedAgentFactory({"architect": [plan()], "critic": [critique()]})
+    Planner(chat_ctx(factory), "overview").draft(goal(), tmp_path)
+    [architect] = [p for role, p in factory.calls if role == "architect"]
+    assert '"detected_test_cmd": null' in str(architect)

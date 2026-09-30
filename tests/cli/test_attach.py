@@ -184,3 +184,19 @@ def test_attach_prompts_again_when_the_spawned_worker_paused_again_before_a_samp
     assert attach(connect(paths.db_path), record.run_id, events, console, io, poll_s=0, start_timeout_s=3600) == "completed"
     assert len(spawns) == 2
     assert "worker.log" not in console.export_text()
+
+
+def test_render_event_prints_the_test_cmd_change_escaped():
+    console = make_console(record=True, width=120)
+    render_event(console, {"kind": "test_cmd_changed", "ts": "2026-09-29T00:00:00Z", "cmd": "make [red]test[/red]"})
+    assert "Using the updated test command: make [red]test[/red]." in console.export_text()
+
+
+def test_attach_renders_a_test_cmd_change_from_the_run(calc_repo):
+    info, record = escalated_run(calc_repo)
+    paths = ProjectPaths(info.slug)
+    run_events(paths, record.run_id).append("test_cmd_changed", cmd="make test")
+    io = AttachIO(choose=lambda p, o: "abort", ask_hint=lambda: None, spawn=lambda m, d: None, sleep=lambda _: None)
+    console = make_console(record=True, width=120)
+    attach(connect(paths.db_path), record.run_id, run_events(paths, record.run_id), console, io, poll_s=0)
+    assert "Using the updated test command: make test." in console.export_text()

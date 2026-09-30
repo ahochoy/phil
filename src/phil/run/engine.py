@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import time
@@ -17,7 +18,7 @@ from phil.agents.registry import get_spec
 from phil.agents.tools import CommandLog
 from phil.config import PhilConfig
 from phil.contracts import ImplementInput, Issue, ReviewInput, TaskResult, TesterInput, TestReport, Worklog
-from phil.git import GitError, branch_for
+from phil.git import GitError, branch_for, git
 from phil.packets import Packet, PacketTooLarge, build_packet
 from phil.run.gates import (
     is_test_path,
@@ -140,15 +141,57 @@ class RunEngine:
         if "state" in fields:
             events.append("state", state=fields["state"], needs_attention=fields.get("needs_attention"))
 
-    def _test(self, state: RunState, name: str) -> TestReport:
+    def _test(self, state: RunState, name: str, worktree: Path | None = None) -> TestReport:
+        if not state["test_cmd"]:
+            # A run of check tasks only may have no test suite: its gates rely on each check_cmd.
+            return TestReport(command="", passed=True, failures=[], log_path="")
         return run_tests(
             state["test_cmd"],
-            self.deps.worktree,
+            worktree or self.deps.worktree,
             shell=self.deps.config.shell,
             artifacts=self.deps.artifacts,
             name=name,
             baseline=state.get("baseline_failures", []),
         )
+
+    def _rebaseline(self, state: RunState) -> dict:
+        """After a resume switched the test command, re-capture the baseline with it (once).
+
+        The new command runs on the run's base commit in a temporary detached worktree, so the
+        baseline describes the base, as `setup`'s did, not the run's work so far."""
+        if not state.get("rebaseline"):
+            return {}
+        path = self.deps.worktree.parent / f"{self.deps.worktree.name}-rebaseline"
+        self._drop_worktree(path)  # a leftover from a worker that died mid-rebaseline
+        git(self.deps.repo_root, "worktree", "add", "--detach", str(path), state["base_sha"])
+        try:
+            name = artifact_name("rebaseline", None, state.get("call_seq", 0))
+            report = self._test({**state, "baseline_failures": []}, name, worktree=path)
+        finally:
+            self._drop_worktree(path)
+        return {
+            "baseline_failures": report.failures,
+            "initial_baseline": report.failures,
+            "base_passed": report.passed_count,
+            "base_skipped": report.skipped_count,
+            "rebaseline": False,
+        }
+
+    def _drop_worktree(self, path: Path) -> None:
+        try:
+            git(self.deps.repo_root, "worktree", "remove", "--force", str(path))
+        except GitError:
+            pass  # not registered (or already gone): clear what's left below
+        shutil.rmtree(path, ignore_errors=True)
+        try:
+            git(self.deps.repo_root, "worktree", "prune")
+        except GitError:
+            pass
+
+    def _rebased(self, state: RunState, node: Callable[[RunState], dict]) -> dict:
+        """Run a node that runs the tests, re-capturing the baseline first when the command changed."""
+        update = self._rebaseline(state)
+        return {**update, **node({**state, **update})}
 
     def _context(self, state: RunState, log: CommandLog) -> AgentContext:
         plan = load_plan(state)
@@ -272,6 +315,10 @@ class RunEngine:
         budget_warn, escalation = self._budget_check(state, "implement")
         if escalation is not None:
             return {**budget_warn, "escalation": escalation}
+        if not state["test_cmd"] and state["phase"] == "red":
+            # Only a run of check tasks may lack a test command; a tdd task (e.g. a fix the tester
+            # or reviewer asked for) can't be verified without one, so ask before spending a call.
+            return {**budget_warn, "escalation": self._no_test_cmd_escalation(state)}
         worktree = self.deps.worktree
         # The previous attempt's changes (or the red phase's, before green) are still in the
         # worktree: capture them for the packet before the reset below throws them away.
@@ -339,6 +386,18 @@ class RunEngine:
             }
         return {**budget_warn, **update}
 
+    def _no_test_cmd_escalation(self, state: RunState) -> dict:
+        task = load_plan(state).tasks[state["task_index"]]
+        summary = f"{task.id} needs a test command: set [project] test_cmd in phil.toml, then retry"
+        return {
+            "reason": "no_test_cmd",
+            "task_id": task.id,
+            "phase": state["phase"],
+            "problems": [f"the run has no test command, so {task.id}'s tests can't run"],
+            "options": ["retry", "skip", "abort"],
+            "summary": summary,
+        }
+
     def _implement_packet(self, contract: ImplementInput, files: list[str], ledger: list[str]) -> Packet:
         def build(item: ImplementInput) -> Packet:
             return build_packet(
@@ -372,6 +431,9 @@ class RunEngine:
         return "escalate" if state.get("escalation") else "verify"
 
     def verify(self, state: RunState) -> dict:
+        return self._rebased(state, self._verify)
+
+    def _verify(self, state: RunState) -> dict:
         task = load_plan(state).tasks[state["task_index"]]
         globs = self.deps.config.project.test_globs
         worktree = self.deps.worktree
@@ -582,12 +644,18 @@ class RunEngine:
         }
 
     def tester(self, state: RunState) -> dict:
+        return self._rebased(state, self._tester)
+
+    def _tester(self, state: RunState) -> dict:
         budget_warn, escalation = self._budget_check(state, "tester")
         if escalation is not None:
             return {**budget_warn, "escalation": escalation}
         return {**budget_warn, **self._run_tester(state, state["base_sha"], "tester"), "tester_done": True}
 
     def tester_task(self, state: RunState) -> dict:
+        return self._rebased(state, self._tester_task)
+
+    def _tester_task(self, state: RunState) -> dict:
         budget_warn, escalation = self._budget_check(state, "tester_task")
         if escalation is not None:
             return {**budget_warn, "escalation": escalation}
@@ -604,6 +672,9 @@ class RunEngine:
         return "tester_task" if audit else "pick_task"
 
     def review(self, state: RunState) -> dict:
+        return self._rebased(state, self._review)
+
+    def _review(self, state: RunState) -> dict:
         budget_warn, escalation = self._budget_check(state, "review")
         if escalation is not None:
             return {**budget_warn, "escalation": escalation}
@@ -649,6 +720,11 @@ class RunEngine:
         return "escalate" if state.get("escalation") else state["next"]
 
     def finish(self, state: RunState) -> dict:
+        if state.get("status") == "aborted":
+            return self._finish(state)  # runs no tests, so a pending rebaseline would be wasted
+        return self._rebased(state, self._finish)
+
+    def _finish(self, state: RunState) -> dict:
         plan = load_plan(state)
         status = "aborted" if state.get("status") == "aborted" else "completed"
         open_issues = list(state.get("open_issues", []))

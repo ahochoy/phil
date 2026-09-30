@@ -1,0 +1,35 @@
+"""Propose a repo's test command from its files when neither the plan nor phil.toml sets one."""
+
+import json
+from pathlib import Path
+
+PYTHON_MARKERS = ("pyproject.toml", "pytest.ini", "conftest.py")
+# `npm init` writes this script: it fails on purpose and runs no tests.
+NPM_PLACEHOLDER = "no test specified"
+
+
+def _npm_test_script(root: Path) -> bool:
+    try:
+        data = json.loads((root / "package.json").read_text())
+    except (OSError, ValueError):
+        return False
+    scripts = data.get("scripts") if isinstance(data, dict) else None
+    script = scripts.get("test") if isinstance(scripts, dict) else None
+    return isinstance(script, str) and bool(script.strip()) and NPM_PLACEHOLDER not in script
+
+
+def detect_test_cmd(root: Path) -> str | None:
+    """The test command `root`'s files suggest, or None.
+
+    In order: a package.json `test` script gives `npm test`; Python markers give `uv run pytest`
+    when uv.lock exists, else `pytest`; go.mod gives `go test ./...`; Cargo.toml gives `cargo test`.
+    """
+    if (root / "package.json").is_file() and _npm_test_script(root):
+        return "npm test"
+    if any((root / marker).is_file() for marker in PYTHON_MARKERS):
+        return "uv run pytest" if (root / "uv.lock").is_file() else "pytest"
+    if (root / "go.mod").is_file():
+        return "go test ./..."
+    if (root / "Cargo.toml").is_file():
+        return "cargo test"
+    return None

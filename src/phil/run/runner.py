@@ -45,8 +45,10 @@ def start(engine: RunEngine, graph: Any, *, plan: Plan, base_sha: str, test_cmd:
     return _drive(engine, graph, initial_state(engine.deps.run_id, plan, base_sha, test_cmd))
 
 
-def resume(engine: RunEngine, graph: Any, decision: dict) -> RunOutcome:
-    return _drive(engine, graph, Command(resume=decision))
+def resume(engine: RunEngine, graph: Any, decision: dict, update: dict | None = None) -> RunOutcome:
+    """Answer the pending pause. `update` is merged into the state as the paused node resumes: unlike
+    `graph.update_state`, it keeps the pause pending until then, so a resume that fails can be retried."""
+    return _drive(engine, graph, Command(resume=decision, update=update) if update else Command(resume=decision))
 
 
 def continue_run(engine: RunEngine, graph: Any) -> RunOutcome:

@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import signal
@@ -10,14 +11,15 @@ import pytest
 import phil.run.worker as worker_module
 from phil.agents.fake import ScriptedAgentFactory
 from phil.repo import resolve_repo
+from phil.run.checkpoint import open_checkpointer
 from phil.run.launch import prepare_run
 from phil.run.worker import Heartbeat, StopRequested, WorkerError, run_worker
 from phil.store.db import connect, utcnow
 from phil.store.events import EventLog, run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
-from tests.helpers import run_git
-from tests.run.conftest import bad_green, calc_plan, review, tester_report, write_green, write_red
+from tests.helpers import MODELS_TOML, run_git
+from tests.run.conftest import TEST_CMD, bad_green, calc_plan, review, tester_report, write_green, write_red
 
 
 def happy():
@@ -277,3 +279,81 @@ def test_heartbeat_survives_a_transient_update_failure(calc_repo, monkeypatch):
     beat.stop()
     assert calls["n"] >= 2
     assert row(info, record.run_id).heartbeat_at is not None
+
+
+NEW_CMD = f"{TEST_CMD} -x"
+
+
+def checkpointed(info, run_id) -> dict:
+    saver = open_checkpointer(ProjectPaths(info.slug).db_path)
+    try:
+        return saver.get_tuple({"configurable": {"thread_id": run_id}}).checkpoint["channel_values"]
+    finally:
+        saver.conn.close()
+
+
+def events_of(info, run_id, kind):
+    return [e for e in run_events(ProjectPaths(info.slug), run_id).read()[0] if e["kind"] == kind]
+
+
+def rebaseline_logs(info, run_id):
+    return sorted((ProjectPaths(info.slug).run_dir(run_id) / "logs").glob("rebaseline*"))
+
+
+def set_project_test_cmd(repo, cmd):
+    (repo / "phil.toml").write_text(MODELS_TOML + f"[project]\ntest_cmd = {json.dumps(cmd)}\n")
+
+
+def test_resume_picks_up_a_changed_test_command_from_phil_toml(calc_repo):
+    info, record = escalated_run(calc_repo)
+    set_project_test_cmd(calc_repo, NEW_CMD)
+    outcome = run_worker(calc_repo, record.run_id, "resume", {"action": "retry"}, factory=finishing())
+
+    assert outcome.status == "completed"
+    assert [e["cmd"] for e in events_of(info, record.run_id, "test_cmd_changed")] == [NEW_CMD]
+    state = checkpointed(info, record.run_id)
+    assert state["test_cmd"] == NEW_CMD
+    assert state["rebaseline"] is False
+    assert len(rebaseline_logs(info, record.run_id)) == 1
+
+
+def test_continue_picks_up_a_changed_test_command_from_phil_toml(calc_repo):
+    info, record = new_run(calc_repo)
+    crashing = ScriptedAgentFactory({"implementer": [write_red, RuntimeError("model went away")]})
+    with pytest.raises(RuntimeError):
+        run_worker(calc_repo, record.run_id, "start", factory=crashing)
+    set_project_test_cmd(calc_repo, NEW_CMD)
+    assert run_worker(calc_repo, record.run_id, "continue", factory=finishing()).status == "completed"
+
+    assert [e["cmd"] for e in events_of(info, record.run_id, "test_cmd_changed")] == [NEW_CMD]
+    assert checkpointed(info, record.run_id)["test_cmd"] == NEW_CMD
+    assert len(rebaseline_logs(info, record.run_id)) == 1
+
+
+def test_an_unchanged_test_command_is_not_switched_on_resume(calc_repo):
+    info, record = escalated_run(calc_repo)
+    set_project_test_cmd(calc_repo, TEST_CMD)  # the same command the run already uses
+    assert run_worker(calc_repo, record.run_id, "resume", {"action": "retry"}, factory=finishing()).status == "completed"
+    assert events_of(info, record.run_id, "test_cmd_changed") == []
+    assert rebaseline_logs(info, record.run_id) == []
+
+
+def test_a_resume_that_fails_after_the_switch_can_be_resumed_again(calc_repo):
+    info, record = escalated_run(calc_repo)
+    set_project_test_cmd(calc_repo, NEW_CMD)
+    crashing = ScriptedAgentFactory({"implementer": [RuntimeError("model went away")]})
+    with pytest.raises(RuntimeError):
+        run_worker(calc_repo, record.run_id, "resume", {"action": "retry"}, factory=crashing)
+    assert run_worker(calc_repo, record.run_id, "continue", factory=finishing()).status == "completed"
+    assert checkpointed(info, record.run_id)["test_cmd"] == NEW_CMD
+    assert len(rebaseline_logs(info, record.run_id)) == 1
+
+
+def test_start_detects_the_test_command_when_none_is_set(calc_repo):
+    (calc_repo / "pytest.ini").write_text("[pytest]\naddopts = -p no:cacheprovider\n")
+    run_git(calc_repo, "add", "pytest.ini")
+    run_git(calc_repo, "commit", "-m", "pytest.ini")
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan().model_copy(update={"test_cmd": None}), info.head_sha)
+    assert run_worker(calc_repo, record.run_id, "start", factory=happy()).status == "completed"
+    assert checkpointed(info, record.run_id)["test_cmd"] == "pytest"

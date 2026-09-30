@@ -13,6 +13,7 @@ class ArchitectInput(Contract):
     repo_overview: str = ""
     previous_plan: Plan | None = None
     critique: PlanCritique | None = None
+    detected_test_cmd: str | None = None
 
 
 class CriticInput(Contract):
