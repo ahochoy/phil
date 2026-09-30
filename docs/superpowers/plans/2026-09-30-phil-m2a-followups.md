@@ -21,24 +21,17 @@ Deferred items from implementing plan M2a ("layered config and models"). Plan:
 
 - No test covers a malformed repo `phil.toml` (as opposed to a malformed global config) going
   through `load_config`'s error path.
-- `phil.tomlw`'s writer emits back-to-back section headers for empty parent tables (a table
-  with only empty sub-tables under it produces adjacent `[x]`/`[x.y]` headers with nothing
-  between them).
 - `effective_toml` omits leaves whose value is `None` instead of printing them explicitly
   (e.g. `api_key_env` left unset on a custom provider).
 
 ## Model resolution and messages (Task 2)
 
-- The missing-model message idiom (build the "no model for `<role>`..." text, then print it)
-  is duplicated between `phil/chat/approval.py` and `phil/cli/main.py`; a shared
-  `missing_model_messages`-style helper could own both call sites instead of each formatting
-  its own wrapper around `PhilConfig.missing_model_messages`.
 - The `[models]` unknown-key wording changed during M2a (roles vs. tiers now both listed); no
   follow-up test pins the exact new wording, so a future edit could drift silently.
 
 ## Providers (Task 3)
 
-- `phil.agents.invoke.chat_model` (and any other direct caller that omits a `provider=`
+- `phil.agents.factory.chat_model` (and any other direct caller that omits a `provider=`
   argument) falls back to a bare `PhilConfig()` rather than the caller's real config. Harmless
   today because production call sites always pass a provider/config explicitly, but a future
   direct caller could silently get built-in defaults instead of the user's settings.

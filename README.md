@@ -101,9 +101,22 @@ Ollama needs no `[providers.ollama]` entry at all — it's already built in and 
 low = "ollama:qwen3:32b"
 ```
 
-Set a provider's per-million-token prices, used to estimate cost when it doesn't report its
-own, on the same `[providers.<name>]` entry (`input_per_mtok`, `output_per_mtok`; see
-Observability for how estimated costs are shown).
+Migrating from an older config: a model prefix that `init_chat_model` used to accept but that
+isn't built in here (e.g. `deepseek:`, `groq:`, `xai:`) now needs a `[providers.<name>]`
+entry. Most such services are OpenAI-compatible:
+
+```toml
+[providers.groq]
+kind = "openai"
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+```
+
+Prices, for estimating a call's cost when it reports none: any provider of kind `openrouter`
+(the built-in one or a custom entry) is priced from OpenRouter's public price list. Every other
+provider uses its own `input_per_mtok` / `output_per_mtok` (USD per million tokens) from its
+`[providers.<name>]` entry; Ollama's built-in prices are `0.0`, so it costs $0. Anything else
+shows as unknown (see Observability).
 
 Every provider's own SDK retries are off (`max_retries=0`), so Phil's retry middleware is the
 only retry policy that runs — except the Google kind, which is built with `max_retries=1`
@@ -113,11 +126,13 @@ only retry policy that runs — except the Google kind, which is built with `max
 
     phil models check
 
-makes one tiny real call to each distinct model set under `[models]` — once per configured
-tier, then once per role that overrides its tier — through the same agent path Phil uses, and
-prints one line per model: pass or fail, the tiers/roles using it, the model string, and how
-long it took (or why it failed: an unknown provider, a missing key, or a model that didn't
-return the required structured output).
+makes one tiny real call to each distinct model that some role resolves to, through the same
+agent path Phil uses, and prints one line per model: pass or fail, the tiers it serves (or
+`role:<name>` when a role's own key overrides its tier), the model string, and how long it
+took (or why it failed: an unknown provider, a missing key, or a model that didn't return the
+required structured output). A tier set under `[models]` that no role maps to — e.g. a global
+`high` under a repo `phil.toml` that sets all six roles — isn't called; it's listed as
+`– high  <model>  unused (no role maps to it)` and isn't a failure.
 
 ## Usage
 
@@ -209,11 +224,12 @@ Cost markers, wherever a cost is shown:
   list): `$?` when the computed total is exactly zero, `?` appended to the formatted amount when
   there's a nonzero total from other calls alongside the unpriced one.
 
-When a call reports no cost, Phil estimates one: first from OpenRouter's public price list
-(`GET https://openrouter.ai/api/v1/models`, no key needed, cached under `~/.phil/cache/` for a
-day) for an `openrouter:<model>` call, then from the provider's own `input_per_mtok` /
-`output_per_mtok` prices — set under `[providers.<name>]`, or Ollama's built-in `0.0` / `0.0`
-(see Configuration → Providers) — for any other provider. A model with neither shows as
+When a call reports no cost, Phil estimates one. A call to any provider of kind `openrouter`
+(the built-in `openrouter` or a custom `[providers.<name>]` entry with that kind) is priced
+from OpenRouter's public price list (`GET https://openrouter.ai/api/v1/models`, no key needed,
+cached under `~/.phil/cache/` for a day). Any other provider uses its own `input_per_mtok` /
+`output_per_mtok` prices set under `[providers.<name>]` (see Configuration → Providers).
+Ollama's built-in prices are `0.0` / `0.0`, so it costs $0. A model with no price shows as
 unknown, never estimated.
 
 A run pauses at 100% of its `[run] max_tokens` / `max_cost_usd` limits as before, and now warns
