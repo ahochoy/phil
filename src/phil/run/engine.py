@@ -325,6 +325,7 @@ class RunEngine:
             "hint": None,
             "implement_failed": False,
             "denied": [],
+            "keep_worktree": False,  # a new task never continues another task's attempt
             "escalation": None,
         }
 
@@ -553,10 +554,10 @@ class RunEngine:
             plan = with_task_status(load_plan(state), state["task_index"], "SKIPPED")
             return {**cleared, "plan": plan.model_dump(), "next": "pick_task"}
         if action == "approve":
-            # The approved call's own problems are dropped: no gate judged it, and implement continues
-            # that attempt on the worktree as it was left (keep_worktree), with the approval in place.
+            # No gate judged the approved call, so implement continues that attempt on the worktree
+            # as it was left (keep_worktree), with the approval in place. The call's own problems
+            # (e.g. refused commands) stay in last_problems and reach its feedback as context.
             approved = [*state.get("approved", []), *escalation["commands"]]
-            # No gate has judged that attempt, so implement continues on the worktree as it was left.
             return {**cleared, "approved": approved, "denied": [], "keep_worktree": True, "next": "implement"}
         if action == "deny":
             hint = f"Not approved: {', '.join(escalation['commands'])}. Do not use them."

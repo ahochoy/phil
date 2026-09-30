@@ -165,3 +165,16 @@ def test_a_diff_that_overflows_a_small_budget_is_omitted(make_harness):
     green = implement_inputs(harness)[1]
     assert green["diff"] == "…(diff omitted: over the packet budget)"
     assert green["worklog"] is not None
+
+
+def test_pick_task_clears_a_stale_keep_worktree(make_harness):
+    from phil.run.state import load_plan, with_task_status
+
+    harness = make_harness({"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]})
+    final = harness.start()
+    assert final["status"] == "completed"
+    # A new task never continues a previous task's attempt, whatever the flag was left at.
+    reopened = with_task_status(load_plan(final), 0, "TODO")
+    update = harness.engine.pick_task({**final, "plan": reopened.model_dump(), "keep_worktree": True})
+    assert update["task_index"] == 0
+    assert update["keep_worktree"] is False
