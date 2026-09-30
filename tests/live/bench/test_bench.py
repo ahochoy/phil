@@ -2,6 +2,9 @@
 
 Each case plans and runs a small goal with real models and appends a record to
 ~/.phil/bench/results.jsonl (or $PHIL_BENCH_RESULTS); `python -m tests.live.bench.report` shows them.
+
+For comparable `minutes`, run the cases one at a time: `... uv run pytest -m bench -n 0`. The default
+`-n auto` runs them in parallel, and contention inflates each case's wall-clock time.
 """
 
 import json

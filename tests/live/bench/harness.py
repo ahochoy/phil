@@ -3,9 +3,14 @@
 `run_case` copies a fixture into a fresh git repo, plans the goal with the real `Planner`, starts the
 run with `prepare_run` and drives it with `run_worker` (as the chat's spawned worker would), checks the
 result on the run's worktree, and appends one JSON record to the results file.
+
+Planning starts at the architect: intake is not run, so the case's goal goes to the architect as the
+objective (a benchmark goal has no open questions to ask). The architect reads an exported snapshot of
+the base commit, as in the chat, and the chat's start gate (`launch_problems`) is applied before the run.
 """
 
 import json
+import secrets
 import shutil
 import subprocess
 import time
@@ -14,8 +19,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from phil.agents.invoke import AgentContext, AgentFactory
+from phil.chat.approval import launch_problems
 from phil.chat.overview import repo_overview
 from phil.chat.planning import Planner
+from phil.chat.snapshot import export_tree
 from phil.config import load_config
 from phil.contracts import Goal, Plan
 from phil.repo import resolve_repo
@@ -146,29 +153,37 @@ def run_case(case: Case, config_path: Path, work: Path, *, factory: AgentFactory
     root = _init_repo(case, Path(work), config_data)
     info = resolve_repo(root)
     paths = ProjectPaths(info.slug)
-    chat_id = f"bench-{case.name}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
+    chat_id = f"bench-{case.name}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(2)}"
     conn = connect(paths.db_path)
+    chat_dir = paths.project_dir / "chats" / chat_id
     ctx = AgentContext(
         config=load_config(info.root), conn=conn, layer="chat", chat_id=chat_id,
-        artifacts=ArtifactStore(paths.project_dir / "chats" / chat_id), factory=factory,
+        artifacts=ArtifactStore(chat_dir), factory=factory,
     )
     ts = datetime.now(UTC).isoformat(timespec="seconds")
     started = time.monotonic()
     plan: Plan | None = None
     run_id: str | None = None
     error: str | None = None
+    refused = False
     try:
-        plan = Planner(ctx, repo_overview(info.root)).draft(Goal(objective=case.goal), tree=info.root).plan
-        run_id = prepare_run(info, plan, info.head_sha, chat_id=chat_id).run_id
-        outcome = run_worker(info.root, run_id, "start", factory=factory)
-        if outcome.escalation is not None:
-            error = outcome.escalation.get("error") or outcome.escalation.get("summary")
+        # Like the chat: the architect reads the base commit's tracked files, never the live tree.
+        tree = export_tree(info.root, info.head_sha, chat_dir / "tree" / info.head_sha[:12])
+        plan = Planner(ctx, repo_overview(info.root)).draft(Goal(objective=case.goal), tree=tree).plan
+        problems = launch_problems(plan, ctx.config)
+        if problems:  # the chat would refuse to start this run
+            refused, error = True, "; ".join(problems)
+        else:
+            run_id = prepare_run(info, plan, info.head_sha, chat_id=chat_id).run_id
+            outcome = run_worker(info.root, run_id, "start", factory=factory)
+            if outcome.escalation is not None:
+                error = outcome.escalation.get("error") or outcome.escalation.get("summary")
     except Exception as exc:  # the record says what went wrong; the benchmark carries on
         error = f"{type(exc).__name__}: {exc}"
     minutes = round((time.monotonic() - started) / 60, 2)
     try:
         run = get_run(conn, run_id) if run_id else None
-        state = run.state if run else "planning_failed"
+        state = run.state if run else "launch_refused" if refused else "planning_failed"
         if error is None and state != "completed" and run is not None:
             error = run.needs_attention
         # Checked on the run's worktree before anything cleans it up. An escalated run answered nothing.

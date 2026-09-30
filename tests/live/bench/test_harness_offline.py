@@ -71,7 +71,8 @@ def results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture
 def config(tmp_path: Path) -> Path:
     path = tmp_path / "bench.toml"
-    path.write_text(MODELS_TOML)
+    # The plan's test command is the project's own, so the chat's start gate lets the run start.
+    path.write_text(MODELS_TOML + f"\n[project]\ntest_cmd = {json.dumps(TEST_CMD)}\n")
     return path
 
 
@@ -90,9 +91,37 @@ def test_run_case_appends_one_complete_record(tmp_path, results, config):
     # architect + critic in the chat, then red, green, tester and reviewer in the run
     assert record["calls"] == 6
     assert (record["tokens_in"], record["tokens_out"]) == (600, 120)
-    assert record["model_calls"] >= 0 and record["retries"] == 0
+    assert (record["model_calls"], record["retries"]) == (0, 0)  # scripted agents make no model calls
     assert record["cost_source"] in ("reported", "estimated", "unknown")
     assert record["chat_id"].startswith("bench-py-multiply-")
+
+
+def test_architect_reads_a_snapshot_of_the_base_commit(tmp_path, results, config):
+    seen = []
+
+    def architect(turn: Turn):
+        seen.append(turn.workdir)
+        return multiply_plan()
+
+    factory = scripted()
+    factory.scripts["architect"] = [architect]
+    record = run_case(case("py-multiply"), config, tmp_path / "work", factory=factory)
+    assert record["passed"] is True
+    [tree] = seen
+    assert tree != (tmp_path / "work" / "py-multiply").resolve()
+    assert record["chat_id"] in str(tree)
+    assert (tree / "calc" / "__init__.py").is_file()
+
+
+def test_a_plan_the_chat_would_not_start_is_refused(tmp_path, results, config):
+    no_test_cmd = multiply_plan().model_copy(update={"test_cmd": None})
+    config.write_text(MODELS_TOML)  # no [project] test_cmd either
+    factory = ScriptedAgentFactory({"architect": [no_test_cmd], "critic": [critique()]})
+    record = run_case(case("py-multiply"), config, tmp_path / "work", factory=factory)
+    assert (record["state"], record["passed"], record["run_id"]) == ("launch_refused", False, None)
+    assert "no test command" in record["error"]
+    assert record["calls"] == 2  # architect and critic only: no run started
+    assert len(results.read_text().splitlines()) == 1
 
 
 def test_run_case_writes_the_merged_config(tmp_path, results, config):
