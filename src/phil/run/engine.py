@@ -15,9 +15,9 @@ from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, in
 from phil.agents.registry import get_spec
 from phil.agents.tools import CommandLog
 from phil.config import PhilConfig
-from phil.contracts import ImplementInput, Issue, ReviewInput, TesterInput, TestReport
+from phil.contracts import ImplementInput, Issue, ReviewInput, TaskResult, TesterInput, TestReport, Worklog
 from phil.git import GitError, branch_for
-from phil.packets import PacketTooLarge, build_packet
+from phil.packets import Packet, PacketTooLarge, build_packet
 from phil.run.gates import (
     is_test_path,
     run_check,
@@ -63,6 +63,16 @@ def _write_json_atomic(path: Path, data: Any) -> None:
         except OSError:
             pass
         raise
+
+
+# The previous attempt's diff is cut to this many characters before it goes into the packet.
+MAX_DIFF_CHARS = 8_000
+DIFF_TRUNCATED = "\n…(diff truncated)"
+DIFF_OMITTED = "…(diff omitted: over the packet budget)"
+
+
+def _cap_diff(diff: str) -> str:
+    return diff if len(diff) <= MAX_DIFF_CHARS else diff[:MAX_DIFF_CHARS] + DIFF_TRUNCATED
 
 
 class RunEngine:
@@ -255,11 +265,15 @@ class RunEngine:
         budget_warn, escalation = self._budget_check(state, "implement")
         if escalation is not None:
             return {**budget_warn, "escalation": escalation}
+        worktree = self.deps.worktree
+        # The previous attempt's changes (or the red phase's, before green) are still in the
+        # worktree: capture them for the packet before the reset below throws them away.
+        diff = _cap_diff(self.worktrees.working_diff(worktree, state["task_base_sha"]))
         if state["phase"] == "red" or not state.get("red_tree"):
             # Red, or a check task (green with no red tree): start from the task's base commit.
-            self.worktrees.reset_to(self.deps.worktree, state["task_base_sha"])
+            self.worktrees.reset_to(worktree, state["task_base_sha"])
         else:
-            self.worktrees.restore_snapshot(self.deps.worktree, state["red_tree"])
+            self.worktrees.restore_snapshot(worktree, state["red_tree"])
         plan = load_plan(state)
         task = plan.tasks[state["task_index"]]
         seq = state.get("call_seq", 0) + 1
@@ -267,33 +281,39 @@ class RunEngine:
         if state.get("hint"):
             feedback.append(f"Human hint: {state['hint']}")
         last = state.get("last_report")
+        previous = state.get("worklogs", {}).get(task.id)
         contract = ImplementInput(
             task=task,
             phase=state["phase"],
             test_cmd=state["test_cmd"],
             last_report=TestReport.model_validate(last) if last else None,
             feedback=feedback,
+            worklog=Worklog.model_validate(previous) if previous else None,
+            diff=diff,
         )
         ledger = [e["assumption"] for e in self.deps.artifacts.read_assumptions() if e.get("task_id") == task.id]
-        packet = build_packet(
-            "implementer",
-            contract,
-            budget_tokens=self._budget("implementer"),
-            root=self.deps.worktree,
-            files=task.files_hint,
-            ledger=ledger,
-        )
+        packet = self._implement_packet(contract, task.files_hint, ledger)
         log = CommandLog()
         self._update_run(current_node="implement")
         try:
-            invoke_agent(
+            output = invoke_agent(
                 get_spec("implementer"), packet, self._context(state, log), node="implement", task_id=task.id, call=seq
             )
-            failed, problems = False, []
+            assert isinstance(output, TaskResult)  # the implementer spec's out_contract
+            failed, problems, worklog = False, [], output.worklog
         except ContractViolation as exc:
             failed, problems = True, [f"implementer output rejected: {problem}" for problem in exc.problems]
+            worklog = None
         problems += [f"refused command: {cmd}" for cmd in log.refused]
-        update = {"call_seq": seq, "implement_failed": failed, "last_problems": problems, "denied": list(log.denied)}
+        if worklog is None:
+            worklog = self._fallback_worklog(state, log, problems)
+        update = {
+            "call_seq": seq,
+            "implement_failed": failed,
+            "last_problems": problems,
+            "denied": list(log.denied),
+            "worklogs": {**state.get("worklogs", {}), task.id: worklog.model_dump()},
+        }
         if log.denied:
             update["escalation"] = {
                 "reason": "approval",
@@ -303,6 +323,37 @@ class RunEngine:
                 "summary": f"{task.id} needs approval for: {', '.join(log.denied)}",
             }
         return {**budget_warn, **update}
+
+    def _implement_packet(self, contract: ImplementInput, files: list[str], ledger: list[str]) -> Packet:
+        def build(item: ImplementInput) -> Packet:
+            return build_packet(
+                "implementer",
+                item,
+                budget_tokens=self._budget("implementer"),
+                root=self.deps.worktree,
+                files=files,
+                ledger=ledger,
+            )
+
+        try:
+            return build(contract)
+        except PacketTooLarge:
+            if not contract.diff:
+                raise
+            # Even the capped diff doesn't fit a small budget: send the rest without it.
+            return build(contract.model_copy(update={"diff": DIFF_OMITTED}))
+
+    def _fallback_worklog(self, state: RunState, log: CommandLog, problems: list[str]) -> Worklog:
+        """A worklog for an attempt that returned no usable output, built from what the tools saw."""
+        read: list[str] = []
+        for tool in ("read_file", "ls", "glob", "grep"):
+            read += [path for path in log.tool_paths.get(tool, []) if path not in read]
+        changed = self.worktrees.changed_files(self.deps.worktree, since=state["task_base_sha"])
+        return Worklog(
+            files_read=read[:50],
+            files_changed=changed[:50],
+            notes=[problem if len(problem) <= 200 else problem[:199] + "…" for problem in problems[:2]],
+        )
 
     def route_after_implement(self, state: RunState) -> str:
         return "escalate" if state.get("escalation") else "verify"
@@ -374,7 +425,11 @@ class RunEngine:
                 "phase": state["phase"],
                 "problems": problems,
                 "options": ["retry", "skip", "abort"],
-                "summary": f"{task.id} failed {attempts} attempts in the {state['phase']} phase",
+                "summary": (
+                    f"{task.id} failed {attempts} attempts on the check task"
+                    if task.verify == "check"
+                    else f"{task.id} failed {attempts} attempts in the {state['phase']} phase"
+                ),
                 "log": (report or {}).get("log_path") or None,
             }
         return update

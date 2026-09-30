@@ -11,7 +11,7 @@ from phil.contracts.inputs import (
 )
 from phil.contracts.interface import Brief, Decision, Goal, ParkedItem, Ref, RunStatus
 from phil.contracts.planning import Plan, PlanCritique, Task
-from phil.contracts.results import Review, TaskResult, TesterReport, TestReport
+from phil.contracts.results import Review, TaskResult, TesterReport, TestReport, Worklog
 
 ALL_CONTRACTS: list[type[Contract]] = [
     Plan,
@@ -60,4 +60,5 @@ __all__ = [
     "TesterInput",
     "TesterReport",
     "TestReport",
+    "Worklog",
 ]

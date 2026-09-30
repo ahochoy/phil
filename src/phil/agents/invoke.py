@@ -268,7 +268,7 @@ def invoke_agent(
                 ctx.artifacts.write_json("packets", f"{name}.retry", {"messages": payload_messages})
         started = time.monotonic()
         parse_problems: list[str] | None = None
-        collector = UsageCollector(ignore_tools={spec.out_contract.__name__})
+        collector = UsageCollector(ignore_tools={spec.out_contract.__name__}, tool_paths=log.tool_paths)
         sleeps: list[float] = []
 
         def counting_sleep(delay: float) -> None:

@@ -39,6 +39,7 @@ class RunState(TypedDict, total=False):
     original_task_ids: list[str]
     open_issues: list[dict[str, Any]]
     commit_bypass: bool
+    worklogs: dict[str, dict]
 
 
 def initial_state(run_id: str, plan: Plan, base_sha: str, test_cmd: str) -> RunState:
@@ -76,6 +77,7 @@ def initial_state(run_id: str, plan: Plan, base_sha: str, test_cmd: str) -> RunS
         original_task_ids=[task.id for task in plan.tasks],
         open_issues=[],
         commit_bypass=False,
+        worklogs={},
     )
 
 

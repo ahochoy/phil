@@ -51,6 +51,10 @@ class WorktreeManager:
     def diff(self, path: Path, base: str) -> str:
         return git(path, "diff", base, "HEAD")
 
+    def working_diff(self, path: Path, base: str) -> str:
+        """The diff from `base` to the working tree as it stands, uncommitted and untracked files included."""
+        return git(path, "diff", base, self.snapshot(path))
+
     def head(self, path: Path) -> str:
         return git(path, "rev-parse", "HEAD").strip()
 

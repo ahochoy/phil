@@ -1,9 +1,23 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, StringConstraints
 
-from phil.contracts.base import Contract
+from phil.contracts.base import Contract, Part
 from phil.contracts.common import Issue, SelfCheck
+
+
+class Worklog(Part):
+    files_read: list[str] = Field(
+        default_factory=list, max_length=50, description="Paths you read or listed, as you named them to the tools."
+    )
+    files_changed: list[str] = Field(
+        default_factory=list, max_length=50, description="Repo-relative paths you created, edited, or deleted."
+    )
+    notes: list[Annotated[str, StringConstraints(max_length=200)]] = Field(
+        default_factory=list,
+        max_length=5,
+        description="Up to 5 short notes for your next attempt: what you tried, what failed, what's next.",
+    )
 
 
 class TaskResult(Contract):
@@ -12,6 +26,10 @@ class TaskResult(Contract):
     files_changed: list[str] = Field(description="Repo-relative paths you created, edited, or deleted.")
     tests_added: list[str] = Field(description="Repo-relative test files you created or extended.")
     self_check: SelfCheck = Field(description="Your self-check of this work.")
+    worklog: Worklog = Field(
+        default_factory=Worklog,
+        description="A short record of this attempt, handed to your next attempt at the same task.",
+    )
 
 
 class TestReport(Contract):

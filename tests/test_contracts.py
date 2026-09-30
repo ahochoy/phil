@@ -9,6 +9,8 @@ from phil.contracts import (
     Plan,
     SelfCheck,
     Task,
+    TaskResult,
+    Worklog,
 )
 from phil.contracts.schema import export_schemas
 
@@ -109,3 +111,32 @@ def test_export_schemas_describe_the_check_fields(tmp_path):
     task = schema["$defs"]["Task"]["properties"]
     assert task["verify"]["enum"] == ["tdd", "check"] and task["verify"]["default"] == "tdd"
     assert "description" in task["verify"] and "description" in task["check_cmd"]
+
+
+def test_worklog_defaults_to_empty_and_task_result_carries_one():
+    assert Worklog() == Worklog(files_read=[], files_changed=[], notes=[])
+    result = TaskResult(phase="green", summary="s", files_changed=[], tests_added=[], self_check=_self_check())
+    assert result.worklog == Worklog()
+
+
+def _self_check() -> SelfCheck:
+    return SelfCheck(assumptions=[], evidence=[], risks=[], unverified=[], out_of_scope=[])
+
+
+def test_worklog_limits():
+    Worklog(files_read=["f"] * 50, files_changed=["f"] * 50, notes=["n" * 200] * 5)
+    with pytest.raises(ValidationError, match="files_read"):
+        Worklog(files_read=["f"] * 51)
+    with pytest.raises(ValidationError, match="files_changed"):
+        Worklog(files_changed=["f"] * 51)
+    with pytest.raises(ValidationError, match="notes"):
+        Worklog(notes=["n"] * 6)
+    with pytest.raises(ValidationError, match="notes"):
+        Worklog(notes=["n" * 201])
+
+
+def test_implement_input_carries_an_optional_worklog_and_diff():
+    from phil.contracts import ImplementInput
+
+    implement = ImplementInput(task=make_task(), phase="green", test_cmd="pytest")
+    assert (implement.worklog, implement.diff) == (None, "")

@@ -85,3 +85,13 @@ def test_check_task_that_edits_a_test_file_fails_the_gate(make_harness):
     packets = implementer_packets(harness)
     assert "modified test files: tests/test_calc.py" in packets[1]
     assert "test_extra" not in (harness.deps.worktree / "tests" / "test_calc.py").read_text()
+
+
+def test_a_check_task_that_keeps_failing_escalates_without_green_phase_wording(make_harness):
+    harness = make_harness({"implementer": [write_page_and_touch_tests] * 3}, plan=check_plan())
+    escalation = harness.start()["__interrupt__"][0].value
+
+    assert escalation["reason"] == "attempts"
+    assert escalation["summary"] == "CALC-001 failed 3 attempts on the check task"
+    assert "check task modified test files: tests/test_calc.py" in escalation["problems"]
+    assert not any("green" in problem for problem in escalation["problems"])

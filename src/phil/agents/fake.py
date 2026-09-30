@@ -65,6 +65,7 @@ class Turn:
     payload: dict
     workdir: Path | None
     tools: dict[str, Callable[..., str]]
+    config: dict | None = None  # the invoke config, e.g. its LangChain callbacks
 
 
 class _ScriptedAgent:
@@ -84,7 +85,7 @@ class _ScriptedAgent:
         self.factory.calls.append((self.role, payload))
         if isinstance(item, BaseException):
             raise item
-        output = item(Turn(payload, self.workdir, self.tools)) if callable(item) else item
+        output = item(Turn(payload, self.workdir, self.tools, config)) if callable(item) else item
         return {"messages": [_usage_message(self.factory.usage)], "structured_response": output}
 
 

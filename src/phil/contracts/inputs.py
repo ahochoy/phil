@@ -5,7 +5,7 @@ from pydantic import Field
 from phil.contracts.base import Contract
 from phil.contracts.interface import Goal, RunStatus
 from phil.contracts.planning import Plan, PlanCritique, Task
-from phil.contracts.results import TestReport
+from phil.contracts.results import TestReport, Worklog
 
 
 class ArchitectInput(Contract):
@@ -33,6 +33,8 @@ class ImplementInput(Contract):
     test_cmd: str
     last_report: TestReport | None = None
     feedback: list[str] = Field(default_factory=list)
+    worklog: Worklog | None = None
+    diff: str = ""
 
 
 class TesterInput(Contract):

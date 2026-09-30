@@ -13,6 +13,9 @@ class CommandLog:
     commands: list[str] = field(default_factory=list)
     denied: list[str] = field(default_factory=list)
     refused: list[str] = field(default_factory=list)
+    # Paths the agent's file tools touched, by tool name; `invoke_agent` records into it live, so
+    # it survives a rejected output (ContractViolation) or a crash.
+    tool_paths: dict[str, list[str]] = field(default_factory=dict)
 
 
 def make_shell_tool(
