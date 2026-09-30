@@ -15,6 +15,8 @@ import shutil
 import subprocess
 import time
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -23,7 +25,8 @@ from phil.chat.approval import launch_problems
 from phil.chat.overview import repo_overview
 from phil.chat.planning import Planner
 from phil.chat.snapshot import export_tree
-from phil.config import load_config
+import phil.config
+from phil.config import ROLES, ConfigError, PhilConfig, load_config
 from phil.contracts import Goal, Plan
 from phil.repo import resolve_repo
 from phil.run.launch import prepare_run
@@ -33,6 +36,7 @@ from phil.store.db import connect
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
 from phil.store.telemetry import chat_usage
+from phil.tomlw import dump_toml
 from tests.live.bench.cases import FIXTURES, Case
 from tests.live.bench.report import results_path
 
@@ -64,30 +68,6 @@ def deep_merge(base: dict, override: dict) -> dict:
         else:
             merged[key] = value
     return merged
-
-
-def _toml_value(value: object) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int | float):
-        return repr(value)
-    if isinstance(value, str):
-        return json.dumps(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
-    raise TypeError(f"cannot write {type(value).__name__} to phil.toml")
-
-
-def dump_toml(data: dict, prefix: str = "") -> str:
-    """Enough TOML for phil.toml: scalars, lists of scalars and nested tables."""
-    scalars = {k: v for k, v in data.items() if not isinstance(v, dict)}
-    tables = {k: v for k, v in data.items() if isinstance(v, dict)}
-    lines = [f"{json.dumps(k) if not k.isidentifier() else k} = {_toml_value(v)}" for k, v in scalars.items()]
-    out = "\n".join(lines) + ("\n" if lines else "")
-    for key, table in tables.items():
-        name = f"{prefix}.{key}" if prefix else key
-        out += f"\n[{name}]\n" + dump_toml(table, name)
-    return out
 
 
 def case_config(case: Case, user_config: dict) -> dict:
@@ -145,6 +125,29 @@ def _modes(plan: Plan | None) -> list[str]:
     return [getattr(task, "verify", None) or "tdd" for task in plan.tasks] if plan else []
 
 
+@contextmanager
+def without_global_config(work: Path) -> Iterator[None]:
+    """Hide the user's ~/.phil/config.toml while a case runs, so a global [project], [shell], [git],
+    [tiers] or [models] setting can't change results. The worker runs in-process, so this reaches it."""
+    original = phil.config.global_config_path
+    phil.config.global_config_path = lambda: Path(work) / "no-global-config.toml"  # never created
+    try:
+        yield
+    finally:
+        phil.config.global_config_path = original
+
+
+def resolved_models(config: PhilConfig) -> dict[str, str]:
+    """The model each role actually resolves to, skipping roles that have none."""
+    models = {}
+    for role in ROLES:
+        try:
+            models[role] = config.model_for(role)
+        except ConfigError:
+            continue
+    return models
+
+
 def append_record(record: dict) -> None:
     path = results_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -153,7 +156,14 @@ def append_record(record: dict) -> None:
 
 
 def run_case(case: Case, config_path: Path, work: Path, *, factory: AgentFactory | None = None) -> dict:
-    """Plan and run `case` end to end, then append and return its record. `factory=None` uses real models."""
+    """Plan and run `case` end to end, then append and return its record. `factory=None` uses real models.
+
+    The user's global config is ignored: the case's phil.toml alone decides its settings."""
+    with without_global_config(work):
+        return _run_case(case, config_path, work, factory=factory)
+
+
+def _run_case(case: Case, config_path: Path, work: Path, *, factory: AgentFactory | None) -> dict:
     config_data = case_config(case, tomllib.loads(Path(config_path).read_text()))
     root = _init_repo(case, Path(work), config_data)
     info = resolve_repo(root)
@@ -197,7 +207,7 @@ def run_case(case: Case, config_path: Path, work: Path, *, factory: AgentFactory
             "case": case.name,
             "ts": ts,
             "phil_sha": phil_sha(),
-            "models": dict(config_data.get("models", {})),
+            "models": resolved_models(ctx.config),
             "tasks": len(plan.tasks) if plan else 0,
             "modes": _modes(plan),
             "expect_modes": list(case.expect_modes),

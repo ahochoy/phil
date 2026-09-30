@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import signal
@@ -137,7 +138,8 @@ def run_worker(
     if record.state in FINISHED:
         conn.close()
         raise WorkerError(f"{run_id} is {record.state}; the run is finished")
-    config = load_config(info.root)
+    # The run keeps the `--set` overrides it was started with, whichever mode resumes it.
+    config = load_config(info.root, overrides=json.loads(record.config_overrides or "[]"))
     events = run_events(paths, run_id)
     deps = RunDeps(
         config=config,

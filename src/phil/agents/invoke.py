@@ -10,7 +10,8 @@ from pydantic import BaseModel, ValidationError
 
 from phil.agents.evidence import check_evidence
 from phil.agents.pricing import PriceBook, default_price_book
-from phil.agents.retry import call_with_retry
+from phil.agents.providers import ProviderSpec, estimate_cost, provider_for_model, split_model
+from phil.agents.retry import MODEL_CALL_ATTEMPTS, call_with_retry
 from phil.agents.spec import AgentSpec
 from phil.agents.tools import CommandLog, make_shell_tool
 from phil.agents.usage import extract_usage
@@ -21,9 +22,9 @@ from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.parked import park
 from phil.store.telemetry import CallRow, CostSource, TelemetryRow, record, record_calls, weakest
 
-# `Callable[...]` can't express the `timeout_s` keyword-only parameter with its default;
-# real factories (build_agent) and scripted ones (ScriptedAgentFactory/FakeAgentFactory) all
-# accept it as `*, timeout_s: int = 180`.
+# `Callable[...]` can't express the keyword-only parameters; real factories (build_agent) and
+# scripted ones (ScriptedAgentFactory/FakeAgentFactory) all accept
+# `*, timeout_s: int = 180, provider: ProviderSpec | None = None` (the fakes ignore `provider`).
 AgentFactory = Callable[[AgentSpec, str, Path | None, list[Callable[..., str]]], Any]
 
 
@@ -96,17 +97,31 @@ def _pricing_models(configured: str, call_model: str | None) -> list[str]:
 
 
 def _estimate(
-    ctx: AgentContext, configured: str, call_model: str | None, input_tokens: int, output_tokens: int
+    ctx: AgentContext,
+    configured: str,
+    provider: ProviderSpec | None,
+    call_model: str | None,
+    input_tokens: int,
+    output_tokens: int,
 ) -> float | None:
-    prices = _price_book(ctx)
-    for name in _pricing_models(configured, call_model):
-        cost = prices.estimate(name, input_tokens, output_tokens)
-        if cost is not None:
-            return cost
+    """A call's cost with none reported: OpenRouter's price book for an OpenRouter-kind provider,
+    then the provider's own prices (`[providers.x]`, or Ollama's 0.0), else `None` (unknown)."""
+    if provider is None or provider.kind == "openrouter":
+        # The book knows models as `openrouter:<id>`, whatever the provider entry is called.
+        book_model = configured if provider is None else f"openrouter:{split_model(configured)[1]}"
+        prices = _price_book(ctx)
+        for name in _pricing_models(book_model, call_model):
+            cost = prices.estimate(name, input_tokens, output_tokens)
+            if cost is not None:
+                return cost
+    if provider is not None:
+        return estimate_cost(provider, input_tokens, output_tokens)
     return None
 
 
-def _usage(ctx: AgentContext, collector: Any, messages: list, configured: str) -> _Usage:
+def _usage(
+    ctx: AgentContext, collector: Any, messages: list, configured: str, provider: ProviderSpec | None = None
+) -> _Usage:
     """Callback totals win when the collector saw model calls; otherwise (scripted fakes) fall
     back to the usage on the returned messages."""
     tool_calls = dict(collector.tool_calls)
@@ -119,7 +134,9 @@ def _usage(ctx: AgentContext, collector: Any, messages: list, configured: str) -
         if model_call.reported_cost is not None:
             cost, source = model_call.reported_cost, "reported"
         else:
-            estimate = _estimate(ctx, configured, model_call.model, model_call.input_tokens, model_call.output_tokens)
+            estimate = _estimate(
+                ctx, configured, provider, model_call.model, model_call.input_tokens, model_call.output_tokens
+            )
             cost, source = (estimate, "estimated") if estimate is not None else (0.0, "unknown")
         rows.append(
             CallRow(
@@ -165,6 +182,30 @@ def _validate(spec: AgentSpec, raw: object) -> tuple[Contract | None, list[str]]
     except ValidationError as exc:
         problems = [f"{'.'.join(str(p) for p in err['loc']) or '<root>'}: {err['msg']}" for err in exc.errors()]
         return None, problems
+
+
+RAW_TEXT_LIMIT = 2000
+
+
+def _last_ai_text(messages: list) -> str | None:
+    """The text of the last AI message (a string, or the text parts of a content list), capped at
+    `RAW_TEXT_LIMIT` characters; `None` when there is no AI message."""
+    for message in reversed(messages):
+        if getattr(message, "type", None) != "ai":
+            continue
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            text = content
+        else:
+            parts = []
+            for part in content or []:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict) and part.get("type") == "text":
+                    parts.append(str(part.get("text", "")))
+            text = "".join(parts)
+        return text[:RAW_TEXT_LIMIT]
+    return None
 
 
 def _is_structured_output_parse_error(exc: BaseException) -> bool:
@@ -226,14 +267,25 @@ def invoke_agent(
     node: str,
     task_id: str | None = None,
     call: int = 1,
+    model: str | None = None,
+    max_attempts: int = 2,
+    transient_retries: bool = True,
 ) -> Contract:
+    """Run `spec` on `packet`. `model` pins the model instead of the role's configured one;
+    `max_attempts` bounds the contract retries (a rejected output gets another try); without
+    `transient_retries`, a failed model call is not retried (`phil models check` uses one try)."""
     if "shell" in spec.tools and ctx.workdir is None:
         raise ValueError(f"{spec.name} needs a workdir for its shell tool")
     if packet.contract_type != spec.in_contract.__name__:
         raise ValueError(
             f"{spec.name} expects a {spec.in_contract.__name__} packet, got {packet.contract_type}"
         )
-    model = ctx.config.model_for(spec.role)
+    if model is None:
+        model = ctx.config.model_for(spec.role)
+        provider = provider_for_model(ctx.config, model, ctx.config.model_owner(spec.role))
+    else:
+        provider = provider_for_model(ctx.config, model, spec.role)
+    retry_attempts = MODEL_CALL_ATTEMPTS if transient_retries else 1
     log = ctx.command_log if ctx.command_log is not None else CommandLog()
     shell = ctx.config.shell
     effective_node = node if call == 1 else f"{node}-c{call}"
@@ -251,7 +303,9 @@ def invoke_agent(
                 approved=ctx.approved,
             )
         )
-    agent = _resolve_factory(ctx)(spec, model, ctx.workdir, tools, timeout_s=ctx.config.run.model_timeout_s)
+    agent = _resolve_factory(ctx)(
+        spec, model, ctx.workdir, tools, timeout_s=ctx.config.run.model_timeout_s, provider=provider
+    )
     # lazy: keeps langchain out of module import
     from phil.agents.collector import UsageCollector
     from phil.agents.model_retry import TRACKER_KEY, ModelRetryTracker, model_call_retried
@@ -259,12 +313,12 @@ def invoke_agent(
     messages: list[dict[str, str]] = [{"role": "user", "content": packet.render()}]
     problems: list[str] = []
     last_rejected_path: str | None = None
-    for attempt in (1, 2):
+    for attempt in range(1, max_attempts + 1):
         name = artifact_name(effective_node, task_id, attempt)
         payload_messages = messages if attempt == 1 else [*messages, _retry_message(problems)]
         if ctx.artifacts is not None:
             ctx.artifacts.write("packets", name, packet)
-            if attempt == 2:
+            if attempt > 1:
                 ctx.artifacts.write_json("packets", f"{name}.retry", {"messages": payload_messages})
         started = time.monotonic()
         parse_problems: list[str] | None = None
@@ -279,12 +333,13 @@ def invoke_agent(
         # through `counting_sleep`); `call_with_retry` re-runs the whole agent only for a transient
         # error raised outside a wrapped model call (a fake agent, a summarisation call), never
         # again for one the middleware already handled.
-        tracker = ModelRetryTracker(sleep=counting_sleep)
+        tracker = ModelRetryTracker(sleep=counting_sleep, attempts=retry_attempts)
         try:
             result, _ = call_with_retry(
                 agent,
                 {"messages": payload_messages},
                 sleep=counting_sleep,
+                attempts=retry_attempts,
                 config={"callbacks": [collector], "configurable": {TRACKER_KEY: tracker}},
                 retryable=lambda exc: not model_call_retried(exc),
             )
@@ -301,7 +356,7 @@ def invoke_agent(
                     call=call,
                     packet=packet,
                     started=started,
-                    usage=_usage(ctx, collector, [], model),
+                    usage=_usage(ctx, collector, [], model, provider),
                     retries=retries,
                 )
                 raise
@@ -319,7 +374,7 @@ def invoke_agent(
             )
             if problems:
                 outcome = "evidence_fail"
-        usage = _usage(ctx, collector, result.get("messages", []), model)
+        usage = _usage(ctx, collector, result.get("messages", []), model, provider)
         _record_usage(
             ctx,
             TelemetryRow(
@@ -347,6 +402,9 @@ def invoke_agent(
         if problems and ctx.artifacts is not None:
             raw = result.get("structured_response")
             raw_data = raw.model_dump() if isinstance(raw, BaseModel) else raw
+            if raw is None and parse_problems is None:
+                # No structured output: keep what the model said instead, to diagnose it.
+                raw_data = _last_ai_text(result.get("messages", []))
             last_rejected_path = str(
                 ctx.artifacts.write_json("outputs", f"{name}.rejected", {"raw": raw_data, "problems": problems})
             )

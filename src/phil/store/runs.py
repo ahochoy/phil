@@ -38,6 +38,7 @@ _UPDATABLE = {
     "pr_number",
     "pr_state",
     "pr_checked_at",
+    "config_overrides",
 }
 
 
@@ -64,6 +65,7 @@ class RunRecord:
     pr_number: int | None = None
     pr_state: str | None = None
     pr_checked_at: str | None = None
+    config_overrides: str | None = None  # JSON list of the `--set` overrides the run was started with
 
 
 def new_run_id(conn: sqlite3.Connection) -> str:
@@ -84,13 +86,18 @@ def create_run(
     story_ref: str | None = None,
     chat_id: str | None = None,
     base_branch: str | None = None,
+    config_overrides: str | None = None,
 ) -> RunRecord:
     branch = branch_for(run_id)
     now = utcnow()
     conn.execute(
         "INSERT INTO runs (run_id, keyword, base_sha, branch, worktree, state, tasks_total,"
-        " story_ref, created_at, updated_at, chat_id, base_branch) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
-        (run_id, keyword, base_sha, branch, str(worktree), tasks_total, story_ref, now, now, chat_id, base_branch),
+        " story_ref, created_at, updated_at, chat_id, base_branch, config_overrides)"
+        " VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
+        (
+            run_id, keyword, base_sha, branch, str(worktree), tasks_total, story_ref, now, now, chat_id, base_branch,
+            config_overrides,
+        ),
     )
     run = get_run(conn, run_id)
     assert run is not None

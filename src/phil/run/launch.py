@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,7 +15,10 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, create_run, new_run_id
 
 
-def prepare_run(info: RepoInfo, plan: Plan, base_sha: str, *, chat_id: str | None = None) -> RunRecord:
+def prepare_run(
+    info: RepoInfo, plan: Plan, base_sha: str, *, chat_id: str | None = None, overrides: Sequence[str] = ()
+) -> RunRecord:
+    """Record a pending run; its worker reloads the config with the same `--set` `overrides`."""
     paths = ProjectPaths(info.slug)
     conn = connect(paths.db_path)
     try:
@@ -30,6 +34,7 @@ def prepare_run(info: RepoInfo, plan: Plan, base_sha: str, *, chat_id: str | Non
             story_ref=plan.story_ref,
             chat_id=chat_id,
             base_branch=info.branch,
+            config_overrides=json.dumps(list(overrides)) if overrides else None,
         )
     finally:
         conn.close()

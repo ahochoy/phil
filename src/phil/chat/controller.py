@@ -4,7 +4,7 @@ import shutil
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -13,7 +13,14 @@ from rich.markup import escape
 from rich.text import Text
 
 from phil.agents.invoke import AgentContext
-from phil.chat.approval import effective_test_cmd, git_policy_note, launch_problems, test_cmd_differs, test_cmd_problem
+from phil.chat.approval import (
+    effective_test_cmd,
+    git_policy_note,
+    launch_problems,
+    terminated,
+    test_cmd_differs,
+    test_cmd_problem,
+)
 from phil.chat.btw import ask_btw
 from phil.chat.events import ChatEvent
 from phil.chat.overview import repo_overview
@@ -105,8 +112,11 @@ class ChatController:
         worker_starting: Callable[[object], bool] = worker_starting,
         pr_check_interval_s: float = PR_CHECK_INTERVAL_S,
         start_pr_monitor: bool = True,
+        config_overrides: Sequence[str] = (),
     ) -> None:
         self.info, self.config, self.conn, self.console, self.io = info, config, conn, console, io
+        # The chat's `--set` overrides: applied again whenever the config is reloaded, and kept by its runs.
+        self._config_overrides = tuple(config_overrides)
         # `conn` belongs to the main thread; each job opens its own connection to this database.
         self._db_path = ProjectPaths(info.slug).db_path
         # None means "resolve HEAD when a run is actually started" (_start), not at chat start,
@@ -580,8 +590,11 @@ class ChatController:
         root = self._detection_root(draft.plan)
         problem = test_cmd_problem(draft.plan, self.config, root)
         differs = test_cmd_differs(draft.plan, self.config)
+        origin = self.config.sources.get("project.test_cmd")  # the file that set [project] test_cmd
         note = problem or (
-            f"plan test command differs from phil.toml's ({self.config.project.test_cmd})" if differs else None
+            f"plan test command differs from {origin or 'your config'}'s ({self.config.project.test_cmd})"
+            if differs
+            else None
         )
         self._shown_test_cmd, source = effective_test_cmd(draft.plan, self.config, root)
         render_plan(
@@ -589,6 +602,7 @@ class ChatController:
             draft,
             test_cmd=self._shown_test_cmd,
             test_cmd_source=source,
+            test_cmd_origin=origin,
             test_cmd_note=note,
             git_note=git_policy_note(self.config),
         )
@@ -608,9 +622,9 @@ class ChatController:
         draft = self._draft
         choice = answer.lower()
         if choice in ("y", "yes"):
-            # Errors tell the user to edit phil.toml, so re-read it rather than trusting the chat-start copy.
+            # Errors tell the user to edit their config, so re-read it rather than trusting the chat-start copy.
             try:
-                self.config = load_config(self.info.root)
+                self.config = load_config(self.info.root, overrides=self._config_overrides)
             except ConfigError as exc:
                 self.console.print(f"[phil.error]{escape(str(exc))}[/]")
                 self._show_plan(draft)
@@ -621,13 +635,13 @@ class ChatController:
             problems = launch_problems(draft.plan, self.config, root, check_root=root or self.info.root)
             if problems:
                 for item in problems:
-                    self.console.print(f"[phil.error]{escape(item)}.[/]")
-                self.console.print("[phil.muted]Fix phil.toml and answer y again, or use edit to change the plan.[/]")
+                    self.console.print(f"[phil.error]{escape(terminated(item))}[/]")
+                self.console.print("[phil.muted]Fix your config and answer y again, or use edit to change the plan.[/]")
                 self._show_plan(draft)
                 return
             if effective_test_cmd(draft.plan, self.config, root)[0] != self._shown_test_cmd:
-                # phil.toml changed the test command since the plan was shown: show what would run first.
-                self.console.print("[phil.warn]The test command changed in phil.toml. Review it and answer again.[/]")
+                # The config changed the test command since the plan was shown: show what would run first.
+                self.console.print("[phil.warn]The test command changed in your config. Review it and answer again.[/]")
                 self._show_plan(draft)
                 return
             self._start(draft, answer, self._shown_test_cmd)
@@ -667,7 +681,9 @@ class ChatController:
         plan = draft.plan.model_copy(update={"test_cmd": test_cmd})
         try:
             base_sha = self._explicit_base_sha or resolve_repo(self.info.root).head_sha
-            record = prepare_run(self.info, plan, base_sha, chat_id=self.session.id)
+            record = prepare_run(
+                self.info, plan, base_sha, chat_id=self.session.id, overrides=self._config_overrides
+            )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             self._safe_note("start_failed", plan_version=draft.version, answer=answer, error=error)

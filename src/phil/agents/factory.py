@@ -2,6 +2,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from phil.agents.providers import ProviderSpec, build_chat_model, resolve_provider, split_model
 from phil.agents.spec import AgentSpec, load_prompt
 
 
@@ -25,31 +26,18 @@ def _tool_strategy(spec: AgentSpec) -> Any:
     return ToolStrategy(spec.out_contract)
 
 
-# Per-provider kwargs for `init_chat_model` that put a ceiling on every model call and turn off
-# the provider SDK's own retries (phil.agents.model_retry retries each failed model call
-# instead, so Phil alone controls backoff and counts attempts). Units and the kwarg name that reaches the
-# SDK differ by provider:
-#  - openrouter: `ChatOpenRouter.request_timeout` (alias `timeout`) is milliseconds, mapped to
-#    the SDK's `timeout_ms`.
-#  - openai/anthropic/google_genai: `timeout` is seconds.
-# An unknown/unlisted provider (a local server, a custom endpoint, or a bare model name in
-# tests) gets no extra kwargs.
-_PROVIDER_TIMEOUT_KWARGS: dict[str, Callable[[int], dict[str, Any]]] = {
-    "openrouter": lambda timeout_s: {"timeout": timeout_s * 1000, "max_retries": 0},
-    "openai": lambda timeout_s: {"timeout": timeout_s, "max_retries": 0},
-    "anthropic": lambda timeout_s: {"timeout": timeout_s, "max_retries": 0},
-    "google_genai": lambda timeout_s: {"timeout": timeout_s, "max_retries": 0},
-}
+def chat_model(
+    model: str, timeout_s: int, provider: ProviderSpec | None = None, used_by: tuple[str, ...] = ()
+) -> Any:
+    """Build the `BaseChatModel` for `model` (`provider:name`) on `provider` (resolved from the
+    built-ins when not given), capping every call at `timeout_s` and disabling the provider SDK's
+    own retries: phil.agents.model_retry retries each failed model call instead, so Phil alone
+    controls backoff and counts attempts. `used_by` names the roles in a missing-key error."""
+    from phil.config import PhilConfig
 
-
-def chat_model(model: str, timeout_s: int) -> Any:
-    """Build the `BaseChatModel` for `model`, capping every call at `timeout_s` and disabling
-    the provider SDK's own retries."""
-    from langchain.chat_models import init_chat_model
-
-    provider = model.partition(":")[0]
-    kwargs_for = _PROVIDER_TIMEOUT_KWARGS.get(provider)
-    return init_chat_model(model, **(kwargs_for(timeout_s) if kwargs_for else {}))
+    name, model_name = split_model(model)
+    spec = provider if provider is not None else resolve_provider(PhilConfig(), name)
+    return build_chat_model(spec, model_name, timeout_s, used_by=used_by)
 
 
 def build_agent(
@@ -59,30 +47,62 @@ def build_agent(
     tools: list[Callable[..., str]],
     *,
     timeout_s: int = 180,
+    provider: ProviderSpec | None = None,
 ) -> Any:
+    """`provider` is the resolved provider for `model` (invoke_agent resolves it from the config);
+    without one, `model`'s provider must be a built-in."""
     if spec.harness == "lean":
-        return _build_lean_agent(spec, model, tools, timeout_s)
-    return _build_deep_agent(spec, model, workdir, tools, timeout_s)
+        return _build_lean_agent(spec, model, tools, timeout_s, provider)
+    return _build_deep_agent(spec, model, workdir, tools, timeout_s, provider)
 
 
-def _build_lean_agent(spec: AgentSpec, model: str, tools: list[Callable[..., str]], timeout_s: int) -> Any:
+def _build_lean_agent(
+    spec: AgentSpec, model: str, tools: list[Callable[..., str]], timeout_s: int, provider: ProviderSpec | None
+) -> Any:
     if spec.tools or tools:
         raise ValueError(f"{spec.name} uses the lean harness, which does not support tools")
     from langchain.agents import create_agent
 
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
+    middleware: list[Any] = [PhilModelRetryMiddleware()]
+    if spec.end_on_text:
+        middleware.append(_end_on_text_middleware())
     return create_agent(
-        chat_model(model, timeout_s),
+        chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=[],
         system_prompt=load_prompt(spec),
         response_format=_tool_strategy(spec),
-        middleware=[PhilModelRetryMiddleware()],
+        middleware=middleware,
     )
 
 
+def _end_on_text_middleware() -> Any:
+    """Ends a lean agent's loop after a model answer with no tool call, leaving no structured
+    output (invoke_agent then records the answer's text as the rejected output). Only a plain AI
+    answer ends it: an invalid structured-output call leaves a ToolMessage with the error last, and
+    LangChain's own loop asks the model to fix its arguments."""
+    from langchain.agents.middleware import AgentMiddleware, hook_config
+
+    class EndOnText(AgentMiddleware):
+        @hook_config(can_jump_to=["end"])
+        def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+            last = state["messages"][-1] if state["messages"] else None
+            is_text_answer = getattr(last, "type", None) == "ai" and not getattr(last, "tool_calls", None)
+            if state.get("structured_response") is None and is_text_answer:
+                return {"jump_to": "end"}
+            return None
+
+    return EndOnText()
+
+
 def _build_deep_agent(
-    spec: AgentSpec, model: str, workdir: Path | None, tools: list[Callable[..., str]], timeout_s: int
+    spec: AgentSpec,
+    model: str,
+    workdir: Path | None,
+    tools: list[Callable[..., str]],
+    timeout_s: int,
+    provider: ProviderSpec | None,
 ) -> Any:
     from deepagents import create_deep_agent
     from deepagents.backends.filesystem import FilesystemBackend
@@ -91,7 +111,7 @@ def _build_deep_agent(
 
     backend = FilesystemBackend(root_dir=workdir, virtual_mode=True) if workdir is not None else None
     return create_deep_agent(
-        model=chat_model(model, timeout_s),
+        model=chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=tools,
         system_prompt=load_prompt(spec),
         backend=backend,

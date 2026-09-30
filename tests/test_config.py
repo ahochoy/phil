@@ -1,8 +1,11 @@
+import tomllib
 from pathlib import Path
 
 import pytest
 
-from phil.config import ConfigError, load_config
+from phil.config import ConfigError, PhilConfig, effective_toml, global_config_path, load_config, parse_override
+from phil.store.paths import phil_home
+from tests.helpers import TEST_MODELS
 
 
 def test_missing_file_gives_defaults(tmp_path):
@@ -43,7 +46,7 @@ def test_models_must_be_set_per_role(tmp_path):
     (tmp_path / "phil.toml").write_text('[models]\nimplementer = "openrouter:cheap/model"\n')
     config = load_config(tmp_path)
     assert config.model_for("implementer") == "openrouter:cheap/model"
-    with pytest.raises(ConfigError, match=r'reviewer = "provider:model"'):
+    with pytest.raises(ConfigError, match=r"No model for reviewer \(tier high\)"):
         config.model_for("reviewer")
 
 
@@ -51,6 +54,70 @@ def test_missing_models_lists_unset_roles(tmp_path):
     (tmp_path / "phil.toml").write_text('[models]\nimplementer = "openrouter:cheap/model"\n')
     config = load_config(tmp_path)
     assert config.missing_models(("implementer", "tester", "reviewer")) == ["tester", "reviewer"]
+
+
+def test_high_and_low_tiers_resolve_the_default_roles(tmp_path):
+    (tmp_path / "phil.toml").write_text('[models]\nhigh = "openrouter:big/model"\nlow = "openrouter:small/model"\n')
+    config = load_config(tmp_path)
+    assert config.model_for("architect") == "openrouter:big/model"
+    assert config.model_for("implementer") == "openrouter:small/model"
+
+
+def test_a_role_key_beats_its_tier(tmp_path):
+    (tmp_path / "phil.toml").write_text(
+        '[models]\nhigh = "openrouter:big/model"\narchitect = "openrouter:special/model"\n'
+    )
+    config = load_config(tmp_path)
+    assert config.model_for("architect") == "openrouter:special/model"
+
+
+def test_tiers_table_remaps_a_role_to_another_tier(tmp_path):
+    (tmp_path / "phil.toml").write_text(
+        '[models]\nhigh = "openrouter:big/model"\nlow = "openrouter:small/model"\n'
+        '[tiers]\nimplementer = "high"\n'
+    )
+    config = load_config(tmp_path)
+    assert config.tier_for("implementer") == "high"
+    assert config.model_for("implementer") == "openrouter:big/model"
+
+
+def test_classifier_falls_back_to_low(tmp_path):
+    (tmp_path / "phil.toml").write_text('[models]\nlow = "openrouter:small/model"\n')
+    config = load_config(tmp_path)
+    assert config.tier_model("classifier") == "openrouter:small/model"
+
+
+def test_legacy_six_role_config_resolves_each_role_to_its_own_key(tmp_path):
+    lines = "".join(f'{role} = "openrouter:{role}/model"\n' for role in TEST_MODELS)
+    (tmp_path / "phil.toml").write_text("[models]\n" + lines)
+    config = load_config(tmp_path)
+    for role in TEST_MODELS:
+        assert config.model_for(role) == f"openrouter:{role}/model"
+
+
+def test_with_only_high_set_implementer_is_missing_with_low_tier_in_the_message(tmp_path):
+    (tmp_path / "phil.toml").write_text('[models]\nhigh = "openrouter:big/model"\n')
+    config = load_config(tmp_path)
+    assert config.missing_models(("implementer",)) == ["implementer"]
+    with pytest.raises(ConfigError, match=r"\(tier low\)"):
+        config.model_for("implementer")
+
+
+def test_unknown_tier_in_tiers_is_rejected(tmp_path):
+    (tmp_path / "phil.toml").write_text('[tiers]\nimplementer = "medium"\n')
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
+
+
+def test_tier_resolution_spans_the_global_and_repo_layers(tmp_path):
+    _write_global('[models]\nhigh = "openrouter:big/model"\nlow = "openrouter:small/model"\n')
+    (tmp_path / "phil.toml").write_text('[models]\narchitect = "openrouter:special/model"\n')
+    config = load_config(tmp_path)
+    # The repo's own role key wins over the global file's tier.
+    assert config.model_for("architect") == "openrouter:special/model"
+    # Roles with no role key of their own still resolve through the global file's tier models.
+    assert config.model_for("critic") == "openrouter:big/model"
+    assert config.model_for("implementer") == "openrouter:small/model"
 
 
 def test_sections_are_loaded(tmp_path):
@@ -129,13 +196,172 @@ def test_invalid_sign_commits_is_rejected(tmp_path):
         load_config(tmp_path)
 
 
-def test_missing_keys_names_the_env_var_for_each_provider(tmp_path):
+def test_missing_keys_groups_roles_by_provider(tmp_path):
     (tmp_path / "phil.toml").write_text(
         '[models]\nimplementer = "openrouter:openai/gpt-6-sol"\ntester = "openrouter:openai/gpt-6-luna"\n'
-        'reviewer = "anthropic:claude-sonnet-5"\ncritic = "local:llama"\n'
+        'reviewer = "anthropic:claude-sonnet-5"\n'
     )
     config = load_config(tmp_path)
-    roles = ("implementer", "tester", "reviewer", "critic", "architect")
-    assert config.missing_keys(roles, environ={}) == ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"]
+    roles = ("implementer", "tester", "reviewer", "architect")
+    expected = [
+        "openrouter needs OPENROUTER_API_KEY (used by implementer, tester).",
+        "anthropic needs ANTHROPIC_API_KEY (used by reviewer).",
+    ]
+    assert config.missing_keys(roles, environ={}) == expected
+    assert config.missing_keys(roles, environ={"OPENROUTER_API_KEY": ""}) == expected
     assert config.missing_keys(roles, environ={"OPENROUTER_API_KEY": "x", "ANTHROPIC_API_KEY": "y"}) == []
-    assert config.missing_keys(roles, environ={"OPENROUTER_API_KEY": ""}) == ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"]
+
+
+def test_missing_keys_names_a_tier_model_by_its_provider_alias(tmp_path):
+    (tmp_path / "phil.toml").write_text('[models]\nhigh = "google_genai:gemini-2.5-pro"\n')
+    config = load_config(tmp_path)
+    assert config.missing_keys(("architect", "critic"), environ={}) == [
+        "google needs GOOGLE_API_KEY (used by architect, critic)."
+    ]
+
+
+def test_ollama_needs_no_key(tmp_path):
+    (tmp_path / "phil.toml").write_text('[models]\nlow = "ollama:qwen3:32b"\n')
+    assert load_config(tmp_path).missing_keys(("implementer", "tester"), environ={}) == []
+
+
+def test_a_custom_provider_key_is_checked(tmp_path):
+    (tmp_path / "phil.toml").write_text(
+        '[models]\nlow = "lab:llama"\n[providers.lab]\nkind = "openai"\napi_key_env = "LAB_KEY"\n'
+    )
+    config = load_config(tmp_path)
+    assert config.missing_keys(("implementer",), environ={}) == ["lab needs LAB_KEY (used by implementer)."]
+    assert config.missing_keys(("implementer",), environ={"LAB_KEY": "k"}) == []
+
+
+def test_missing_keys_reports_an_unknown_provider(tmp_path):
+    (tmp_path / "phil.toml").write_text(
+        '[models]\nhigh = "local:llama"\nimplementer = "nowhere:x"\ntester = "openrouter:openai/gpt-6-luna"\n'
+    )
+    config = load_config(tmp_path)
+    assert config.missing_keys(("architect", "critic", "implementer", "tester"), environ={}) == [
+        'Unknown provider "local" in high model "local:llama". Add [providers.local] to ~/.phil/config.toml or phil.toml.',
+        'Unknown provider "nowhere" in implementer model "nowhere:x". '
+        "Add [providers.nowhere] to ~/.phil/config.toml or phil.toml.",
+        "openrouter needs OPENROUTER_API_KEY (used by tester).",
+    ]
+
+
+def _write_global(text: str) -> Path:
+    path = phil_home() / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def test_global_config_path_is_under_phil_home():
+    assert global_config_path() == phil_home() / "config.toml"
+
+
+def test_global_values_apply_when_the_repo_has_no_phil_toml(tmp_path):
+    path = _write_global("[run]\nmax_cost_usd = 7.0\n")
+    config = load_config(tmp_path)
+    assert config.run.max_cost_usd == 7.0
+    assert config.sources["run.max_cost_usd"] == str(path)
+    assert config.sources["run.max_tokens"] == "default"
+
+
+def test_repo_overrides_global_key_by_key(tmp_path):
+    path = _write_global("[run]\nmax_cost_usd = 7.0\nwarn_at = 0.5\n")
+    (tmp_path / "phil.toml").write_text("[run]\nmax_cost_usd = 3.0\n")
+    config = load_config(tmp_path)
+    assert config.run.max_cost_usd == 3.0
+    assert config.sources["run.max_cost_usd"] == "phil.toml"
+    assert config.run.warn_at == 0.5
+    assert config.sources["run.warn_at"] == str(path)
+
+
+def test_lists_replace(tmp_path):
+    _write_global('[shell]\nallow = ["a"]\n')
+    (tmp_path / "phil.toml").write_text('[shell]\nallow = ["b"]\n')
+    config = load_config(tmp_path)
+    assert config.shell.allow == ["b"]
+    assert config.sources["shell.allow"] == "phil.toml"
+
+
+def test_set_wins_over_every_file(tmp_path):
+    _write_global("[run]\nmax_cost_usd = 7.0\n")
+    (tmp_path / "phil.toml").write_text("[run]\nmax_cost_usd = 3.0\n")
+    config = load_config(tmp_path, overrides=["run.max_cost_usd=5"])
+    assert config.run.max_cost_usd == 5.0
+    assert config.sources["run.max_cost_usd"] == "--set"
+
+
+def test_set_parses_toml_values_and_bare_strings(tmp_path):
+    assert parse_override("models.high=openrouter:x/y") == (["models", "high"], "openrouter:x/y")
+    assert parse_override("run.max_tokens=100") == (["run", "max_tokens"], 100)
+    assert parse_override('shell.allow=["ls"]') == (["shell", "allow"], ["ls"])
+    config = load_config(tmp_path, overrides=["run.max_tokens=100", 'shell.allow=["ls"]'])
+    assert config.run.max_tokens == 100
+    assert config.shell.allow == ["ls"]
+
+
+@pytest.mark.parametrize("text", ["run.max_cost_usd", "=5"])
+def test_set_without_equals_is_a_config_error(tmp_path, text):
+    with pytest.raises(ConfigError, match="--set expects key.path=value"):
+        parse_override(text)
+    with pytest.raises(ConfigError, match="--set expects key.path=value"):
+        load_config(tmp_path, overrides=[text])
+
+
+def test_set_unknown_path_names_set_in_the_error(tmp_path):
+    with pytest.raises(ConfigError, match=r"Invalid --set: run\.nope"):
+        load_config(tmp_path, overrides=["run.nope=1"])
+
+
+def test_invalid_global_file_names_the_file(tmp_path):
+    path = _write_global('[run]\nmax_cost_usd = "x"\n')
+    with pytest.raises(ConfigError) as info:
+        load_config(tmp_path)
+    assert f"Invalid {path}: run.max_cost_usd: " in str(info.value)
+
+
+def test_malformed_global_file_names_the_file(tmp_path):
+    path = _write_global("[run\n")
+    with pytest.raises(ConfigError, match="Invalid " + str(path).replace("\\", "\\\\")):
+        load_config(tmp_path)
+
+
+def test_unknown_role_in_the_global_file_names_the_file(tmp_path):
+    path = _write_global('[models]\nwizard = "openrouter:x/y"\n')
+    with pytest.raises(ConfigError) as info:
+        load_config(tmp_path)
+    assert f"Invalid {path}: models: " in str(info.value)
+    assert "wizard" in str(info.value)
+
+
+def test_invalid_repo_value_names_phil_toml(tmp_path):
+    _write_global("[run]\nmax_cost_usd = 7.0\n")
+    (tmp_path / "phil.toml").write_text('[run]\nmax_cost_usd = "x"\n')
+    with pytest.raises(ConfigError, match=r"Invalid phil\.toml: run\.max_cost_usd: "):
+        load_config(tmp_path)
+
+
+def test_effective_toml_marks_sources(tmp_path):
+    path = _write_global("[run]\nwarn_at = 0.5\n")
+    (tmp_path / "phil.toml").write_text('[run]\nmax_cost_usd = 3.0\n[models]\ncritic = "openrouter:x/y"\n')
+    config = load_config(tmp_path, overrides=["run.max_tokens=100"])
+    text = effective_toml(config)
+    assert "max_cost_usd = 3.0  # from phil.toml" in text
+    assert f"warn_at = 0.5  # from {path}" in text
+    assert "max_tokens = 100  # from --set" in text
+    assert "model_timeout_s = 180  # from default" in text
+    assert 'critic = "openrouter:x/y"  # from phil.toml' in text
+    # it is valid TOML that loads back to the same settings
+    reloaded = PhilConfig(**tomllib.loads(text))
+    assert reloaded.model_dump() == config.model_dump()
+
+
+def test_effective_toml_prints_no_empty_table_headers(tmp_path):
+    text = effective_toml(load_config(tmp_path))
+    for header in ("[models]", "[tiers]", "[budget]", "[providers]"):
+        assert header not in text
+    (tmp_path / "phil.toml").write_text('[providers.lab]\nkind = "openai"\n')
+    text = effective_toml(load_config(tmp_path))
+    assert "[providers]\n" not in text
+    assert '[providers.lab]\nkind = "openai"  # from phil.toml\n' in text

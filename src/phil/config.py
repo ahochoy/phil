@@ -1,20 +1,24 @@
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError, field_validator
+
+from phil.store.paths import phil_home
+from phil.tomlw import dump_toml
 
 ROLES = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer")
-# API-key environment variable each model provider reads. Providers not listed (a local server,
-# a custom endpoint) are not checked.
-PROVIDER_KEYS = {
-    "openrouter": "OPENROUTER_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "google_genai": "GOOGLE_API_KEY",
+TIERS = ("high", "low", "classifier")
+# Tier each role resolves through when it has no model of its own (and [tiers] doesn't remap it).
+DEFAULT_TIERS: dict[str, str] = {
+    "architect": "high",
+    "critic": "high",
+    "reviewer": "high",
+    "orchestrator": "low",
+    "implementer": "low",
+    "tester": "low",
 }
-
 # Roles the chat calls; `phil` checks these have models before the conversation starts.
 CHAT_ROLES = ("orchestrator", "architect", "critic")
 # Roles the run graph calls; `phil run` checks these have models before starting.
@@ -98,21 +102,77 @@ class ProjectConfig(_Section):
     ]
 
 
+class ProviderConfig(_Section):
+    """A `[providers.<name>]` entry: a custom provider, or field overrides for a built-in one.
+    API keys never live here, only the name of the environment variable that holds one."""
+
+    kind: Literal["openai", "anthropic", "google", "openrouter"] | None = None
+    base_url: str | None = None
+    api_key_env: str | None = None
+    input_per_mtok: float | None = None  # USD per million tokens
+    output_per_mtok: float | None = None
+
+    @field_validator("api_key_env")
+    @classmethod
+    def _validate_api_key_env(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("api_key_env must name an environment variable (leave it out for no key)")
+        return value
+
+
 class PhilConfig(_Section):
-    # No default model: each role's model is chosen explicitly in phil.toml.
+    # No default model: each role's model is chosen explicitly in phil.toml, or through a tier.
     models: dict[str, str] = {}
+    # Role -> tier, overriding DEFAULT_TIERS.
+    tiers: dict[str, str] = {}
     budget: dict[str, RoleBudget] = {}
     run: RunConfig = RunConfig()
     shell: ShellConfig = ShellConfig()
     project: ProjectConfig = ProjectConfig()
     git: GitConfig = GitConfig()
+    providers: dict[str, ProviderConfig] = {}
+    # Dotted leaf path -> the layer that set it: "default", the global file's path, "phil.toml" or "--set".
+    _sources: dict[str, str] = PrivateAttr(default_factory=dict)
+
+    @property
+    def sources(self) -> dict[str, str]:
+        return self._sources
 
     @field_validator("models")
     @classmethod
     def _validate_model_roles(cls, value: dict[str, str]) -> dict[str, str]:
-        unknown = sorted(set(value) - set(ROLES))
+        unknown = sorted(set(value) - set(ROLES) - set(TIERS))
         if unknown:
-            raise ValueError(f"Unknown role(s) in [models]: {unknown}. Valid roles: {list(ROLES)}")
+            raise ValueError(
+                f"Unknown key(s) in [models]: {unknown}. Valid roles: {list(ROLES)}, valid tiers: {list(TIERS)}"
+            )
+        return value
+
+    @field_validator("tiers")
+    @classmethod
+    def _validate_tiers(cls, value: dict[str, str]) -> dict[str, str]:
+        unknown_roles = sorted(set(value) - set(ROLES))
+        if unknown_roles:
+            raise ValueError(f"Unknown role(s) in [tiers]: {unknown_roles}. Valid roles: {list(ROLES)}")
+        unknown_tiers = sorted(set(value.values()) - set(TIERS))
+        if unknown_tiers:
+            raise ValueError(f"Unknown tier(s) in [tiers]: {unknown_tiers}. Valid tiers: {list(TIERS)}")
+        return value
+
+    @field_validator("providers")
+    @classmethod
+    def _validate_providers(cls, value: dict[str, ProviderConfig]) -> dict[str, ProviderConfig]:
+        from phil.agents.providers import ALIASES, is_known_provider
+
+        for alias, canonical in ALIASES.items():
+            if alias in value and canonical in value:
+                raise ValueError(
+                    f"[providers.{canonical}] and [providers.{alias}] both configure the {canonical} provider "
+                    f"({alias} is an alias); keep only [providers.{canonical}]"
+                )
+        for name, entry in value.items():
+            if entry.kind is None and not is_known_provider(name):
+                raise ValueError(f"[providers.{name}] needs a kind: openai, anthropic, google or openrouter")
         return value
 
     @field_validator("budget")
@@ -123,40 +183,197 @@ class PhilConfig(_Section):
             raise ValueError(f"Unknown role(s) in [budget]: {unknown}. Valid roles: {list(ROLES)}")
         return value
 
+    def tier_for(self, role: str) -> str:
+        """The tier `role` resolves through: its `[tiers]` remap, else the default for that role."""
+        return self.tiers.get(role, DEFAULT_TIERS.get(role, "low"))
+
+    def tier_model(self, tier: str) -> str | None:
+        """The model set for `tier` under `[models]`, or `None` if it isn't set.
+
+        `classifier` falls back to the `low` model when it has none of its own."""
+        if tier in self.models:
+            return self.models[tier]
+        if tier == "classifier":
+            return self.models.get("low")
+        return None
+
     def model_for(self, role: str) -> str:
+        """The model for `role`: its own `[models]` key, else its tier's model. Raises if neither is set."""
         if role not in ROLES:
             raise ConfigError(f"Unknown role {role!r}. Valid roles: {list(ROLES)}")
-        if role not in self.models:
-            raise ConfigError(f'No model set for {role}. Add {role} = "provider:model" under [models] in phil.toml.')
-        return self.models[role]
+        if role in self.models:
+            return self.models[role]
+        tier = self.tier_for(role)
+        model = self.tier_model(tier)
+        if model is not None:
+            return model
+        raise ConfigError(f"No model for {role} (tier {tier}). Set models.{tier} in ~/.phil/config.toml or phil.toml.")
 
     def missing_models(self, roles: tuple[str, ...]) -> list[str]:
-        return [role for role in roles if role not in self.models]
+        missing = []
+        for role in roles:
+            try:
+                self.model_for(role)
+            except ConfigError:
+                missing.append(role)
+        return missing
+
+    def missing_model_messages(self, roles: tuple[str, ...]) -> list[str]:
+        """The exact `model_for` error message for each of `roles` that has no resolved model."""
+        messages = []
+        for role in roles:
+            try:
+                self.model_for(role)
+            except ConfigError as exc:
+                messages.append(str(exc))
+        return messages
+
+    def model_owner(self, role: str) -> str:
+        """Where `role`'s model is set: the role itself, or the tier whose model it uses."""
+        if role in self.models:
+            return role
+        tier = self.tier_for(role)
+        if tier == "classifier" and "classifier" not in self.models:
+            return "low"
+        return tier
 
     def missing_keys(self, roles: tuple[str, ...], environ: Mapping[str, str]) -> list[str]:
-        """API-key variables that the models set for `roles` need but `environ` lacks, in role order."""
-        missing: list[str] = []
+        """What stops the models resolved for `roles` from being called, one message each, in role
+        order: an unknown provider, or a provider whose key variable `environ` lacks (with the roles
+        that use it). Unset models are `missing_models`' to report."""
+        from phil.agents.providers import UnknownProvider, missing_key_message, provider_for_model
+
+        # In first-seen order: an unknown-provider message, or (provider, env var) -> roles needing the key.
+        problems: dict[str | tuple[str, str], list[str]] = {}
         for role in roles:
-            provider = self.models.get(role, "").partition(":")[0]
-            key = PROVIDER_KEYS.get(provider)
-            if key and not environ.get(key) and key not in missing:
-                missing.append(key)
-        return missing
+            try:
+                model = self.model_for(role)
+            except ConfigError:
+                continue
+            try:
+                provider = provider_for_model(self, model, self.model_owner(role))
+            except UnknownProvider as exc:
+                problems.setdefault(str(exc), [])
+                continue
+            env = provider.api_key_env
+            if env and not environ.get(env):
+                users = problems.setdefault((provider.name, env), [])
+                if role not in users:
+                    users.append(role)
+        return [
+            problem if isinstance(problem, str) else missing_key_message(*problem, users)
+            for problem, users in problems.items()
+        ]
 
     def budget_for(self, role: str) -> RoleBudget:
         default = RoleBudget(max_input_tokens=DEFAULT_BUDGETS.get(role, 12_000))
         return self.budget.get(role, default)
 
 
-def load_config(repo_root: Path) -> PhilConfig:
-    path = repo_root / "phil.toml"
-    if not path.exists():
-        return PhilConfig()
+DEFAULT_SOURCE = "default"
+REPO_SOURCE = "phil.toml"
+SET_SOURCE = "--set"
+
+
+def global_config_path() -> Path:
+    return phil_home() / "config.toml"
+
+
+def parse_override(text: str) -> tuple[list[str], object]:
+    """`key.path=value` from `--set`: the value is parsed as TOML, else kept as the raw string."""
+    key, sep, value = text.partition("=")
+    path = key.strip().split(".")
+    if not sep or not key.strip() or any(not part.strip() for part in path):
+        raise ConfigError(f"--set expects key.path=value: {text}")
     try:
-        data = tomllib.loads(path.read_text())
+        parsed: object = tomllib.loads("v = " + value)["v"]
+    except tomllib.TOMLDecodeError:
+        parsed = value
+    return [part.strip() for part in path], parsed
+
+
+def _leaves(data: Mapping, prefix: tuple[str, ...] = ()) -> list[str]:
+    paths: list[str] = []
+    for key, value in data.items():
+        path = (*prefix, str(key))
+        if isinstance(value, Mapping):
+            paths.extend(_leaves(value, path))
+        else:
+            paths.append(".".join(path))
+    return paths
+
+
+def _merge(base: dict, layer: Mapping, source: str, sources: dict[str, str], prefix: tuple[str, ...] = ()) -> None:
+    """Merge `layer` into `base` in place: dicts merge recursively, anything else replaces."""
+    for key, value in layer.items():
+        path = ".".join((*prefix, key))
+        if isinstance(value, Mapping):
+            sources.pop(path, None)  # a table replaces a lower layer's leaf here; tables merge
+            if not isinstance(base.get(key), dict):
+                base[key] = {}
+            _merge(base[key], value, source, sources, (*prefix, key))
+        else:
+            # A leaf replaces whatever the lower layers set at or under this key.
+            for stale in [p for p in sources if p.startswith(path + ".")]:
+                del sources[stale]
+            base[key] = value
+            sources[path] = source
+
+
+def _read_layer(path: Path, label: str) -> dict:
+    try:
+        return tomllib.loads(path.read_text())
     except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"Invalid phil.toml: {exc}") from exc
+        raise ConfigError(f"Invalid {label}: {exc}") from exc
+
+
+def _precedence(source: str) -> int:
+    return {DEFAULT_SOURCE: 0, REPO_SOURCE: 2, SET_SOURCE: 3}.get(source, 1)  # any other source is the global file
+
+
+def _source_of(loc: tuple, sources: Mapping[str, str]) -> str:
+    """The layer that set the value at pydantic's `loc`, or the key that introduced it."""
+    parts = [str(part) for part in loc]
+    while parts:
+        path = ".".join(parts)
+        if path in sources:
+            return sources[path]
+        under = [src for leaf, src in sources.items() if leaf.startswith(path + ".")]
+        if under:
+            # A table-level failure (e.g. an unknown role in [models]): the highest layer under it.
+            return max(under, key=_precedence)
+        parts.pop()
+    return "config"
+
+
+def load_config(repo_root: Path, *, overrides: Sequence[str] = ()) -> PhilConfig:
+    """Settings in layers: defaults, then ~/.phil/config.toml, then the repo's phil.toml, then `--set`."""
+    parsed_overrides = [parse_override(text) for text in overrides]
+    merged: dict = {}
+    sources: dict[str, str] = dict.fromkeys(_leaves(PhilConfig().model_dump()), DEFAULT_SOURCE)
+    global_path = global_config_path()
+    if global_path.is_file():
+        _merge(merged, _read_layer(global_path, str(global_path)), str(global_path), sources)
+    repo_path = repo_root / "phil.toml"
+    if repo_path.is_file():
+        _merge(merged, _read_layer(repo_path, REPO_SOURCE), REPO_SOURCE, sources)
+    for path, value in parsed_overrides:
+        layer: object = value
+        for part in reversed(path):
+            layer = {part: layer}
+        _merge(merged, layer, SET_SOURCE, sources)  # type: ignore[arg-type]
     try:
-        return PhilConfig(**data)
+        config = PhilConfig(**merged)
     except ValidationError as exc:
-        raise ConfigError(f"Invalid phil.toml: {exc}") from exc
+        error = exc.errors()[0]
+        loc = ".".join(str(part) for part in error["loc"])
+        raise ConfigError(f"Invalid {_source_of(error['loc'], sources)}: {loc}: {error['msg']}") from exc
+    config._sources = sources
+    return config
+
+
+def effective_toml(config: PhilConfig) -> str:
+    """The merged settings as TOML, each leaf line ending `# from <source>`."""
+    data = config.model_dump()
+    comments = {leaf: f"from {config.sources.get(leaf, DEFAULT_SOURCE)}" for leaf in _leaves(data)}
+    return dump_toml(data, comments)

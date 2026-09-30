@@ -3,7 +3,7 @@ import json
 from phil.agents.fake import ScriptedAgentFactory
 from phil.chat.controller import WAKE, ChatController, ChatIO
 from phil.chat.watcher import RunWatcher
-from phil.config import PhilConfig
+from phil.config import PhilConfig, global_config_path, load_config
 from phil.repo import resolve_repo
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
@@ -100,7 +100,7 @@ def test_edit_revises_the_plan(calc_repo):
     assert runs[0].tasks_total == 2
 
 
-CHAT_ONLY_TOML = "[models]\n" + "".join(f'{r} = "test:model"\n' for r in ("orchestrator", "architect", "critic"))
+CHAT_ONLY_TOML = "[models]\n" + "".join(f'{r} = "ollama:test-model"\n' for r in ("orchestrator", "architect", "critic"))
 
 
 def test_missing_run_models_block_approval(calc_repo):
@@ -109,8 +109,9 @@ def test_missing_run_models_block_approval(calc_repo):
         calc_repo, ["add subtract", "y", "n"],
         {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
     )
-    assert "implementer, tester, reviewer" in text
-    assert "[models]" in text
+    assert "No model for implementer (tier low)" in text
+    assert "No model for tester (tier low)" in text
+    assert "No model for reviewer (tier high)" in text
     assert spawned == [] and runs == []
 
 
@@ -134,7 +135,7 @@ def test_approval_rereads_phil_toml(calc_repo):
     factory = ScriptedAgentFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
     ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory, start_pr_monitor=False).run()
     text = console.export_text()
-    assert "implementer, tester, reviewer" in text  # first y refused
+    assert "No model for implementer (tier low)" in text  # first y refused
     runs = list_runs(conn)
     assert [r.run_id for r in runs] == spawned and len(runs) == 1
 
@@ -163,6 +164,7 @@ def test_bad_test_command_blocks_approval(calc_repo):
         {"intake": [goal()], "architect": [plan(test_cmd="pytest; rm -rf /")], "critic": [critique()]},
     )
     assert "shell operators" in text
+    assert "Fix your config and answer y again" in text
     assert spawned == [] and runs == []
 
 
@@ -330,9 +332,23 @@ def test_the_test_command_source_is_labelled(calc_repo):
         calc_repo,
         ["add subtract", "n"],
         {"intake": [goal()], "architect": [plan(test_cmd=None)], "critic": [critique()]},
-        config=PhilConfig(models=TEST_MODELS, project={"test_cmd": "make check"}),
+        config=load_config(calc_repo),
     )
     assert "Tests: make check (from phil.toml)" in text
+
+
+def test_a_test_command_from_the_global_config_names_that_file(calc_repo):
+    global_config_path().parent.mkdir(parents=True, exist_ok=True)
+    global_config_path().write_text('[project]\ntest_cmd = "make check"\n')
+    (calc_repo / "phil.toml").write_text(MODELS_TOML)
+    text, *_ = run_chat(
+        calc_repo,
+        ["add subtract", "n"],
+        {"intake": [goal()], "architect": [plan(test_cmd=None)], "critic": [critique()]},
+        config=load_config(calc_repo),
+    )
+    squashed = "".join(text.split())  # the long temp path wraps at the console's width
+    assert "".join(f"Tests: make check (from {global_config_path()})".split()) in squashed
 
 
 def session_dir(repo):
@@ -415,6 +431,31 @@ def test_prepare_failure_is_noted_and_reported(calc_repo, monkeypatch):
     kinds = [e["kind"] for e in transcript(calc_repo)]
     assert "start_failed" in kinds and "approved" not in kinds
     assert spawned == [] and runs == []
+
+
+def test_the_chats_runs_keep_its_set_overrides(calc_repo):
+    text, spawned, runs, *_ = run_chat(
+        calc_repo, ["add subtract", "y"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
+        config_overrides=["run.max_cost_usd=5"],
+    )
+    assert json.loads(runs[0].config_overrides) == ["run.max_cost_usd=5"]
+
+
+def test_the_chat_reload_applies_its_set_overrides(calc_repo):
+    seen = []
+
+    def approve(controller):
+        return "y"
+
+    def after(controller):
+        seen.append((controller.config.run.max_cost_usd, controller.config.sources["run.max_cost_usd"]))
+        return None
+
+    run_chat(
+        calc_repo, ["add subtract", approve, after], {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
+        config_overrides=["run.max_cost_usd=5"],
+    )
+    assert seen == [(5.0, "--set")]
 
 
 def test_start_message_names_the_base_commit(calc_repo):

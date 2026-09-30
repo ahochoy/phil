@@ -1,6 +1,6 @@
 # Phil Roadmap
 
-**Updated:** 2026-09-29. **Inputs:** the v1 design (`specs/2026-09-23-phil-v1-design.md`), the plan followups files, and the live-testing feedback (`../feedback/2026-09-29-live-testing-feedback.md`).
+**Updated:** 2026-09-30. **Inputs:** the v1 design (`specs/2026-09-23-phil-v1-design.md`), the plan followups files, and the live-testing feedback (`../feedback/2026-09-29-live-testing-feedback.md`).
 
 Phil is a development partner. It plans with you, does the work in its own worktree, shows what it is doing, and closes the loop through a PR and cleanup. The live tests showed that it works end to end, but it is disproportionate: a one-tag change took about 50 minutes and more than 3M tokens. The next milestones make it proportional, configurable, and visible.
 
@@ -13,6 +13,7 @@ Each milestone gets its own spec and plan when it starts. The notes below give d
 | 1 · 2 · 3a · 3b | Foundation, contracts and agents, the TDD run engine, the background worker and CLI |
 | 4a · 4b · 4c | Chat planning, the live chat (toolbar, `/btw`, following a run), observability (usage and cost, `phil show`, budgets, timeouts) |
 | 5 | Phil raises the PR, notices the merge, cleans up, and writes `learnings.md` |
+| 6a (M1, merged) | Stop the waste: a live benchmark, safe read-only shell commands by default, evidence checks, `check`-mode tasks, current test-command detection, tighter prompts. [Plan](plans/2026-09-29-phil-06a-stop-the-waste.md) · [spec](specs/2026-09-29-phil-06a-stop-the-waste-design.md) · [benchmark results](../journey/01-stop-the-waste.md) |
 
 ## Principles (from live testing)
 
@@ -25,25 +26,17 @@ Each milestone gets its own spec and plan when it starts. The notes below give d
 
 ## Milestones
 
-### M1 — Stop the waste (plan 6a) · implemented, pending the user's benchmark comparison
+### M2 — Configuration and models · part a (plan M2a) implemented
 
-Plan: `plans/2026-09-29-phil-06a-stop-the-waste.md`. Spec: `specs/2026-09-29-phil-06a-stop-the-waste-design.md`.
+Plan: `plans/2026-09-30-phil-m2a-config-and-models.md`. Spec:
+`specs/2026-09-30-phil-m2a-config-and-models-design.md`.
 
-Fix everything that inflated the live run, and measure it:
-- a live benchmark (fixture repos, trivial and small goals; tokens, calls, minutes, and pass/fail per run);
-- read-only shell commands allowed by default;
-- evidence claims that may cite file-tool calls;
-- a work summary carried between attempts instead of re-exploring;
-- the test command detected from the repo and kept current on resume;
-- `check`-mode tasks, which skip the red phase when there is nothing to test, and no verification-only tasks;
-- prompt tightening: concise handoffs, don't overbuild, stop when the acceptance criteria pass.
-
-### M2 — Configuration and models
-
-- Layered config: built-in → `~/.phil` → repository → session or command.
-- Model tiers: high, low, and an optional classifier that falls back to low. Agents reference tiers, and per-role overrides stay available as an advanced option.
-- Providers: OpenRouter, Anthropic, OpenAI, Google, Ollama, and custom endpoints (provider-agnostic, required before public launch).
-- A guided first-run setup that writes readable, editable config under `~/.phil`.
+- Layered config: built-in → `~/.phil` → repository → session or command. ✓ (M2a)
+- Model tiers: high, low, and an optional classifier that falls back to low. Agents reference tiers, and per-role overrides stay available as an advanced option. ✓ (M2a)
+- Providers: OpenRouter, Anthropic, OpenAI, Google, Ollama, and custom endpoints (provider-agnostic, required before public launch). ✓ (M2a)
+- A guided first-run setup that writes readable, editable config under `~/.phil`, and
+  keychain-stored credentials. Not yet implemented — M2b; see the M2a follow-ups doc
+  (`plans/2026-09-30-phil-m2a-followups.md`).
 
 ### M3 — Proportional orchestration
 

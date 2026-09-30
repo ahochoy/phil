@@ -30,7 +30,7 @@ def render_goal(console: Console, goal: Goal) -> None:
             console.print(f"  [phil.muted](+{extra} more)[/]")
 
 
-SOURCE_LABELS = {"plan": " (from the plan)", "config": " (from phil.toml)", "detected": " (detected)"}
+SOURCE_LABELS = {"plan": " (from the plan)", "config": " (from your config)", "detected": " (detected)"}
 
 
 def render_plan(
@@ -41,7 +41,10 @@ def render_plan(
     test_cmd_note: str | None,
     git_note: str | None,
     test_cmd_source: str | None = None,
+    test_cmd_origin: str | None = None,
 ) -> None:
+    """`test_cmd_origin` names the file a "config" test command came from (`config.sources`):
+    "phil.toml", the global config's path, or "--set"."""
     plan = draft.plan
     count = len(plan.tasks)
     console.print(
@@ -65,11 +68,13 @@ def render_plan(
         console.print(f"  [phil.muted](+{extra} more)[/]")
     if test_cmd:
         label = SOURCE_LABELS.get(test_cmd_source or "", "")
+        if test_cmd_source == "config" and test_cmd_origin:
+            label = f" (from {escape(test_cmd_origin)})"
         console.print(f"Tests: {escape(test_cmd)}{label}")  # shown in full: it's what the user approves
     elif plan.tasks and all(task.verify == "check" for task in plan.tasks):
         console.print("Tests: none (check tasks only)")
     else:
-        console.print("[phil.warn]Tests: none — set test_cmd in the plan or phil.toml[/]")
+        console.print("[phil.warn]Tests: none — set test_cmd in the plan or your config[/]")
     if test_cmd_note:
         console.print(f"[phil.warn]⚠ {escape(_clip(test_cmd_note))}[/]")
     if git_note:

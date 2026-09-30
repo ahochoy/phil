@@ -12,6 +12,14 @@ def test_new_run_records_its_base_branch(tmp_path: Path):
     assert (run.pr_url, run.pr_number, run.pr_state, run.pr_checked_at) == (None, None, None, None)
 
 
+def test_config_overrides_are_stored_and_updatable(tmp_path: Path):
+    conn = connect(tmp_path / "phil.db")
+    run = create_run(conn, run_id="r-0001", keyword="CALC", base_sha="abc", worktree=tmp_path / "wt",
+                     tasks_total=1, config_overrides='["run.max_cost_usd=5"]')
+    assert run.config_overrides == '["run.max_cost_usd=5"]'
+    assert update_run(conn, "r-0001", config_overrides="[]").config_overrides == "[]"
+
+
 def test_pr_fields_are_updatable(tmp_path: Path):
     conn = connect(tmp_path / "phil.db")
     create_run(conn, run_id="r-0001", keyword="CALC", base_sha="abc", worktree=tmp_path / "wt", tasks_total=1)

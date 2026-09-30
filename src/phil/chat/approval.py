@@ -8,6 +8,11 @@ from phil.workspace.shell import CONTAINMENT_DETAIL, ShellPolicy
 GIT_POLICY_NOTE = "Commit signing or hooks are on; a failing signature or hook will pause the run."
 
 
+def terminated(text: str) -> str:
+    """`text` with a trailing period, without doubling one it already ends with."""
+    return text if text.endswith(".") else f"{text}."
+
+
 def effective_test_cmd(plan: Plan, config: PhilConfig, root: Path | None = None) -> tuple[str | None, str]:
     """The test command a run of `plan` uses and where it came from: "plan", "config", "detected" or "none".
 
@@ -28,7 +33,7 @@ def test_cmd_problem(plan: Plan, config: PhilConfig, root: Path | None = None) -
     if not cmd:
         if plan.tasks and all(task.verify == "check" for task in plan.tasks):
             return None  # every task is verified by its check_cmd: the run needs no test suite
-        return "the plan has no test command and phil.toml sets no [project] test_cmd"
+        return "the plan has no test command and your config sets no [project] test_cmd"
     if cmd == config.project.test_cmd:
         return None
     # Approving the plan approves its own test command (or the detected one it shows), so only a
@@ -75,14 +80,12 @@ def git_policy_note(config: PhilConfig) -> str | None:
 def launch_problems(
     plan: Plan, config: PhilConfig, root: Path | None = None, *, check_root: Path | None = None
 ) -> list[str]:
-    """Why a run of `plan` can't start under `config` (empty when it can). Callers escape before printing.
+    """Why a run of `plan` can't start under `config` (empty when it can). Callers escape before printing,
+    and should use `terminated()` rather than assuming a problem needs a trailing period added.
 
     `root`, when given, is where a missing test command is detected from. `check_root` (default:
     `root`) is the tree check commands' paths must stay inside."""
-    problems = []
-    missing = config.missing_models(RUN_ROLES)
-    if missing:
-        problems.append(f"phil.toml sets no model for: {', '.join(missing)}. Add them under [models]")
+    problems = list(config.missing_model_messages(RUN_ROLES))
     problem = test_cmd_problem(plan, config, root)
     if problem:
         problems.append(problem)

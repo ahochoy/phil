@@ -24,12 +24,31 @@ def test_phil_opens_the_chat_and_starts_a_run(calc_repo, monkeypatch):
     assert spawned == [(record.run_id, "start")]
 
 
+def test_phil_set_overrides_reach_the_chats_runs(calc_repo, monkeypatch):
+    monkeypatch.setenv("PHIL_AGENT_FACTORY", "tests.chat.chat_scenarios:factory")
+    monkeypatch.setenv("PHIL_TEST_SCENARIO", "approve")
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    result = runner.invoke(
+        cli.app, ["--repo", str(calc_repo), "--set", "run.max_cost_usd=5"], input="add subtract\ny\n"
+    )
+    assert result.exit_code == 0, result.output
+    [record] = list_runs(connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path))
+    assert record.config_overrides == '["run.max_cost_usd=5"]'
+
+
+def test_phil_rejects_a_bad_set_override(calc_repo):
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "--set", "run.nope=1"], input="")
+    assert result.exit_code == 1
+    assert "Invalid --set" in result.output
+
+
 def test_chat_requires_chat_models(calc_repo):
-    (calc_repo / "phil.toml").write_text('[models]\nimplementer = "test:model"\n')
+    (calc_repo / "phil.toml").write_text('[models]\nimplementer = "ollama:test-model"\n')
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
     assert result.exit_code == 1
-    assert "orchestrator, architect, critic" in result.output
-    assert "[models]" in result.output
+    assert "No model for orchestrator (tier low)" in result.output
+    assert "No model for architect (tier high)" in result.output
+    assert "No model for critic (tier high)" in result.output
 
 
 def test_chat_warns_about_uncommitted_files(calc_repo):
@@ -64,7 +83,16 @@ def test_chat_requires_the_provider_api_key(calc_repo, monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
     assert result.exit_code == 1
-    assert "OPENROUTER_API_KEY is not set" in result.output
+    assert "openrouter needs OPENROUTER_API_KEY (used by" in result.output
+
+
+def test_chat_refuses_an_unknown_provider(calc_repo, monkeypatch):
+    (calc_repo / "phil.toml").write_text('[models]\nhigh = "nowhere:x"\nlow = "ollama:test-model"\n')
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
+    assert result.exit_code == 1
+    output = " ".join(result.output.split())
+    assert 'Unknown provider "nowhere" in high model "nowhere:x".' in output
+    assert "Add [providers.nowhere] to ~/.phil/config.toml or phil.toml." in output
 
 
 def _approved_chat(calc_repo, monkeypatch) -> str:

@@ -2,6 +2,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from phil.agents.providers import ProviderSpec
 from phil.agents.spec import AgentSpec
 
 
@@ -54,6 +55,7 @@ class FakeAgentFactory:
         tools: list[Callable[..., str]],
         *,
         timeout_s: int = 180,
+        provider: ProviderSpec | None = None,  # ignored: scripted agents call no model
     ) -> FakeAgent:
         self.built.append((spec.name, model))
         self.tools_seen.append([tool.__name__ for tool in tools])
@@ -106,5 +108,6 @@ class ScriptedAgentFactory:
         tools: list[Callable[..., str]],
         *,
         timeout_s: int = 180,
+        provider: ProviderSpec | None = None,  # ignored: scripted agents call no model
     ) -> _ScriptedAgent:
         return _ScriptedAgent(self, spec.name, workdir, {tool.__name__: tool for tool in tools})
