@@ -99,6 +99,41 @@ def test_run_case_appends_one_complete_record(tmp_path, results, config):
     assert record["chat_id"].startswith("bench-py-multiply-")
 
 
+def test_run_case_ignores_the_global_config_and_records_resolved_models(tmp_path, results, config, monkeypatch):
+    import phil.run.worker
+    from phil.config import global_config_path
+    from tests.live.bench import harness
+
+    # A global config the benchmark must not see: its [run], [models] and [tiers] would change results.
+    global_config_path().parent.mkdir(parents=True, exist_ok=True)
+    global_config_path().write_text(
+        '[run]\nmax_cost_usd = 7.5\nmax_review_rounds = 5\n[models]\nreviewer = "ollama:global"\n[tiers]\ncritic = "low"\n'
+    )
+    config.write_text(
+        '[models]\nhigh = "ollama:hi"\nlow = "ollama:lo"\n' + f"[project]\ntest_cmd = {json.dumps(TEST_CMD)}\n"
+    )
+    loaded = []
+
+    def spy(load):
+        def wrapper(*args, **kwargs):
+            loaded.append(load(*args, **kwargs))
+            return loaded[-1]
+        return wrapper
+
+    monkeypatch.setattr(harness, "load_config", spy(harness.load_config))
+    monkeypatch.setattr(phil.run.worker, "load_config", spy(phil.run.worker.load_config))
+    record = run_case(case("py-multiply"), config, tmp_path / "work", factory=scripted())
+    assert record["state"] == "completed"
+    assert len(loaded) >= 2  # the chat's config and the worker's
+    assert all(cfg.run.max_cost_usd == 10.0 for cfg in loaded)  # the baseline, not the global 7.5
+    assert all(cfg.run.max_review_rounds == 2 for cfg in loaded)  # the default, not the global 5
+    assert all(str(global_config_path()) not in cfg.sources.values() for cfg in loaded)
+    assert record["models"] == {
+        "orchestrator": "ollama:lo", "architect": "ollama:hi", "critic": "ollama:hi",
+        "implementer": "ollama:lo", "tester": "ollama:lo", "reviewer": "ollama:hi",
+    }
+
+
 def test_architect_reads_a_snapshot_of_the_base_commit(tmp_path, results, config):
     seen = []
 
