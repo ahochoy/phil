@@ -190,3 +190,27 @@ def test_run_requires_the_provider_api_key(calc_repo, tmp_path, monkeypatch):
     assert result.exit_code == 1
     assert "openrouter needs OPENROUTER_API_KEY (used by" in result.output
     assert runs_for(calc_repo) == []
+
+
+def test_run_stores_its_set_overrides_on_the_run(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    result = runner.invoke(
+        cli.app,
+        [
+            "--repo", str(calc_repo), "--set", "run.warn_at=0.5",
+            "run", str(plan_file(tmp_path)), "--set", "run.max_cost_usd=5",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    [record] = runs_for(calc_repo)
+    assert json.loads(record.config_overrides) == ["run.warn_at=0.5", "run.max_cost_usd=5"]
+
+
+def test_run_rejects_a_bad_set_override(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    result = runner.invoke(
+        cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path)), "--set", "run.nope=1"]
+    )
+    assert result.exit_code == 1
+    assert "--set" in result.output
+    assert runs_for(calc_repo) == []

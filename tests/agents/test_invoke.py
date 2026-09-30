@@ -78,6 +78,42 @@ def test_rejected_attempt_saves_raw_output_and_problems(config, conn, artifacts,
     assert rejected["problems"]
 
 
+class ProseAgent:
+    """Answers with the given AI messages and no structured output."""
+
+    def __init__(self, *answers) -> None:
+        self.answers = list(answers)
+
+    def __call__(self, spec, model, workdir, tools, *, timeout_s=180, provider=None):
+        return self
+
+    def invoke(self, payload, config=None):
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        return {"messages": [HumanMessage(content="packet"), AIMessage(content=self.answers.pop(0))]}
+
+
+def test_a_rejected_no_structured_output_record_keeps_the_last_ai_text(config, conn, artifacts, critic_packet):
+    factory = ProseAgent("Here is my critique: looks fine.", [{"type": "text", "text": "a" * 3000}, "tail"])
+    with pytest.raises(ContractViolation):
+        invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic")
+    first = json.loads((artifacts.run_dir / "outputs" / "critic-run-1.rejected.json").read_text())
+    assert first == {"raw": "Here is my critique: looks fine.", "problems": ["no structured output was returned"]}
+    second = json.loads((artifacts.run_dir / "outputs" / "critic-run-2.rejected.json").read_text())
+    assert second["raw"] == ("a" * 3000 + "tail")[:2000]
+
+
+def test_invoke_agent_can_try_once_with_an_explicit_model(config, conn, artifacts, critic_packet):
+    factory = FakeAgentFactory([None, critique()])
+    with pytest.raises(ContractViolation):
+        invoke_agent(
+            get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic",
+            model="ollama:other", max_attempts=1,
+        )
+    assert factory.built == [("critic", "ollama:other")]
+    assert [row["model"] for row in telemetry(conn)] == ["ollama:other"]
+
+
 def test_second_attempt_saves_the_retry_payload(config, conn, artifacts, critic_packet):
     factory = FakeAgentFactory([{"verdict": "maybe"}, critique()])
     invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic")

@@ -418,6 +418,31 @@ def test_prepare_failure_is_noted_and_reported(calc_repo, monkeypatch):
     assert spawned == [] and runs == []
 
 
+def test_the_chats_runs_keep_its_set_overrides(calc_repo):
+    text, spawned, runs, *_ = run_chat(
+        calc_repo, ["add subtract", "y"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
+        config_overrides=["run.max_cost_usd=5"],
+    )
+    assert json.loads(runs[0].config_overrides) == ["run.max_cost_usd=5"]
+
+
+def test_the_chat_reload_applies_its_set_overrides(calc_repo):
+    seen = []
+
+    def approve(controller):
+        return "y"
+
+    def after(controller):
+        seen.append((controller.config.run.max_cost_usd, controller.config.sources["run.max_cost_usd"]))
+        return None
+
+    run_chat(
+        calc_repo, ["add subtract", approve, after], {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
+        config_overrides=["run.max_cost_usd=5"],
+    )
+    assert seen == [(5.0, "--set")]
+
+
 def test_start_message_names_the_base_commit(calc_repo):
     text, spawned, runs, *_ = run_chat(
         calc_repo, ["add subtract", "y"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}

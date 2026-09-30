@@ -15,7 +15,15 @@ from rich.markup import escape
 
 from phil import __version__
 from phil.chat.approval import git_policy_note, launch_problems, terminated
-from phil.config import CHAT_ROLES, RUN_ROLES, ConfigError, PhilConfig, load_config
+from phil.config import (
+    CHAT_ROLES,
+    RUN_ROLES,
+    ConfigError,
+    PhilConfig,
+    effective_toml,
+    global_config_path,
+    load_config,
+)
 from phil.contracts import Plan
 from phil.contracts.schema import export_schemas
 from phil.git import GitError, git
@@ -35,12 +43,16 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 app = typer.Typer(add_completion=False, help="Phil: a contract-driven coding agent.")
+models_app = typer.Typer(help="Check the configured models.")
+app.add_typer(models_app, name="models")
 console = make_console()
 
 # A pending run whose row was updated more recently than this is assumed to still be starting
 # (its worker process hasn't written a pid/heartbeat yet); older than this, treat it as a worker
 # that never started and let `phil resume` continue it from scratch.
 PENDING_STALE_AFTER_S = 30.0
+
+SET_HELP = "Override a setting for this command, e.g. --set run.max_cost_usd=5 (repeatable)."
 
 
 def _print_version(value: bool) -> None:
@@ -63,20 +75,33 @@ def root(
         None, "--resume", help="Reopen a chat by id (see the list shown by `phil`)."
     ),
     new: bool = typer.Option(False, "--new", help="Start a new chat without listing open ones."),
+    overrides: list[str] | None = typer.Option(None, "--set", help=SET_HELP),
 ) -> None:
-    ctx.obj = {"repo": repo, "base": base, "resume": resume_chat, "new": new}
+    ctx.obj = {"repo": repo, "base": base, "resume": resume_chat, "new": new, "overrides": list(overrides or [])}
     if ctx.invoked_subcommand is None:
         _chat(ctx)
 
 
-def _open_project(ctx: typer.Context) -> tuple[RepoInfo, sqlite3.Connection]:
+def _resolve(ctx: typer.Context) -> RepoInfo:
     start = ctx.obj.get("repo") or Path.cwd()
     try:
-        info = resolve_repo(start)
+        return resolve_repo(start)
     except RepoError as exc:
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
+
+
+def _open_project(ctx: typer.Context) -> tuple[RepoInfo, sqlite3.Connection]:
+    info = _resolve(ctx)
     return info, connect(ProjectPaths(info.slug).db_path)
+
+
+def _load_config(root: Path, overrides: list[str]) -> PhilConfig:
+    try:
+        return load_config(root, overrides=overrides)
+    except ConfigError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
 
 
 def _require_api_keys(config: PhilConfig, roles: tuple[str, ...]) -> None:
@@ -143,11 +168,8 @@ def _chat(ctx: typer.Context) -> None:
         console.print("[phil.error]choose --resume or --new, not both[/]")
         raise typer.Exit(1)
     info, conn = _open_project(ctx)
-    try:
-        config = load_config(info.root)
-    except ConfigError as exc:
-        console.print(f"[phil.error]{escape(str(exc))}[/]")
-        raise typer.Exit(1) from exc
+    overrides = ctx.obj.get("overrides", [])
+    config = _load_config(info.root, overrides)
     missing = config.missing_model_messages(CHAT_ROLES)
     if missing:
         for message in missing:
@@ -208,12 +230,12 @@ def _chat(ctx: typer.Context) -> None:
         raise typer.Exit(1) from exc
     try:
         with chat_logging(session.dir):
-            _run_chat(info, config, conn, out, tty, factory, base_sha, session, resume)
+            _run_chat(info, config, conn, out, tty, factory, base_sha, session, resume, overrides)
     finally:
         session.unlock()
 
 
-def _run_chat(info, config, conn, out, tty, factory, base_sha, session, resume: bool) -> None:
+def _run_chat(info, config, conn, out, tty, factory, base_sha, session, resume: bool, overrides=()) -> None:
     from phil.chat.controller import ChatController
     from phil.chat.terminal import LineIO
     from phil.ui.toolbar import render_toolbar
@@ -231,6 +253,7 @@ def _run_chat(info, config, conn, out, tty, factory, base_sha, session, resume: 
         try:
             controller = ChatController(
                 info, config, conn, out, io, factory=factory, base_sha=base_sha, session=session, resume=resume,
+                config_overrides=overrides,
             )
         except GitError as exc:
             out.print(f"[phil.error]{escape(str(exc))}[/]")
@@ -305,19 +328,18 @@ def run_plan(
     plan_file: Path = typer.Argument(..., exists=True, dir_okay=False, help="Plan JSON file."),
     base: str | None = typer.Option(None, "--base", help="Start from this ref instead of HEAD."),
     foreground: bool = typer.Option(False, "--foreground", help="Run in this process instead of a background worker."),
+    run_overrides: list[str] | None = typer.Option(None, "--set", help=SET_HELP),
 ) -> None:
     """Start a run from a plan file."""
     info, _ = _open_project(ctx)
+    # `phil --set a=1 run --set b=2`: both apply, the command's own last. The run keeps them.
+    overrides = [*ctx.obj.get("overrides", []), *(run_overrides or [])]
     try:
         plan = Plan.model_validate_json(plan_file.read_text())
     except ValidationError as exc:
         console.print(f"[phil.error]invalid plan: {escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
-    try:
-        config = load_config(info.root)
-    except ConfigError as exc:
-        console.print(f"[phil.error]{escape(str(exc))}[/]")
-        raise typer.Exit(1) from exc
+    config = _load_config(info.root, overrides)
     problems = launch_problems(plan, config, info.root)
     if problems:
         for problem in problems:
@@ -350,7 +372,7 @@ def run_plan(
                 f"[phil.error]cannot load PHIL_AGENT_FACTORY: {escape(type(exc).__name__)}: {escape(str(exc))}[/]"
             )
             raise typer.Exit(1) from exc
-    record = prepare_run(info, plan, base_sha)
+    record = prepare_run(info, plan, base_sha, overrides=overrides)
     if foreground:
         from phil.run.worker import WorkerError, run_worker
 
@@ -372,6 +394,53 @@ def run_plan(
     console.print(
         f"Run [phil.id]{escape(record.run_id)}[/] started. Follow it with `phil attach {escape(record.run_id)}`."
     )
+
+
+@app.command("config")
+def config_command(
+    ctx: typer.Context,
+    path: bool = typer.Option(False, "--path", help="Show where the settings files are, and whether they exist."),
+) -> None:
+    """Show the effective settings, and where each value came from."""
+    info = _resolve(ctx)
+    if path:
+        for label, file in (("global", global_config_path()), ("repo", info.root / "phil.toml")):
+            state = "exists" if file.is_file() else "missing"
+            console.print(f"{label}: {escape(str(file))} ({state})", soft_wrap=True, highlight=False)
+        return
+    typer.echo(effective_toml(_load_config(info.root, ctx.obj.get("overrides", []))), nl=False)
+
+
+@models_app.command("check")
+def models_check(ctx: typer.Context) -> None:
+    """Make one tiny call to each configured model to check it returns structured output."""
+    from phil.agents.check import check_models
+
+    info = _resolve(ctx)
+    config = _load_config(info.root, ctx.obj.get("overrides", []))
+    try:
+        factory = _factory_from_env()
+    except Exception as exc:
+        console.print(
+            f"[phil.error]cannot load PHIL_AGENT_FACTORY: {escape(type(exc).__name__)}: {escape(str(exc))}[/]"
+        )
+        raise typer.Exit(1) from exc
+    results = check_models(config, factory=factory, repo_root=info.root)
+    if not results:
+        console.print(
+            "[phil.error]No models configured. Set models.high and models.low in "
+            f"{escape(str(global_config_path()))} or phil.toml.[/]",
+            soft_wrap=True,
+        )
+        raise typer.Exit(1)
+    for result in results:
+        if result.ok:
+            line = f"[phil.gate.pass]✓[/] {escape(result.label)}  {escape(result.model)}  {result.seconds:.1f}s"
+        else:
+            line = f"[phil.gate.fail]✗[/] {escape(result.label)}  {escape(result.model)}  {escape(result.detail)}"
+        console.print(line, soft_wrap=True, highlight=False)
+    if not all(result.ok for result in results):
+        raise typer.Exit(1)
 
 
 @app.command("_worker", hidden=True)

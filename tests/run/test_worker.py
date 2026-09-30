@@ -405,3 +405,31 @@ def test_the_recorded_config_decides_the_switch():
     assert worker_module._test_cmd_switch(values, config_with("make test"), "r-1") == {
         "test_cmd": "make test", "rebaseline": True, "config_test_cmd": "make test",
     }
+
+
+def test_a_resumed_worker_keeps_the_runs_set_overrides(calc_repo, monkeypatch):
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha, overrides=["run.max_cost_usd=5"])
+    assert json.loads(row(info, record.run_id).config_overrides) == ["run.max_cost_usd=5"]
+    real_load_config = worker_module.load_config
+    loaded = []
+
+    def spy(root, *, overrides=()):
+        config = real_load_config(root, overrides=overrides)
+        loaded.append((list(overrides), config.run.max_cost_usd, config.sources["run.max_cost_usd"]))
+        return config
+
+    monkeypatch.setattr(worker_module, "load_config", spy)
+    crashing = ScriptedAgentFactory({"implementer": [write_red, RuntimeError("model went away")]})
+    with pytest.raises(RuntimeError):
+        run_worker(calc_repo, record.run_id, "start", factory=crashing)
+    recovering = ScriptedAgentFactory(
+        {"implementer": [write_green], "tester": [tester_report()], "reviewer": [review()]}
+    )
+    assert run_worker(calc_repo, record.run_id, "continue", factory=recovering).status == "completed"
+    assert loaded == [(["run.max_cost_usd=5"], 5.0, "--set")] * 2
+
+
+def test_a_run_without_overrides_stores_none(calc_repo):
+    info, record = new_run(calc_repo)
+    assert record.config_overrides is None

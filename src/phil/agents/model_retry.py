@@ -23,7 +23,7 @@ from collections.abc import Awaitable, Callable
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langgraph.errors import GraphBubbleUp
 
-from phil.agents.retry import retry_delay
+from phil.agents.retry import MODEL_CALL_ATTEMPTS, retry_delay
 
 TRACKER_KEY = "phil_model_retry"
 _RETRIED_ATTR = "_phil_model_call_retried"
@@ -31,10 +31,12 @@ _RETRIED_ATTR = "_phil_model_call_retried"
 
 class ModelRetryTracker:
     """Shared by every model call in one agent invocation (sub-agents too): the sleep to back
-    off with, and the number of retries made. Thread-safe: sub-agents can run in parallel."""
+    off with, the tries each model call gets (1: no retries), and the number of retries made.
+    Thread-safe: sub-agents can run in parallel."""
 
-    def __init__(self, sleep: Callable[[float], None] = time.sleep) -> None:
+    def __init__(self, sleep: Callable[[float], None] = time.sleep, attempts: int = MODEL_CALL_ATTEMPTS) -> None:
         self.sleep = sleep
+        self.attempts = attempts
         self._lock = threading.Lock()
         self.retries = 0
 
@@ -68,6 +70,10 @@ def _tracker() -> ModelRetryTracker | None:
     return tracker if isinstance(tracker, ModelRetryTracker) else None
 
 
+def _attempts(tracker: ModelRetryTracker | None) -> int:
+    return tracker.attempts if tracker is not None else MODEL_CALL_ATTEMPTS
+
+
 class PhilModelRetryMiddleware(AgentMiddleware):
     """Retry a failed model call when `retry_delay` says so; otherwise let the error propagate,
     marked so `call_with_retry` doesn't re-run the whole agent for it."""
@@ -83,7 +89,7 @@ class PhilModelRetryMiddleware(AgentMiddleware):
             except GraphBubbleUp:
                 raise
             except Exception as exc:
-                delay = retry_delay(exc, index)
+                delay = retry_delay(exc, index, attempts=_attempts(tracker))
                 if delay is None:
                     _mark(exc)
                     raise
@@ -103,7 +109,7 @@ class PhilModelRetryMiddleware(AgentMiddleware):
             except GraphBubbleUp:
                 raise
             except Exception as exc:
-                delay = retry_delay(exc, index)
+                delay = retry_delay(exc, index, attempts=_attempts(tracker))
                 if delay is None:
                     _mark(exc)
                     raise

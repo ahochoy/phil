@@ -119,6 +119,17 @@ def test_other_transient_errors_get_two_retries():
     assert delays == [1.0, 2.0]
 
 
+def test_a_tracker_with_one_attempt_turns_retries_off():
+    model = ScriptedChatModel(script=[HTTPError(503), usage(AIMessage(content="never"))])
+    agent = create_agent(model, tools=[], middleware=[PhilModelRetryMiddleware()])
+    tracker = ModelRetryTracker(sleep=lambda _: None, attempts=1)
+    with pytest.raises(HTTPError) as excinfo:
+        agent.invoke({"messages": [{"role": "user", "content": "go"}]}, config={"configurable": {TRACKER_KEY: tracker}})
+    assert len(model.received) == 1
+    assert tracker.retries == 0
+    assert model_call_retried(excinfo.value)
+
+
 def test_a_non_transient_error_propagates_without_retry():
     model = ScriptedChatModel(script=[HTTPError(401), usage(AIMessage(content="never"))])
     agent = create_agent(model, tools=[], middleware=[PhilModelRetryMiddleware()])

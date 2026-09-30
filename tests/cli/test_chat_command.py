@@ -24,6 +24,24 @@ def test_phil_opens_the_chat_and_starts_a_run(calc_repo, monkeypatch):
     assert spawned == [(record.run_id, "start")]
 
 
+def test_phil_set_overrides_reach_the_chats_runs(calc_repo, monkeypatch):
+    monkeypatch.setenv("PHIL_AGENT_FACTORY", "tests.chat.chat_scenarios:factory")
+    monkeypatch.setenv("PHIL_TEST_SCENARIO", "approve")
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    result = runner.invoke(
+        cli.app, ["--repo", str(calc_repo), "--set", "run.max_cost_usd=5"], input="add subtract\ny\n"
+    )
+    assert result.exit_code == 0, result.output
+    [record] = list_runs(connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path))
+    assert record.config_overrides == '["run.max_cost_usd=5"]'
+
+
+def test_phil_rejects_a_bad_set_override(calc_repo):
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "--set", "run.nope=1"], input="")
+    assert result.exit_code == 1
+    assert "Invalid --set" in result.output
+
+
 def test_chat_requires_chat_models(calc_repo):
     (calc_repo / "phil.toml").write_text('[models]\nimplementer = "ollama:test-model"\n')
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")

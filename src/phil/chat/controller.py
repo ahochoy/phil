@@ -4,7 +4,7 @@ import shutil
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -112,8 +112,11 @@ class ChatController:
         worker_starting: Callable[[object], bool] = worker_starting,
         pr_check_interval_s: float = PR_CHECK_INTERVAL_S,
         start_pr_monitor: bool = True,
+        config_overrides: Sequence[str] = (),
     ) -> None:
         self.info, self.config, self.conn, self.console, self.io = info, config, conn, console, io
+        # The chat's `--set` overrides: applied again whenever the config is reloaded, and kept by its runs.
+        self._config_overrides = tuple(config_overrides)
         # `conn` belongs to the main thread; each job opens its own connection to this database.
         self._db_path = ProjectPaths(info.slug).db_path
         # None means "resolve HEAD when a run is actually started" (_start), not at chat start,
@@ -617,7 +620,7 @@ class ChatController:
         if choice in ("y", "yes"):
             # Errors tell the user to edit phil.toml, so re-read it rather than trusting the chat-start copy.
             try:
-                self.config = load_config(self.info.root)
+                self.config = load_config(self.info.root, overrides=self._config_overrides)
             except ConfigError as exc:
                 self.console.print(f"[phil.error]{escape(str(exc))}[/]")
                 self._show_plan(draft)
@@ -674,7 +677,9 @@ class ChatController:
         plan = draft.plan.model_copy(update={"test_cmd": test_cmd})
         try:
             base_sha = self._explicit_base_sha or resolve_repo(self.info.root).head_sha
-            record = prepare_run(self.info, plan, base_sha, chat_id=self.session.id)
+            record = prepare_run(
+                self.info, plan, base_sha, chat_id=self.session.id, overrides=self._config_overrides
+            )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             self._safe_note("start_failed", plan_version=draft.version, answer=answer, error=error)

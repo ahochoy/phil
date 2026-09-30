@@ -65,13 +65,32 @@ def _build_lean_agent(
 
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
+    middleware: list[Any] = [PhilModelRetryMiddleware()]
+    if spec.end_on_text:
+        middleware.append(_end_on_text_middleware())
     return create_agent(
         chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=[],
         system_prompt=load_prompt(spec),
         response_format=_tool_strategy(spec),
-        middleware=[PhilModelRetryMiddleware()],
+        middleware=middleware,
     )
+
+
+def _end_on_text_middleware() -> Any:
+    """Ends a lean agent's loop after a model answer with no tool call, leaving no structured
+    output (invoke_agent then records the answer's text as the rejected output)."""
+    from langchain.agents.middleware import AgentMiddleware, hook_config
+
+    class EndOnText(AgentMiddleware):
+        @hook_config(can_jump_to=["end"])
+        def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+            last = state["messages"][-1] if state["messages"] else None
+            if state.get("structured_response") is None and not getattr(last, "tool_calls", None):
+                return {"jump_to": "end"}
+            return None
+
+    return EndOnText()
 
 
 def _build_deep_agent(
