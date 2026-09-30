@@ -1,30 +1,40 @@
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from phil.agents.collector import PATH_TOOLS
 from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, invoke_agent
 from phil.agents.registry import get_spec
 from phil.agents.tools import CommandLog
 from phil.config import PhilConfig
-from phil.contracts import ImplementInput, Issue, ReviewInput, TesterInput, TestReport
-from phil.git import GitError, branch_for
-from phil.packets import PacketTooLarge, build_packet
-from phil.run.gates import is_test_path, run_tests, snapshot_tests, verify_green, verify_red
+from phil.contracts import AttemptWorklog, ImplementInput, Issue, ReviewInput, TaskResult, TesterInput, TestReport
+from phil.git import GitError, branch_for, git
+from phil.packets import Packet, PacketTooLarge, build_packet
+from phil.run.gates import (
+    is_test_path,
+    run_check,
+    run_tests,
+    snapshot_tests,
+    verify_check,
+    verify_green,
+    verify_red,
+)
 from phil.run.state import RunState, dedupe_issues, issues_to_tasks, load_plan, next_todo, render_summary, with_task_status
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.events import EventLog
 from phil.store.runs import update_run
 from phil.store.telemetry import run_usage, usage_by_role
-from phil.workspace.worktree import WorktreeManager
+from phil.workspace.worktree import WorktreeManager, rebaseline_path
 
 
 @dataclass
@@ -55,6 +65,27 @@ def _write_json_atomic(path: Path, data: Any) -> None:
         except OSError:
             pass
         raise
+
+
+# The previous attempt's diff is cut to this many characters before it goes into the packet.
+MAX_DIFF_CHARS = 8_000
+DIFF_TRUNCATED = "\n…(diff truncated)"
+DIFF_OMITTED = "…(diff omitted: over the packet budget)"
+
+
+def _repo_relative(paths: list[str]) -> list[str]:
+    """The file tools see the worktree as `/`: store their paths repo-relative, like files_changed
+    (`/calc.py` -> `calc.py`, `/` -> `.`), deduplicated in order."""
+    return list(dict.fromkeys(path.lstrip("/") or "." for path in paths))
+
+
+def _tool_reads(log: CommandLog) -> list[str]:
+    """The paths an attempt's file tools read or listed, repo-relative (clipped by AttemptWorklog)."""
+    return _repo_relative([path for tool in PATH_TOOLS for path in log.tool_paths.get(tool, [])])
+
+
+def _cap_diff(diff: str) -> str:
+    return diff if len(diff) <= MAX_DIFF_CHARS else diff[:MAX_DIFF_CHARS] + DIFF_TRUNCATED
 
 
 class RunEngine:
@@ -115,17 +146,74 @@ class RunEngine:
         if "state" in fields:
             events.append("state", state=fields["state"], needs_attention=fields.get("needs_attention"))
 
-    def _test(self, state: RunState, name: str) -> TestReport:
+    def _test(self, state: RunState, name: str, worktree: Path | None = None) -> TestReport:
+        if not state["test_cmd"]:
+            # A run of check tasks only may have no test suite: its gates rely on each check_cmd.
+            return TestReport(command="", passed=True, failures=[], log_path="")
         return run_tests(
             state["test_cmd"],
-            self.deps.worktree,
+            worktree or self.deps.worktree,
             shell=self.deps.config.shell,
             artifacts=self.deps.artifacts,
             name=name,
             baseline=state.get("baseline_failures", []),
         )
 
+    def _rebaseline(self, state: RunState) -> dict:
+        """After a resume switched the test command, re-capture the baseline with it (once).
+
+        The new command runs in temporary detached worktrees, never on the run's own (which may hold
+        the task's uncommitted work): at the run's committed HEAD for the running baseline, so
+        failures the run already committed (e.g. a tester's failing test) stay known, and at the
+        base commit for `initial_baseline`, as `setup` captured it. Equal commits run once."""
+        if not state.get("rebaseline"):
+            return {}
+        if self.deps.events is not None:
+            self.deps.events.append("test_cmd_changed", cmd=state["test_cmd"])
+        seq = state.get("call_seq", 0)
+        head = self.worktrees.head(self.deps.worktree)
+        current = self._test_at(state, head, artifact_name("rebaseline", None, seq))
+        initial = current
+        if head != state["base_sha"]:
+            initial = self._test_at(state, state["base_sha"], artifact_name("rebaseline-base", None, seq))
+        return {
+            "baseline_failures": current.failures,
+            "initial_baseline": initial.failures,
+            "base_passed": current.passed_count,
+            "base_skipped": current.skipped_count,
+            "rebaseline": False,
+        }
+
+    def _test_at(self, state: RunState, sha: str, name: str) -> TestReport:
+        """Run the tests on commit `sha` in a temporary detached worktree, removed afterwards."""
+        path = rebaseline_path(self.deps.worktree)
+        self._drop_worktree(path)  # a leftover from a worker that died mid-rebaseline
+        git(self.deps.repo_root, "worktree", "add", "--detach", str(path), sha)
+        try:
+            return self._test({**state, "baseline_failures": []}, name, worktree=path)
+        finally:
+            self._drop_worktree(path)
+
+    def _drop_worktree(self, path: Path) -> None:
+        try:
+            git(self.deps.repo_root, "worktree", "remove", "--force", str(path))
+        except GitError:
+            pass  # not registered (or already gone): clear what's left below
+        shutil.rmtree(path, ignore_errors=True)
+        try:
+            git(self.deps.repo_root, "worktree", "prune")
+        except GitError:
+            pass
+
+    def _rebased(self, state: RunState, node: Callable[[RunState], dict]) -> dict:
+        """Run a node that runs the tests, re-capturing the baseline first when the command changed."""
+        update = self._rebaseline(state)
+        return {**update, **node({**state, **update})}
+
     def _context(self, state: RunState, log: CommandLog) -> AgentContext:
+        plan = load_plan(state)
+        check_cmds = tuple(task.check_cmd for task in plan.tasks if task.check_cmd)
+        extra_allow = tuple(cmd for cmd in (state["test_cmd"], *check_cmds) if cmd)
         return AgentContext(
             config=self.deps.config,
             conn=self.deps.conn,
@@ -136,7 +224,8 @@ class RunEngine:
             factory=self.deps.factory,
             sleep=self.deps.sleep,
             command_log=log,
-            extra_allow=tuple(state.get("approved", [])),
+            extra_allow=extra_allow,
+            approved=tuple(state.get("approved", [])),
         )
 
     def _budget(self, role: str) -> int:
@@ -210,22 +299,33 @@ class RunEngine:
         }
 
     def pick_task(self, state: RunState) -> dict:
-        index = next_todo(load_plan(state))
+        plan = load_plan(state)
+        index = next_todo(plan)
         self._update_run(current_node="pick_task")
         if index is None:
             return {"task_index": -1}
+        worktree = self.deps.worktree
+        base_sha = self.worktrees.head(worktree)
+        check = plan.tasks[index].verify == "check"
+        # A check task has no red phase: its test files are snapshotted as they stand, the same way
+        # verify snapshots them after red, so "green must not modify test files" applies unchanged.
+        red_snapshot: dict[str, str] = {}
+        if check:
+            changed = self.worktrees.changed_files(worktree, since=base_sha)
+            red_snapshot = snapshot_tests(worktree, changed, self.deps.config.project.test_globs)
         return {
             "task_index": index,
-            "task_base_sha": self.worktrees.head(self.deps.worktree),
-            "phase": "red",
+            "task_base_sha": base_sha,
+            "phase": "green" if check else "red",
             "attempts": 0,
             "last_problems": [],
             "last_report": None,
-            "red_snapshot": {},
+            "red_snapshot": red_snapshot,
             "red_tree": "",
             "hint": None,
             "implement_failed": False,
             "denied": [],
+            "keep_worktree": False,  # a new task never continues another task's attempt
             "escalation": None,
         }
 
@@ -233,10 +333,23 @@ class RunEngine:
         budget_warn, escalation = self._budget_check(state, "implement")
         if escalation is not None:
             return {**budget_warn, "escalation": escalation}
-        if state["phase"] == "red":
-            self.worktrees.reset_to(self.deps.worktree, state["task_base_sha"])
-        else:
-            self.worktrees.restore_snapshot(self.deps.worktree, state["red_tree"])
+        if not state["test_cmd"] and state["phase"] == "red":
+            # Only a run of check tasks may lack a test command; a tdd task (e.g. a fix the tester
+            # or reviewer asked for) can't be verified without one, so ask before spending a call.
+            return {**budget_warn, "escalation": self._no_test_cmd_escalation(state)}
+        worktree = self.deps.worktree
+        # The previous attempt's changes (or the red phase's, before green) are still in the
+        # worktree: capture them for the packet before the reset below throws them away.
+        diff = _cap_diff(self.worktrees.working_diff(worktree, state["task_base_sha"]))
+        # An approval resume continues the unjudged attempt where it stopped; everything else
+        # (a failed gate, a new phase, a human retry) starts from the phase's starting state.
+        continuing = bool(state.get("keep_worktree"))
+        if not continuing:
+            if state["phase"] == "red" or not state.get("red_tree"):
+                # Red, or a check task (green with no red tree): start from the task's base commit.
+                self.worktrees.reset_to(worktree, state["task_base_sha"])
+            else:
+                self.worktrees.restore_snapshot(worktree, state["red_tree"])
         plan = load_plan(state)
         task = plan.tasks[state["task_index"]]
         seq = state.get("call_seq", 0) + 1
@@ -244,33 +357,44 @@ class RunEngine:
         if state.get("hint"):
             feedback.append(f"Human hint: {state['hint']}")
         last = state.get("last_report")
+        previous = state.get("worklogs", {}).get(task.id)
         contract = ImplementInput(
             task=task,
             phase=state["phase"],
             test_cmd=state["test_cmd"],
             last_report=TestReport.model_validate(last) if last else None,
             feedback=feedback,
+            worklog=AttemptWorklog.model_validate(previous) if previous else None,
+            diff=diff,
+            continuing=continuing,
         )
         ledger = [e["assumption"] for e in self.deps.artifacts.read_assumptions() if e.get("task_id") == task.id]
-        packet = build_packet(
-            "implementer",
-            contract,
-            budget_tokens=self._budget("implementer"),
-            root=self.deps.worktree,
-            files=task.files_hint,
-            ledger=ledger,
-        )
+        packet = self._implement_packet(contract, task.files_hint, ledger)
         log = CommandLog()
         self._update_run(current_node="implement")
         try:
-            invoke_agent(
+            output = invoke_agent(
                 get_spec("implementer"), packet, self._context(state, log), node="implement", task_id=task.id, call=seq
             )
+            # invoke_agent validated it against the implementer spec's out_contract, TaskResult.
+            # What the attempt read comes from the file tools, never from the model.
+            note = cast(TaskResult, output).worklog
+            worklog: AttemptWorklog | None = AttemptWorklog(**note.model_dump(), files_read=_tool_reads(log))
             failed, problems = False, []
         except ContractViolation as exc:
             failed, problems = True, [f"implementer output rejected: {problem}" for problem in exc.problems]
+            worklog = None
         problems += [f"refused command: {cmd}" for cmd in log.refused]
-        update = {"call_seq": seq, "implement_failed": failed, "last_problems": problems, "denied": list(log.denied)}
+        if worklog is None:
+            worklog = self._fallback_worklog(state, log, problems)
+        update = {
+            "call_seq": seq,
+            "implement_failed": failed,
+            "last_problems": problems,
+            "denied": list(log.denied),
+            "worklogs": {**state.get("worklogs", {}), task.id: worklog.model_dump()},
+            "keep_worktree": False,
+        }
         if log.denied:
             update["escalation"] = {
                 "reason": "approval",
@@ -281,10 +405,53 @@ class RunEngine:
             }
         return {**budget_warn, **update}
 
+    def _no_test_cmd_escalation(self, state: RunState) -> dict:
+        task = load_plan(state).tasks[state["task_index"]]
+        summary = f"{task.id} needs a test command: set [project] test_cmd in phil.toml, then retry"
+        return {
+            "reason": "no_test_cmd",
+            "task_id": task.id,
+            "phase": state["phase"],
+            "problems": [f"the run has no test command, so {task.id}'s tests can't run"],
+            "options": ["retry", "skip", "abort"],
+            "summary": summary,
+        }
+
+    def _implement_packet(self, contract: ImplementInput, files: list[str], ledger: list[str]) -> Packet:
+        def build(item: ImplementInput) -> Packet:
+            return build_packet(
+                "implementer",
+                item,
+                budget_tokens=self._budget("implementer"),
+                root=self.deps.worktree,
+                files=files,
+                ledger=ledger,
+            )
+
+        try:
+            return build(contract)
+        except PacketTooLarge:
+            if not contract.diff:
+                raise
+            # Even the capped diff doesn't fit a small budget: send the rest without it.
+            return build(contract.model_copy(update={"diff": DIFF_OMITTED}))
+
+    def _fallback_worklog(self, state: RunState, log: CommandLog, problems: list[str]) -> AttemptWorklog:
+        """A worklog for an attempt that returned no usable output, built from what the tools saw."""
+        changed = self.worktrees.changed_files(self.deps.worktree, since=state["task_base_sha"])
+        return AttemptWorklog(
+            files_read=_tool_reads(log),
+            files_changed=changed[:50],
+            notes=[problem if len(problem) <= 200 else problem[:199] + "…" for problem in problems[:2]],
+        )
+
     def route_after_implement(self, state: RunState) -> str:
         return "escalate" if state.get("escalation") else "verify"
 
     def verify(self, state: RunState) -> dict:
+        return self._rebased(state, self._verify)
+
+    def _verify(self, state: RunState) -> dict:
         task = load_plan(state).tasks[state["task_index"]]
         globs = self.deps.config.project.test_globs
         worktree = self.deps.worktree
@@ -308,6 +475,24 @@ class RunEngine:
                     "red_tree": tree,
                     "verdict": "red_ok",
                 }
+        elif task.verify == "check":
+            check = run_check(
+                task.check_cmd,
+                worktree,
+                shell=self.deps.config.shell,
+                artifacts=self.deps.artifacts,
+                name=artifact_name("check", task.id, state["call_seq"]),
+            )
+            problems = verify_check(
+                report,
+                check,
+                state.get("red_snapshot", {}),
+                snapshot_tests(worktree, changed, globs),
+                state.get("base_passed"),
+                state.get("base_skipped"),
+            )
+            if not problems:
+                return {"last_report": report.model_dump(), "last_problems": [], "verdict": "green_ok"}
         else:
             problems = verify_green(
                 report,
@@ -333,7 +518,11 @@ class RunEngine:
                 "phase": state["phase"],
                 "problems": problems,
                 "options": ["retry", "skip", "abort"],
-                "summary": f"{task.id} failed {attempts} attempts in the {state['phase']} phase",
+                "summary": (
+                    f"{task.id} failed {attempts} attempts on the check task"
+                    if task.verify == "check"
+                    else f"{task.id} failed {attempts} attempts in the {state['phase']} phase"
+                ),
                 "log": (report or {}).get("log_path") or None,
             }
         return update
@@ -365,9 +554,11 @@ class RunEngine:
             plan = with_task_status(load_plan(state), state["task_index"], "SKIPPED")
             return {**cleared, "plan": plan.model_dump(), "next": "pick_task"}
         if action == "approve":
-            # The approved call's own problems are dropped because implement re-runs the phase from its starting state.
+            # No gate judged the approved call, so implement continues that attempt on the worktree
+            # as it was left (keep_worktree), with the approval in place. The call's own problems
+            # (e.g. refused commands) stay in last_problems and reach its feedback as context.
             approved = [*state.get("approved", []), *escalation["commands"]]
-            return {**cleared, "approved": approved, "denied": [], "next": "implement"}
+            return {**cleared, "approved": approved, "denied": [], "keep_worktree": True, "next": "implement"}
         if action == "deny":
             hint = f"Not approved: {', '.join(escalation['commands'])}. Do not use them."
             return {**cleared, "denied": [], "hint": hint, "next": "verify"}
@@ -459,7 +650,7 @@ class RunEngine:
         notes += [Issue(severity="minor", note=f"tester command refused: {cmd}") for cmd in log.refused]
         blocking = [issue for issue in issues if issue.severity in ("blocker", "major")]
         minor = [issue for issue in issues if issue.severity == "minor"]
-        plan = issues_to_tasks(plan, blocking, "tester") if blocking else plan
+        plan = issues_to_tasks(plan, blocking, "tester", state["test_cmd"]) if blocking else plan
         open_issues = [*state.get("open_issues", []), *(issue.model_dump() for issue in [*minor, *notes])]
         return {
             "plan": plan.model_dump(),
@@ -471,12 +662,18 @@ class RunEngine:
         }
 
     def tester(self, state: RunState) -> dict:
+        return self._rebased(state, self._tester)
+
+    def _tester(self, state: RunState) -> dict:
         budget_warn, escalation = self._budget_check(state, "tester")
         if escalation is not None:
             return {**budget_warn, "escalation": escalation}
         return {**budget_warn, **self._run_tester(state, state["base_sha"], "tester"), "tester_done": True}
 
     def tester_task(self, state: RunState) -> dict:
+        return self._rebased(state, self._tester_task)
+
+    def _tester_task(self, state: RunState) -> dict:
         budget_warn, escalation = self._budget_check(state, "tester_task")
         if escalation is not None:
             return {**budget_warn, "escalation": escalation}
@@ -493,6 +690,9 @@ class RunEngine:
         return "tester_task" if audit else "pick_task"
 
     def review(self, state: RunState) -> dict:
+        return self._rebased(state, self._review)
+
+    def _review(self, state: RunState) -> dict:
         budget_warn, escalation = self._budget_check(state, "review")
         if escalation is not None:
             return {**budget_warn, "escalation": escalation}
@@ -524,7 +724,7 @@ class RunEngine:
         blocking = [issue for issue in verdict.issues if issue.severity in ("blocker", "major")]
         minor = [issue for issue in verdict.issues if issue.severity == "minor"]
         if verdict.verdict == "changes" and blocking and rounds < self.deps.config.run.max_review_rounds:
-            plan = issues_to_tasks(plan, blocking, "review")
+            plan = issues_to_tasks(plan, blocking, "review", state["test_cmd"])
             return {
                 **budget_warn, "plan": plan.model_dump(), "call_seq": seq, "review_rounds": rounds,
                 "open_issues": [*carried, *(issue.model_dump() for issue in minor)], "next": "pick_task",
@@ -538,6 +738,11 @@ class RunEngine:
         return "escalate" if state.get("escalation") else state["next"]
 
     def finish(self, state: RunState) -> dict:
+        if state.get("status") == "aborted":
+            return self._finish(state)  # runs no tests, so a pending rebaseline would be wasted
+        return self._rebased(state, self._finish)
+
+    def _finish(self, state: RunState) -> dict:
         plan = load_plan(state)
         status = "aborted" if state.get("status") == "aborted" else "completed"
         open_issues = list(state.get("open_issues", []))

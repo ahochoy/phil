@@ -8,7 +8,11 @@ from phil.contracts.base import Part
 class Claim(Part):
     statement: str = Field(description="What you claim is true.")
     command: str | None = Field(
-        default=None, description="Exact command you ran to verify the claim. Never list a command you did not run."
+        default=None,
+        description=(
+            "The exact shell command you ran, or the tool call you made (e.g. read_file src/app.ts, "
+            "grep 'egg' src/). Never list one you did not run."
+        ),
     )
     observed_output: str | None = Field(default=None, description="Relevant output you observed, trimmed.")
 

@@ -11,14 +11,33 @@ KEYWORD_PATTERN = r"^[A-Z]{3,6}$"
 
 class Task(Part):
     id: str = Field(pattern=TASK_ID_PATTERN, description="KEYWORD-### id, e.g. MAPS-001.")
-    description: str = Field(description="One atomic change a developer can test-drive in isolation.")
+    description: str = Field(description="One atomic change a developer can test-drive, or check, in isolation.")
     acceptance_criteria: list[str] = Field(
-        min_length=1, description="Observable behaviours a failing test can check. At least one."
+        min_length=1, description="Observable outcomes a failing test, or a check task's check_cmd, can confirm. At least one."
     )
     files_hint: list[str] = Field(default=[], description="Repo-relative files this task most likely touches.")
     status: Literal["TODO", "DONE", "SKIPPED", "FAILED"] = Field(
         default="TODO", description="Always TODO in a new plan."
     )
+    verify: Literal["tdd", "check"] = Field(
+        default="tdd",
+        description=(
+            "tdd: write a failing test, then make it pass. check: no testable behaviour (copy, markup, static "
+            "assets, config, docs); make the change and pass check_cmd."
+        ),
+    )
+    check_cmd: str | None = Field(
+        default=None,
+        description="check tasks only: one shell command, ideally one the repo already defines, that must exit 0.",
+    )
+
+    @model_validator(mode="after")
+    def _check_verify_mode(self) -> "Task":
+        if self.verify == "check" and not self.check_cmd:
+            raise ValueError(f"task {self.id}: a check task needs a check_cmd")
+        if self.verify == "tdd" and self.check_cmd is not None:
+            raise ValueError(f"task {self.id}: check_cmd is only for check tasks")
+        return self
 
 
 class Plan(Contract):

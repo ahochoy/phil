@@ -30,8 +30,17 @@ def render_goal(console: Console, goal: Goal) -> None:
             console.print(f"  [phil.muted](+{extra} more)[/]")
 
 
+SOURCE_LABELS = {"plan": " (from the plan)", "config": " (from phil.toml)", "detected": " (detected)"}
+
+
 def render_plan(
-    console: Console, draft: PlanDraft, *, test_cmd: str | None, test_cmd_note: str | None, git_note: str | None
+    console: Console,
+    draft: PlanDraft,
+    *,
+    test_cmd: str | None,
+    test_cmd_note: str | None,
+    git_note: str | None,
+    test_cmd_source: str | None = None,
 ) -> None:
     plan = draft.plan
     count = len(plan.tasks)
@@ -40,7 +49,9 @@ def render_plan(
     )
     console.print(escape(_clip(plan.description)))
     for task in plan.tasks:
-        console.print(f"  [phil.id]{escape(task.id)}[/]  {escape(_clip(task.description))}")
+        # A check command is shown in full: it's what the user approves.
+        check = f"  (check: {escape(task.check_cmd)})" if task.verify == "check" and task.check_cmd else ""
+        console.print(f"  [phil.id]{escape(task.id)}[/]  {escape(_clip(task.description))}{check}")
         for criterion in task.acceptance_criteria[:MAX_CRITERIA]:
             console.print(f"      [phil.gate.pass]✓[/] {escape(_clip(criterion))}")
         extra = len(task.acceptance_criteria) - MAX_CRITERIA
@@ -53,7 +64,10 @@ def render_plan(
     if extra > 0:
         console.print(f"  [phil.muted](+{extra} more)[/]")
     if test_cmd:
-        console.print(f"Tests: {escape(test_cmd)}")  # shown in full: it's what the user approves
+        label = SOURCE_LABELS.get(test_cmd_source or "", "")
+        console.print(f"Tests: {escape(test_cmd)}{label}")  # shown in full: it's what the user approves
+    elif plan.tasks and all(task.verify == "check" for task in plan.tasks):
+        console.print("Tests: none (check tasks only)")
     else:
         console.print("[phil.warn]Tests: none — set test_cmd in the plan or phil.toml[/]")
     if test_cmd_note:

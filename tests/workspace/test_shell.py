@@ -9,7 +9,15 @@ import pytest
 
 from phil.config import ShellConfig
 from phil.workspace import shell as shell_module
-from phil.workspace.shell import ShellPolicy, child_env, is_secret_name, literal_pattern, run_command, truncate_output
+from phil.workspace.shell import (
+    READ_ONLY,
+    ShellPolicy,
+    child_env,
+    is_secret_name,
+    literal_pattern,
+    run_command,
+    truncate_output,
+)
 
 PY = shlex.quote(sys.executable)
 
@@ -173,6 +181,328 @@ def test_run_command_uses_explicit_env(tmp_path):
     assert result.stdout.strip() == "yes"
 
 
+@pytest.mark.parametrize("command", READ_ONLY)
+def test_read_only_commands_are_allowed_with_an_empty_allow_list(command):
+    assert ShellPolicy([]).is_allowed(command)
+
+
+def test_find_delete_and_exec_are_forbidden():
+    policy = ShellPolicy([])
+    assert policy.is_allowed("find . -name x")
+    assert policy.denial_reason("find . -delete") == "forbidden"
+    assert policy.denial_reason("find . -exec rm {} ;") == "forbidden"
+    assert policy.denial_reason("find . -exec rm {} +") == "forbidden"
+
+
+@pytest.mark.parametrize(
+    "command", ["find . -fprint out.txt", "find . -fprint0 out.txt", "find . -fprintf fmt out.txt"]
+)
+def test_find_fprint_family_is_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+@pytest.mark.parametrize("command", ["find -L . -name x", "find . -follow"])
+def test_find_symlink_following_flags_are_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git branch -qD x",
+        "git branch -rd origin/x",
+        "git branch --del x",
+        "git branch --mo a b",
+        "git branch newb",
+        "git branch -D x",
+        "git branch --set-upstream-to=origin/x",
+        "git branch --unset-upstream",
+        "git branch --track",
+        "git branch --edit-description",
+    ],
+)
+def test_git_branch_refuses_anything_but_listing(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git branch",
+        "git branch -a",
+        "git branch --list 'feat*'",
+        "git branch --show-current",
+        "git branch --sort=-committerdate",
+        "git branch --format=%(refname)",
+    ],
+)
+def test_git_branch_allows_listing(command):
+    assert ShellPolicy([]).is_allowed(command)
+
+
+def test_git_log_oneline_is_allowed():
+    assert ShellPolicy([]).is_allowed("git log --oneline")
+
+
+@pytest.mark.parametrize(
+    "command", ["rg --pre sh x .", "rg --pre=sh x .", "rg --pre-glob '*.sh' x .", "rg --pre-glob=*.sh x ."]
+)
+def test_rg_pre_hook_flags_are_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+def test_rg_plain_search_is_allowed():
+    assert ShellPolicy([]).is_allowed("rg x .")
+
+
+@pytest.mark.parametrize(
+    "command", ["rg --hostname-bin=/bin/sh x .", "rg --hostname-bin sh x ."]
+)
+def test_rg_hostname_bin_is_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+@pytest.mark.parametrize("command", ["grep -R x .", "grep -Rn x .", "grep --dereference-recursive x ."])
+def test_grep_recursive_dereference_is_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+def test_grep_lowercase_recursive_is_allowed():
+    assert ShellPolicy([]).is_allowed("grep -r x .")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "grep -S x .",
+        "grep -rS x .",
+        "grep -rnS x .",
+        "grep -O x .",
+        "grep -rO x .",
+        "grep -p x .",
+        "grep -rp x .",
+    ],
+)
+def test_grep_bsd_symlink_flags_are_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+def test_grep_pattern_attached_to_dash_e_is_not_mistaken_for_more_flags():
+    assert ShellPolicy([]).is_allowed("grep -eR src")
+
+
+def test_rg_pattern_attached_to_dash_e_is_not_mistaken_for_more_flags():
+    assert ShellPolicy([]).is_allowed("rg -eL")
+
+
+@pytest.mark.parametrize("command", ["rg -L x .", "rg -Ln x .", "rg --follow x ."])
+def test_rg_follow_symlinks_is_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+@pytest.mark.parametrize("command", ["ls -L", "ls -lL", "ls --dereference"])
+def test_ls_dereference_is_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+def test_ls_plain_long_listing_is_allowed():
+    assert ShellPolicy([]).is_allowed("ls -la")
+
+
+def test_containment_blocks_paths_outside_root(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "x.ts").write_text("")
+    policy = ShellPolicy([], root=tmp_path)
+    assert policy.denial_reason("cat /etc/passwd") == "forbidden"
+    assert policy.denial_reason("ls ../..") == "forbidden"
+    assert policy.is_allowed("cat src/x.ts")
+    assert policy.is_allowed("ls -la")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "grep --file=/etc/hosts x .",
+        "grep -f/etc/hosts x .",
+        "wc --files0-from=/etc/hosts",
+    ],
+)
+def test_containment_catches_attached_flag_path_values(tmp_path, command):
+    assert ShellPolicy([], root=tmp_path).denial_reason(command) == "forbidden"
+
+
+def test_containment_still_catches_a_separate_flag_argument(tmp_path):
+    assert ShellPolicy([], root=tmp_path).denial_reason("grep -f /etc/hosts x .") == "forbidden"
+
+
+def test_containment_allows_harmless_flag_values(tmp_path):
+    policy = ShellPolicy([], root=tmp_path)
+    assert policy.is_allowed("git branch --sort=-committerdate")
+    assert policy.is_allowed("git branch --format=%(refname)")
+
+
+def test_grep_rg_positional_pattern_is_excluded_from_path_containment(tmp_path):
+    policy = ShellPolicy([], root=tmp_path)
+    assert policy.is_allowed("grep -rn /api/ src")
+    assert policy.is_allowed("rg /etc/ src")
+
+
+def test_grep_rg_second_positional_is_still_a_real_path(tmp_path):
+    policy = ShellPolicy([], root=tmp_path)
+    assert policy.denial_reason("grep -rn foo /etc") == "forbidden"
+
+
+def test_grep_with_explicit_pattern_flag_treats_all_positionals_as_paths(tmp_path):
+    assert ShellPolicy([], root=tmp_path).denial_reason("grep -e foo /etc") == "forbidden"
+
+
+@pytest.fixture
+def worktree_with_outside_file(tmp_path):
+    root = tmp_path / "wt"
+    (root / "src").mkdir(parents=True)
+    (root / ".ignore").write_text("*.log\n")
+    (tmp_path / "outside").write_text("secret\n")
+    return root
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rg --ignore-file ../outside foo .",
+        "rg --file ../outside .",
+        "grep --exclude-from ../outside foo .",
+        "grep --file ../outside .",
+        # A separate value for a non-file option shifts the pattern to the next positional.
+        "grep -A 3 foo ../outside",
+        "grep -A 3 foo /etc",
+        "rg -g '*.py' foo ../outside",
+        "rg --max-depth 2 foo ../outside",
+        "rg -d 2 foo ../outside",
+        # After `--`, the first token is the pattern even if it looks like a flag.
+        "grep -- -x ../outside",
+        # GNU/BSD grep accept abbreviated long options; an abbreviation is never trusted.
+        "grep --exclude-f ../outside foo .",
+        "grep --regex foo ../outside",
+        # BSD grep's --context takes its value only via `=`, GNU's also as a separate token.
+        "grep --context 3 ../outside .",
+        # `rg --files` takes no pattern: every positional is a path to list.
+        "rg --files ../outside",
+    ],
+)
+def test_grep_rg_separate_option_values_are_never_taken_as_the_pattern(
+    worktree_with_outside_file, command
+):
+    policy = ShellPolicy([], root=worktree_with_outside_file)
+    assert policy.denial_reason(command) == "forbidden"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rg --ignore-file .ignore foo .",
+        "grep -A 3 foo src",
+        "grep -A 3 /api/ src",
+        "grep --max-count 2 /api/ src",
+        "rg -g '*.py' /api/ src",
+        "rg --type py /api/ src",
+        "grep -rn -- /api/ src",
+    ],
+)
+def test_grep_rg_pattern_after_consumed_option_values_is_still_excluded(
+    worktree_with_outside_file, command
+):
+    assert ShellPolicy([], root=worktree_with_outside_file).is_allowed(command)
+
+
+def test_symlink_escaping_the_worktree_is_forbidden(tmp_path):
+    outside = tmp_path.parent / "outside-secret.txt"
+    outside.write_text("secret")
+    link = tmp_path / "link"
+    link.symlink_to(outside)
+    assert ShellPolicy([], root=tmp_path).denial_reason("cat link") == "forbidden"
+
+
+def test_symlink_inside_the_worktree_is_allowed(tmp_path):
+    target = tmp_path / "real.txt"
+    target.write_text("hi")
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    assert ShellPolicy([], root=tmp_path).is_allowed("cat link")
+
+
+def test_symlink_named_like_a_flag_after_double_dash_is_caught(tmp_path):
+    outside = tmp_path.parent / "outside-secret2.txt"
+    outside.write_text("secret")
+    link = tmp_path / "-evil"
+    link.symlink_to(outside)
+    assert ShellPolicy([], root=tmp_path).denial_reason("cat -- -evil") == "forbidden"
+
+
+def test_symlink_named_by_an_attached_short_flag_value_is_caught(tmp_path):
+    outside = tmp_path.parent / "outside-secret3.txt"
+    outside.write_text("secret")
+    link = tmp_path / "evil"
+    link.symlink_to(outside)
+    assert ShellPolicy([], root=tmp_path).denial_reason("grep -fevil x .") == "forbidden"
+
+
+def test_symlink_loop_does_not_crash_containment_checks(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.symlink_to(b)
+    b.symlink_to(a)
+    # Neither raises nor hangs; a loop that never escapes root resolves to something still
+    # (nominally) inside it, so this is allowed rather than forbidden.
+    assert ShellPolicy([], root=tmp_path).is_allowed("cat a")
+
+
+def test_extra_allow_matches_literal_tokens_with_trailing_arguments():
+    assert ShellPolicy([]).denial_reason("npm run build") == "not_allowed"
+    policy = ShellPolicy([], extra_allow=("npm run build",))
+    assert policy.is_allowed("npm run build")
+    assert policy.is_allowed("npm run build --watch")
+
+
+def test_extra_allow_escapes_glob_characters_in_the_command():
+    cmd = "pytest tests/test_foo.py::test_bar[case1]"
+    policy = ShellPolicy([], extra_allow=(cmd,))
+    assert policy.is_allowed(cmd)
+    assert policy.is_allowed(cmd + " -v")
+    assert not policy.is_allowed("pytest tests/test_foo.py::test_bar[XYZ9]")
+
+
+def test_approved_command_matches_only_exactly():
+    policy = ShellPolicy([], approved=("rm build.log",))
+    assert policy.is_allowed("rm build.log")
+    assert not policy.is_allowed("rm build.log -rf /Users/x")
+
+
+def test_approved_command_with_brackets_matches_only_itself():
+    cmd = "pytest tests/test_foo.py::test_bar[case1]"
+    policy = ShellPolicy([], approved=(cmd,))
+    assert policy.is_allowed(cmd)
+    assert not policy.is_allowed("pytest tests/test_foo.py::test_bar[XYZ9]")
+    assert not policy.is_allowed("pytest tests/test_foo.py::test_bar1")
+
+
+def test_grep_piped_to_head_is_still_forbidden():
+    assert ShellPolicy([]).denial_reason("grep x | head") == "forbidden"
+
+
+def test_custom_allow_does_not_remove_read_only_commands():
+    assert ShellPolicy(["npm test"]).is_allowed("ls")
+
+
+def test_refusal_detail_for_containment(tmp_path):
+    policy = ShellPolicy([], root=tmp_path)
+    assert policy.refusal_detail("cat /etc/passwd") == "stay inside the worktree"
+
+
+def test_refusal_detail_is_none_when_allowed_or_only_not_allowed():
+    assert ShellPolicy([]).refusal_detail("ls") is None
+    assert ShellPolicy([]).refusal_detail("npm run build") is None
+
+
 def test_literal_pattern_matches_only_the_exact_command():
     exact = "pytest tests/test_foo.py::test_bar[case1]"
     policy = ShellPolicy([literal_pattern(exact), literal_pattern("pytest tests/*")])
@@ -242,3 +572,29 @@ def test_run_command_kills_child_on_sigalrm(tmp_path):
         # Clean up: cancel timer and restore old handler
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, old_handler)
+
+
+def test_git_ls_files_is_read_only_and_contained(tmp_path):
+    (tmp_path / "src").mkdir()
+    policy = ShellPolicy([], root=tmp_path)
+    assert policy.is_allowed("git ls-files")
+    assert policy.is_allowed("git ls-files src")
+    assert policy.denial_reason("git ls-files /etc") == "forbidden"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "find . -files0-from list.txt",
+        "find -files0-from list.txt",
+        "wc --files0-from=list.txt",
+        "wc --files0-from list.txt",
+        "wc --files0 list.txt",
+    ],
+)
+def test_files0_from_is_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+def test_wc_plain_count_is_still_allowed():
+    assert ShellPolicy([]).is_allowed("wc -l README.md")

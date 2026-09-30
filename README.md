@@ -123,6 +123,83 @@ max_tokens = 1500000
 max_cost_usd = 2.0
 ```
 
+## Shell commands
+
+Read-only commands run without needing a `[shell] allow` entry: `cat`, `find`, `git branch`,
+`git diff`, `git log`, `git ls-files`, `git show`, `git status`, `grep`, `head`, `ls`, `pwd`,
+`rg`, `tail`, `wc` — as long as every path they touch stays inside the run's worktree. A flag
+that would let one of these write, delete, run something, follow a symlink out of the worktree,
+or read a list of paths from a file is refused (`find -exec`, `find -files0-from`,
+`git branch -D`, `grep -R`, `rg --pre`, `ls -L`, `wc --files0-from`, and similar), as is any command
+using shell operators (`;`, `&&`, `|`, backticks, redirects, newlines).
+
+Everything else needs an entry in `[shell] allow` — matched exactly, or with a trailing `*` in
+the pattern to also allow trailing arguments (e.g. `pytest *`) — or a live approval after a
+denial. A command off both says
+`DENIED: ... is not on the allowlist`; one that can never run here — a shell operator, a
+containment escape, a mutating flag on an otherwise read-only command — says
+`REFUSED: ... and can never run here`, and Phil doesn't retry variations of it.
+
+The plan's approved test command and every task's `check_cmd` run for that run without needing
+an allowlist entry of their own (exact match plus trailing arguments) — they were shown in the
+plan you approved.
+
+```toml
+[shell]
+allow = ["pytest", "pytest *", "uv run pytest", "uv run pytest *", "npm test", "git status", "git diff", "git diff *"]
+timeout_s = 300
+max_output_lines = 200
+```
+
+## Plans
+
+Every task is `tdd` (the default) or `check`. A `tdd` task is driven by a failing test: red,
+then green. A `check` task is for a change with no testable behaviour — copy, markup, static
+assets, config, docs — and skips the red phase entirely; it's verified by its `check_cmd`, a
+single shell command (no pipes, `&&`, or redirects) that the plan shows you and that must exit 0
+for the task to pass. If every task in a plan is `check`, the plan needs no test command.
+
+## Test command
+
+Phil looks for the project's test command in order: the plan's own `test_cmd`, then `phil.toml`'s
+`[project] test_cmd`, then detection from the repo's files — a `package.json` with a real `test`
+script gives `npm test`; a `pyproject.toml`, `pytest.ini`, or `conftest.py` gives `uv run pytest`
+(or plain `pytest` without a `uv.lock`); `go.mod` gives `go test ./...`; `Cargo.toml` gives
+`cargo test`. If none of these apply and the plan has a `tdd` task, the chat won't start the run.
+
+A paused run picks up a change to `phil.toml`'s `[project] test_cmd` on resume, but only when
+that value has actually changed since the run started — an approved plan command that still
+differs from an unchanged `phil.toml` is left alone. Picking up the change re-baselines the run's
+test results against the worktree's current `HEAD`, and the chat (and `phil attach`) print
+`Using the updated test command: ...`.
+
+## Benchmark
+
+An opt-in live benchmark (`tests/live/bench`) plans and runs a few small goals — add a Python
+function, add a meta tag, fix a typo — with real models, through Phil's real chat and run code
+paths, and appends one JSON record per case to `~/.phil/bench/results.jsonl` (or
+`$PHIL_BENCH_RESULTS`):
+
+    PHIL_BENCH_CONFIG=~/bench.toml uv run pytest -m bench -n 0
+    uv run python -m tests.live.bench.report
+
+`PHIL_BENCH_CONFIG` points at a `phil.toml` that sets the `[models]` to benchmark. Always add
+`-n 0` when comparing timings: the default `-n auto` runs cases in parallel, and the contention
+inflates each case's `minutes`. The report prints each case's last 5 runs (`--last N` for more)
+with its task count and modes, state, pass/fail, minutes, calls, model calls, tokens, and cost.
+
+To compare against a baseline, run the benchmark from a separate `git worktree` pinned at the
+commit you're comparing from (for plan 6a, the benchmark's own baseline commit, `50fea6d`), so
+later commits on your branch can't leak into the baseline numbers (each record carries the short
+`phil_sha` it ran):
+
+    git worktree add ../phil-bench-baseline 50fea6d
+    cd ../phil-bench-baseline
+    PHIL_BENCH_CONFIG=~/bench.toml uv run pytest -m bench -n 0
+
+Then run the same command again from the branch under test, and compare the two
+`uv run python -m tests.live.bench.report` outputs (tokens, calls, minutes, and pass rate).
+
 ## Development
 
     uv sync

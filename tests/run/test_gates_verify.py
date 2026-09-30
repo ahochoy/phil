@@ -1,6 +1,7 @@
-from phil.config import ProjectConfig
+from phil.config import ProjectConfig, ShellConfig
 from phil.contracts import TestReport
-from phil.run.gates import is_test_path, snapshot_tests, verify_green, verify_red
+from phil.run.gates import is_test_path, run_check, snapshot_tests, verify_check, verify_green, verify_red
+from phil.workspace.shell import ShellResult
 
 GLOBS = ["tests/*", "test_*.py"]
 DEFAULT_GLOBS = ProjectConfig().test_globs
@@ -105,3 +106,72 @@ def test_green_rejects_more_skipped_tests():
 def test_green_passes_with_more_passing_tests():
     snap = {"tests/test_sub.py": "abc"}
     assert verify_green(report(passed=4, skipped=0), snap, dict(snap), base_passed=3, base_skipped=0) == []
+
+
+def check_result(exit_code=0, stdout="", stderr="", timed_out=False) -> ShellResult:
+    return ShellResult(
+        command="npm run build", exit_code=exit_code, stdout=stdout, stderr=stderr, timed_out=timed_out, duration_ms=1
+    )
+
+
+def test_check_passes_when_its_command_succeeds_and_tests_are_untouched():
+    snap = {"tests/test_calc.py": "abc"}
+    assert verify_check(report(passed=3), check_result(), snap, dict(snap), base_passed=3) == []
+
+
+def test_check_reports_a_failing_exit_with_the_output_tail():
+    output = "\n".join(f"line {n}" for n in range(1, 31))
+    problems = verify_check(report(), check_result(exit_code=2, stdout=output, stderr="boom"), {}, {})
+    assert len(problems) == 1
+    head, *tail = problems[0].splitlines()
+    assert head == "check command failed (exit 2): npm run build"
+    assert tail == [*(f"line {n}" for n in range(12, 31)), "boom"]
+
+
+def test_check_reports_a_timeout():
+    problems = verify_check(report(), check_result(exit_code=-9, timed_out=True), {}, {})
+    assert problems == ["check command failed (timed out): npm run build"]
+
+
+def test_check_rejects_fewer_passing_tests():
+    problems = verify_check(report(passed=2), check_result(), {}, {}, base_passed=3)
+    assert problems == ["check task reduced passing tests from 3 to 2"]
+
+
+def test_check_messages_name_the_check_task_not_the_green_phase():
+    problems = verify_check(
+        report(new=["tests/test_calc.py::test_add"], passed=3, skipped=2),
+        check_result(),
+        {"tests/test_calc.py": "abc"},
+        {"tests/test_calc.py": "def"},
+        base_passed=3,
+        base_skipped=1,
+    )
+    assert problems == [
+        "tests still failing: tests/test_calc.py::test_add",
+        "check task modified test files: tests/test_calc.py",
+        "check task increased skipped tests from 1 to 2",
+    ]
+    assert not any("green" in problem for problem in problems)
+
+
+def test_run_check_refuses_a_forbidden_command_without_running_it(tmp_path):
+    marker = tmp_path / "ran"
+    result = run_check(f"touch {marker}; true", tmp_path, shell=ShellConfig(), artifacts=None, name="check")
+    assert not result.ok
+    assert not marker.exists()
+    assert "refused" in result.stderr
+
+
+def test_run_check_refuses_a_read_only_command_that_leaves_the_worktree(tmp_path):
+    result = run_check("cat /etc/hosts", tmp_path, shell=ShellConfig(), artifacts=None, name="check")
+    assert not result.ok
+    assert result.exit_code == 126
+    assert "stay inside the worktree" in result.stderr
+
+
+def test_run_check_runs_a_contained_read_only_command(tmp_path):
+    (tmp_path / "a.txt").write_text("hello\n")
+    result = run_check("cat a.txt", tmp_path, shell=ShellConfig(), artifacts=None, name="check")
+    assert result.ok
+    assert result.stdout == "hello\n"

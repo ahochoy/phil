@@ -29,7 +29,7 @@ from phil.publish.service import PrChange, PublishRefused, change_line, publish_
 from phil.repo import RepoInfo, resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, worker_starting
 from phil.store.db import connect
-from phil.store.events import run_events
+from phil.store.events import run_events, test_cmd_changed_line
 from phil.store.paths import ProjectPaths
 from phil.store.parked import open_count, park
 from phil.store.runs import get_run, list_runs
@@ -61,7 +61,10 @@ PROMPTS = {
 TRANSCRIPT_STAGES = {"idle": "goal", "intake": "goal", "planning": "goal", "running": "goal", "questions": "answers"}
 GOAL_JOB_STAGES = ("intake", "planning")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
-RUN_EVENTS = ("run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning")
+RUN_EVENTS = (
+    "run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning",
+    "test_cmd_changed",
+)
 RECENT_EVENTS = 10  # run events a /btw answer sees
 NOTICE_REFS = 3  # details a completion notice lists
 PR_CHECK_INTERVAL_S = 300  # how often an open chat checks its runs' PRs for merges
@@ -574,19 +577,32 @@ class ChatController:
     # --- approval and start ----------------------------------------------------------------------
 
     def _show_plan(self, draft: PlanDraft) -> None:
-        problem = test_cmd_problem(draft.plan, self.config)
+        root = self._detection_root(draft.plan)
+        problem = test_cmd_problem(draft.plan, self.config, root)
         differs = test_cmd_differs(draft.plan, self.config)
         note = problem or (
             f"plan test command differs from phil.toml's ({self.config.project.test_cmd})" if differs else None
         )
-        self._shown_test_cmd = effective_test_cmd(draft.plan, self.config)
+        self._shown_test_cmd, source = effective_test_cmd(draft.plan, self.config, root)
         render_plan(
             self.console,
             draft,
             test_cmd=self._shown_test_cmd,
+            test_cmd_source=source,
             test_cmd_note=note,
             git_note=git_policy_note(self.config),
         )
+
+    def _detection_root(self, plan: Plan) -> Path | None:
+        """Where a missing test command is detected from: the base commit's snapshot, which is what
+        the run will see. None when the plan or phil.toml already sets one, or the export fails."""
+        if plan.test_cmd or self.config.project.test_cmd:
+            return None
+        try:
+            return self._snapshot(self._generation)
+        except Exception:
+            logger.warning("couldn't export the snapshot to detect a test command", exc_info=True)
+            return None
 
     def _approval(self, answer: str) -> None:
         draft = self._draft
@@ -599,19 +615,22 @@ class ChatController:
                 self.console.print(f"[phil.error]{escape(str(exc))}[/]")
                 self._show_plan(draft)
                 return
-            problems = launch_problems(draft.plan, self.config)
+            root = self._detection_root(draft.plan)
+            # Check commands' paths must stay inside the tree: the base commit's snapshot when it was
+            # exported for detection, else the repo itself.
+            problems = launch_problems(draft.plan, self.config, root, check_root=root or self.info.root)
             if problems:
                 for item in problems:
                     self.console.print(f"[phil.error]{escape(item)}.[/]")
                 self.console.print("[phil.muted]Fix phil.toml and answer y again, or use edit to change the plan.[/]")
                 self._show_plan(draft)
                 return
-            if effective_test_cmd(draft.plan, self.config) != self._shown_test_cmd:
+            if effective_test_cmd(draft.plan, self.config, root)[0] != self._shown_test_cmd:
                 # phil.toml changed the test command since the plan was shown: show what would run first.
                 self.console.print("[phil.warn]The test command changed in phil.toml. Review it and answer again.[/]")
                 self._show_plan(draft)
                 return
-            self._start(draft, answer)
+            self._start(draft, answer, self._shown_test_cmd)
         elif choice == "edit":
             self._parent_stage = "approval"
             self._set_stage("edit")
@@ -643,8 +662,9 @@ class ChatController:
 
         self._job("plan_ready", fn)
 
-    def _start(self, draft: PlanDraft, answer: str) -> None:
-        plan = draft.plan.model_copy(update={"test_cmd": effective_test_cmd(draft.plan, self.config)})
+    def _start(self, draft: PlanDraft, answer: str, test_cmd: str | None) -> None:
+        # The run keeps the command the user approved (the plan's, phil.toml's or the detected one).
+        plan = draft.plan.model_copy(update={"test_cmd": test_cmd})
         try:
             base_sha = self._explicit_base_sha or resolve_repo(self.info.root).head_sha
             record = prepare_run(self.info, plan, base_sha, chat_id=self.session.id)
@@ -762,6 +782,9 @@ class ChatController:
     def _on_budget_warning(self, data: dict) -> None:
         line = budget_warning_line(self._run_id, **data)
         self.console.print(f"[phil.warn]{escape(line)}[/]")
+
+    def _on_test_cmd_changed(self, data: dict) -> None:
+        self.console.print(f"[phil.warn]{escape(test_cmd_changed_line(str(data.get('cmd'))))}[/]")
 
     def _on_run_paused(self, data: dict) -> None:
         escalation = data["escalation"]

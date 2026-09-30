@@ -11,6 +11,11 @@ class Worktree:
     base_sha: str
 
 
+def rebaseline_path(worktree: Path) -> Path:
+    """The temporary worktree a run uses to re-capture its baseline after a test command switch."""
+    return worktree.parent / f"{worktree.name}-rebaseline"
+
+
 class WorktreeManager:
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = repo_root
@@ -50,6 +55,10 @@ class WorktreeManager:
 
     def diff(self, path: Path, base: str) -> str:
         return git(path, "diff", base, "HEAD")
+
+    def working_diff(self, path: Path, base: str) -> str:
+        """The diff from `base` to the working tree as it stands, uncommitted and untracked files included."""
+        return git(path, "diff", base, self.snapshot(path))
 
     def head(self, path: Path) -> str:
         return git(path, "rev-parse", "HEAD").strip()

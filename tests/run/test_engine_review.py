@@ -20,6 +20,8 @@ def test_changes_create_fix_tasks_then_second_review(make_harness):
     final = harness.start()
     assert final["review_rounds"] == 2
     assert [t.id for t in load_plan(final).tasks] == ["CALC-001", "CALC-002"]
+    assert load_plan(final).tasks[1].verify == "tdd"
+    assert load_plan(final).tasks[1].check_cmd is None
     assert final["status"] == "completed"
 
 

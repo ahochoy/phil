@@ -21,6 +21,8 @@ ENDED_UNCONDITIONALLY = ("completed", "aborted", "cleaned")
 ENDED_IF_IDLE = ("failed", "stopped")
 
 CONSECUTIVE_FAILURES_BEFORE_REPORT = 5
+# Run events posted to the chat as they are, once each: the latest of each kind since the last poll.
+NOTICES = ("budget_warning", "test_cmd_changed")
 
 
 class RunWatcher:
@@ -48,19 +50,19 @@ class RunWatcher:
         self._paused = False
         self._idle_since: float | None = None
         self._lost_posted = False
-        # Seeded from the log so a reopened/resumed chat's new watcher posts only the budget
-        # warnings written after it started, not the one the user was already shown.
-        self._budget_warning_ts: str | None = self._latest_budget_warning_ts()
+        # Seeded from the log so a reopened/resumed chat's new watcher posts only the notices
+        # (budget warnings, test command switches) written after it started, not ones already shown.
+        self._notice_ts: dict[str, str | None] = {kind: self._latest_ts(kind) for kind in NOTICES}
         self._consecutive_failures = 0
         self._error_posted = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def _latest_budget_warning_ts(self) -> str | None:
+    def _latest_ts(self, kind: str) -> str | None:
         try:
-            latest = self.events.latest("budget_warning")
+            latest = self.events.latest(kind)
         except Exception:  # an unreadable log: poll_once reports it through its own error path
-            logger.debug("couldn't read the budget warnings for %s", self.run_id, exc_info=True)
+            logger.debug("couldn't read the %s events for %s", kind, self.run_id, exc_info=True)
             return None
         return latest.get("ts") if latest else None
 
@@ -82,11 +84,12 @@ class RunWatcher:
                     "tasks_total": record.tasks_total, "keyword": record.keyword, "started": started,
                     "tokens": totals.tokens, "cost_usd": totals.cost_usd, "cost_source": totals.cost_source,
                 }))
-            latest_warning = self.events.latest("budget_warning")
-            if latest_warning and latest_warning.get("ts") != self._budget_warning_ts:
-                self._budget_warning_ts = latest_warning.get("ts")
-                data = {k: v for k, v in latest_warning.items() if k not in ("kind", "ts")}
-                self.post(ChatEvent("budget_warning", data))
+            for kind in NOTICES:
+                latest_notice = self.events.latest(kind)
+                if latest_notice and latest_notice.get("ts") != self._notice_ts[kind]:
+                    self._notice_ts[kind] = latest_notice.get("ts")
+                    data = {k: v for k, v in latest_notice.items() if k not in ("kind", "ts")}
+                    self.post(ChatEvent(kind, data))
             active = self.alive(record) or self.starting(self.events)
             if record.state == "escalated":
                 latest = self.events.latest("escalation")

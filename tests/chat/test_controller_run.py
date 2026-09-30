@@ -167,6 +167,25 @@ def test_budget_warning_is_printed(calc_repo):
     assert expected in text
 
 
+def cmd_change(cmd):
+    def step(controller):
+        paths, run_id, conn = _run(controller)
+        run_events(paths, run_id).append("test_cmd_changed", cmd=cmd)
+        controller._watcher.poll_once()
+        return WAKE
+
+    return step
+
+
+def test_a_test_cmd_change_is_printed_escaped(calc_repo):
+    text, *_ = run_chat(
+        calc_repo,
+        ["add subtract", "y", cmd_change("make [bold]test[/bold]"), to_state("completed", tasks_done=1)],
+        FULL_SCRIPT,
+    )
+    assert "Using the updated test command: make [bold]test[/bold]." in text
+
+
 def test_progress_goes_to_the_toolbar(calc_repo):
     seen = {}
     before = {}

@@ -11,3 +11,10 @@ Before returning, check your own work and fill `self_check`:
 - `risks`: how this output could be wrong.
 - `unverified`: what you could not check.
 - `out_of_scope`: problems you noticed that are not your job right now.
+
+## Working efficiently
+- Explore with the file tools (ls, read_file, glob, grep), not the shell.
+- Don't re-read what is already in your input, worklog, or diff.
+- Match the repository's existing conventions. Add no files, abstractions, or features the task doesn't require.
+- Stop as soon as the acceptance criteria are met.
+- Keep outputs short and structured: other agents read them, not people.

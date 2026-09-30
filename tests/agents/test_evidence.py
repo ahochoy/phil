@@ -31,6 +31,38 @@ def test_claims_without_commands_are_accepted():
     assert check_evidence(output, commands=[], workdir=None) == []
 
 
+def test_claim_naming_a_called_file_tool_is_accepted():
+    output = result(self_check=self_check(evidence=[Claim(statement="read it", command="read_file src/x.ts")]))
+    assert check_evidence(output, commands=[], workdir=None, tools=["read_file"]) == []
+    assert check_evidence(output, commands=[], workdir=None, tools=[]) == [
+        "claimed command was never run: read_file src/x.ts"
+    ]
+
+
+def test_claim_naming_grep_is_accepted_by_either_tool_or_shell_command():
+    output = result(self_check=self_check(evidence=[Claim(statement="grepped", command="grep egg src/")]))
+    assert check_evidence(output, commands=[], workdir=None, tools=["grep"]) == []
+    assert check_evidence(output, commands=["grep egg src/"], workdir=None, tools=[]) == []
+    assert check_evidence(output, commands=[], workdir=None, tools=[]) == [
+        "claimed command was never run: grep egg src/"
+    ]
+
+
+def test_unknown_shell_command_that_never_ran_is_still_rejected():
+    output = result(self_check=self_check(evidence=[Claim(statement="ran it", command="uv run pytest -q")]))
+    assert check_evidence(output, commands=[], workdir=None, tools=["read_file", "grep"]) == [
+        "claimed command was never run: uv run pytest -q"
+    ]
+
+
+def test_claim_naming_run_shell_still_needs_a_matching_command():
+    output = result(self_check=self_check(evidence=[Claim(statement="ran it", command="run_shell ls")]))
+    assert check_evidence(output, commands=[], workdir=None, tools=["run_shell"]) == [
+        "claimed command was never run: run_shell ls"
+    ]
+    assert check_evidence(output, commands=["run_shell ls"], workdir=None, tools=["run_shell"]) == []
+
+
 def test_tests_added_must_exist(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_a.py").write_text("")

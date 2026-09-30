@@ -1,3 +1,5 @@
+import ast
+import json
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -38,15 +40,51 @@ def _model_name(response_metadata: dict) -> str | None:
     return response_metadata.get("model_name") or response_metadata.get("model")
 
 
+# deepagents' filesystem tools and the argument that names what they touched.
+PATH_TOOLS = ("read_file", "ls", "glob", "grep")
+_PATH_ARGS = ("file_path", "path")
+MAX_TOOL_PATHS = 50
+
+
+def _tool_args(input_str: str, inputs: object) -> dict | None:
+    """The tool's arguments: the `inputs` kwarg when LangChain passes one, else `input_str` parsed
+    as JSON or a Python literal; None when neither is a dict."""
+    if isinstance(inputs, dict):
+        return inputs
+    for parse in (json.loads, ast.literal_eval):
+        try:
+            parsed = parse(input_str)
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            continue
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _tool_path(input_str: str, inputs: object) -> str | None:
+    args = _tool_args(input_str, inputs)
+    if args is None:
+        return None
+    for key in _PATH_ARGS:
+        value = args.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 class UsageCollector(BaseCallbackHandler):
     """A LangChain callback that counts every chat-model call and tool call, including nested
     (sub-agent) runs. Safe to share across threads: appends are protected by a lock.
+
+    It also records the path each file tool (`PATH_TOOLS`) was called on, in `tool_paths`: at most
+    `MAX_TOOL_PATHS` distinct paths per tool, in call order. Pass `tool_paths` to record into a dict
+    that outlives this collector (the engine's `CommandLog.tool_paths`).
     """
 
-    def __init__(self, *, ignore_tools: Iterable[str] = ()) -> None:
+    def __init__(self, *, ignore_tools: Iterable[str] = (), tool_paths: dict[str, list[str]] | None = None) -> None:
         self._lock = threading.Lock()
         self.calls: list[ModelCall] = []
         self.tool_calls: dict[str, int] = {}
+        self.tool_paths: dict[str, list[str]] = tool_paths if tool_paths is not None else {}
         self._ignore_tools = set(ignore_tools)
 
     def on_llm_end(self, response: LLMResult, *, run_id, parent_run_id=None, **kwargs) -> None:
@@ -85,5 +123,10 @@ class UsageCollector(BaseCallbackHandler):
         name = (serialized or {}).get("name") or kwargs.get("name")
         if not name or name in self._ignore_tools:
             return
+        path = _tool_path(input_str, kwargs.get("inputs")) if name in PATH_TOOLS else None
         with self._lock:
             self.tool_calls[name] = self.tool_calls.get(name, 0) + 1
+            if path is not None:
+                paths = self.tool_paths.setdefault(name, [])
+                if path not in paths and len(paths) < MAX_TOOL_PATHS:
+                    paths.append(path)

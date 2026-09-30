@@ -57,3 +57,35 @@ def test_only_judging_and_intake_roles_use_the_lean_harness():
     lean = {name for name, spec in SPECS.items() if spec.harness == "lean"}
     assert lean == {"intake", "critic", "reviewer"}
     assert all(not SPECS[name].tools and not SPECS[name].writes_files for name in lean)
+
+
+def test_tester_and_reviewer_prompts_cover_a_run_with_no_test_suite():
+    tester = load_prompt(get_spec("tester"))
+    assert "If `test_cmd` is empty, the project has no test suite" in tester
+    reviewer = load_prompt(get_spec("reviewer"))
+    assert "If `final_report.command` is empty, the project has no test suite" in reviewer
+
+
+@pytest.mark.parametrize("name", ["intake", "architect", "critic", "implementer", "tester", "reviewer", "btw"])
+def test_working_efficiently_block_reaches_every_agent(name):
+    prompt = load_prompt(get_spec(name))
+    assert "## Working efficiently" in prompt
+    assert "Explore with the file tools" in prompt
+
+
+def test_architect_prompt_has_task_sizing_rules():
+    prompt = load_prompt(get_spec("architect"))
+    assert "fewest tasks that keep each one independently verifiable" in prompt
+    assert "Don't split a change to mirror patterns" in prompt
+
+
+def test_implementer_prompt_leaves_files_read_to_phil():
+    prompt = load_prompt(get_spec("implementer"))
+    assert "Fill `worklog` in your output: files you changed and up to 5 short notes" in prompt
+    assert "Phil records what you read." in prompt
+    assert "files you read" not in prompt
+
+
+def test_architect_prompt_warns_about_check_cmd_build_output():
+    prompt = load_prompt(get_spec("architect"))
+    assert "A `check_cmd` that writes build output relies on that output being gitignored" in prompt

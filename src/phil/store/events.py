@@ -33,5 +33,13 @@ class EventLog:
         return None
 
 
+def test_cmd_changed_line(cmd: str) -> str:
+    """What the chat and `phil attach` print for a `test_cmd_changed` event (escape before printing)."""
+    return f"Using the updated test command: {cmd}."
+
+
+test_cmd_changed_line.__test__ = False  # not a pytest test
+
+
 def run_events(paths: ProjectPaths, run_id: str) -> EventLog:
     return EventLog(paths.run_dir(run_id) / "events.jsonl")

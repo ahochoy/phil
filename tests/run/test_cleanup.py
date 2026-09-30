@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from phil.publish.publisher import FakePublisher
@@ -133,3 +135,19 @@ def test_a_purge_of_a_run_dir_that_vanished_is_ignored(calc_repo, monkeypatch):
     clean_run(info, conn, record, purge=True)
 
     assert get_run(conn, record.run_id).state == "cleaned"
+
+
+def test_clean_run_removes_a_leftover_rebaseline_worktree(calc_repo):
+    from phil.workspace.worktree import rebaseline_path
+    from tests.helpers import run_git
+
+    info, record, paths = finished_run(calc_repo)
+    conn = connect(paths.db_path)
+    record = get_run(conn, record.run_id)
+    leftover = rebaseline_path(Path(record.worktree))
+    run_git(calc_repo, "worktree", "add", "--detach", str(leftover), record.base_sha)
+
+    clean_run(info, conn, record)
+
+    assert not leftover.exists()
+    assert str(leftover) not in run_git(calc_repo, "worktree", "list", "--porcelain")

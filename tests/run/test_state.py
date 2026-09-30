@@ -43,8 +43,9 @@ def test_issues_become_numbered_fix_tasks():
         Issue(severity="major", note="subtract ignores floats", file="calc.py"),
         Issue(severity="blocker", note="missing negative test"),
     ]
-    updated = issues_to_tasks(plan(), issues, "review")
+    updated = issues_to_tasks(plan(), issues, "review", "pytest")
     new = updated.tasks[2:]
+    assert [t.verify for t in new] == ["tdd", "tdd"]
     assert [t.id for t in new] == ["CALC-003", "CALC-004"]
     assert new[0].description == "Fix (review): subtract ignores floats"
     assert new[0].acceptance_criteria == ["subtract ignores floats"]
@@ -174,3 +175,33 @@ def test_render_summary_dedupes_open_issues():
     )
     assert text.count("rename helper") == 1
     assert "- (blocker) rename helper" in text
+
+
+def check_only_plan(test_cmd: str | None = "pytest") -> Plan:
+    tasks = [
+        Task(id="CALC-001", description="Copy", acceptance_criteria=["c"], verify="check", check_cmd="grep -q a x"),
+        Task(id="CALC-002", description="Copy", acceptance_criteria=["c"], verify="check", check_cmd="grep -q b y"),
+    ]
+    return Plan(keyword="CALC", description="d", tasks=tasks, test_cmd=test_cmd)
+
+
+def test_findings_in_an_all_check_run_become_check_tasks_with_the_first_check_cmd():
+    issue = Issue(severity="major", note="title missing")
+    new = issues_to_tasks(check_only_plan(), [issue], "review", "pytest").tasks[2]
+    assert (new.verify, new.check_cmd) == ("check", "grep -q a x")
+    no_suite = issues_to_tasks(check_only_plan(None), [issue], "tester", "").tasks[2]
+    assert (no_suite.verify, no_suite.check_cmd) == ("check", "grep -q a x")
+
+
+def test_findings_in_a_run_without_a_test_command_become_check_tasks():
+    mixed = plan().model_copy(
+        update={"tasks": [*plan().tasks, check_only_plan().tasks[1].model_copy(update={"id": "CALC-003"})]}
+    )
+    new = issues_to_tasks(mixed, [Issue(severity="major", note="n")], "review", "").tasks[3]
+    assert (new.verify, new.check_cmd) == ("check", "grep -q b y")
+    # A mixed run with a test command keeps its findings tdd.
+    assert issues_to_tasks(mixed, [Issue(severity="major", note="n")], "review", "pytest").tasks[3].verify == "tdd"
+
+
+def test_findings_stay_tdd_when_no_check_cmd_exists_to_borrow():
+    assert issues_to_tasks(plan(), [Issue(severity="major", note="n")], "review", "").tasks[2].verify == "tdd"

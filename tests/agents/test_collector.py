@@ -105,6 +105,34 @@ def test_on_tool_start_reads_name_from_kwargs_when_serialized_lacks_it():
     assert collector.tool_calls == {"read_file": 1}
 
 
+def test_on_tool_start_records_file_tool_paths_from_input_str_and_inputs():
+    collector = UsageCollector()
+    collector.on_tool_start({"name": "read_file"}, '{"file_path": "/src/app.py", "offset": 0}', run_id=uuid.uuid4())
+    collector.on_tool_start({"name": "ls"}, "{'path': '/src'}", run_id=uuid.uuid4())
+    collector.on_tool_start({"name": "grep"}, "not a literal", run_id=uuid.uuid4(), inputs={"pattern": "x", "path": "/lib"})
+    collector.on_tool_start({"name": "glob"}, '{"pattern": "**/*.py"}', run_id=uuid.uuid4())
+    collector.on_tool_start({"name": "run_shell"}, '{"command": "ls", "path": "/nope"}', run_id=uuid.uuid4())
+    collector.on_tool_start({"name": "read_file"}, "garbage", run_id=uuid.uuid4())
+    collector.on_tool_start({"name": "read_file"}, '["/a"]', run_id=uuid.uuid4())
+    collector.on_tool_start({"name": "read_file"}, '{"file_path": 3}', run_id=uuid.uuid4())
+    assert collector.tool_paths == {"read_file": ["/src/app.py"], "ls": ["/src"], "grep": ["/lib"]}
+
+
+def test_tool_paths_are_deduplicated_and_capped_per_tool():
+    collector = UsageCollector()
+    for index in range(60):
+        collector.on_tool_start({"name": "read_file"}, f'{{"file_path": "/f{index}"}}', run_id=uuid.uuid4())
+        collector.on_tool_start({"name": "read_file"}, '{"file_path": "/f0"}', run_id=uuid.uuid4())
+    assert collector.tool_paths["read_file"] == [f"/f{index}" for index in range(50)]
+
+
+def test_tool_paths_can_record_into_a_shared_sink():
+    sink: dict[str, list[str]] = {}
+    UsageCollector(tool_paths=sink).on_tool_start({"name": "ls"}, '{"path": "/a"}', run_id=uuid.uuid4())
+    UsageCollector(tool_paths=sink).on_tool_start({"name": "ls"}, '{"path": "/b"}', run_id=uuid.uuid4())
+    assert sink == {"ls": ["/a", "/b"]}
+
+
 def test_end_to_end_propagation_through_create_agent():
     model = GenericFakeChatModel(
         messages=iter(

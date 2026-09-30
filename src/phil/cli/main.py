@@ -323,7 +323,7 @@ def run_plan(
     except ConfigError as exc:
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
-    problems = launch_problems(plan, config)
+    problems = launch_problems(plan, config, info.root)
     if problems:
         for problem in problems:
             console.print(f"[phil.error]{escape(problem)}.[/]")

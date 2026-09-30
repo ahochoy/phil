@@ -5,10 +5,13 @@ from pydantic import ValidationError
 
 from phil.contracts import (
     ALL_CONTRACTS,
+    AttemptWorklog,
     Brief,
     Plan,
     SelfCheck,
     Task,
+    TaskResult,
+    Worklog,
 )
 from phil.contracts.schema import export_schemas
 
@@ -84,3 +87,92 @@ def test_export_schemas_writes_one_file_per_contract(tmp_path):
         schema = json.loads(path.read_text())
         assert "properties" in schema
     assert (tmp_path / "schemas" / "Plan.schema.json").exists()
+
+
+def test_task_defaults_to_tdd_without_a_check_cmd():
+    task = make_task()
+    assert (task.verify, task.check_cmd) == ("tdd", None)
+
+
+def test_check_task_requires_a_check_cmd():
+    with pytest.raises(ValidationError, match="check_cmd"):
+        Task(id="MAPS-001", description="x", acceptance_criteria=["c"], verify="check")
+    task = Task(id="MAPS-001", description="x", acceptance_criteria=["c"], verify="check", check_cmd="npm run build")
+    assert task.check_cmd == "npm run build"
+
+
+def test_tdd_task_forbids_a_check_cmd():
+    with pytest.raises(ValidationError, match="check_cmd"):
+        Task(id="MAPS-001", description="x", acceptance_criteria=["c"], check_cmd="npm run build")
+
+
+def test_export_schemas_describe_the_check_fields(tmp_path):
+    export_schemas(tmp_path / "schemas")
+    schema = json.loads((tmp_path / "schemas" / "Plan.schema.json").read_text())
+    task = schema["$defs"]["Task"]["properties"]
+    assert task["verify"]["enum"] == ["tdd", "check"] and task["verify"]["default"] == "tdd"
+    assert "description" in task["verify"] and "description" in task["check_cmd"]
+
+
+def test_worklog_defaults_to_empty_and_task_result_carries_one():
+    assert Worklog() == Worklog(files_changed=[], notes=[])
+    result = TaskResult(phase="green", summary="s", files_changed=[], tests_added=[], self_check=_self_check())
+    assert result.worklog == Worklog()
+
+
+def _self_check() -> SelfCheck:
+    return SelfCheck(assumptions=[], evidence=[], risks=[], unverified=[], out_of_scope=[])
+
+
+def _result_with_worklog(worklog: dict) -> TaskResult:
+    return TaskResult.model_validate(
+        {
+            "phase": "green",
+            "summary": "s",
+            "files_changed": [],
+            "tests_added": [],
+            "self_check": _self_check().model_dump(),
+            "worklog": worklog,
+        }
+    )
+
+
+def test_worklog_limits_clip_instead_of_rejecting():
+    notes = ["short"] * 6 + ["n" * 500]
+    notes[1] = "m" * 500
+    result = _result_with_worklog({"files_changed": ["c"] * 60, "notes": notes})
+    assert result.worklog.notes == ["short", "m" * 200, "short", "short", "short"]
+    assert len(result.worklog.files_changed) == 50
+    stored = AttemptWorklog(files_read=[f"f{n}" for n in range(60)])
+    assert stored.files_read == [f"f{n}" for n in range(50)]
+
+
+def test_worklog_limits_stay_in_the_schema_as_guidance():
+    schema = TaskResult.model_json_schema()["$defs"]["Worklog"]["properties"]
+    assert schema["files_changed"]["maxItems"] == 50
+    assert schema["notes"]["maxItems"] == 5 and schema["notes"]["items"]["maxLength"] == 200
+
+
+def test_the_model_does_not_write_files_read():
+    # The engine records what the file tools read; the output schema leaves it out, and a stray
+    # value from the model is dropped rather than failing the whole output.
+    schema = TaskResult.model_json_schema()["$defs"]["Worklog"]["properties"]
+    assert "files_read" not in schema
+    result = _result_with_worklog({"files_read": ["x.py"], "files_changed": ["a.py"]})
+    assert result.worklog == Worklog(files_changed=["a.py"])
+
+
+def test_the_stored_worklog_carries_files_read_into_the_implement_input():
+    from phil.contracts import ImplementInput
+
+    worklog = AttemptWorklog(files_read=["calc.py"], files_changed=["a.py"], notes=["n"])
+    implement = ImplementInput(task=make_task(), phase="green", test_cmd="pytest", worklog=worklog.model_dump())
+    assert implement.worklog == worklog
+    assert "files_read" in ImplementInput.model_json_schema()["$defs"]["AttemptWorklog"]["properties"]
+
+
+def test_implement_input_carries_an_optional_worklog_and_diff():
+    from phil.contracts import ImplementInput
+
+    implement = ImplementInput(task=make_task(), phase="green", test_cmd="pytest")
+    assert (implement.worklog, implement.diff) == (None, "")
