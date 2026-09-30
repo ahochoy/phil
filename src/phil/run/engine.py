@@ -18,7 +18,15 @@ from phil.config import PhilConfig
 from phil.contracts import ImplementInput, Issue, ReviewInput, TesterInput, TestReport
 from phil.git import GitError, branch_for
 from phil.packets import PacketTooLarge, build_packet
-from phil.run.gates import is_test_path, run_tests, snapshot_tests, verify_green, verify_red
+from phil.run.gates import (
+    is_test_path,
+    run_check,
+    run_tests,
+    snapshot_tests,
+    verify_check,
+    verify_green,
+    verify_red,
+)
 from phil.run.state import RunState, dedupe_issues, issues_to_tasks, load_plan, next_todo, render_summary, with_task_status
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.events import EventLog
@@ -127,7 +135,7 @@ class RunEngine:
 
     def _context(self, state: RunState, log: CommandLog) -> AgentContext:
         plan = load_plan(state)
-        check_cmds = tuple(cmd for task in plan.tasks if (cmd := getattr(task, "check_cmd", None)))
+        check_cmds = tuple(task.check_cmd for task in plan.tasks if task.check_cmd)
         extra_allow = tuple(cmd for cmd in (state["test_cmd"], *check_cmds) if cmd)
         return AgentContext(
             config=self.deps.config,
@@ -214,18 +222,28 @@ class RunEngine:
         }
 
     def pick_task(self, state: RunState) -> dict:
-        index = next_todo(load_plan(state))
+        plan = load_plan(state)
+        index = next_todo(plan)
         self._update_run(current_node="pick_task")
         if index is None:
             return {"task_index": -1}
+        worktree = self.deps.worktree
+        base_sha = self.worktrees.head(worktree)
+        check = plan.tasks[index].verify == "check"
+        # A check task has no red phase: its test files are snapshotted as they stand, the same way
+        # verify snapshots them after red, so "green must not modify test files" applies unchanged.
+        red_snapshot: dict[str, str] = {}
+        if check:
+            changed = self.worktrees.changed_files(worktree, since=base_sha)
+            red_snapshot = snapshot_tests(worktree, changed, self.deps.config.project.test_globs)
         return {
             "task_index": index,
-            "task_base_sha": self.worktrees.head(self.deps.worktree),
-            "phase": "red",
+            "task_base_sha": base_sha,
+            "phase": "green" if check else "red",
             "attempts": 0,
             "last_problems": [],
             "last_report": None,
-            "red_snapshot": {},
+            "red_snapshot": red_snapshot,
             "red_tree": "",
             "hint": None,
             "implement_failed": False,
@@ -237,7 +255,8 @@ class RunEngine:
         budget_warn, escalation = self._budget_check(state, "implement")
         if escalation is not None:
             return {**budget_warn, "escalation": escalation}
-        if state["phase"] == "red":
+        if state["phase"] == "red" or not state.get("red_tree"):
+            # Red, or a check task (green with no red tree): start from the task's base commit.
             self.worktrees.reset_to(self.deps.worktree, state["task_base_sha"])
         else:
             self.worktrees.restore_snapshot(self.deps.worktree, state["red_tree"])
@@ -312,6 +331,24 @@ class RunEngine:
                     "red_tree": tree,
                     "verdict": "red_ok",
                 }
+        elif task.verify == "check":
+            check = run_check(
+                task.check_cmd,
+                worktree,
+                shell=self.deps.config.shell,
+                artifacts=self.deps.artifacts,
+                name=artifact_name("check", task.id, state["call_seq"]),
+            )
+            problems = verify_check(
+                report,
+                check,
+                state.get("red_snapshot", {}),
+                snapshot_tests(worktree, changed, globs),
+                state.get("base_passed"),
+                state.get("base_skipped"),
+            )
+            if not problems:
+                return {"last_report": report.model_dump(), "last_problems": [], "verdict": "green_ok"}
         else:
             problems = verify_green(
                 report,

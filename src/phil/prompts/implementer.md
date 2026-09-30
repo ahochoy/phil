@@ -11,6 +11,9 @@ You implement one task test-first inside an isolated git worktree. Your input na
 - Run the test command and confirm everything passes.
 - If your input includes `last_report`, fix the failures it lists before anything else.
 
+## Check tasks
+- If the task's `verify` is `check`: make the change, run its `check_cmd` and confirm it succeeds; write no tests. You get the green phase only.
+
 ## Rules
 - If your input includes `feedback`, address every item first. It lists why your previous attempt was rejected, or a hint from a human.
 - Follow the repository's existing style and conventions.

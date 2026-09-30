@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 from phil.config import ShellConfig
 from phil.contracts import TestReport
 from phil.store.artifacts import ArtifactStore
-from phil.workspace.shell import child_env, run_command
+from phil.workspace.shell import ShellResult, child_env, run_command
 
 _FAILURE_LINE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
 _SUMMARY_LINE = re.compile(r"^=*\s*(no tests ran|\d+ [a-z]+(?:, \d+ [a-z]+)*) in [\d.]+s\b", re.MULTILINE)
@@ -110,12 +110,8 @@ def verify_red(
     return problems
 
 
-def verify_green(
-    report: TestReport,
-    red_snapshot: dict[str, str],
-    now_snapshot: dict[str, str],
-    base_passed: int | None = None,
-    base_skipped: int | None = None,
+def _unchanged_tests_problems(
+    report: TestReport, red_snapshot: dict[str, str], now_snapshot: dict[str, str]
 ) -> list[str]:
     problems: list[str] = []
     if report.new_failures_vs_baseline:
@@ -123,9 +119,53 @@ def verify_green(
     edited = sorted(path for path in set(red_snapshot) | set(now_snapshot) if red_snapshot.get(path) != now_snapshot.get(path))
     if edited:
         problems.append(f"green phase modified test files: {', '.join(edited)}")
+    return problems
+
+
+def verify_green(
+    report: TestReport,
+    red_snapshot: dict[str, str],
+    now_snapshot: dict[str, str],
+    base_passed: int | None = None,
+    base_skipped: int | None = None,
+) -> list[str]:
+    problems = _unchanged_tests_problems(report, red_snapshot, now_snapshot)
     if report.passed_count is not None and base_passed is not None and report.passed_count <= base_passed:
         problems.append(
             f"green phase did not add passing tests ({report.passed_count} passing, {base_passed} before the task)"
         )
     problems += _skip_problem("green", report, base_skipped)
+    return problems
+
+
+CHECK_OUTPUT_LINES = 20
+
+
+def run_check(check_cmd: str, worktree: Path, *, shell: ShellConfig, artifacts: ArtifactStore | None, name: str) -> ShellResult:
+    """Run a check task's `check_cmd` in the worktree with the test runner's environment, logging its output."""
+    env = child_env(os.environ, shell.pass_env) | {"PYTHONDONTWRITEBYTECODE": "1"}
+    result = run_command(check_cmd, worktree, shell.timeout_s, env=env)
+    if artifacts is not None:
+        artifacts.write_log(name, result.stdout + (f"\n{result.stderr}" if result.stderr else ""))
+    return result
+
+
+def verify_check(
+    report: TestReport,
+    check: ShellResult | None,
+    red_snapshot: dict[str, str],
+    now_snapshot: dict[str, str],
+    base_passed: int | None = None,
+    base_skipped: int | None = None,
+) -> list[str]:
+    """Gate for a check task: the green rules, except that no new passing tests are required, plus its check_cmd."""
+    problems = _unchanged_tests_problems(report, red_snapshot, now_snapshot)
+    if report.passed_count is not None and base_passed is not None and report.passed_count < base_passed:
+        problems.append(f"check task reduced passing tests from {base_passed} to {report.passed_count}")
+    problems += _skip_problem("green", report, base_skipped)
+    if check is not None and not check.ok:
+        status = "timed out" if check.timed_out else f"exit {check.exit_code}"
+        output = (check.stdout + ("\n" + check.stderr if check.stderr else "")).strip()
+        tail = "\n".join(output.splitlines()[-CHECK_OUTPUT_LINES:])
+        problems.append(f"check command failed ({status}): {check.command}" + (f"\n{tail}" if tail else ""))
     return problems

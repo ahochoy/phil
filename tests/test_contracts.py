@@ -84,3 +84,28 @@ def test_export_schemas_writes_one_file_per_contract(tmp_path):
         schema = json.loads(path.read_text())
         assert "properties" in schema
     assert (tmp_path / "schemas" / "Plan.schema.json").exists()
+
+
+def test_task_defaults_to_tdd_without_a_check_cmd():
+    task = make_task()
+    assert (task.verify, task.check_cmd) == ("tdd", None)
+
+
+def test_check_task_requires_a_check_cmd():
+    with pytest.raises(ValidationError, match="check_cmd"):
+        Task(id="MAPS-001", description="x", acceptance_criteria=["c"], verify="check")
+    task = Task(id="MAPS-001", description="x", acceptance_criteria=["c"], verify="check", check_cmd="npm run build")
+    assert task.check_cmd == "npm run build"
+
+
+def test_tdd_task_forbids_a_check_cmd():
+    with pytest.raises(ValidationError, match="check_cmd"):
+        Task(id="MAPS-001", description="x", acceptance_criteria=["c"], check_cmd="npm run build")
+
+
+def test_export_schemas_describe_the_check_fields(tmp_path):
+    export_schemas(tmp_path / "schemas")
+    schema = json.loads((tmp_path / "schemas" / "Plan.schema.json").read_text())
+    task = schema["$defs"]["Task"]["properties"]
+    assert task["verify"]["enum"] == ["tdd", "check"] and task["verify"]["default"] == "tdd"
+    assert "description" in task["verify"] and "description" in task["check_cmd"]

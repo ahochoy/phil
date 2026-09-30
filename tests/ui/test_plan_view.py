@@ -1,5 +1,5 @@
 from phil.chat.planning import PlanDraft
-from phil.contracts import Goal
+from phil.contracts import Goal, Task
 from phil.ui.plan_view import render_goal, render_plan
 from phil.ui.theme import make_console
 from tests.chat.conftest import critique, plan
@@ -66,3 +66,14 @@ def test_render_goal_is_bounded():
     assert "question 0" in text and "question 2" in text
     assert "question 3" not in text
     assert "(+2 more)" in text
+
+
+def test_render_plan_marks_check_tasks():
+    base = plan()
+    check = Task(
+        id="CALC-002", description="Edit copy", acceptance_criteria=["c"], verify="check", check_cmd="grep -q [b] x"
+    )
+    draft = PlanDraft(base.model_copy(update={"tasks": [*base.tasks, check]}), critique("ok"), 1)
+    text = text_of(render_plan, draft, test_cmd="uv run pytest -q", test_cmd_note=None, git_note=None)
+    assert "CALC-002  Edit copy  (check: grep -q [b] x)" in text
+    assert "Step 1  (check" not in text

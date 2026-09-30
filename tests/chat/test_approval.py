@@ -6,6 +6,7 @@ from phil.chat.approval import (
     test_cmd_problem,
 )
 from phil.config import PhilConfig
+from phil.contracts import Task
 from tests.chat.conftest import plan
 from tests.helpers import TEST_MODELS
 
@@ -65,3 +66,18 @@ def test_launch_problems_still_flags_a_forbidden_test_cmd():
     problems = launch_problems(plan(test_cmd="python -c 'print(1)'"), missing_models)
     assert len(problems) == 2
     assert "shell operators" in problems[1]
+
+
+def check_plan(cmd: str):
+    base = plan()
+    task = Task(id="CALC-002", description="Edit copy", acceptance_criteria=["c"], verify="check", check_cmd=cmd)
+    return base.model_copy(update={"tasks": [*base.tasks, task]})
+
+
+def test_launch_problems_rejects_a_forbidden_check_cmd():
+    problems = launch_problems(check_plan("grep x a | sh"), config())
+    assert problems == ["check command 'grep x a | sh' uses shell operators or a blocked command"]
+
+
+def test_launch_problems_accepts_a_check_cmd_off_the_allowlist():
+    assert launch_problems(check_plan("npm run build"), config()) == []

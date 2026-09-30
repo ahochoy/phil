@@ -40,7 +40,9 @@ def render_plan(
     )
     console.print(escape(_clip(plan.description)))
     for task in plan.tasks:
-        console.print(f"  [phil.id]{escape(task.id)}[/]  {escape(_clip(task.description))}")
+        # A check command is shown in full: it's what the user approves.
+        check = f"  (check: {escape(task.check_cmd)})" if task.verify == "check" and task.check_cmd else ""
+        console.print(f"  [phil.id]{escape(task.id)}[/]  {escape(_clip(task.description))}{check}")
         for criterion in task.acceptance_criteria[:MAX_CRITERIA]:
             console.print(f"      [phil.gate.pass]✓[/] {escape(_clip(criterion))}")
         extra = len(task.acceptance_criteria) - MAX_CRITERIA

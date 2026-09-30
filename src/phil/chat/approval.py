@@ -31,6 +31,17 @@ test_cmd_problem.__test__ = False  # not a pytest test
 test_cmd_differs.__test__ = False
 
 
+def check_cmd_problems(plan: Plan, config: PhilConfig) -> list[str]:
+    """Forbidden check commands. Anything merely off [shell] allow is fine: the run allows each check_cmd."""
+    policy = ShellPolicy(config.shell.allow)
+    cmds = dict.fromkeys(task.check_cmd for task in plan.tasks if task.check_cmd)
+    return [
+        f"check command {cmd!r} uses shell operators or a blocked command"
+        for cmd in cmds
+        if policy.denial_reason(cmd) == "forbidden"
+    ]
+
+
 def git_policy_note(config: PhilConfig) -> str | None:
     if config.git.sign_commits is not False or config.git.run_hooks:
         return GIT_POLICY_NOTE
@@ -46,4 +57,5 @@ def launch_problems(plan: Plan, config: PhilConfig) -> list[str]:
     problem = test_cmd_problem(plan, config)
     if problem:
         problems.append(problem)
+    problems += check_cmd_problems(plan, config)
     return problems
