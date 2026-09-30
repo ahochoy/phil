@@ -77,3 +77,15 @@ def test_architect_prompt_has_task_sizing_rules():
     prompt = load_prompt(get_spec("architect"))
     assert "fewest tasks that keep each one independently verifiable" in prompt
     assert "Don't split a change to mirror patterns" in prompt
+
+
+def test_implementer_prompt_leaves_files_read_to_phil():
+    prompt = load_prompt(get_spec("implementer"))
+    assert "Fill `worklog` in your output: files you changed and up to 5 short notes" in prompt
+    assert "Phil records what you read." in prompt
+    assert "files you read" not in prompt
+
+
+def test_architect_prompt_warns_about_check_cmd_build_output():
+    prompt = load_prompt(get_spec("architect"))
+    assert "A `check_cmd` that writes build output relies on that output being gitignored" in prompt
