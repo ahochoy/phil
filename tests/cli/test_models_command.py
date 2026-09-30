@@ -1,3 +1,5 @@
+import re
+
 from langchain_core.messages import AIMessage
 from typer.testing import CliRunner
 
@@ -33,6 +35,17 @@ def test_models_check_prints_one_line_per_model(git_repo, monkeypatch):
     assert len(lines) == 2
     assert lines[0].startswith("✓ high  ollama:big  ") and lines[0].endswith("s")
     assert lines[1].startswith("✓ low  ollama:small  ")
+
+
+def test_models_check_joins_the_labels_of_a_shared_model(git_repo, monkeypatch):
+    use(monkeypatch, ScriptedAgentFactory({"model_check": [OK, OK]}))
+    (git_repo / "phil.toml").write_text(
+        '[models]\nhigh = "ollama:same"\nlow = "ollama:same"\ncritic = "ollama:judge"\n'
+    )
+    result = runner.invoke(cli.app, ["--repo", str(git_repo), "models", "check"])
+    assert result.exit_code == 0, result.output
+    lines = [re.sub(r"\d+\.\ds$", "<t>", line) for line in result.output.splitlines()]
+    assert lines == ["✓ high, low  ollama:same  <t>", "✓ role:critic  ollama:judge  <t>"]
 
 
 def test_models_check_exits_1_on_a_failure(git_repo, monkeypatch):

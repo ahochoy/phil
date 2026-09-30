@@ -17,14 +17,14 @@ from phil.contracts import (
 )
 
 SPECS: dict[str, AgentSpec] = {
-    "intake": AgentSpec("intake", "orchestrator", IntakeInput, Goal, harness="lean"),
+    "intake": AgentSpec("intake", "orchestrator", IntakeInput, Goal, harness="lean", end_on_text=True),
     "architect": AgentSpec("architect", "architect", ArchitectInput, Plan),
-    "critic": AgentSpec("critic", "critic", CriticInput, PlanCritique, harness="lean"),
+    "critic": AgentSpec("critic", "critic", CriticInput, PlanCritique, harness="lean", end_on_text=True),
     "implementer": AgentSpec(
         "implementer", "implementer", ImplementInput, TaskResult, tools=("shell",), writes_files=True
     ),
     "tester": AgentSpec("tester", "tester", TesterInput, TesterReport, tools=("shell",), writes_files=True),
-    "reviewer": AgentSpec("reviewer", "reviewer", ReviewInput, Review, harness="lean"),
+    "reviewer": AgentSpec("reviewer", "reviewer", ReviewInput, Review, harness="lean", end_on_text=True),
     "btw": AgentSpec("btw", "orchestrator", BtwInput, Brief, writes_files=False),
 }
 

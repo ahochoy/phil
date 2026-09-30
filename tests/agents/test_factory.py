@@ -91,7 +91,7 @@ def test_lean_roles_use_plain_create_agent(tmp_path, monkeypatch):
     assert captured["tools"] == []
     assert captured["response_format"].schema is spec.out_contract
     assert captured["system_prompt"] == load_prompt(spec)
-    assert [type(m).__name__ for m in captured["middleware"]] == ["PhilModelRetryMiddleware"]
+    assert [type(m).__name__ for m in captured["middleware"]] == ["PhilModelRetryMiddleware", "EndOnText"]
 
 
 def test_deep_roles_use_deepagents_with_permissions(tmp_path, monkeypatch):
