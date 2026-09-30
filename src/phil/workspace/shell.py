@@ -39,13 +39,67 @@ READ_ONLY: tuple[str, ...] = (
     "head",
     "ls",
     "pwd",
+    "rg",
     "tail",
     "wc",
 )
 
-# Flags that turn an otherwise read-only command into one that writes or deletes.
-_FIND_MUTATING = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprintf", "-fls"}
-_GIT_BRANCH_MUTATING = {"-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy"}
+# `find` flags that turn it into something that writes, deletes, executes, or follows symlinks
+# out of the worktree. `-fprint*` covers -fprint/-fprint0/-fprintf by prefix since find accepts
+# all three.
+_FIND_MUTATING = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fls", "-L", "-follow"}
+
+
+def _find_mutates(rest: list[str]) -> bool:
+    return any(arg in _FIND_MUTATING or arg.startswith("-fprint") for arg in rest)
+
+
+# `git branch` is allowed for listing only. Every flag must be on this list (or a --format=/
+# --sort= value); anything else — a combined short flag, an abbreviated long option, or a bare
+# branch-name argument not preceded by --list/-l — creates, moves, or deletes a branch instead.
+_GIT_BRANCH_ALLOWED_FLAGS = {
+    "-a",
+    "-r",
+    "-v",
+    "-vv",
+    "--list",
+    "--show-current",
+    "--contains",
+    "--no-contains",
+    "--merged",
+    "--no-merged",
+    "--points-at",
+    "--column",
+    "--no-column",
+    "--color",
+    "--no-color",
+    "-l",
+}
+_GIT_BRANCH_ALLOWED_PREFIXES = ("--format=", "--sort=")
+_GIT_BRANCH_LIST_FLAGS = {"--list", "-l"}
+
+
+def _git_branch_mutates(rest: list[str]) -> bool:
+    seen_list = False
+    for arg in rest:
+        if arg in _GIT_BRANCH_ALLOWED_FLAGS:
+            seen_list = seen_list or arg in _GIT_BRANCH_LIST_FLAGS
+            continue
+        if arg.startswith(_GIT_BRANCH_ALLOWED_PREFIXES):
+            continue
+        if arg.startswith("-") or not seen_list:
+            return True
+    return False
+
+
+# `rg --pre`/`--pre-glob` run an arbitrary preprocessor command on every searched file.
+_RG_MUTATING_EXACT = {"--pre", "--pre-glob"}
+_RG_MUTATING_PREFIXES = ("--pre=", "--pre-glob=")
+
+
+def _rg_mutates(rest: list[str]) -> bool:
+    return any(arg in _RG_MUTATING_EXACT or arg.startswith(_RG_MUTATING_PREFIXES) for arg in rest)
+
 
 _GENERIC_FORBIDDEN_DETAIL = "uses shell operators or risky flags"
 _CONTAINMENT_DETAIL = "stay inside the worktree"
@@ -63,14 +117,37 @@ def _read_only_key(argv: list[str]) -> tuple[str, ...] | None:
 def _read_only_mutates(argv: list[str], key: tuple[str, ...]) -> bool:
     rest = argv[len(key) :]
     if key == ("find",):
-        return any(arg in _FIND_MUTATING for arg in rest)
+        return _find_mutates(rest)
     if key == ("git", "branch"):
-        return any(arg in _GIT_BRANCH_MUTATING for arg in rest)
+        return _git_branch_mutates(rest)
+    if key == ("rg",):
+        return _rg_mutates(rest)
     return False
 
 
 def _looks_like_path(arg: str) -> bool:
     return not arg.startswith("-") and ("/" in arg or arg == "..")
+
+
+def _flag_path_value(arg: str) -> str | None:
+    """The path-like value carried by a flag argument, if any: the text after `=`, or — for an
+    attached short option like `-f/etc/x` — the remainder after the option letter, when it
+    contains a `/`. A separate argument (`-f`, `/etc/x`) is handled by the plain path check."""
+    if not arg.startswith("-"):
+        return None
+    if "=" in arg:
+        return arg.split("=", 1)[1]
+    if len(arg) > 2 and arg[1] != "-" and "/" in arg[2:]:
+        return arg[2:]
+    return None
+
+
+def _escapes_via_symlink(arg: str, root: Path) -> bool:
+    """Whether a bare argument with no `/` and not `..` should still be containment-checked,
+    because something exists at that name under `root` — most importantly a symlink whose real
+    target lies outside it."""
+    candidate = root / arg
+    return candidate.exists() or candidate.is_symlink()
 
 
 def _outside_root(arg: str, root: Path) -> bool:
@@ -115,9 +192,21 @@ def _is_denied(argv: list[str]) -> bool:
 
 
 class ShellPolicy:
-    def __init__(self, allow: list[str], *, extra_allow: Iterable[str] = (), root: Path | None = None) -> None:
+    def __init__(
+        self,
+        allow: list[str],
+        *,
+        extra_allow: Iterable[str] = (),
+        approved: Iterable[str] = (),
+        root: Path | None = None,
+    ) -> None:
         self.allow = allow
+        # `extra_allow` (the plan's test/check commands) matches literal-escaped tokens plus a
+        # real trailing "*", so trailing arguments are still allowed. `approved` (commands a human
+        # approved after a denial) matches only the exact command — never widened with a wildcard,
+        # or an approval of `rm build.log` would also cover `rm build.log -rf /`.
         self.extra_allow = tuple(extra_allow)
+        self.approved = tuple(approved)
         self.root = root
 
     def _classify(self, command: str) -> tuple[str | None, str | None]:
@@ -140,12 +229,24 @@ class ShellPolicy:
             if self.root is not None:
                 root = self.root.resolve()
                 for arg in argv[1:]:
-                    if _looks_like_path(arg) and _outside_root(arg, root):
+                    if arg.startswith("-"):
+                        value = _flag_path_value(arg)
+                        if value is not None and _outside_root(value, root):
+                            return "forbidden", _CONTAINMENT_DETAIL
+                        continue
+                    if (_looks_like_path(arg) or _escapes_via_symlink(arg, root)) and _outside_root(arg, root):
                         return "forbidden", _CONTAINMENT_DETAIL
             return None, None
+        for pattern in self.approved:
+            try:
+                pattern_tokens = shlex.split(literal_pattern(pattern))
+            except ValueError:
+                continue
+            if _matches_pattern(argv, pattern_tokens):
+                return None, None
         for pattern in self.extra_allow:
             try:
-                pattern_tokens = [*shlex.split(pattern), "*"]
+                pattern_tokens = [*shlex.split(literal_pattern(pattern)), "*"]
             except ValueError:
                 continue
             if _matches_pattern(argv, pattern_tokens):

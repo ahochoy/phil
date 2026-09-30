@@ -22,8 +22,9 @@ def make_shell_tool(
     artifacts: ArtifactStore | None = None,
     log_prefix: str = "",
     extra_allow: Iterable[str] = (),
+    approved: Iterable[str] = (),
 ) -> Callable[[str], str]:
-    policy = ShellPolicy(shell.allow, extra_allow=extra_allow, root=workdir)
+    policy = ShellPolicy(shell.allow, extra_allow=extra_allow, approved=approved, root=workdir)
     env = child_env(os.environ, shell.pass_env) | {"PYTHONDONTWRITEBYTECODE": "1"}
 
     def run_shell(command: str) -> str:

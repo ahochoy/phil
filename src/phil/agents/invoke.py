@@ -39,6 +39,7 @@ class AgentContext:
     sleep: Callable[[float], None] = time.sleep
     command_log: CommandLog | None = None
     extra_allow: tuple[str, ...] = ()
+    approved: tuple[str, ...] = ()
     chat_id: str | None = None
     prices: PriceBook | None = None  # None: the process-wide default book, created on first use
 
@@ -240,7 +241,15 @@ def invoke_agent(
     tools: list[Callable[..., str]] = []
     if "shell" in spec.tools and ctx.workdir is not None:
         tools.append(
-            make_shell_tool(ctx.workdir, shell, log, ctx.artifacts, log_prefix=log_prefix, extra_allow=ctx.extra_allow)
+            make_shell_tool(
+                ctx.workdir,
+                shell,
+                log,
+                ctx.artifacts,
+                log_prefix=log_prefix,
+                extra_allow=ctx.extra_allow,
+                approved=ctx.approved,
+            )
         )
     agent = _resolve_factory(ctx)(spec, model, ctx.workdir, tools, timeout_s=ctx.config.run.model_timeout_s)
     # lazy: keeps langchain out of module import

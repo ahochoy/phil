@@ -73,6 +73,17 @@ def test_extra_allow_lets_the_run_scoped_command_through(tmp_path):
     assert "built" in output
 
 
+def test_approved_command_runs_but_does_not_widen_to_extra_arguments(tmp_path):
+    (tmp_path / "build.log").write_text("")
+    log = CommandLog()
+    run_shell = make_shell_tool(tmp_path, ShellConfig(allow=[]), log, approved=("rm build.log",))
+    denied = run_shell("rm build.log -rf /Users/x")
+    assert denied.startswith("DENIED:")
+    output = run_shell("rm build.log")
+    assert output.startswith("exit_code: 0")
+    assert not (tmp_path / "build.log").exists()
+
+
 def test_long_output_is_truncated_and_saved(tmp_path):
     (tmp_path / "spam.py").write_text("for i in range(1000):\n    print(i)\n")
     artifacts = ArtifactStore(tmp_path / "run")

@@ -9,7 +9,15 @@ import pytest
 
 from phil.config import ShellConfig
 from phil.workspace import shell as shell_module
-from phil.workspace.shell import ShellPolicy, child_env, is_secret_name, literal_pattern, run_command, truncate_output
+from phil.workspace.shell import (
+    READ_ONLY,
+    ShellPolicy,
+    child_env,
+    is_secret_name,
+    literal_pattern,
+    run_command,
+    truncate_output,
+)
 
 PY = shlex.quote(sys.executable)
 
@@ -173,24 +181,7 @@ def test_run_command_uses_explicit_env(tmp_path):
     assert result.stdout.strip() == "yes"
 
 
-@pytest.mark.parametrize(
-    "command",
-    [
-        "cat README.md",
-        "find .",
-        "git branch",
-        "git diff",
-        "git log",
-        "git show HEAD",
-        "git status",
-        "grep x .",
-        "head README.md",
-        "ls",
-        "pwd",
-        "tail README.md",
-        "wc -l README.md",
-    ],
-)
+@pytest.mark.parametrize("command", READ_ONLY)
 def test_read_only_commands_are_allowed_with_an_empty_allow_list(command):
     assert ShellPolicy([]).is_allowed(command)
 
@@ -203,14 +194,65 @@ def test_find_delete_and_exec_are_forbidden():
     assert policy.denial_reason("find . -exec rm {} +") == "forbidden"
 
 
-def test_git_branch_delete_is_forbidden_but_branch_alone_is_allowed():
-    policy = ShellPolicy([])
-    assert policy.is_allowed("git branch")
-    assert policy.denial_reason("git branch -D x") == "forbidden"
+@pytest.mark.parametrize(
+    "command", ["find . -fprint out.txt", "find . -fprint0 out.txt", "find . -fprintf fmt out.txt"]
+)
+def test_find_fprint_family_is_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+@pytest.mark.parametrize("command", ["find -L . -name x", "find . -follow"])
+def test_find_symlink_following_flags_are_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git branch -qD x",
+        "git branch -rd origin/x",
+        "git branch --del x",
+        "git branch --mo a b",
+        "git branch newb",
+        "git branch -D x",
+        "git branch --set-upstream-to=origin/x",
+        "git branch --unset-upstream",
+        "git branch --track",
+        "git branch --edit-description",
+    ],
+)
+def test_git_branch_refuses_anything_but_listing(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git branch",
+        "git branch -a",
+        "git branch --list 'feat*'",
+        "git branch --show-current",
+        "git branch --sort=-committerdate",
+        "git branch --format=%(refname)",
+    ],
+)
+def test_git_branch_allows_listing(command):
+    assert ShellPolicy([]).is_allowed(command)
 
 
 def test_git_log_oneline_is_allowed():
     assert ShellPolicy([]).is_allowed("git log --oneline")
+
+
+@pytest.mark.parametrize(
+    "command", ["rg --pre sh x .", "rg --pre=sh x .", "rg --pre-glob '*.sh' x .", "rg --pre-glob=*.sh x ."]
+)
+def test_rg_pre_hook_flags_are_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+def test_rg_plain_search_is_allowed():
+    assert ShellPolicy([]).is_allowed("rg x .")
 
 
 def test_containment_blocks_paths_outside_root(tmp_path):
@@ -223,11 +265,71 @@ def test_containment_blocks_paths_outside_root(tmp_path):
     assert policy.is_allowed("ls -la")
 
 
-def test_extra_allow_matches_exact_command_and_trailing_arguments():
+@pytest.mark.parametrize(
+    "command",
+    [
+        "grep --file=/etc/hosts x .",
+        "grep -f/etc/hosts x .",
+        "wc --files0-from=/etc/hosts",
+    ],
+)
+def test_containment_catches_attached_flag_path_values(tmp_path, command):
+    assert ShellPolicy([], root=tmp_path).denial_reason(command) == "forbidden"
+
+
+def test_containment_still_catches_a_separate_flag_argument(tmp_path):
+    assert ShellPolicy([], root=tmp_path).denial_reason("grep -f /etc/hosts x .") == "forbidden"
+
+
+def test_containment_allows_harmless_flag_values(tmp_path):
+    policy = ShellPolicy([], root=tmp_path)
+    assert policy.is_allowed("git branch --sort=-committerdate")
+    assert policy.is_allowed("git branch --format=%(refname)")
+
+
+def test_symlink_escaping_the_worktree_is_forbidden(tmp_path):
+    outside = tmp_path.parent / "outside-secret.txt"
+    outside.write_text("secret")
+    link = tmp_path / "link"
+    link.symlink_to(outside)
+    assert ShellPolicy([], root=tmp_path).denial_reason("cat link") == "forbidden"
+
+
+def test_symlink_inside_the_worktree_is_allowed(tmp_path):
+    target = tmp_path / "real.txt"
+    target.write_text("hi")
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    assert ShellPolicy([], root=tmp_path).is_allowed("cat link")
+
+
+def test_extra_allow_matches_literal_tokens_with_trailing_arguments():
     assert ShellPolicy([]).denial_reason("npm run build") == "not_allowed"
     policy = ShellPolicy([], extra_allow=("npm run build",))
     assert policy.is_allowed("npm run build")
     assert policy.is_allowed("npm run build --watch")
+
+
+def test_extra_allow_escapes_glob_characters_in_the_command():
+    cmd = "pytest tests/test_foo.py::test_bar[case1]"
+    policy = ShellPolicy([], extra_allow=(cmd,))
+    assert policy.is_allowed(cmd)
+    assert policy.is_allowed(cmd + " -v")
+    assert not policy.is_allowed("pytest tests/test_foo.py::test_bar[XYZ9]")
+
+
+def test_approved_command_matches_only_exactly():
+    policy = ShellPolicy([], approved=("rm build.log",))
+    assert policy.is_allowed("rm build.log")
+    assert not policy.is_allowed("rm build.log -rf /Users/x")
+
+
+def test_approved_command_with_brackets_matches_only_itself():
+    cmd = "pytest tests/test_foo.py::test_bar[case1]"
+    policy = ShellPolicy([], approved=(cmd,))
+    assert policy.is_allowed(cmd)
+    assert not policy.is_allowed("pytest tests/test_foo.py::test_bar[XYZ9]")
+    assert not policy.is_allowed("pytest tests/test_foo.py::test_bar1")
 
 
 def test_grep_piped_to_head_is_still_forbidden():
