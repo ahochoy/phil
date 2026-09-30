@@ -1,12 +1,21 @@
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints
+from pydantic import Field, StringConstraints, field_validator
 
 from phil.contracts.base import Contract, Part
 from phil.contracts.common import Issue, SelfCheck
 
 
+MAX_WORKLOG_PATHS = 50
+MAX_WORKLOG_NOTES = 5
+MAX_WORKLOG_NOTE_CHARS = 200
+
+
 class Worklog(Part):
+    """A hand-off note between attempts. Its limits clip rather than reject: an over-long worklog
+    must never fail a task's output and force a whole agent re-run. The limits stay in the field
+    constraints so the schema still shows them as guidance."""
+
     files_read: list[str] = Field(
         default_factory=list, max_length=50, description="Paths you read or listed, as you named them to the tools."
     )
@@ -18,6 +27,20 @@ class Worklog(Part):
         max_length=5,
         description="Up to 5 short notes for your next attempt: what you tried, what failed, what's next.",
     )
+
+    @field_validator("files_read", "files_changed", mode="before")
+    @classmethod
+    def _clip_paths(cls, value: object) -> object:
+        return value[:MAX_WORKLOG_PATHS] if isinstance(value, list) else value
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def _clip_notes(cls, value: object) -> object:
+        if not isinstance(value, list):
+            return value
+        return [
+            note[:MAX_WORKLOG_NOTE_CHARS] if isinstance(note, str) else note for note in value[:MAX_WORKLOG_NOTES]
+        ]
 
 
 class TaskResult(Contract):

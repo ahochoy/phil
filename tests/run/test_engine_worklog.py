@@ -3,6 +3,7 @@ import uuid
 
 from phil.agents.fake import Turn
 from phil.contracts import TaskResult, Worklog
+from phil.config import PhilConfig, RoleBudget
 from tests.run.conftest import review, tester_report, write_green, write_red
 from tests.run.test_engine_approval import BUILD, add_build_script, red_with_build
 
@@ -34,7 +35,9 @@ def rejected_red(turn: Turn) -> None:
 
 def red_with_worklog(turn: Turn) -> TaskResult:
     result = write_red(turn)
-    worklog = Worklog(files_read=["/calc.py"], files_changed=["tests/test_sub.py"], notes=["wrote the subtract test"])
+    worklog = Worklog(
+        files_read=["/calc.py", "calc.py", "/"], files_changed=["tests/test_sub.py"], notes=["wrote the subtract test"]
+    )
     return result.model_copy(update={"worklog": worklog})
 
 
@@ -85,8 +88,9 @@ def test_an_accepted_red_worklog_and_diff_reach_the_green_packet(make_harness):
     red, green = implement_inputs(harness)
     assert red["worklog"] is None
     assert green["phase"] == "green"
+    # Stored repo-relative (and deduplicated), like the fallback's paths.
     assert green["worklog"] == {
-        "files_read": ["/calc.py"],
+        "files_read": ["calc.py", "."],
         "files_changed": ["tests/test_sub.py"],
         "notes": ["wrote the subtract test"],
     }
@@ -139,3 +143,21 @@ def test_a_long_diff_is_truncated(make_harness):
     green = implement_inputs(harness)[1]
     assert green["diff"].endswith("…(diff truncated)")
     assert len(green["diff"]) <= 8_000 + len("\n…(diff truncated)")
+
+
+def test_a_diff_that_overflows_a_small_budget_is_omitted(make_harness):
+    def big_red(turn: Turn) -> TaskResult:
+        result = write_red(turn)
+        (turn.workdir / "tests" / "data.txt").write_text("y\n" * 6000)
+        return result
+
+    config = PhilConfig(budget={"implementer": RoleBudget(max_input_tokens=1_500)})
+    harness = make_harness(
+        {"implementer": [big_red, write_green], "tester": [tester_report()], "reviewer": [review()]}, config=config
+    )
+    final = harness.start()
+
+    assert final["status"] == "completed"
+    green = implement_inputs(harness)[1]
+    assert green["diff"] == "…(diff omitted: over the packet budget)"
+    assert green["worklog"] is not None

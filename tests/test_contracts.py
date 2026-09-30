@@ -123,16 +123,28 @@ def _self_check() -> SelfCheck:
     return SelfCheck(assumptions=[], evidence=[], risks=[], unverified=[], out_of_scope=[])
 
 
-def test_worklog_limits():
-    Worklog(files_read=["f"] * 50, files_changed=["f"] * 50, notes=["n" * 200] * 5)
-    with pytest.raises(ValidationError, match="files_read"):
-        Worklog(files_read=["f"] * 51)
-    with pytest.raises(ValidationError, match="files_changed"):
-        Worklog(files_changed=["f"] * 51)
-    with pytest.raises(ValidationError, match="notes"):
-        Worklog(notes=["n"] * 6)
-    with pytest.raises(ValidationError, match="notes"):
-        Worklog(notes=["n" * 201])
+def test_worklog_limits_clip_instead_of_rejecting():
+    notes = ["short"] * 6 + ["n" * 500]
+    notes[1] = "m" * 500
+    result = TaskResult.model_validate(
+        {
+            "phase": "green",
+            "summary": "s",
+            "files_changed": [],
+            "tests_added": [],
+            "self_check": _self_check().model_dump(),
+            "worklog": {"files_read": [f"f{n}" for n in range(60)], "files_changed": ["c"] * 60, "notes": notes},
+        }
+    )
+    assert result.worklog.notes == ["short", "m" * 200, "short", "short", "short"]
+    assert result.worklog.files_read == [f"f{n}" for n in range(50)]
+    assert len(result.worklog.files_changed) == 50
+
+
+def test_worklog_limits_stay_in_the_schema_as_guidance():
+    schema = TaskResult.model_json_schema()["$defs"]["Worklog"]["properties"]
+    assert schema["files_read"]["maxItems"] == 50 and schema["files_changed"]["maxItems"] == 50
+    assert schema["notes"]["maxItems"] == 5 and schema["notes"]["items"]["maxLength"] == 200
 
 
 def test_implement_input_carries_an_optional_worklog_and_diff():

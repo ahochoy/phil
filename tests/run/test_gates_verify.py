@@ -1,6 +1,5 @@
-from phil.config import ProjectConfig
+from phil.config import ProjectConfig, ShellConfig
 from phil.contracts import TestReport
-from phil.config import ShellConfig
 from phil.run.gates import is_test_path, run_check, snapshot_tests, verify_check, verify_green, verify_red
 from phil.workspace.shell import ShellResult
 

@@ -6,11 +6,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from phil.agents.collector import PATH_TOOLS
 from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, invoke_agent
 from phil.agents.registry import get_spec
 from phil.agents.tools import CommandLog
@@ -69,6 +70,12 @@ def _write_json_atomic(path: Path, data: Any) -> None:
 MAX_DIFF_CHARS = 8_000
 DIFF_TRUNCATED = "\n…(diff truncated)"
 DIFF_OMITTED = "…(diff omitted: over the packet budget)"
+
+
+def _repo_relative(paths: list[str]) -> list[str]:
+    """The file tools see the worktree as `/`: store their paths repo-relative, like files_changed
+    (`/calc.py` -> `calc.py`, `/` -> `.`), deduplicated in order."""
+    return list(dict.fromkeys(path.lstrip("/") or "." for path in paths))
 
 
 def _cap_diff(diff: str) -> str:
@@ -304,8 +311,10 @@ class RunEngine:
             output = invoke_agent(
                 get_spec("implementer"), packet, self._context(state, log), node="implement", task_id=task.id, call=seq
             )
-            assert isinstance(output, TaskResult)  # the implementer spec's out_contract
-            failed, problems, worklog = False, [], output.worklog
+            # invoke_agent validated it against the implementer spec's out_contract, TaskResult.
+            worklog = cast(TaskResult, output).worklog
+            worklog = worklog.model_copy(update={"files_read": _repo_relative(worklog.files_read)})
+            failed, problems = False, []
         except ContractViolation as exc:
             failed, problems = True, [f"implementer output rejected: {problem}" for problem in exc.problems]
             worklog = None
@@ -351,13 +360,7 @@ class RunEngine:
 
     def _fallback_worklog(self, state: RunState, log: CommandLog, problems: list[str]) -> Worklog:
         """A worklog for an attempt that returned no usable output, built from what the tools saw."""
-        read: list[str] = []
-        for tool in ("read_file", "ls", "glob", "grep"):
-            for path in log.tool_paths.get(tool, []):
-                # The file tools see the worktree as `/`; store repo-relative paths like files_changed.
-                relative = path.lstrip("/") or "."
-                if relative not in read:
-                    read.append(relative)
+        read = _repo_relative([path for tool in PATH_TOOLS for path in log.tool_paths.get(tool, [])])
         changed = self.worktrees.changed_files(self.deps.worktree, since=state["task_base_sha"])
         return Worklog(
             files_read=read[:50],
@@ -471,7 +474,8 @@ class RunEngine:
             plan = with_task_status(load_plan(state), state["task_index"], "SKIPPED")
             return {**cleared, "plan": plan.model_dump(), "next": "pick_task"}
         if action == "approve":
-            # The approved call's own problems are dropped because implement re-runs the phase from its starting state.
+            # The approved call's own problems are dropped: no gate judged it, and implement continues
+            # that attempt on the worktree as it was left (keep_worktree), with the approval in place.
             approved = [*state.get("approved", []), *escalation["commands"]]
             # No gate has judged that attempt, so implement continues on the worktree as it was left.
             return {**cleared, "approved": approved, "denied": [], "keep_worktree": True, "next": "implement"}
