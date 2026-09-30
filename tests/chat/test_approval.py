@@ -46,7 +46,7 @@ def test_an_all_check_plan_needs_no_test_command():
 
 def test_a_tdd_task_still_needs_a_test_command():
     mixed = check_plan("grep -q x a").model_copy(update={"test_cmd": None})
-    assert "no test command" in test_cmd_problem(mixed, config())
+    assert test_cmd_problem(mixed, config()) == "the plan has no test command and your config sets no [project] test_cmd"
     assert any("no test command" in problem for problem in launch_problems(mixed, config()))
 
 

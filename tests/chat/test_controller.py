@@ -3,7 +3,7 @@ import json
 from phil.agents.fake import ScriptedAgentFactory
 from phil.chat.controller import WAKE, ChatController, ChatIO
 from phil.chat.watcher import RunWatcher
-from phil.config import PhilConfig
+from phil.config import PhilConfig, global_config_path, load_config
 from phil.repo import resolve_repo
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
@@ -164,6 +164,7 @@ def test_bad_test_command_blocks_approval(calc_repo):
         {"intake": [goal()], "architect": [plan(test_cmd="pytest; rm -rf /")], "critic": [critique()]},
     )
     assert "shell operators" in text
+    assert "Fix your config and answer y again" in text
     assert spawned == [] and runs == []
 
 
@@ -331,9 +332,23 @@ def test_the_test_command_source_is_labelled(calc_repo):
         calc_repo,
         ["add subtract", "n"],
         {"intake": [goal()], "architect": [plan(test_cmd=None)], "critic": [critique()]},
-        config=PhilConfig(models=TEST_MODELS, project={"test_cmd": "make check"}),
+        config=load_config(calc_repo),
     )
     assert "Tests: make check (from phil.toml)" in text
+
+
+def test_a_test_command_from_the_global_config_names_that_file(calc_repo):
+    global_config_path().parent.mkdir(parents=True, exist_ok=True)
+    global_config_path().write_text('[project]\ntest_cmd = "make check"\n')
+    (calc_repo / "phil.toml").write_text(MODELS_TOML)
+    text, *_ = run_chat(
+        calc_repo,
+        ["add subtract", "n"],
+        {"intake": [goal()], "architect": [plan(test_cmd=None)], "critic": [critique()]},
+        config=load_config(calc_repo),
+    )
+    squashed = "".join(text.split())  # the long temp path wraps at the console's width
+    assert "".join(f"Tests: make check (from {global_config_path()})".split()) in squashed
 
 
 def session_dir(repo):

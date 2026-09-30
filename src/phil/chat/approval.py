@@ -33,7 +33,7 @@ def test_cmd_problem(plan: Plan, config: PhilConfig, root: Path | None = None) -
     if not cmd:
         if plan.tasks and all(task.verify == "check" for task in plan.tasks):
             return None  # every task is verified by its check_cmd: the run needs no test suite
-        return "the plan has no test command and phil.toml sets no [project] test_cmd"
+        return "the plan has no test command and your config sets no [project] test_cmd"
     if cmd == config.project.test_cmd:
         return None
     # Approving the plan approves its own test command (or the detected one it shows), so only a

@@ -55,7 +55,7 @@ def test_a_tdd_task_with_no_test_command_pauses_before_calling_the_implementer(m
     escalation = harness.graph.get_state(harness.thread).values["escalation"]
     assert escalation["reason"] == "no_test_cmd"
     assert escalation["options"] == ["retry", "skip", "abort"]
-    assert "[project] test_cmd" in escalation["summary"]
+    assert escalation["summary"] == "CALC-001 needs a test command: set [project] test_cmd in your config, then retry"
     assert harness.factory.calls == []
 
 

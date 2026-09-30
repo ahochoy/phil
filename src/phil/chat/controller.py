@@ -590,8 +590,11 @@ class ChatController:
         root = self._detection_root(draft.plan)
         problem = test_cmd_problem(draft.plan, self.config, root)
         differs = test_cmd_differs(draft.plan, self.config)
+        origin = self.config.sources.get("project.test_cmd")  # the file that set [project] test_cmd
         note = problem or (
-            f"plan test command differs from phil.toml's ({self.config.project.test_cmd})" if differs else None
+            f"plan test command differs from {origin or 'your config'}'s ({self.config.project.test_cmd})"
+            if differs
+            else None
         )
         self._shown_test_cmd, source = effective_test_cmd(draft.plan, self.config, root)
         render_plan(
@@ -599,6 +602,7 @@ class ChatController:
             draft,
             test_cmd=self._shown_test_cmd,
             test_cmd_source=source,
+            test_cmd_origin=origin,
             test_cmd_note=note,
             git_note=git_policy_note(self.config),
         )
@@ -618,7 +622,7 @@ class ChatController:
         draft = self._draft
         choice = answer.lower()
         if choice in ("y", "yes"):
-            # Errors tell the user to edit phil.toml, so re-read it rather than trusting the chat-start copy.
+            # Errors tell the user to edit their config, so re-read it rather than trusting the chat-start copy.
             try:
                 self.config = load_config(self.info.root, overrides=self._config_overrides)
             except ConfigError as exc:
@@ -632,12 +636,12 @@ class ChatController:
             if problems:
                 for item in problems:
                     self.console.print(f"[phil.error]{escape(terminated(item))}[/]")
-                self.console.print("[phil.muted]Fix phil.toml and answer y again, or use edit to change the plan.[/]")
+                self.console.print("[phil.muted]Fix your config and answer y again, or use edit to change the plan.[/]")
                 self._show_plan(draft)
                 return
             if effective_test_cmd(draft.plan, self.config, root)[0] != self._shown_test_cmd:
-                # phil.toml changed the test command since the plan was shown: show what would run first.
-                self.console.print("[phil.warn]The test command changed in phil.toml. Review it and answer again.[/]")
+                # The config changed the test command since the plan was shown: show what would run first.
+                self.console.print("[phil.warn]The test command changed in your config. Review it and answer again.[/]")
                 self._show_plan(draft)
                 return
             self._start(draft, answer, self._shown_test_cmd)

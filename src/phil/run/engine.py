@@ -407,7 +407,7 @@ class RunEngine:
 
     def _no_test_cmd_escalation(self, state: RunState) -> dict:
         task = load_plan(state).tasks[state["task_index"]]
-        summary = f"{task.id} needs a test command: set [project] test_cmd in phil.toml, then retry"
+        summary = f"{task.id} needs a test command: set [project] test_cmd in your config, then retry"
         return {
             "reason": "no_test_cmd",
             "task_id": task.id,
