@@ -26,16 +26,18 @@ def _tool_strategy(spec: AgentSpec) -> Any:
     return ToolStrategy(spec.out_contract)
 
 
-def chat_model(model: str, timeout_s: int, provider: ProviderSpec | None = None) -> Any:
+def chat_model(
+    model: str, timeout_s: int, provider: ProviderSpec | None = None, used_by: tuple[str, ...] = ()
+) -> Any:
     """Build the `BaseChatModel` for `model` (`provider:name`) on `provider` (resolved from the
     built-ins when not given), capping every call at `timeout_s` and disabling the provider SDK's
     own retries: phil.agents.model_retry retries each failed model call instead, so Phil alone
-    controls backoff and counts attempts."""
+    controls backoff and counts attempts. `used_by` names the roles in a missing-key error."""
     from phil.config import PhilConfig
 
     name, model_name = split_model(model)
     spec = provider if provider is not None else resolve_provider(PhilConfig(), name)
-    return build_chat_model(spec, model_name, timeout_s)
+    return build_chat_model(spec, model_name, timeout_s, used_by=used_by)
 
 
 def build_agent(
@@ -64,7 +66,7 @@ def _build_lean_agent(
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
     return create_agent(
-        chat_model(model, timeout_s, provider=provider),
+        chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=[],
         system_prompt=load_prompt(spec),
         response_format=_tool_strategy(spec),
@@ -87,7 +89,7 @@ def _build_deep_agent(
 
     backend = FilesystemBackend(root_dir=workdir, virtual_mode=True) if workdir is not None else None
     return create_deep_agent(
-        model=chat_model(model, timeout_s, provider=provider),
+        model=chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=tools,
         system_prompt=load_prompt(spec),
         backend=backend,

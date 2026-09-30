@@ -355,3 +355,13 @@ def test_effective_toml_marks_sources(tmp_path):
     # it is valid TOML that loads back to the same settings
     reloaded = PhilConfig(**tomllib.loads(text))
     assert reloaded.model_dump() == config.model_dump()
+
+
+def test_effective_toml_prints_no_empty_table_headers(tmp_path):
+    text = effective_toml(load_config(tmp_path))
+    for header in ("[models]", "[tiers]", "[budget]", "[providers]"):
+        assert header not in text
+    (tmp_path / "phil.toml").write_text('[providers.lab]\nkind = "openai"\n')
+    text = effective_toml(load_config(tmp_path))
+    assert "[providers]\n" not in text
+    assert '[providers.lab]\nkind = "openai"  # from phil.toml\n' in text

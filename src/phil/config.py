@@ -112,6 +112,13 @@ class ProviderConfig(_Section):
     input_per_mtok: float | None = None  # USD per million tokens
     output_per_mtok: float | None = None
 
+    @field_validator("api_key_env")
+    @classmethod
+    def _validate_api_key_env(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("api_key_env must name an environment variable (leave it out for no key)")
+        return value
+
 
 class PhilConfig(_Section):
     # No default model: each role's model is chosen explicitly in phil.toml, or through a tier.
@@ -155,8 +162,14 @@ class PhilConfig(_Section):
     @field_validator("providers")
     @classmethod
     def _validate_providers(cls, value: dict[str, ProviderConfig]) -> dict[str, ProviderConfig]:
-        from phil.agents.providers import is_known_provider
+        from phil.agents.providers import ALIASES, is_known_provider
 
+        for alias, canonical in ALIASES.items():
+            if alias in value and canonical in value:
+                raise ValueError(
+                    f"[providers.{canonical}] and [providers.{alias}] both configure the {canonical} provider "
+                    f"({alias} is an alias); keep only [providers.{canonical}]"
+                )
         for name, entry in value.items():
             if entry.kind is None and not is_known_provider(name):
                 raise ValueError(f"[providers.{name}] needs a kind: openai, anthropic, google or openrouter")
@@ -228,9 +241,10 @@ class PhilConfig(_Section):
         """What stops the models resolved for `roles` from being called, one message each, in role
         order: an unknown provider, or a provider whose key variable `environ` lacks (with the roles
         that use it). Unset models are `missing_models`' to report."""
-        from phil.agents.providers import UnknownProvider, provider_for_model
+        from phil.agents.providers import UnknownProvider, missing_key_message, provider_for_model
 
-        problems: dict[str, list[str] | None] = {}  # message key -> roles needing the key (None: unknown provider)
+        # In first-seen order: an unknown-provider message, or (provider, env var) -> roles needing the key.
+        problems: dict[str | tuple[str, str], list[str]] = {}
         for role in roles:
             try:
                 model = self.model_for(role)
@@ -239,16 +253,16 @@ class PhilConfig(_Section):
             try:
                 provider = provider_for_model(self, model, self.model_owner(role))
             except UnknownProvider as exc:
-                problems.setdefault(str(exc), None)
+                problems.setdefault(str(exc), [])
                 continue
             env = provider.api_key_env
             if env and not environ.get(env):
-                users = problems.setdefault(f"{provider.name} needs {env}", [])
-                if users is not None and role not in users:
+                users = problems.setdefault((provider.name, env), [])
+                if role not in users:
                     users.append(role)
         return [
-            message if users is None else f"{message} (used by {', '.join(users)})."
-            for message, users in problems.items()
+            problem if isinstance(problem, str) else missing_key_message(*problem, users)
+            for problem, users in problems.items()
         ]
 
     def budget_for(self, role: str) -> RoleBudget:

@@ -4,7 +4,7 @@ Built-in providers can be overridden field by field, and new ones added, under `
 Provider packages are imported only when a model of that kind is built."""
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -13,8 +13,8 @@ from phil.config import ConfigError
 if TYPE_CHECKING:
     from phil.config import PhilConfig
 
-# A placeholder key for keyless local servers (Ollama, llama.cpp, ...), which ignore it; the
-# OpenAI-style SDKs refuse to build without some key.
+# The key sent to a provider with no `api_key_env` (keyless local servers: Ollama, llama.cpp, ...),
+# which ignore it; the OpenAI-style SDKs refuse to build without some key.
 NO_KEY = "not-needed"
 
 
@@ -48,6 +48,11 @@ class UnknownProvider(ConfigError):
         super().__init__(
             f'Unknown provider "{name}"{located}. Add [providers.{name}] to ~/.phil/config.toml or phil.toml.'
         )
+
+
+def missing_key_message(provider: str, env: str, used_by: Sequence[str] = ()) -> str:
+    """`<provider> needs <ENV_VAR> (used by <roles>).`; without roles, just `<provider> needs <ENV_VAR>.`"""
+    return f"{provider} needs {env} (used by {', '.join(used_by)})." if used_by else f"{provider} needs {env}."
 
 
 def split_model(model: str) -> tuple[str, str]:
@@ -108,38 +113,56 @@ def estimate_cost(spec: ProviderSpec, input_tokens: int, output_tokens: int) -> 
 
 
 def build_chat_model(
-    spec: ProviderSpec, model_name: str, timeout_s: int, environ: Mapping[str, str] = os.environ
+    spec: ProviderSpec,
+    model_name: str,
+    timeout_s: int,
+    environ: Mapping[str, str] = os.environ,
+    *,
+    used_by: Sequence[str] = (),
 ) -> Any:
     """The LangChain chat model for `model_name` on `spec`: every call capped at `timeout_s` (in the
-    SDK's own units) and the SDK's own retries off, so Phil's retry middleware is the only retry policy."""
-    key = environ.get(spec.api_key_env) if spec.api_key_env else None
-    if spec.kind == "openrouter":
-        from langchain.chat_models import init_chat_model
+    SDK's own units) and the SDK's own retries off, so Phil's retry middleware is the only retry policy.
 
-        # ChatOpenRouter's `timeout` (request_timeout) is in milliseconds.
-        kwargs: dict[str, Any] = {"timeout": timeout_s * 1000, "max_retries": 0}
-        if key:
-            kwargs["api_key"] = key
-        if spec.base_url:
-            kwargs["openrouter_api_base"] = spec.base_url
-        return init_chat_model(f"openrouter:{model_name}", **kwargs)
+    A provider with an `api_key_env` needs that variable set (non-empty) in `environ`; `used_by`
+    names the roles in the error. A provider without one gets a placeholder key."""
+    if spec.api_key_env is None:
+        key = NO_KEY
+    else:
+        key = environ.get(spec.api_key_env) or ""
+        if not key:
+            raise ConfigError(missing_key_message(spec.name, spec.api_key_env, used_by))
+    if spec.kind == "openrouter":
+        return _build_openrouter(spec, model_name, timeout_s, key)
     if spec.kind == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(
-            model=model_name, base_url=spec.base_url, api_key=key or NO_KEY, timeout=timeout_s, max_retries=0
-        )
+        return ChatOpenAI(model=model_name, base_url=spec.base_url, api_key=key, timeout=timeout_s, max_retries=0)
     if spec.kind == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(
-            model=model_name, base_url=spec.base_url, api_key=key or NO_KEY, timeout=timeout_s, max_retries=0
-        )
+        return ChatAnthropic(model=model_name, base_url=spec.base_url, api_key=key, timeout=timeout_s, max_retries=0)
     if spec.kind == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         # The Google SDK reads max_retries=0 as "use its default" (5 retries); 1 is a single attempt.
         return ChatGoogleGenerativeAI(
-            model=model_name, base_url=spec.base_url, google_api_key=key or NO_KEY, timeout=timeout_s, max_retries=1
+            model=model_name, base_url=spec.base_url, google_api_key=key, timeout=timeout_s, max_retries=1
         )
     raise ConfigError(f"Unknown provider kind {spec.kind!r} for provider {spec.name!r}")
+
+
+def _build_openrouter(spec: ProviderSpec, model_name: str, timeout_s: int, key: str) -> Any:
+    from langchain.chat_models import init_chat_model
+    from openrouter.utils import RetryConfig
+
+    # ChatOpenRouter's `timeout` (request_timeout) is in milliseconds.
+    kwargs: dict[str, Any] = {"timeout": timeout_s * 1000, "max_retries": 0, "api_key": key}
+    if spec.base_url:
+        kwargs["openrouter_api_base"] = spec.base_url
+    model = init_chat_model(f"openrouter:{model_name}", **kwargs)
+    # max_retries=0 alone isn't enough: ChatOpenRouter then leaves the SDK's retry_config UNSET,
+    # and the OpenRouter SDK falls back to retrying 5XX and connection errors with backoff for up
+    # to an hour. A non-"backoff" strategy makes each request exactly once. The SDK's sub-clients
+    # (`client.chat`) share this configuration object.
+    model.client.sdk_configuration.retry_config = RetryConfig("none", None, False)
+    return model

@@ -84,7 +84,7 @@ def test_lean_roles_use_plain_create_agent(tmp_path, monkeypatch):
 
     monkeypatch.setattr(langchain.agents, "create_agent", fake_create_agent)
     monkeypatch.setattr(deepagents, "create_deep_agent", forbidden)
-    monkeypatch.setattr("phil.agents.factory.chat_model", lambda model, timeout_s, provider=None: sentinel)
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda model, timeout_s, **_: sentinel)
     spec = get_spec("critic")
     assert build_agent(spec, "m", tmp_path, []) == "lean-agent"
     assert captured["model"] is sentinel
@@ -105,7 +105,7 @@ def test_deep_roles_use_deepagents_with_permissions(tmp_path, monkeypatch):
         return "deep-agent"
 
     monkeypatch.setattr(deepagents, "create_deep_agent", fake_create_deep_agent)
-    monkeypatch.setattr("phil.agents.factory.chat_model", lambda model, timeout_s, provider=None: sentinel)
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda model, timeout_s, **_: sentinel)
     spec = get_spec("architect")
     assert build_agent(spec, "m", tmp_path, []) == "deep-agent"
     assert captured["model"] is sentinel
@@ -156,7 +156,7 @@ def test_build_agent_passes_timeout_s_and_provider_to_chat_model(tmp_path, monke
     monkeypatch.setattr(langchain.agents, "create_agent", lambda *a, **kw: "lean-agent")
     monkeypatch.setattr(
         "phil.agents.factory.chat_model",
-        lambda model, timeout_s, provider=None: (seen.append((timeout_s, provider)), object())[1],
+        lambda model, timeout_s, provider=None, **_: (seen.append((timeout_s, provider)), object())[1],
     )
     spec = get_spec("critic")
     lab = ProviderSpec("lab", "openai", "http://lab:8000/v1", None, None, None)
@@ -172,7 +172,7 @@ def test_chat_model_builds_through_the_given_provider(monkeypatch):
     captured = []
     monkeypatch.setattr(
         "phil.agents.factory.build_chat_model",
-        lambda spec, name, timeout_s: (captured.append((spec, name, timeout_s)), "model-object")[1],
+        lambda spec, name, timeout_s, **_: (captured.append((spec, name, timeout_s)), "model-object")[1],
     )
     lab = ProviderSpec("lab", "openai", "http://lab:8000/v1", None, None, None)
     assert chat_model("lab:qwen3:32b", 42, provider=lab) == "model-object"
@@ -183,7 +183,7 @@ def test_chat_model_without_a_provider_resolves_a_builtin(monkeypatch):
     captured = []
     monkeypatch.setattr(
         "phil.agents.factory.build_chat_model",
-        lambda spec, name, timeout_s: (captured.append((spec, name, timeout_s)), "model-object")[1],
+        lambda spec, name, timeout_s, **_: (captured.append((spec, name, timeout_s)), "model-object")[1],
     )
     chat_model("google_genai:gemini-2.5-flash", 90)
     assert captured == [(BUILTIN_PROVIDERS["google"], "gemini-2.5-flash", 90)]

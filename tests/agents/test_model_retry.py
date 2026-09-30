@@ -161,7 +161,7 @@ PLAN_ARGS = {
 
 
 def real_factory(model: ScriptedChatModel, monkeypatch):
-    monkeypatch.setattr("phil.agents.factory.chat_model", lambda name, timeout_s, provider=None: model)
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda name, timeout_s, **_: model)
     return build_agent
 
 

@@ -101,7 +101,7 @@ A user entry with a built-in name overrides that provider's fields, for example 
 
 **Model construction** (`phil.agents.providers`) builds the LangChain chat model for each kind, with the right model, base URL and key:
 - The timeout is converted to the provider's own units. OpenRouter takes milliseconds; the others take seconds.
-- The SDK's own retries are turned off, so Phil's retry policy is the only one.
+- The SDK's own retries are turned off, so Phil's retry policy is the only one. Google kind uses max_retries=1 (its SDK treats 0 as 'use default retries'). OpenRouter's SDK client also gets an explicit no-retry `retry_config`, because with `max_retries=0` it falls back to its own backoff.
 
 `langchain-openai`, `langchain-anthropic` and `langchain-google-genai` become runtime dependencies, at their current versions. They are imported only when a model of that kind is built.
 

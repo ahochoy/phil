@@ -26,7 +26,7 @@
   - `google`, with alias `google_genai` (google, `GOOGLE_API_KEY`)
   - `ollama` (openai, `base_url` `http://localhost:11434/v1`, no key, prices 0.0)
 - **Provider kinds:** `openai` (OpenAI-compatible), `anthropic`, `google`, `openrouter`.
-- **Provider SDK settings:** the timeout goes in the provider's own units (OpenRouter takes milliseconds, the others seconds), and `max_retries=0` always.
+- **Provider SDK settings:** the timeout goes in the provider's own units (OpenRouter takes milliseconds, the others seconds), and `max_retries=0` always. Exception: Google kind uses max_retries=1 (its SDK treats 0 as 'use default retries'). OpenRouter's SDK client also gets an explicit no-retry `retry_config`.
 - **Messages (exact):**
   - missing model: `No model for <role> (tier <tier>). Set models.<tier> in ~/.phil/config.toml or phil.toml.`
   - unknown provider: `Unknown provider "<name>" in <role/tier> model "<string>". Add [providers.<name>] to ~/.phil/config.toml or phil.toml.`

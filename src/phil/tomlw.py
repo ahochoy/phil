@@ -48,6 +48,12 @@ def dump_toml(data: Mapping, comments: Mapping[str, str] | None = None, *, _pref
         if not isinstance(value, Mapping):
             continue
         path = (*_prefix, key)
-        header = ".".join(toml_key(part) for part in path)
-        out += ("\n" if out else "") + f"[{header}]\n" + dump_toml(value, comments, _prefix=path)
+        body = dump_toml(value, comments, _prefix=path)
+        if not body:
+            continue  # nothing set anywhere under it: no header at all
+        if not body.startswith("["):
+            # The table has leaves of its own; a table with only sub-tables needs no header,
+            # since each sub-table's dotted header defines it.
+            body = "[" + ".".join(toml_key(part) for part in path) + "]\n" + body
+        out += ("\n" if out else "") + body
     return out

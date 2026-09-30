@@ -182,3 +182,42 @@ def test_openrouter_kind_uses_a_millisecond_timeout_and_no_sdk_retries():
     assert _secret(model.openrouter_api_key) == "dummy-openrouter"
     assert model.request_timeout == 180_000
     assert model.max_retries == 0
+
+
+def test_openrouter_sdk_client_does_not_retry():
+    # ChatOpenRouter leaves the SDK's retry_config UNSET when max_retries == 0, and the SDK then
+    # falls back to retrying 5XX and connection errors with backoff for up to an hour.
+    from openrouter.types import UNSET
+
+    model = build_chat_model(BUILTIN_PROVIDERS["openrouter"], "openai/gpt-6-luna", 180, environ=FAKE_ENVIRON)
+    for configuration in (model.client.sdk_configuration, model.client.chat.sdk_configuration):
+        retry_config = configuration.retry_config
+        assert retry_config is not UNSET
+        assert retry_config.strategy == "none"
+        assert retry_config.retry_connection_errors is False
+
+
+@pytest.mark.parametrize("environ", [{}, {"OPENAI_API_KEY": ""}])
+def test_a_keyed_provider_without_its_key_refuses_to_build(environ):
+    with pytest.raises(ConfigError) as excinfo:
+        build_chat_model(BUILTIN_PROVIDERS["openai"], "gpt-5-mini", 42, environ=environ, used_by=("critic",))
+    assert str(excinfo.value) == "openai needs OPENAI_API_KEY (used by critic)."
+
+
+def test_a_missing_key_message_without_roles():
+    with pytest.raises(ConfigError, match=r"^anthropic needs ANTHROPIC_API_KEY\.$"):
+        build_chat_model(BUILTIN_PROVIDERS["anthropic"], "claude-sonnet-5", 42, environ={})
+
+
+def test_an_empty_api_key_env_is_rejected(tmp_path):
+    (tmp_path / "phil.toml").write_text('[providers.lab]\nkind = "openai"\napi_key_env = ""\n')
+    with pytest.raises(ConfigError, match=r"providers\.lab\.api_key_env"):
+        load_config(tmp_path)
+
+
+def test_a_provider_and_its_alias_cannot_both_be_defined(tmp_path):
+    (tmp_path / "phil.toml").write_text(
+        '[providers.google]\nbase_url = "http://a"\n[providers.google_genai]\nbase_url = "http://b"\n'
+    )
+    with pytest.raises(ConfigError, match=r"\[providers\.google\] and \[providers\.google_genai\] both configure"):
+        load_config(tmp_path)
