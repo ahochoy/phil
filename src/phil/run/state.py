@@ -1,5 +1,5 @@
 import re
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from phil.contracts import Issue, Plan, Task
 from phil.store.telemetry import Totals, UsageLine, format_cost
@@ -108,8 +108,24 @@ def with_task_status(plan: Plan, index: int, status: str) -> Plan:
     return plan.model_copy(update={"tasks": tasks})
 
 
-def issues_to_tasks(plan: Plan, issues: list[Issue], source: str) -> Plan:
+def _finding_check_cmd(plan: Plan, test_cmd: str | None) -> str | None:
+    """The check_cmd a finding's fix task borrows, or None to keep it tdd.
+
+    A tdd task can never pass red in a run with no test command, or in an all-check run (whose
+    tests aren't what the plan verifies with), so such a run's findings become check tasks using
+    the plan's first check_cmd. Findings only ever become check tasks in an all-check run, so
+    "every task is check" is the same as "every original task is check". With no check_cmd to
+    borrow the task stays tdd, and the run escalates for a test command as before."""
+    first_check = next((task.check_cmd for task in plan.tasks if task.check_cmd), None)
+    if not test_cmd or all(task.verify == "check" for task in plan.tasks):
+        return first_check
+    return None
+
+
+def issues_to_tasks(plan: Plan, issues: list[Issue], source: str, test_cmd: str | None) -> Plan:
     number = max(int(task.id.rsplit("-", 1)[1]) for task in plan.tasks)
+    check_cmd = _finding_check_cmd(plan, test_cmd)
+    verify: Literal["tdd", "check"] = "check" if check_cmd else "tdd"
     new_tasks: list[Task] = []
     for issue in issues:
         number += 1
@@ -120,6 +136,8 @@ def issues_to_tasks(plan: Plan, issues: list[Issue], source: str) -> Plan:
                 description=f"Fix ({source}): {note}",
                 acceptance_criteria=[note],
                 files_hint=[issue.file] if issue.file else [],
+                verify=verify,
+                check_cmd=check_cmd,
             )
         )
     return plan.model_copy(update={"tasks": [*plan.tasks, *new_tasks]})

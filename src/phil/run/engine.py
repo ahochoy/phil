@@ -644,7 +644,7 @@ class RunEngine:
         notes += [Issue(severity="minor", note=f"tester command refused: {cmd}") for cmd in log.refused]
         blocking = [issue for issue in issues if issue.severity in ("blocker", "major")]
         minor = [issue for issue in issues if issue.severity == "minor"]
-        plan = issues_to_tasks(plan, blocking, "tester") if blocking else plan
+        plan = issues_to_tasks(plan, blocking, "tester", state["test_cmd"]) if blocking else plan
         open_issues = [*state.get("open_issues", []), *(issue.model_dump() for issue in [*minor, *notes])]
         return {
             "plan": plan.model_dump(),
@@ -718,7 +718,7 @@ class RunEngine:
         blocking = [issue for issue in verdict.issues if issue.severity in ("blocker", "major")]
         minor = [issue for issue in verdict.issues if issue.severity == "minor"]
         if verdict.verdict == "changes" and blocking and rounds < self.deps.config.run.max_review_rounds:
-            plan = issues_to_tasks(plan, blocking, "review")
+            plan = issues_to_tasks(plan, blocking, "review", state["test_cmd"])
             return {
                 **budget_warn, "plan": plan.model_dump(), "call_seq": seq, "review_rounds": rounds,
                 "open_issues": [*carried, *(issue.model_dump() for issue in minor)], "next": "pick_task",

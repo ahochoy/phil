@@ -1,5 +1,5 @@
 from phil.agents.fake import Turn
-from phil.contracts import Plan, Task, TaskResult
+from phil.contracts import Issue, Plan, Task, TaskResult
 from phil.run.state import load_plan
 from tests.helpers import run_git
 from tests.run.conftest import TEST_CMD, review, task_result, tester_report
@@ -95,3 +95,29 @@ def test_a_check_task_that_keeps_failing_escalates_without_green_phase_wording(m
     assert escalation["summary"] == "CALC-001 failed 3 attempts on the check task"
     assert "check task modified test files: tests/test_calc.py" in escalation["problems"]
     assert not any("green" in problem for problem in escalation["problems"])
+
+
+def write_titled_page(turn: Turn) -> TaskResult:
+    (turn.workdir / "index.html").write_text("<title>easter</title>\n<meta name='easter-egg' content='hello world'>\n")
+    return task_result("green", ["index.html"])
+
+
+def test_a_review_finding_in_an_all_check_run_becomes_a_check_task(make_harness):
+    issue = Issue(severity="major", note="add a page title")
+    harness = make_harness(
+        {
+            "implementer": [write_page, write_titled_page],
+            "tester": [tester_report()],
+            "reviewer": [review("changes", [issue]), review()],
+        },
+        plan=check_plan(),
+    )
+    final = harness.start()
+
+    assert final["status"] == "completed"
+    fix = load_plan(final).tasks[1]
+    assert (fix.id, fix.verify, fix.check_cmd, fix.status) == ("CALC-002", "check", CHECK_CMD, "DONE")
+    packets = implementer_packets(harness)
+    assert len(packets) == 2
+    assert '"phase": "green"' in packets[1]
+    assert harness.factory.remaining() == {"implementer": 0, "tester": 0, "reviewer": 0}
