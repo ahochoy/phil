@@ -5,7 +5,7 @@ from pydantic import Field
 from phil.contracts.base import Contract
 from phil.contracts.interface import Goal, RunStatus
 from phil.contracts.planning import Plan, PlanCritique, Task
-from phil.contracts.results import TestReport, Worklog
+from phil.contracts.results import AttemptWorklog, TestReport
 
 
 class ArchitectInput(Contract):
@@ -34,7 +34,7 @@ class ImplementInput(Contract):
     test_cmd: str
     last_report: TestReport | None = None
     feedback: list[str] = Field(default_factory=list)
-    worklog: Worklog | None = None
+    worklog: AttemptWorklog | None = None
     diff: str = ""
     continuing: bool = False  # True: the previous attempt's changes are still in the worktree
 

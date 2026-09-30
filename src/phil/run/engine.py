@@ -17,7 +17,7 @@ from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, in
 from phil.agents.registry import get_spec
 from phil.agents.tools import CommandLog
 from phil.config import PhilConfig
-from phil.contracts import ImplementInput, Issue, ReviewInput, TaskResult, TesterInput, TestReport, Worklog
+from phil.contracts import AttemptWorklog, ImplementInput, Issue, ReviewInput, TaskResult, TesterInput, TestReport
 from phil.git import GitError, branch_for, git
 from phil.packets import Packet, PacketTooLarge, build_packet
 from phil.run.gates import (
@@ -77,6 +77,11 @@ def _repo_relative(paths: list[str]) -> list[str]:
     """The file tools see the worktree as `/`: store their paths repo-relative, like files_changed
     (`/calc.py` -> `calc.py`, `/` -> `.`), deduplicated in order."""
     return list(dict.fromkeys(path.lstrip("/") or "." for path in paths))
+
+
+def _tool_reads(log: CommandLog) -> list[str]:
+    """The paths an attempt's file tools read or listed, repo-relative (clipped by AttemptWorklog)."""
+    return _repo_relative([path for tool in PATH_TOOLS for path in log.tool_paths.get(tool, [])])
 
 
 def _cap_diff(diff: str) -> str:
@@ -358,7 +363,7 @@ class RunEngine:
             test_cmd=state["test_cmd"],
             last_report=TestReport.model_validate(last) if last else None,
             feedback=feedback,
-            worklog=Worklog.model_validate(previous) if previous else None,
+            worklog=AttemptWorklog.model_validate(previous) if previous else None,
             diff=diff,
             continuing=continuing,
         )
@@ -371,8 +376,9 @@ class RunEngine:
                 get_spec("implementer"), packet, self._context(state, log), node="implement", task_id=task.id, call=seq
             )
             # invoke_agent validated it against the implementer spec's out_contract, TaskResult.
-            worklog = cast(TaskResult, output).worklog
-            worklog = worklog.model_copy(update={"files_read": _repo_relative(worklog.files_read)})
+            # What the attempt read comes from the file tools, never from the model.
+            note = cast(TaskResult, output).worklog
+            worklog: AttemptWorklog | None = AttemptWorklog(**note.model_dump(), files_read=_tool_reads(log))
             failed, problems = False, []
         except ContractViolation as exc:
             failed, problems = True, [f"implementer output rejected: {problem}" for problem in exc.problems]
@@ -429,12 +435,11 @@ class RunEngine:
             # Even the capped diff doesn't fit a small budget: send the rest without it.
             return build(contract.model_copy(update={"diff": DIFF_OMITTED}))
 
-    def _fallback_worklog(self, state: RunState, log: CommandLog, problems: list[str]) -> Worklog:
+    def _fallback_worklog(self, state: RunState, log: CommandLog, problems: list[str]) -> AttemptWorklog:
         """A worklog for an attempt that returned no usable output, built from what the tools saw."""
-        read = _repo_relative([path for tool in PATH_TOOLS for path in log.tool_paths.get(tool, [])])
         changed = self.worktrees.changed_files(self.deps.worktree, since=state["task_base_sha"])
-        return Worklog(
-            files_read=read[:50],
+        return AttemptWorklog(
+            files_read=_tool_reads(log),
             files_changed=changed[:50],
             notes=[problem if len(problem) <= 200 else problem[:199] + "…" for problem in problems[:2]],
         )

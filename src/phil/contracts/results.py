@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints, field_validator
+from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from phil.contracts.base import Contract, Part
 from phil.contracts.common import Issue, SelfCheck
@@ -11,14 +11,18 @@ MAX_WORKLOG_NOTES = 5
 MAX_WORKLOG_NOTE_CHARS = 200
 
 
-class Worklog(Part):
-    """A hand-off note between attempts. Its limits clip rather than reject: an over-long worklog
-    must never fail a task's output and force a whole agent re-run. The limits stay in the field
-    constraints so the schema still shows them as guidance."""
+def _clip_paths(value: object) -> object:
+    return value[:MAX_WORKLOG_PATHS] if isinstance(value, list) else value
 
-    files_read: list[str] = Field(
-        default_factory=list, max_length=50, description="Paths you read or listed, as you named them to the tools."
-    )
+
+class Worklog(Part):
+    """A hand-off note between attempts, as the implementer writes it. Its limits clip rather than
+    reject: an over-long worklog must never fail a task's output and force a whole agent re-run.
+    The limits stay in the field constraints so the schema still shows them as guidance.
+
+    What the attempt read is not the model's to write: the engine records it from the file tools
+    (`AttemptWorklog.files_read`). A stray `files_read` from the model is dropped, not rejected."""
+
     files_changed: list[str] = Field(
         default_factory=list, max_length=50, description="Repo-relative paths you created, edited, or deleted."
     )
@@ -28,10 +32,17 @@ class Worklog(Part):
         description="Up to 5 short notes for your next attempt: what you tried, what failed, what's next.",
     )
 
-    @field_validator("files_read", "files_changed", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def _clip_paths(cls, value: object) -> object:
-        return value[:MAX_WORKLOG_PATHS] if isinstance(value, list) else value
+    def _drop_model_files_read(cls, value: object) -> object:
+        if cls is Worklog and isinstance(value, dict) and "files_read" in value:
+            return {key: item for key, item in value.items() if key != "files_read"}
+        return value
+
+    @field_validator("files_changed", mode="before")
+    @classmethod
+    def _clip_changed(cls, value: object) -> object:
+        return _clip_paths(value)
 
     @field_validator("notes", mode="before")
     @classmethod
@@ -41,6 +52,22 @@ class Worklog(Part):
         return [
             note[:MAX_WORKLOG_NOTE_CHARS] if isinstance(note, str) else note for note in value[:MAX_WORKLOG_NOTES]
         ]
+
+
+class AttemptWorklog(Worklog):
+    """The worklog the engine stores per task and hands to the next attempt: the implementer's
+    note plus `files_read`, which the engine fills from the file tools' paths."""
+
+    files_read: list[str] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Repo-relative paths your previous attempt read or listed with the file tools.",
+    )
+
+    @field_validator("files_read", mode="before")
+    @classmethod
+    def _clip_read(cls, value: object) -> object:
+        return _clip_paths(value)
 
 
 class TaskResult(Contract):

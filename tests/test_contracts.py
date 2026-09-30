@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from phil.contracts import (
     ALL_CONTRACTS,
+    AttemptWorklog,
     Brief,
     Plan,
     SelfCheck,
@@ -114,7 +115,7 @@ def test_export_schemas_describe_the_check_fields(tmp_path):
 
 
 def test_worklog_defaults_to_empty_and_task_result_carries_one():
-    assert Worklog() == Worklog(files_read=[], files_changed=[], notes=[])
+    assert Worklog() == Worklog(files_changed=[], notes=[])
     result = TaskResult(phase="green", summary="s", files_changed=[], tests_added=[], self_check=_self_check())
     assert result.worklog == Worklog()
 
@@ -123,28 +124,51 @@ def _self_check() -> SelfCheck:
     return SelfCheck(assumptions=[], evidence=[], risks=[], unverified=[], out_of_scope=[])
 
 
-def test_worklog_limits_clip_instead_of_rejecting():
-    notes = ["short"] * 6 + ["n" * 500]
-    notes[1] = "m" * 500
-    result = TaskResult.model_validate(
+def _result_with_worklog(worklog: dict) -> TaskResult:
+    return TaskResult.model_validate(
         {
             "phase": "green",
             "summary": "s",
             "files_changed": [],
             "tests_added": [],
             "self_check": _self_check().model_dump(),
-            "worklog": {"files_read": [f"f{n}" for n in range(60)], "files_changed": ["c"] * 60, "notes": notes},
+            "worklog": worklog,
         }
     )
+
+
+def test_worklog_limits_clip_instead_of_rejecting():
+    notes = ["short"] * 6 + ["n" * 500]
+    notes[1] = "m" * 500
+    result = _result_with_worklog({"files_changed": ["c"] * 60, "notes": notes})
     assert result.worklog.notes == ["short", "m" * 200, "short", "short", "short"]
-    assert result.worklog.files_read == [f"f{n}" for n in range(50)]
     assert len(result.worklog.files_changed) == 50
+    stored = AttemptWorklog(files_read=[f"f{n}" for n in range(60)])
+    assert stored.files_read == [f"f{n}" for n in range(50)]
 
 
 def test_worklog_limits_stay_in_the_schema_as_guidance():
     schema = TaskResult.model_json_schema()["$defs"]["Worklog"]["properties"]
-    assert schema["files_read"]["maxItems"] == 50 and schema["files_changed"]["maxItems"] == 50
+    assert schema["files_changed"]["maxItems"] == 50
     assert schema["notes"]["maxItems"] == 5 and schema["notes"]["items"]["maxLength"] == 200
+
+
+def test_the_model_does_not_write_files_read():
+    # The engine records what the file tools read; the output schema leaves it out, and a stray
+    # value from the model is dropped rather than failing the whole output.
+    schema = TaskResult.model_json_schema()["$defs"]["Worklog"]["properties"]
+    assert "files_read" not in schema
+    result = _result_with_worklog({"files_read": ["x.py"], "files_changed": ["a.py"]})
+    assert result.worklog == Worklog(files_changed=["a.py"])
+
+
+def test_the_stored_worklog_carries_files_read_into_the_implement_input():
+    from phil.contracts import ImplementInput
+
+    worklog = AttemptWorklog(files_read=["calc.py"], files_changed=["a.py"], notes=["n"])
+    implement = ImplementInput(task=make_task(), phase="green", test_cmd="pytest", worklog=worklog.model_dump())
+    assert implement.worklog == worklog
+    assert "files_read" in ImplementInput.model_json_schema()["$defs"]["AttemptWorklog"]["properties"]
 
 
 def test_implement_input_carries_an_optional_worklog_and_diff():

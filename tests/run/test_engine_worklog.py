@@ -34,11 +34,14 @@ def rejected_red(turn: Turn) -> None:
 
 
 def red_with_worklog(turn: Turn) -> TaskResult:
+    """Reads through the file tools, then returns a worklog — with a stray `files_read` the model
+    isn't meant to write, which is dropped: the engine fills it from the tools."""
+    _read(turn, "read_file", file_path="/calc.py")
+    _read(turn, "read_file", file_path="calc.py")
+    _read(turn, "ls", path="/")
     result = write_red(turn)
-    worklog = Worklog(
-        files_read=["/calc.py", "calc.py", "/"], files_changed=["tests/test_sub.py"], notes=["wrote the subtract test"]
-    )
-    return result.model_copy(update={"worklog": worklog})
+    worklog = {"files_read": ["/invented.py"], "files_changed": ["tests/test_sub.py"], "notes": ["wrote the subtract test"]}
+    return result.model_copy(update={"worklog": Worklog.model_validate(worklog)})
 
 
 def present_at_call(seen: list[bool], script):
@@ -88,7 +91,8 @@ def test_an_accepted_red_worklog_and_diff_reach_the_green_packet(make_harness):
     red, green = implement_inputs(harness)
     assert red["worklog"] is None
     assert green["phase"] == "green"
-    # Stored repo-relative (and deduplicated), like the fallback's paths.
+    # files_read comes from the file tools, stored repo-relative (and deduplicated) like the
+    # fallback's paths; the model's own value never reaches the next attempt.
     assert green["worklog"] == {
         "files_read": ["calc.py", "."],
         "files_changed": ["tests/test_sub.py"],
@@ -97,7 +101,7 @@ def test_an_accepted_red_worklog_and_diff_reach_the_green_packet(make_harness):
     assert "def test_subtract" in green["diff"]
     assert green["continuing"] is False
     assert seen == [True]  # the red snapshot is restored for green, as before
-    # An accepted output's worklog is stored as the agent returned it.
+    # An accepted output's worklog is stored as the agent returned it, plus the engine's files_read.
     assert final["worklogs"]["CALC-001"] == {"files_read": [], "files_changed": [], "notes": []}
 
 

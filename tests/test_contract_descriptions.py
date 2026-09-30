@@ -63,3 +63,11 @@ def test_input_contracts_construct():
 def test_input_contracts_are_exported_for_schemas():
     for model in (ArchitectInput, CriticInput, ImplementInput, TesterInput, ReviewInput, IntakeInput, BtwInput):
         assert model in ALL_CONTRACTS
+
+
+def test_task_result_worklog_leaves_files_read_to_the_engine():
+    worklog = TaskResult.model_json_schema()["$defs"]["Worklog"]["properties"]
+    assert set(worklog) == {"files_changed", "notes"}
+    stored = ImplementInput.model_json_schema()["$defs"]["AttemptWorklog"]["properties"]
+    assert set(stored) == {"files_read", "files_changed", "notes"}
+    assert "description" in stored["files_read"]
