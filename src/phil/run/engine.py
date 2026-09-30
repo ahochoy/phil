@@ -269,11 +269,15 @@ class RunEngine:
         # The previous attempt's changes (or the red phase's, before green) are still in the
         # worktree: capture them for the packet before the reset below throws them away.
         diff = _cap_diff(self.worktrees.working_diff(worktree, state["task_base_sha"]))
-        if state["phase"] == "red" or not state.get("red_tree"):
-            # Red, or a check task (green with no red tree): start from the task's base commit.
-            self.worktrees.reset_to(worktree, state["task_base_sha"])
-        else:
-            self.worktrees.restore_snapshot(worktree, state["red_tree"])
+        # An approval resume continues the unjudged attempt where it stopped; everything else
+        # (a failed gate, a new phase, a human retry) starts from the phase's starting state.
+        continuing = bool(state.get("keep_worktree"))
+        if not continuing:
+            if state["phase"] == "red" or not state.get("red_tree"):
+                # Red, or a check task (green with no red tree): start from the task's base commit.
+                self.worktrees.reset_to(worktree, state["task_base_sha"])
+            else:
+                self.worktrees.restore_snapshot(worktree, state["red_tree"])
         plan = load_plan(state)
         task = plan.tasks[state["task_index"]]
         seq = state.get("call_seq", 0) + 1
@@ -290,6 +294,7 @@ class RunEngine:
             feedback=feedback,
             worklog=Worklog.model_validate(previous) if previous else None,
             diff=diff,
+            continuing=continuing,
         )
         ledger = [e["assumption"] for e in self.deps.artifacts.read_assumptions() if e.get("task_id") == task.id]
         packet = self._implement_packet(contract, task.files_hint, ledger)
@@ -313,6 +318,7 @@ class RunEngine:
             "last_problems": problems,
             "denied": list(log.denied),
             "worklogs": {**state.get("worklogs", {}), task.id: worklog.model_dump()},
+            "keep_worktree": False,
         }
         if log.denied:
             update["escalation"] = {
@@ -347,7 +353,11 @@ class RunEngine:
         """A worklog for an attempt that returned no usable output, built from what the tools saw."""
         read: list[str] = []
         for tool in ("read_file", "ls", "glob", "grep"):
-            read += [path for path in log.tool_paths.get(tool, []) if path not in read]
+            for path in log.tool_paths.get(tool, []):
+                # The file tools see the worktree as `/`; store repo-relative paths like files_changed.
+                relative = path.lstrip("/") or "."
+                if relative not in read:
+                    read.append(relative)
         changed = self.worktrees.changed_files(self.deps.worktree, since=state["task_base_sha"])
         return Worklog(
             files_read=read[:50],
@@ -463,7 +473,8 @@ class RunEngine:
         if action == "approve":
             # The approved call's own problems are dropped because implement re-runs the phase from its starting state.
             approved = [*state.get("approved", []), *escalation["commands"]]
-            return {**cleared, "approved": approved, "denied": [], "next": "implement"}
+            # No gate has judged that attempt, so implement continues on the worktree as it was left.
+            return {**cleared, "approved": approved, "denied": [], "keep_worktree": True, "next": "implement"}
         if action == "deny":
             hint = f"Not approved: {', '.join(escalation['commands'])}. Do not use them."
             return {**cleared, "denied": [], "hint": hint, "next": "verify"}

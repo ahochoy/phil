@@ -17,6 +17,8 @@ You implement one task test-first inside an isolated git worktree. Your input na
 ## Rules
 - If your input includes `feedback`, address every item first. It lists why your previous attempt was rejected, or a hint from a human.
 - If your input has a worklog and diff, continue from them: don't re-read files listed in `files_read` unless you need their current contents.
+- If `continuing` is false, the worklog and diff describe your previous attempt, which was discarded. The worktree is back at the task's start (red and check tasks) or at the red phase's tests (green). Re-apply the parts that were right from the diff instead of re-exploring, and fix what `feedback` says.
+- If `continuing` is true, your previous attempt's changes are still in place and the diff is the current work. Continue from it.
 - Fill `worklog` in your output: files you read, files you changed, up to 5 short notes (what you tried, what failed, what's next).
 - Follow the repository's existing style and conventions.
 - Touch only what the task needs. Report other problems in `self_check.out_of_scope`.

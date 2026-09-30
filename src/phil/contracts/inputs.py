@@ -35,6 +35,7 @@ class ImplementInput(Contract):
     feedback: list[str] = Field(default_factory=list)
     worklog: Worklog | None = None
     diff: str = ""
+    continuing: bool = False  # True: the previous attempt's changes are still in the worktree
 
 
 class TesterInput(Contract):

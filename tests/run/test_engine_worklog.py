@@ -38,10 +38,21 @@ def red_with_worklog(turn: Turn) -> TaskResult:
     return result.model_copy(update={"worklog": worklog})
 
 
+def present_at_call(seen: list[bool], script):
+    """Wraps a scripted turn to record whether the red test file exists when the call starts."""
+
+    def run(turn: Turn):
+        seen.append((turn.workdir / "tests" / "test_sub.py").exists())
+        return script(turn)
+
+    return run
+
+
 def test_a_rejected_attempt_hands_the_next_one_a_fallback_worklog_and_the_diff(make_harness):
+    seen: list[bool] = []
     harness = make_harness(
         {
-            "implementer": [rejected_red, rejected_red, write_red, write_green],
+            "implementer": [rejected_red, rejected_red, present_at_call(seen, write_red), write_green],
             "tester": [tester_report()],
             "reviewer": [review()],
         }
@@ -53,16 +64,20 @@ def test_a_rejected_attempt_hands_the_next_one_a_fallback_worklog_and_the_diff(m
     assert first["worklog"] is None and first["diff"] == ""
     worklog = second["worklog"]
     assert worklog["files_changed"] == ["tests/test_sub.py"]
-    assert worklog["files_read"] == ["/calc.py", "/tests"]
+    assert worklog["files_read"] == ["calc.py", "tests"]
     assert len(worklog["notes"]) == 1
     assert worklog["notes"][0].startswith("implementer output rejected: no structured output")
     assert "def test_subtract" in second["diff"]
     assert "+++ b/tests/test_sub.py" in second["diff"]
+    # A failed gate discards the attempt: the retry starts from the task's base, told so.
+    assert (first["continuing"], second["continuing"]) == (False, False)
+    assert seen == [False]
 
 
 def test_an_accepted_red_worklog_and_diff_reach_the_green_packet(make_harness):
+    seen: list[bool] = []
     harness = make_harness(
-        {"implementer": [red_with_worklog, write_green], "tester": [tester_report()], "reviewer": [review()]}
+        {"implementer": [red_with_worklog, present_at_call(seen, write_green)], "tester": [tester_report()], "reviewer": [review()]}
     )
     final = harness.start()
 
@@ -76,26 +91,35 @@ def test_an_accepted_red_worklog_and_diff_reach_the_green_packet(make_harness):
         "notes": ["wrote the subtract test"],
     }
     assert "def test_subtract" in green["diff"]
+    assert green["continuing"] is False
+    assert seen == [True]  # the red snapshot is restored for green, as before
     # An accepted output's worklog is stored as the agent returned it.
     assert final["worklogs"]["CALC-001"] == {"files_read": [], "files_changed": [], "notes": []}
 
 
-def test_an_approval_resume_carries_the_worklog_and_diff(make_harness, calc_repo):
+def test_an_approval_resume_keeps_the_worktree_and_carries_the_worklog_and_diff(make_harness, calc_repo):
     add_build_script(calc_repo)
     outputs: list[str] = []
+    seen: list[bool] = []
     harness = make_harness(
         {
-            "implementer": [red_with_build(outputs), red_with_build(outputs), write_green],
+            "implementer": [red_with_build(outputs), present_at_call(seen, red_with_build(outputs)), write_green],
             "tester": [tester_report()],
             "reviewer": [review()],
         }
     )
     assert harness.start()["__interrupt__"][0].value["commands"] == [BUILD]
+    (harness.deps.worktree / "tests" / "notes.txt").write_text("left by the first attempt\n")
     final = harness.resume({"action": "approve"})
 
     assert final["status"] == "completed"
-    _, resumed, _ = implement_inputs(harness)
+    first, resumed, green = implement_inputs(harness)
     assert resumed["phase"] == "red"
+    # No gate judged the approved attempt: it continues on the worktree exactly as it was left.
+    assert seen == [True]
+    assert (first["continuing"], resumed["continuing"], green["continuing"]) == (False, True, False)
+    assert "tests/notes.txt" in resumed["diff"]
+    assert final["keep_worktree"] is False
     assert resumed["worklog"] == {"files_read": [], "files_changed": [], "notes": []}
     assert "def test_subtract" in resumed["diff"]
 
