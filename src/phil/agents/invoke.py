@@ -305,7 +305,9 @@ def invoke_agent(
             output, problems = _validate(spec, result.get("structured_response"))
         outcome = "ok" if not problems else "invalid"
         if output is not None:
-            problems = check_evidence(output, commands=log.commands, workdir=ctx.workdir)
+            problems = check_evidence(
+                output, commands=log.commands, workdir=ctx.workdir, tools=collector.tool_calls.keys()
+            )
             if problems:
                 outcome = "evidence_fail"
         usage = _usage(ctx, collector, result.get("messages", []), model)
