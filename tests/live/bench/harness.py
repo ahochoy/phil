@@ -90,6 +90,11 @@ def dump_toml(data: dict, prefix: str = "") -> str:
     return out
 
 
+def case_config(case: Case, user_config: dict) -> dict:
+    """The run's phil.toml: the baseline, then the benchmark config, then the case's own overrides."""
+    return deep_merge(deep_merge(BASELINE, user_config), case.config)
+
+
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
 
@@ -149,7 +154,7 @@ def append_record(record: dict) -> None:
 
 def run_case(case: Case, config_path: Path, work: Path, *, factory: AgentFactory | None = None) -> dict:
     """Plan and run `case` end to end, then append and return its record. `factory=None` uses real models."""
-    config_data = deep_merge(BASELINE, tomllib.loads(Path(config_path).read_text()))
+    config_data = case_config(case, tomllib.loads(Path(config_path).read_text()))
     root = _init_repo(case, Path(work), config_data)
     info = resolve_repo(root)
     paths = ProjectPaths(info.slug)

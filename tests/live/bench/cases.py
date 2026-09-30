@@ -4,7 +4,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -19,6 +19,8 @@ class Case:
     # Recorded next to the plan's actual modes, never asserted: modes arrive with a later task.
     expect_modes: tuple[str, ...]
     passed: Callable[[Path], bool]
+    # Per-fixture phil.toml overrides, merged over the baseline and the benchmark config.
+    config: dict = field(default_factory=dict)
 
 
 def _exits_zero(command: list[str], cwd: Path) -> bool:
@@ -54,6 +56,9 @@ def _site_typo(tree: Path) -> bool:
     )
 
 
+# The site has no test script: its build is the check, as a user would configure in their own site repo.
+SITE_CONFIG = {"project": {"test_cmd": "node build.mjs"}}
+
 CASES: list[Case] = [
     Case("py-multiply", "py-calc", "Add a multiply(a, b) function to calc.", ("tdd",), _py_multiply),
     Case(
@@ -62,6 +67,9 @@ CASES: list[Case] = [
         'Add a hidden <meta name="easter-egg" content="hello world"> to the page head.',
         ("check",),
         _site_meta_tag,
+        SITE_CONFIG,
     ),
-    Case("site-typo", "static-site", "Fix the typo 'Welcom' in the page heading.", ("check",), _site_typo),
+    Case(
+        "site-typo", "static-site", "Fix the typo 'Welcom' in the page heading.", ("check",), _site_typo, SITE_CONFIG
+    ),
 ]

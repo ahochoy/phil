@@ -4,17 +4,20 @@ import json
 import shlex
 import shutil
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from phil.agents.fake import ScriptedAgentFactory, Turn
+from phil.chat.approval import launch_problems
+from phil.config import load_config
 from phil.contracts import Plan, Task
 from tests.chat.conftest import critique
 from tests.helpers import MODELS_TOML
 from tests.live.bench import report
 from tests.live.bench.cases import CASES, FIXTURES, Case
-from tests.live.bench.harness import deep_merge, phil_sha, run_case
+from tests.live.bench.harness import _init_repo, case_config, deep_merge, phil_sha, run_case
 from tests.run.conftest import review, task_result, tester_report
 
 TEST_CMD = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider"
@@ -149,6 +152,18 @@ def test_deep_merge_keeps_the_baseline_under_the_config():
     merged = deep_merge(base, {"run": {"max_tokens": 7}, "models": {"critic": "x"}})
     assert merged == {"run": {"max_tokens": 7, "max_cost_usd": 10.0}, "models": {"critic": "x"}}
     assert base == {"run": {"max_tokens": 5, "max_cost_usd": 10.0}}
+
+
+@pytest.mark.parametrize("name", ["site-meta-tag", "site-typo"])
+def test_site_cases_configure_the_build_as_the_test_command(tmp_path, name):
+    site_case = case(name)
+    user = tomllib.loads(MODELS_TOML + '[run]\nmax_cost_usd = 3.0\n[project]\ntest_cmd = "npm test"\n')
+    root = _init_repo(site_case, tmp_path / "work", case_config(site_case, user))
+    config = load_config(root)
+    assert config.project.test_cmd == "node build.mjs"  # the case's override wins
+    assert (config.run.max_tokens, config.run.max_cost_usd) == (5_000_000, 3.0)
+    # A plan without a test command (the site has no test script) passes the chat's start gate.
+    assert launch_problems(multiply_plan().model_copy(update={"test_cmd": None}), config) == []
 
 
 def test_phil_sha_is_unknown_outside_git(tmp_path):
