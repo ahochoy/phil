@@ -255,6 +255,36 @@ def test_rg_plain_search_is_allowed():
     assert ShellPolicy([]).is_allowed("rg x .")
 
 
+@pytest.mark.parametrize(
+    "command", ["rg --hostname-bin=/bin/sh x .", "rg --hostname-bin sh x ."]
+)
+def test_rg_hostname_bin_is_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+@pytest.mark.parametrize("command", ["grep -R x .", "grep -Rn x .", "grep --dereference-recursive x ."])
+def test_grep_recursive_dereference_is_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+def test_grep_lowercase_recursive_is_allowed():
+    assert ShellPolicy([]).is_allowed("grep -r x .")
+
+
+@pytest.mark.parametrize("command", ["rg -L x .", "rg -Ln x .", "rg --follow x ."])
+def test_rg_follow_symlinks_is_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+@pytest.mark.parametrize("command", ["ls -L", "ls -lL", "ls --dereference"])
+def test_ls_dereference_is_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+def test_ls_plain_long_listing_is_allowed():
+    assert ShellPolicy([]).is_allowed("ls -la")
+
+
 def test_containment_blocks_paths_outside_root(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "x.ts").write_text("")
@@ -301,6 +331,32 @@ def test_symlink_inside_the_worktree_is_allowed(tmp_path):
     link = tmp_path / "link"
     link.symlink_to(target)
     assert ShellPolicy([], root=tmp_path).is_allowed("cat link")
+
+
+def test_symlink_named_like_a_flag_after_double_dash_is_caught(tmp_path):
+    outside = tmp_path.parent / "outside-secret2.txt"
+    outside.write_text("secret")
+    link = tmp_path / "-evil"
+    link.symlink_to(outside)
+    assert ShellPolicy([], root=tmp_path).denial_reason("cat -- -evil") == "forbidden"
+
+
+def test_symlink_named_by_an_attached_short_flag_value_is_caught(tmp_path):
+    outside = tmp_path.parent / "outside-secret3.txt"
+    outside.write_text("secret")
+    link = tmp_path / "evil"
+    link.symlink_to(outside)
+    assert ShellPolicy([], root=tmp_path).denial_reason("grep -fevil x .") == "forbidden"
+
+
+def test_symlink_loop_does_not_crash_containment_checks(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.symlink_to(b)
+    b.symlink_to(a)
+    # Neither raises nor hangs; a loop that never escapes root resolves to something still
+    # (nominally) inside it, so this is allowed rather than forbidden.
+    assert ShellPolicy([], root=tmp_path).is_allowed("cat a")
 
 
 def test_extra_allow_matches_literal_tokens_with_trailing_arguments():

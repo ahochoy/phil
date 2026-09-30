@@ -92,13 +92,40 @@ def _git_branch_mutates(rest: list[str]) -> bool:
     return False
 
 
-# `rg --pre`/`--pre-glob` run an arbitrary preprocessor command on every searched file.
-_RG_MUTATING_EXACT = {"--pre", "--pre-glob"}
-_RG_MUTATING_PREFIXES = ("--pre=", "--pre-glob=")
+def _short_cluster_has(arg: str, letters: str) -> bool:
+    """Whether `arg` is a single-dash flag cluster (not a `--long` option) that contains any of
+    `letters` — catching e.g. `-Rn` or `-lL` as well as the bare flag on its own."""
+    return len(arg) > 1 and arg[0] == "-" and arg[1] != "-" and any(char in letters for char in arg[1:])
+
+
+# `rg --pre`/`--pre-glob` run an arbitrary preprocessor command on every searched file;
+# `--hostname-bin` (paired with `--hyperlink-format`) does too. `-L`/`--follow` walk symlinks out
+# of the worktree.
+_RG_MUTATING_EXACT = {"--pre", "--pre-glob", "--hostname-bin", "--follow"}
+_RG_MUTATING_PREFIXES = ("--pre=", "--pre-glob=", "--hostname-bin=")
 
 
 def _rg_mutates(rest: list[str]) -> bool:
-    return any(arg in _RG_MUTATING_EXACT or arg.startswith(_RG_MUTATING_PREFIXES) for arg in rest)
+    return any(
+        arg in _RG_MUTATING_EXACT or arg.startswith(_RG_MUTATING_PREFIXES) or _short_cluster_has(arg, "L")
+        for arg in rest
+    )
+
+
+# `grep -R`/`--dereference-recursive` walks symlinks out of the worktree; lowercase `-r` doesn't.
+_GREP_MUTATING_EXACT = {"--dereference-recursive"}
+
+
+def _grep_mutates(rest: list[str]) -> bool:
+    return any(arg in _GREP_MUTATING_EXACT or _short_cluster_has(arg, "R") for arg in rest)
+
+
+# `ls -L`/`--dereference` shows (and so can be tricked into reading through) a symlink's target.
+_LS_MUTATING_EXACT = {"--dereference"}
+
+
+def _ls_mutates(rest: list[str]) -> bool:
+    return any(arg in _LS_MUTATING_EXACT or _short_cluster_has(arg, "L") for arg in rest)
 
 
 _GENERIC_FORBIDDEN_DETAIL = "uses shell operators or risky flags"
@@ -122,32 +149,42 @@ def _read_only_mutates(argv: list[str], key: tuple[str, ...]) -> bool:
         return _git_branch_mutates(rest)
     if key == ("rg",):
         return _rg_mutates(rest)
+    if key == ("grep",):
+        return _grep_mutates(rest)
+    if key == ("ls",):
+        return _ls_mutates(rest)
     return False
 
 
-def _looks_like_path(arg: str) -> bool:
-    return not arg.startswith("-") and ("/" in arg or arg == "..")
-
-
-def _flag_path_value(arg: str) -> str | None:
-    """The path-like value carried by a flag argument, if any: the text after `=`, or — for an
-    attached short option like `-f/etc/x` — the remainder after the option letter, when it
-    contains a `/`. A separate argument (`-f`, `/etc/x`) is handled by the plain path check."""
+def _path_candidates(arg: str) -> list[str]:
+    """Every path-like reading of one argument token: the token itself, always; plus, for a flag
+    token (starts with `-`), the value after `=` (`--file=/etc/x`) or — for an attached
+    single-dash short option (`-f/abs`, `-fevil`) — the remainder after the flag letter. Applied
+    uniformly to every argument, including ones after `--`, so a positional filename that happens
+    to start with `-` (`cat -- -evil`) is still checked via "the token itself"."""
+    candidates = [arg]
     if not arg.startswith("-"):
-        return None
+        return candidates
     if "=" in arg:
-        return arg.split("=", 1)[1]
-    if len(arg) > 2 and arg[1] != "-" and "/" in arg[2:]:
-        return arg[2:]
-    return None
+        candidates.append(arg.split("=", 1)[1])
+    elif len(arg) > 2 and arg[1] != "-":
+        candidates.append(arg[2:])
+    return candidates
 
 
-def _escapes_via_symlink(arg: str, root: Path) -> bool:
-    """Whether a bare argument with no `/` and not `..` should still be containment-checked,
-    because something exists at that name under `root` — most importantly a symlink whose real
-    target lies outside it."""
-    candidate = root / arg
-    return candidate.exists() or candidate.is_symlink()
+def _worktree_entry_exists(candidate: str, root: Path) -> bool:
+    """Whether something already exists at `candidate` under `root`, per `os.lstat` — true for a
+    symlink even when its target is missing or a loop, since lstat never follows the final
+    component."""
+    try:
+        os.lstat(root / candidate)
+    except OSError:
+        return False
+    return True
+
+
+def _needs_containment_check(candidate: str, root: Path) -> bool:
+    return "/" in candidate or candidate == ".." or _worktree_entry_exists(candidate, root)
 
 
 def _outside_root(arg: str, root: Path) -> bool:
@@ -229,13 +266,9 @@ class ShellPolicy:
             if self.root is not None:
                 root = self.root.resolve()
                 for arg in argv[1:]:
-                    if arg.startswith("-"):
-                        value = _flag_path_value(arg)
-                        if value is not None and _outside_root(value, root):
+                    for candidate in _path_candidates(arg):
+                        if _needs_containment_check(candidate, root) and _outside_root(candidate, root):
                             return "forbidden", _CONTAINMENT_DETAIL
-                        continue
-                    if (_looks_like_path(arg) or _escapes_via_symlink(arg, root)) and _outside_root(arg, root):
-                        return "forbidden", _CONTAINMENT_DETAIL
             return None, None
         for pattern in self.approved:
             try:
