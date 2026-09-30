@@ -106,7 +106,7 @@ def _load_config(root: Path, overrides: list[str]) -> PhilConfig:
 
 
 def _require_api_keys(config: PhilConfig, roles: tuple[str, ...]) -> None:
-    problems = config.missing_keys(roles, os.environ)
+    problems = config.missing_keys(roles)
     if problems:
         for problem in problems:
             console.print(f"[phil.error]{escape(problem)}[/]")

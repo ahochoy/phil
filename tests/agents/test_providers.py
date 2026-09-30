@@ -204,6 +204,29 @@ def test_a_keyed_provider_without_its_key_refuses_to_build(environ):
     assert str(excinfo.value) == "openai needs OPENAI_API_KEY (used by critic)."
 
 
+def test_a_store_only_key_builds_an_openai_model(monkeypatch):
+    pytest.importorskip("langchain_openai")
+    from phil.credentials import set_key
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    set_key("OPENAI_API_KEY", "sk-TESTSECRET-stored")
+    model = build_chat_model(BUILTIN_PROVIDERS["openai"], "gpt-5-mini", 42)
+    assert model.openai_api_key.get_secret_value() == "sk-TESTSECRET-stored"
+
+
+def test_the_worker_build_path_finds_a_store_only_key(monkeypatch):
+    # `phil.agents.factory.chat_model` is what `build_agent` calls for every real run and chat
+    # call (including in a background worker); it calls `build_chat_model` with no `environ`.
+    pytest.importorskip("langchain_openai")
+    from phil.agents.factory import chat_model
+    from phil.credentials import set_key
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    set_key("OPENAI_API_KEY", "sk-TESTSECRET-stored")
+    model = chat_model("openai:gpt-5-mini", 42)
+    assert model.openai_api_key.get_secret_value() == "sk-TESTSECRET-stored"
+
+
 def test_a_missing_key_message_without_roles():
     with pytest.raises(ConfigError, match=r"^anthropic needs ANTHROPIC_API_KEY\.$"):
         build_chat_model(BUILTIN_PROVIDERS["anthropic"], "claude-sonnet-5", 42, environ={})

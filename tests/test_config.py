@@ -234,6 +234,17 @@ def test_a_custom_provider_key_is_checked(tmp_path):
     assert config.missing_keys(("implementer",), environ={"LAB_KEY": "k"}) == []
 
 
+def test_missing_keys_finds_a_store_only_key(tmp_path, monkeypatch):
+    from phil.credentials import set_key
+
+    (tmp_path / "phil.toml").write_text('[models]\nimplementer = "openai:gpt-5-mini"\n')
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    config = load_config(tmp_path)
+    assert config.missing_keys(("implementer",)) == ["openai needs OPENAI_API_KEY (used by implementer)."]
+    set_key("OPENAI_API_KEY", "sk-TESTSECRET-stored")
+    assert config.missing_keys(("implementer",)) == []
+
+
 def test_missing_keys_reports_an_unknown_provider(tmp_path):
     (tmp_path / "phil.toml").write_text(
         '[models]\nhigh = "local:llama"\nimplementer = "nowhere:x"\ntester = "openrouter:openai/gpt-6-luna"\n'

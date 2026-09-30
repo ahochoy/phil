@@ -3,12 +3,12 @@
 Built-in providers can be overridden field by field, and new ones added, under `[providers.<name>]`.
 Provider packages are imported only when a model of that kind is built."""
 
-import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from phil.config import ConfigError
+from phil.credentials import key_lookup
 
 if TYPE_CHECKING:
     from phil.config import PhilConfig
@@ -116,19 +116,21 @@ def build_chat_model(
     spec: ProviderSpec,
     model_name: str,
     timeout_s: int,
-    environ: Mapping[str, str] = os.environ,
+    environ: Mapping[str, str] | None = None,
     *,
     used_by: Sequence[str] = (),
 ) -> Any:
     """The LangChain chat model for `model_name` on `spec`: every call capped at `timeout_s` (in the
     SDK's own units) and the SDK's own retries off, so Phil's retry middleware is the only retry policy.
 
-    A provider with an `api_key_env` needs that variable set (non-empty) in `environ`; `used_by`
-    names the roles in the error. A provider without one gets a placeholder key."""
+    A provider with an `api_key_env` needs that variable set (non-empty) in `environ` (the
+    environment, then the keychain, when `environ` is omitted); `used_by` names the roles in the
+    error. A provider without one gets a placeholder key."""
+    resolved_environ = environ if environ is not None else key_lookup()
     if spec.api_key_env is None:
         key = NO_KEY
     else:
-        key = environ.get(spec.api_key_env) or ""
+        key = resolved_environ.get(spec.api_key_env) or ""
         if not key:
             raise ConfigError(missing_key_message(spec.name, spec.api_key_env, used_by))
     if spec.kind == "openrouter":
