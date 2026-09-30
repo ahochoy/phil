@@ -25,7 +25,9 @@ Each milestone gets its own spec and plan when it starts. The notes below give d
 
 ## Milestones
 
-### M1 — Stop the waste (plan 6a) · next
+### M1 — Stop the waste (plan 6a) · implemented, pending the user's benchmark comparison
+
+Plan: `plans/2026-09-29-phil-06a-stop-the-waste.md`. Spec: `specs/2026-09-29-phil-06a-stop-the-waste-design.md`.
 
 Fix everything that inflated the live run, and measure it:
 - a live benchmark (fixture repos, trivial and small goals; tokens, calls, minutes, and pass/fail per run);
