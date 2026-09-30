@@ -4,9 +4,125 @@ Phil is a CLI coding agent built around explicit contracts between agents, manag
 
 Design: `docs/superpowers/specs/2026-09-23-phil-v1-design.md`
 
+## Configuration
+
+Settings resolve in layers, each overriding the last: built-in defaults, then your global
+`~/.phil/config.toml`, then the repo's `phil.toml`, then any `--set` on the command line.
+Tables (`[run]`, `[models]`, `[providers.x]`, …) merge key by key; a plain value or list
+replaces whatever a lower layer set.
+
+    phil config          # the effective settings, each line tagged with the layer that set it
+    phil config --path   # where the global and repo files are, and whether they exist
+
+`--set key.path=value` (repeatable) overrides one setting for a single invocation — on the
+chat, `phil run`, `phil config` and `phil models check` only:
+
+    phil --set models.low=ollama:qwen3:8b
+    phil run plan.json --set run.max_cost_usd=5
+
+A minimal global file picks a strong model (`high`) and a light one (`low`), and needs one
+environment variable for its key:
+
+```toml
+# ~/.phil/config.toml
+[models]
+high = "openrouter:openai/gpt-6-luna"
+low = "openrouter:openai/gpt-6-sol"
+```
+
+    export OPENROUTER_API_KEY=...
+
+A repo's `phil.toml` then holds only project settings — it doesn't need to repeat models at
+all:
+
+```toml
+# phil.toml
+[project]
+test_cmd = "uv run pytest"
+```
+
+API keys are never read from or written to a config file, only from an environment variable
+named in `[providers.<name>] api_key_env` (or a built-in provider's own default, e.g.
+`OPENROUTER_API_KEY`) — Phil reads that variable at call time. A guided `phil setup` and
+keychain-stored keys are planned; see the follow-ups doc linked from the roadmap.
+
+### Tiers
+
+Six roles — `orchestrator`, `architect`, `critic`, `implementer`, `tester`, `reviewer` —
+resolve through two tiers by default: `high` for `architect`, `critic` and `reviewer`; `low`
+for `orchestrator`, `implementer` and `tester`. An optional `classifier` tier falls back to
+`low` when it has no model of its own. Remap a role to a different tier under `[tiers]`, or
+give it its own model directly under `[models]`, which always wins over its tier:
+
+```toml
+[models]
+high = "openrouter:openai/gpt-6-luna"
+low = "openrouter:openai/gpt-6-sol"
+critic = "anthropic:claude-opus-5"   # overrides critic's tier for just this role
+
+[tiers]
+tester = "high"                     # give the tester the strong model too
+```
+
+A `phil.toml` that sets every role individually (the old six-role style) keeps working
+unchanged — each role's own `[models]` key always wins over any tier.
+
+### Providers
+
+A model is `provider:model`, e.g. `openrouter:openai/gpt-6-luna` or `ollama:qwen3:32b`. Five
+providers are built in:
+
+| Provider | Kind | Base URL | Key |
+|---|---|---|---|
+| `openrouter` | openrouter | OpenRouter's own | `OPENROUTER_API_KEY` |
+| `openai` | openai | OpenAI's own | `OPENAI_API_KEY` |
+| `anthropic` | anthropic | Anthropic's own | `ANTHROPIC_API_KEY` |
+| `google` (alias `google_genai`) | google | Google's own | `GOOGLE_API_KEY` |
+| `ollama` | openai | `http://localhost:11434/v1` | none |
+
+`kind` picks the SDK: `openai` for any OpenAI-compatible server (including a custom endpoint
+or a local one), plus `anthropic`, `google` and `openrouter`. Add a new provider, or override
+a built-in's fields, under `[providers.<name>]` — for example a self-hosted vLLM server:
+
+```toml
+[providers.vllm]
+kind = "openai"
+base_url = "http://localhost:8000/v1"
+api_key_env = "VLLM_API_KEY"   # leave out for a server that needs no key
+
+[models]
+low = "vllm:my-local-model"
+```
+
+Ollama needs no `[providers.ollama]` entry at all — it's already built in and keyless:
+
+```toml
+[models]
+low = "ollama:qwen3:32b"
+```
+
+Set a provider's per-million-token prices, used to estimate cost when it doesn't report its
+own, on the same `[providers.<name>]` entry (`input_per_mtok`, `output_per_mtok`; see
+Observability for how estimated costs are shown).
+
+Every provider's own SDK retries are off (`max_retries=0`), so Phil's retry middleware is the
+only retry policy that runs — except the Google kind, which is built with `max_retries=1`
+(its SDK treats `0` as "use its own default retries", not "none").
+
+### Checking your models
+
+    phil models check
+
+makes one tiny real call to each distinct model set under `[models]` — once per configured
+tier, then once per role that overrides its tier — through the same agent path Phil uses, and
+prints one line per model: pass or fail, the tiers/roles using it, the model string, and how
+long it took (or why it failed: an unknown provider, a missing key, or a model that didn't
+return the required structured output).
+
 ## Usage
 
-Plan and start work from a chat in your repo (set models first — see phil.toml):
+Plan and start work from a chat in your repo (configure your models first — see
+Configuration above):
 
     cd your-repo
     phil                     # type a goal; approve the plan with y / edit / n
@@ -93,10 +209,12 @@ Cost markers, wherever a cost is shown:
   list): `$?` when the computed total is exactly zero, `?` appended to the formatted amount when
   there's a nonzero total from other calls alongside the unpriced one.
 
-Estimated costs come from OpenRouter's public price list (`GET
-https://openrouter.ai/api/v1/models`, no key needed), cached under `~/.phil/cache/` for a day.
-Only `openrouter:<model>` models are priced this way; a model configured under a different
-provider prefix always shows as reported or unknown, never estimated.
+When a call reports no cost, Phil estimates one: first from OpenRouter's public price list
+(`GET https://openrouter.ai/api/v1/models`, no key needed, cached under `~/.phil/cache/` for a
+day) for an `openrouter:<model>` call, then from the provider's own `input_per_mtok` /
+`output_per_mtok` prices — set under `[providers.<name>]`, or Ollama's built-in `0.0` / `0.0`
+(see Configuration → Providers) — for any other provider. A model with neither shows as
+unknown, never estimated.
 
 A run pauses at 100% of its `[run] max_tokens` / `max_cost_usd` limits as before, and now warns
 once at `[run] warn_at` (default `0.8`, i.e. 80%) of whichever limit it's closer to; the chat and
