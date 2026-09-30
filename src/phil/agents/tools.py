@@ -1,5 +1,5 @@
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,22 +21,26 @@ def make_shell_tool(
     log: CommandLog,
     artifacts: ArtifactStore | None = None,
     log_prefix: str = "",
+    extra_allow: Iterable[str] = (),
 ) -> Callable[[str], str]:
-    policy = ShellPolicy(shell.allow)
+    policy = ShellPolicy(shell.allow, extra_allow=extra_allow, root=workdir)
     env = child_env(os.environ, shell.pass_env) | {"PYTHONDONTWRITEBYTECODE": "1"}
 
     def run_shell(command: str) -> str:
         """Run one allowlisted command in the task worktree.
 
         Returns the exit code and the command's output (long output is trimmed).
-        Only commands matching the project's allowlist run; others are denied.
-        Shell operators such as pipes, redirects, `;` and `&&` are not allowed.
+        Read-only commands (ls, cat, find, grep, git status/diff/log/show/branch, ...) run without
+        needing an allowlist entry, as long as any path they touch stays inside the worktree.
+        Other commands must match the project's allowlist or this run's approved commands; others
+        are denied. Shell operators such as pipes, redirects, `;` and `&&` are not allowed.
         """
         reason = policy.denial_reason(command)
         if reason == "forbidden":
             log.refused.append(command)
+            detail = policy.refusal_detail(command)
             return (
-                f"REFUSED: `{command}` uses shell operators or risky flags and can never run here. "
+                f"REFUSED: `{command}` {detail} and can never run here. "
                 "Use a plain allowlisted command instead."
             )
         if reason is not None:

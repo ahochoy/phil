@@ -173,6 +173,81 @@ def test_run_command_uses_explicit_env(tmp_path):
     assert result.stdout.strip() == "yes"
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat README.md",
+        "find .",
+        "git branch",
+        "git diff",
+        "git log",
+        "git show HEAD",
+        "git status",
+        "grep x .",
+        "head README.md",
+        "ls",
+        "pwd",
+        "tail README.md",
+        "wc -l README.md",
+    ],
+)
+def test_read_only_commands_are_allowed_with_an_empty_allow_list(command):
+    assert ShellPolicy([]).is_allowed(command)
+
+
+def test_find_delete_and_exec_are_forbidden():
+    policy = ShellPolicy([])
+    assert policy.is_allowed("find . -name x")
+    assert policy.denial_reason("find . -delete") == "forbidden"
+    assert policy.denial_reason("find . -exec rm {} ;") == "forbidden"
+    assert policy.denial_reason("find . -exec rm {} +") == "forbidden"
+
+
+def test_git_branch_delete_is_forbidden_but_branch_alone_is_allowed():
+    policy = ShellPolicy([])
+    assert policy.is_allowed("git branch")
+    assert policy.denial_reason("git branch -D x") == "forbidden"
+
+
+def test_git_log_oneline_is_allowed():
+    assert ShellPolicy([]).is_allowed("git log --oneline")
+
+
+def test_containment_blocks_paths_outside_root(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "x.ts").write_text("")
+    policy = ShellPolicy([], root=tmp_path)
+    assert policy.denial_reason("cat /etc/passwd") == "forbidden"
+    assert policy.denial_reason("ls ../..") == "forbidden"
+    assert policy.is_allowed("cat src/x.ts")
+    assert policy.is_allowed("ls -la")
+
+
+def test_extra_allow_matches_exact_command_and_trailing_arguments():
+    assert ShellPolicy([]).denial_reason("npm run build") == "not_allowed"
+    policy = ShellPolicy([], extra_allow=("npm run build",))
+    assert policy.is_allowed("npm run build")
+    assert policy.is_allowed("npm run build --watch")
+
+
+def test_grep_piped_to_head_is_still_forbidden():
+    assert ShellPolicy([]).denial_reason("grep x | head") == "forbidden"
+
+
+def test_custom_allow_does_not_remove_read_only_commands():
+    assert ShellPolicy(["npm test"]).is_allowed("ls")
+
+
+def test_refusal_detail_for_containment(tmp_path):
+    policy = ShellPolicy([], root=tmp_path)
+    assert policy.refusal_detail("cat /etc/passwd") == "stay inside the worktree"
+
+
+def test_refusal_detail_is_none_when_allowed_or_only_not_allowed():
+    assert ShellPolicy([]).refusal_detail("ls") is None
+    assert ShellPolicy([]).refusal_detail("npm run build") is None
+
+
 def test_literal_pattern_matches_only_the_exact_command():
     exact = "pytest tests/test_foo.py::test_bar[case1]"
     policy = ShellPolicy([literal_pattern(exact), literal_pattern("pytest tests/*")])

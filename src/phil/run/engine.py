@@ -126,6 +126,11 @@ class RunEngine:
         )
 
     def _context(self, state: RunState, log: CommandLog) -> AgentContext:
+        plan = load_plan(state)
+        check_cmds = tuple(cmd for task in plan.tasks if (cmd := getattr(task, "check_cmd", None)))
+        extra_allow = tuple(
+            cmd for cmd in (state["test_cmd"], *check_cmds, *state.get("approved", [])) if cmd
+        )
         return AgentContext(
             config=self.deps.config,
             conn=self.deps.conn,
@@ -136,7 +141,7 @@ class RunEngine:
             factory=self.deps.factory,
             sleep=self.deps.sleep,
             command_log=log,
-            extra_allow=tuple(state.get("approved", [])),
+            extra_allow=extra_allow,
         )
 
     def _budget(self, role: str) -> int:

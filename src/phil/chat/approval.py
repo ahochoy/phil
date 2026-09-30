@@ -15,12 +15,12 @@ def test_cmd_problem(plan: Plan, config: PhilConfig) -> str | None:
         return "the plan has no test command and phil.toml sets no [project] test_cmd"
     if cmd == config.project.test_cmd:
         return None
-    reason = ShellPolicy(config.shell.allow).denial_reason(cmd)
-    if reason is None:
-        return None
-    if reason == "forbidden":
+    # Approving the plan approves its own test command, so only a genuinely forbidden one (shell
+    # operators, a blocked flag) is rejected here; anything merely off [shell] allow is fine — the
+    # run allows it for the plan's test command regardless.
+    if ShellPolicy(config.shell.allow).denial_reason(cmd) == "forbidden":
         return f"test command {cmd!r} uses shell operators or a blocked command; Phil runs it directly"
-    return f"test command {cmd!r} is not in [shell] allow; add it there or set [project] test_cmd in phil.toml"
+    return None
 
 
 def test_cmd_differs(plan: Plan, config: PhilConfig) -> bool:

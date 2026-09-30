@@ -25,6 +25,60 @@ _RISKY_PROGRAMS = {"git", "npm", "uv", "python", "python3"}
 _RISKY_PREFIXES = ("--output", "--no-index", "--ext-diff", "--prefix")
 _RISKY_EXACT = {"-c", "-e"}
 
+# Commands that only read state and are allowed by default, with no [shell] allow entry needed.
+# A `git ...` entry matches on argv[1] (the subcommand); every other entry matches on argv[0].
+READ_ONLY: tuple[str, ...] = (
+    "cat",
+    "find",
+    "git branch",
+    "git diff",
+    "git log",
+    "git show",
+    "git status",
+    "grep",
+    "head",
+    "ls",
+    "pwd",
+    "tail",
+    "wc",
+)
+
+# Flags that turn an otherwise read-only command into one that writes or deletes.
+_FIND_MUTATING = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprintf", "-fls"}
+_GIT_BRANCH_MUTATING = {"-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy"}
+
+_GENERIC_FORBIDDEN_DETAIL = "uses shell operators or risky flags"
+_CONTAINMENT_DETAIL = "stay inside the worktree"
+
+
+def _read_only_key(argv: list[str]) -> tuple[str, ...] | None:
+    """The matched `READ_ONLY` entry's tokens, or None if `argv` doesn't match any of them."""
+    for entry in READ_ONLY:
+        tokens = tuple(entry.split())
+        if len(argv) >= len(tokens) and tuple(argv[: len(tokens)]) == tokens:
+            return tokens
+    return None
+
+
+def _read_only_mutates(argv: list[str], key: tuple[str, ...]) -> bool:
+    rest = argv[len(key) :]
+    if key == ("find",):
+        return any(arg in _FIND_MUTATING for arg in rest)
+    if key == ("git", "branch"):
+        return any(arg in _GIT_BRANCH_MUTATING for arg in rest)
+    return False
+
+
+def _looks_like_path(arg: str) -> bool:
+    return not arg.startswith("-") and ("/" in arg or arg == "..")
+
+
+def _outside_root(arg: str, root: Path) -> bool:
+    candidate = Path(arg)
+    resolved = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
+    return not resolved.is_relative_to(root)
+
+
 _SECRET_TOKENS = {"AUTH", "KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "CREDENTIALS"}
 _SECRET_SUFFIXES = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD")
 
@@ -61,28 +115,59 @@ def _is_denied(argv: list[str]) -> bool:
 
 
 class ShellPolicy:
-    def __init__(self, allow: list[str]) -> None:
+    def __init__(self, allow: list[str], *, extra_allow: Iterable[str] = (), root: Path | None = None) -> None:
         self.allow = allow
+        self.extra_allow = tuple(extra_allow)
+        self.root = root
 
-    def denial_reason(self, command: str) -> str | None:
-        """None if allowed; "forbidden" if no approval could make it safe; "not_allowed" if only off the allowlist."""
+    def _classify(self, command: str) -> tuple[str | None, str | None]:
+        """(reason, detail): reason is None if allowed, "forbidden" if no approval could make it
+        safe, or "not_allowed" if only off the allowlist. detail is set only when reason is
+        "forbidden", and is the one-line reason why."""
         command = command.strip()
         if _FORBIDDEN & set(command):
-            return "forbidden"
+            return "forbidden", _GENERIC_FORBIDDEN_DETAIL
         try:
             argv = shlex.split(command)
         except ValueError:
-            return "forbidden"
+            return "forbidden", _GENERIC_FORBIDDEN_DETAIL
         if not argv or _is_denied(argv):
-            return "forbidden"
+            return "forbidden", _GENERIC_FORBIDDEN_DETAIL
+        key = _read_only_key(argv)
+        if key is not None:
+            if _read_only_mutates(argv, key):
+                return "forbidden", _GENERIC_FORBIDDEN_DETAIL
+            if self.root is not None:
+                root = self.root.resolve()
+                for arg in argv[1:]:
+                    if _looks_like_path(arg) and _outside_root(arg, root):
+                        return "forbidden", _CONTAINMENT_DETAIL
+            return None, None
+        for pattern in self.extra_allow:
+            try:
+                pattern_tokens = [*shlex.split(pattern), "*"]
+            except ValueError:
+                continue
+            if _matches_pattern(argv, pattern_tokens):
+                return None, None
         for pattern in self.allow:
             try:
                 pattern_tokens = shlex.split(pattern)
             except ValueError:
                 continue
             if _matches_pattern(argv, pattern_tokens):
-                return None
-        return "not_allowed"
+                return None, None
+        return "not_allowed", None
+
+    def denial_reason(self, command: str) -> str | None:
+        """None if allowed; "forbidden" if no approval could make it safe; "not_allowed" if only off the allowlist."""
+        reason, _ = self._classify(command)
+        return reason
+
+    def refusal_detail(self, command: str) -> str | None:
+        """One-line reason `command` is forbidden, or None if it isn't (including "not_allowed")."""
+        reason, detail = self._classify(command)
+        return detail if reason == "forbidden" else None
 
     def is_allowed(self, command: str) -> bool:
         return self.denial_reason(command) is None

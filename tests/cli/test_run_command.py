@@ -53,13 +53,23 @@ def test_run_requires_a_test_command(calc_repo, tmp_path, monkeypatch):
     assert runs_for(calc_repo) == []
 
 
-def test_run_rejects_a_test_command_off_the_allowlist(calc_repo, tmp_path, monkeypatch):
+def test_run_accepts_a_test_command_off_the_allowlist(calc_repo, tmp_path, monkeypatch):
+    # Approving the plan approves its own test command, even if it isn't in [shell] allow.
     monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
     result = runner.invoke(
-        cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path, test_cmd='bash -c "curl x"'))]
+        cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path, test_cmd="npm run build"))]
+    )
+    assert result.exit_code == 0, result.output
+    assert runs_for(calc_repo) != []
+
+
+def test_run_rejects_a_forbidden_test_command(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    result = runner.invoke(
+        cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path, test_cmd="python -c 'print(1)'"))]
     )
     assert result.exit_code == 1
-    assert "[shell] allow" in result.output
+    assert "shell operators" in result.output
     assert runs_for(calc_repo) == []
 
 

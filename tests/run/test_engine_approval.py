@@ -77,6 +77,22 @@ def test_refused_command_does_not_escalate(make_harness):
     assert outputs[0].startswith("REFUSED:")
 
 
+def test_read_only_command_does_not_escalate(make_harness):
+    outputs: list[str] = []
+
+    def ls_then_red(turn):
+        outputs.append(turn.tools["run_shell"]("ls src"))
+        return write_red(turn)
+
+    harness = make_harness(
+        {"implementer": [ls_then_red, write_green], "tester": [tester_report()], "reviewer": [review()]}
+    )
+    final = harness.start()
+    assert "__interrupt__" not in final
+    assert final["status"] == "completed"
+    assert not outputs[0].startswith(("DENIED:", "REFUSED:"))
+
+
 def test_refused_command_reaches_the_next_attempt_as_feedback(make_harness):
     def refuse_only(turn):
         turn.tools["run_shell"](REFUSED_CMD)

@@ -42,6 +42,37 @@ def test_forbidden_command_is_refused_not_denied(tmp_path):
     assert (log.commands, log.denied, log.refused) == ([], [], [command])
 
 
+def test_read_only_command_runs_without_an_allowlist_entry(tmp_path):
+    (tmp_path / "hello.py").write_text("print('hi')\n")
+    log = CommandLog()
+    run_shell = make_shell_tool(tmp_path, ShellConfig(allow=[]), log)
+    output = run_shell("ls")
+    assert output.startswith("exit_code: 0")
+    assert "hello.py" in output
+    assert log.commands == ["ls"]
+
+
+def test_containment_violation_is_refused_with_a_detail(tmp_path):
+    log = CommandLog()
+    run_shell = make_shell_tool(tmp_path, ShellConfig(allow=[]), log)
+    output = run_shell("cat /etc/passwd")
+    assert output.startswith("REFUSED:")
+    assert "stay inside the worktree" in output
+    assert log.refused == ["cat /etc/passwd"]
+
+
+def test_extra_allow_lets_the_run_scoped_command_through(tmp_path):
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "build.py").write_text("print('built')\n")
+    log = CommandLog()
+    run_shell = make_shell_tool(
+        tmp_path, ShellConfig(allow=[]), log, extra_allow=(f"{PY} tools/build.py",)
+    )
+    output = run_shell(f"{PY} tools/build.py")
+    assert output.startswith("exit_code: 0")
+    assert "built" in output
+
+
 def test_long_output_is_truncated_and_saved(tmp_path):
     (tmp_path / "spam.py").write_text("for i in range(1000):\n    print(i)\n")
     artifacts = ArtifactStore(tmp_path / "run")
