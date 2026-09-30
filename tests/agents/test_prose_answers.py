@@ -13,7 +13,8 @@ from phil.agents.registry import SPECS, get_spec
 from phil.contracts import CriticInput, Goal, IntakeInput, Plan, ReviewInput, Task, TestReport
 from phil.packets import build_packet
 from phil.store.artifacts import ArtifactStore
-from tests.agents.test_model_retry import ScriptedChatModel, architect_packet, real_factory
+from tests.agents.conftest import critique
+from tests.agents.test_model_retry import ScriptedChatModel, architect_packet, real_factory, tool_call
 
 
 def _plan() -> Plan:
@@ -73,3 +74,16 @@ def test_a_deep_agent_answering_in_prose_makes_one_call_per_attempt(config, conn
     assert len(model.received) == 2
     rejected = json.loads((artifacts.run_dir / "outputs" / "architect-run-1.rejected.json").read_text())
     assert rejected["raw"] == "Here is my answer in prose (1)."
+
+
+def test_a_lean_agent_still_fixes_invalid_output_arguments_within_one_attempt(config, conn, tmp_path, monkeypatch):
+    # LangChain answers an invalid structured-output call with a ToolMessage carrying the error and
+    # asks the model again in the same attempt; ending on text must not cut that loop short.
+    model = ScriptedChatModel(
+        script=[tool_call("PlanCritique", {"verdict": "maybe"}, "c1"), tool_call("PlanCritique", critique().model_dump(), "c2")]
+    )
+    artifacts = ArtifactStore(tmp_path / "run")
+    ctx = AgentContext(config=config, conn=conn, layer="chat", artifacts=artifacts, factory=real_factory(model, monkeypatch))
+    assert invoke_agent(get_spec("critic"), _packet("critic"), ctx, node="critic") == critique()
+    assert len(model.received) == 2
+    assert [row["outcome"] for row in conn.execute("SELECT outcome FROM telemetry")] == ["ok"]

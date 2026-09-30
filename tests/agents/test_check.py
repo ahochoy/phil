@@ -112,3 +112,11 @@ def test_the_real_lean_agent_path_does_not_retry_a_transient_error(tmp_path, mon
     )
     assert not result.ok
     assert len(model.received) == 1
+
+
+def test_a_missing_key_names_the_labels_that_use_the_model(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    config = PhilConfig(models={"high": "openai:gpt-x", "low": "openai:gpt-x"})
+    [result] = check_models(config, factory=ScriptedAgentFactory({}), repo_root=tmp_path)
+    assert not result.ok
+    assert result.detail == "openai needs OPENAI_API_KEY (used by high, low)."

@@ -1,6 +1,7 @@
 """`phil models check`: one tiny real call per configured model, through the agent path Phil uses."""
 
 import json
+import os
 import tempfile
 import time
 from collections.abc import Callable
@@ -10,7 +11,7 @@ from pathlib import Path
 from pydantic import Field
 
 from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, invoke_agent
-from phil.agents.providers import provider_for_model
+from phil.agents.providers import missing_key_message, provider_for_model
 from phil.agents.spec import AgentSpec
 from phil.config import ROLES, TIERS, ConfigError, PhilConfig
 from phil.contracts import Contract
@@ -84,10 +85,13 @@ def _violation_detail(exc: ContractViolation) -> str:
     return f"returned invalid structured output: {'; '.join(exc.problems)}"
 
 
-def _check_one(ctx: AgentContext, model: str, where: str, call: int) -> tuple[bool, str]:
+def _check_one(ctx: AgentContext, model: str, labels: list[str], call: int) -> tuple[bool, str]:
     packet = build_packet("model_check", ModelCheckInput(word=CHECK_WORD), budget_tokens=1_000)
     try:
-        provider_for_model(ctx.config, model, where)  # an unknown provider's error names the tier, not the check's role
+        # Checked here so the errors name the tiers and roles using the model, not the check's own role.
+        provider = provider_for_model(ctx.config, model, labels[0])
+        if provider.api_key_env and not os.environ.get(provider.api_key_env):
+            return False, missing_key_message(provider.name, provider.api_key_env, labels)
         output = invoke_agent(
             MODEL_CHECK, packet, ctx, node="model_check", call=call,
             model=model, max_attempts=1, transient_retries=False,
@@ -131,7 +135,7 @@ def check_models(
             )
             for call, (model, labels) in enumerate(targets, 1):
                 started = clock()
-                ok, detail = _check_one(ctx, model, labels[0], call)
+                ok, detail = _check_one(ctx, model, labels, call)
                 results.append(CheckResult(", ".join(labels), model, ok, clock() - started, detail))
         finally:
             conn.close()

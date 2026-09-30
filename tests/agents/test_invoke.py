@@ -114,6 +114,17 @@ def test_invoke_agent_can_try_once_with_an_explicit_model(config, conn, artifact
     assert [row["model"] for row in telemetry(conn)] == ["ollama:other"]
 
 
+def test_every_later_attempt_saves_its_retry_payload(config, conn, artifacts, critic_packet):
+    factory = FakeAgentFactory([{"verdict": "maybe"}, {"verdict": "perhaps"}, critique()])
+    invoke_agent(
+        get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic", max_attempts=3
+    )
+    packets = artifacts.run_dir / "packets"
+    assert not (packets / "critic-run-1.retry.json").exists()
+    assert (packets / "critic-run-2.retry.json").exists()
+    assert (packets / "critic-run-3.retry.json").exists()
+
+
 def test_second_attempt_saves_the_retry_payload(config, conn, artifacts, critic_packet):
     factory = FakeAgentFactory([{"verdict": "maybe"}, critique()])
     invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic")

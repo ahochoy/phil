@@ -6,6 +6,7 @@ import signal
 import sqlite3
 import sys
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -235,7 +236,9 @@ def _chat(ctx: typer.Context) -> None:
         session.unlock()
 
 
-def _run_chat(info, config, conn, out, tty, factory, base_sha, session, resume: bool, overrides=()) -> None:
+def _run_chat(
+    info, config, conn, out, tty, factory, base_sha, session, resume: bool, overrides: Sequence[str] = ()
+) -> None:
     from phil.chat.controller import ChatController
     from phil.chat.terminal import LineIO
     from phil.ui.toolbar import render_toolbar

@@ -79,14 +79,17 @@ def _build_lean_agent(
 
 def _end_on_text_middleware() -> Any:
     """Ends a lean agent's loop after a model answer with no tool call, leaving no structured
-    output (invoke_agent then records the answer's text as the rejected output)."""
+    output (invoke_agent then records the answer's text as the rejected output). Only a plain AI
+    answer ends it: an invalid structured-output call leaves a ToolMessage with the error last, and
+    LangChain's own loop asks the model to fix its arguments."""
     from langchain.agents.middleware import AgentMiddleware, hook_config
 
     class EndOnText(AgentMiddleware):
         @hook_config(can_jump_to=["end"])
         def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
             last = state["messages"][-1] if state["messages"] else None
-            if state.get("structured_response") is None and not getattr(last, "tool_calls", None):
+            is_text_answer = getattr(last, "type", None) == "ai" and not getattr(last, "tool_calls", None)
+            if state.get("structured_response") is None and is_text_answer:
                 return {"jump_to": "end"}
             return None
 

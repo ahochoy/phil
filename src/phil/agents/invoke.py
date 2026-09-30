@@ -318,7 +318,7 @@ def invoke_agent(
         payload_messages = messages if attempt == 1 else [*messages, _retry_message(problems)]
         if ctx.artifacts is not None:
             ctx.artifacts.write("packets", name, packet)
-            if attempt == 2:
+            if attempt > 1:
                 ctx.artifacts.write_json("packets", f"{name}.retry", {"messages": payload_messages})
         started = time.monotonic()
         parse_problems: list[str] | None = None
