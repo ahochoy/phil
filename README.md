@@ -126,10 +126,11 @@ max_cost_usd = 2.0
 ## Shell commands
 
 Read-only commands run without needing a `[shell] allow` entry: `cat`, `find`, `git branch`,
-`git diff`, `git log`, `git show`, `git status`, `grep`, `head`, `ls`, `pwd`, `rg`, `tail`,
-`wc` — as long as every path they touch stays inside the run's worktree. A flag that would let
-one of these write, delete, run something, or follow a symlink out of the worktree is refused
-(`find -exec`, `git branch -D`, `grep -R`, `rg --pre`, `ls -L`, and similar), as is any command
+`git diff`, `git log`, `git ls-files`, `git show`, `git status`, `grep`, `head`, `ls`, `pwd`,
+`rg`, `tail`, `wc` — as long as every path they touch stays inside the run's worktree. A flag
+that would let one of these write, delete, run something, follow a symlink out of the worktree,
+or read a list of paths from a file is refused (`find -exec`, `find -files0-from`,
+`git branch -D`, `grep -R`, `rg --pre`, `ls -L`, `wc --files0-from`, and similar), as is any command
 using shell operators (`;`, `&&`, `|`, backticks, redirects, newlines).
 
 Everything else needs an entry in `[shell] allow` — matched exactly, or with a trailing `*` in

@@ -572,3 +572,29 @@ def test_run_command_kills_child_on_sigalrm(tmp_path):
         # Clean up: cancel timer and restore old handler
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, old_handler)
+
+
+def test_git_ls_files_is_read_only_and_contained(tmp_path):
+    (tmp_path / "src").mkdir()
+    policy = ShellPolicy([], root=tmp_path)
+    assert policy.is_allowed("git ls-files")
+    assert policy.is_allowed("git ls-files src")
+    assert policy.denial_reason("git ls-files /etc") == "forbidden"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "find . -files0-from list.txt",
+        "find -files0-from list.txt",
+        "wc --files0-from=list.txt",
+        "wc --files0-from list.txt",
+        "wc --files0 list.txt",
+    ],
+)
+def test_files0_from_is_forbidden(command):
+    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+
+
+def test_wc_plain_count_is_still_allowed():
+    assert ShellPolicy([]).is_allowed("wc -l README.md")

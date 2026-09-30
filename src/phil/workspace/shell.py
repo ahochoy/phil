@@ -33,6 +33,7 @@ READ_ONLY: tuple[str, ...] = (
     "git branch",
     "git diff",
     "git log",
+    "git ls-files",
     "git show",
     "git status",
     "grep",
@@ -47,7 +48,19 @@ READ_ONLY: tuple[str, ...] = (
 # `find` flags that turn it into something that writes, deletes, executes, or follows symlinks
 # out of the worktree. `-fprint*` covers -fprint/-fprint0/-fprintf by prefix since find accepts
 # all three.
-_FIND_MUTATING = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fls", "-L", "-follow"}
+# `-files0-from` reads a list of start paths from a file, so it can leak names from outside the
+# worktree without naming them on the command line.
+_FIND_MUTATING = {
+    "-delete",
+    "-exec",
+    "-execdir",
+    "-ok",
+    "-okdir",
+    "-fls",
+    "-L",
+    "-follow",
+    "-files0-from",
+}
 
 
 def _find_mutates(rest: list[str]) -> bool:
@@ -154,7 +167,7 @@ def _ls_mutates(rest: list[str]) -> bool:
 
 
 _GENERIC_FORBIDDEN_DETAIL = "uses shell operators or risky flags"
-_CONTAINMENT_DETAIL = "stay inside the worktree"
+CONTAINMENT_DETAIL = "stay inside the worktree"
 
 
 def _read_only_key(argv: list[str]) -> tuple[str, ...] | None:
@@ -164,6 +177,20 @@ def _read_only_key(argv: list[str]) -> tuple[str, ...] | None:
         if len(argv) >= len(tokens) and tuple(argv[: len(tokens)]) == tokens:
             return tokens
     return None
+
+
+# `wc --files0-from` reads the files to count from a list in another file, so it can leak counts
+# (and names) from outside the worktree. GNU wc accepts any unambiguous prefix of a long option,
+# and `--f` is already unique to --files0-from.
+_WC_FILES0_FROM = "--files0-from"
+
+
+def _wc_mutates(rest: list[str]) -> bool:
+    for arg in rest:
+        name = arg.split("=", 1)[0]
+        if len(name) > 2 and _WC_FILES0_FROM.startswith(name):
+            return True
+    return False
 
 
 def _read_only_mutates(argv: list[str], key: tuple[str, ...]) -> bool:
@@ -178,6 +205,8 @@ def _read_only_mutates(argv: list[str], key: tuple[str, ...]) -> bool:
         return _grep_mutates(rest)
     if key == ("ls",):
         return _ls_mutates(rest)
+    if key == ("wc",):
+        return _wc_mutates(rest)
     return False
 
 
@@ -438,7 +467,7 @@ class ShellPolicy:
                         continue
                     for candidate in _path_candidates(arg):
                         if _needs_containment_check(candidate, root) and _outside_root(candidate, root):
-                            return "forbidden", _CONTAINMENT_DETAIL
+                            return "forbidden", CONTAINMENT_DETAIL
             return None, None
         for pattern in self.approved:
             try:

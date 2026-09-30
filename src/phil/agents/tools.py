@@ -34,8 +34,8 @@ def make_shell_tool(
         """Run one allowlisted command in the task worktree.
 
         Returns the exit code and the command's output (long output is trimmed).
-        Read-only commands (ls, cat, find, grep, git status/diff/log/show/branch, ...) run without
-        needing an allowlist entry, as long as any path they touch stays inside the worktree.
+        Read-only commands (ls, cat, find, grep, git status/diff/log/show/branch/ls-files, ...) run
+        without needing an allowlist entry, as long as any path they touch stays inside the worktree.
         Other commands must match the project's allowlist or this run's approved commands; others
         are denied. Shell operators such as pipes, redirects, `;` and `&&` are not allowed.
         """
