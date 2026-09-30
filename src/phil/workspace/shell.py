@@ -113,9 +113,9 @@ def _short_cluster_flags(arg: str, value_letters: str = "") -> str:
 
 # `rg --pre`/`--pre-glob` run an arbitrary preprocessor command on every searched file;
 # `--hostname-bin` (paired with `--hyperlink-format`) does too. `-L`/`--follow` walk symlinks out
-# of the worktree. Value-taking short flags (rg --help): e f g m A B C t T M j r E — scanning
+# of the worktree. Value-taking short flags (rg --help): e f g m A B C t T M j r E d — scanning
 # stops at the first one, so its attached value (e.g. `-eL`'s "L") isn't mistaken for `-L`.
-_RG_VALUE_LETTERS = "efgmABCtTMjrE"
+_RG_VALUE_LETTERS = "efgmABCtTMjrEd"
 _RG_MUTATING_EXACT = {"--pre", "--pre-glob", "--hostname-bin", "--follow"}
 _RG_MUTATING_PREFIXES = ("--pre=", "--pre-glob=", "--hostname-bin=")
 
@@ -181,38 +181,145 @@ def _read_only_mutates(argv: list[str], key: tuple[str, ...]) -> bool:
     return False
 
 
-# For grep/rg, a search pattern given positionally (no -e/--regexp/-f/--file) can look like a
-# path (e.g. the regex "/api/") without being one — it's never resolved as a file. Only grep and
-# rg have this positional-pattern grammar, so only they get a pattern index to exclude.
-_PATTERN_VALUE_LETTERS = {("grep",): _GREP_VALUE_LETTERS, ("rg",): _RG_VALUE_LETTERS}
+@dataclass(frozen=True)
+class _PatternGrammar:
+    """How grep/rg split their arguments into option values, the pattern, and paths.
+
+    `value_longs` take a value, which may be the next token when given without `=` — that token
+    is consumed, never picked as the pattern, and (like every non-pattern token) containment-
+    checked; this is what keeps a file-naming value (`--ignore-file`, `--exclude-from`, `--file`)
+    from being skipped as "the pattern". `unsure_longs` consume a separate value in some
+    implementations but not others, so the pattern can't be located and none is excluded.
+    `pattern_less_longs` switch to a mode with no pattern, where every positional is a path.
+    `abbreviations`: getopt_long accepts any unambiguous prefix of a long option, so a token that
+    only prefixes a known value-taking option is never trusted either."""
+
+    value_letters: str
+    value_longs: frozenset[str]
+    unsure_longs: frozenset[str] = frozenset()
+    pattern_less_longs: frozenset[str] = frozenset()
+    abbreviations: bool = False
 
 
-def _has_pattern_flag(rest: list[str], value_letters: str) -> bool:
-    for arg in rest:
-        if arg in ("--regexp", "--file") or arg.startswith(("--regexp=", "--file=")):
-            return True
-        flags = _short_cluster_flags(arg, value_letters)
-        if "e" in flags or "f" in flags:
-            return True
-    return False
+# Union of GNU grep (Linux) and BSD grep (macOS's /usr/bin/grep). --exclude-from is GNU-only;
+# --include-dir BSD-only. --context takes a separate value in GNU but only `=value` in BSD.
+# --color/--colour take their optional value only via `=` in both, so they're plain flags here.
+_GREP_GRAMMAR = _PatternGrammar(
+    value_letters=_GREP_VALUE_LETTERS,
+    value_longs=frozenset(
+        {
+            "--regexp",
+            "--file",
+            "--exclude-from",
+            "--after-context",
+            "--before-context",
+            "--max-count",
+            "--binary-files",
+            "--devices",
+            "--directories",
+            "--exclude",
+            "--exclude-dir",
+            "--include",
+            "--include-dir",
+            "--label",
+            "--group-separator",
+        }
+    ),
+    unsure_longs=frozenset({"--context"}),
+    abbreviations=True,
+)
 
+# `rg -h` (15.2): every long option shown with `=VALUE`. rg rejects abbreviated long options.
+_RG_GRAMMAR = _PatternGrammar(
+    value_letters=_RG_VALUE_LETTERS,
+    value_longs=frozenset(
+        {
+            "--regexp",
+            "--file",
+            "--ignore-file",
+            "--pre",
+            "--pre-glob",
+            "--dfa-size-limit",
+            "--encoding",
+            "--engine",
+            "--max-count",
+            "--regex-size-limit",
+            "--threads",
+            "--glob",
+            "--iglob",
+            "--max-depth",
+            "--max-filesize",
+            "--type",
+            "--type-not",
+            "--type-add",
+            "--type-clear",
+            "--after-context",
+            "--before-context",
+            "--color",
+            "--colors",
+            "--context",
+            "--context-separator",
+            "--field-context-separator",
+            "--field-match-separator",
+            "--hostname-bin",
+            "--hyperlink-format",
+            "--max-columns",
+            "--path-separator",
+            "--replace",
+            "--sort",
+            "--sortr",
+            "--generate",
+        }
+    ),
+    pattern_less_longs=frozenset({"--files"}),
+)
 
-def _first_positional_index(rest: list[str]) -> int | None:
-    for i, arg in enumerate(rest):
-        if not arg.startswith("-"):
-            return i
-    return None
+_PATTERN_GRAMMARS = {("grep",): _GREP_GRAMMAR, ("rg",): _RG_GRAMMAR}
+_PATTERN_LONGS = ("--regexp", "--file")
 
 
 def _pattern_index_to_exclude(key: tuple[str, ...], rest: list[str]) -> int | None:
-    """The index within `rest` of the grep/rg search pattern, when it's given positionally rather
-    than via -e/-f — excluded from path containment. With -e/-f, the pattern isn't positional at
-    all, so every positional argument is a real path (a filename to search) and none is excluded;
-    -e/-f's own attached or separate value is still containment-checked as any flag value is."""
-    value_letters = _PATTERN_VALUE_LETTERS.get(key)
-    if value_letters is None or _has_pattern_flag(rest, value_letters):
+    """The index within `rest` of the grep/rg search pattern, when it's given positionally — a
+    regex like "/api/" can look like a path without being one, so it's excluded from path
+    containment. None (exclude nothing, check every token) whenever the pattern can't be located
+    with certainty: -e/-f given anywhere (then every positional is a path), a pattern-less mode,
+    or an option whose value-taking differs between implementations or is abbreviated."""
+    grammar = _PATTERN_GRAMMARS.get(key)
+    if grammar is None:
         return None
-    return _first_positional_index(rest)
+    letters = grammar.value_letters
+    known_longs = grammar.value_longs | grammar.unsure_longs
+    first_positional: int | None = None
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        if arg == "--":
+            if first_positional is None and i + 1 < len(rest):
+                first_positional = i + 1
+            break
+        if arg.startswith("--"):
+            name, has_value = arg.split("=", 1)[0], "=" in arg
+            if name in _PATTERN_LONGS or name in grammar.pattern_less_longs:
+                return None
+            if not has_value and name in grammar.unsure_longs:
+                return None
+            if name not in known_longs and grammar.abbreviations:
+                if any(option.startswith(name) for option in (*known_longs, *_PATTERN_LONGS)):
+                    return None
+            if not has_value and name in grammar.value_longs:
+                i += 2
+                continue
+        elif _is_short_cluster(arg):
+            flags = _short_cluster_flags(arg, letters)
+            if "e" in flags or "f" in flags:
+                return None
+            if flags[-1] in letters and len(flags) == len(arg) - 1:
+                i += 2  # the value-taking flag ends the token, so its value is the next one
+                continue
+        elif first_positional is None:
+            first_positional = i
+        i += 1
+    return first_positional
 
 
 def _path_candidates(arg: str) -> list[str]:

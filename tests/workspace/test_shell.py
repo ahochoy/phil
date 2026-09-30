@@ -356,6 +356,64 @@ def test_grep_with_explicit_pattern_flag_treats_all_positionals_as_paths(tmp_pat
     assert ShellPolicy([], root=tmp_path).denial_reason("grep -e foo /etc") == "forbidden"
 
 
+@pytest.fixture
+def worktree_with_outside_file(tmp_path):
+    root = tmp_path / "wt"
+    (root / "src").mkdir(parents=True)
+    (root / ".ignore").write_text("*.log\n")
+    (tmp_path / "outside").write_text("secret\n")
+    return root
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rg --ignore-file ../outside foo .",
+        "rg --file ../outside .",
+        "grep --exclude-from ../outside foo .",
+        "grep --file ../outside .",
+        # A separate value for a non-file option shifts the pattern to the next positional.
+        "grep -A 3 foo ../outside",
+        "grep -A 3 foo /etc",
+        "rg -g '*.py' foo ../outside",
+        "rg --max-depth 2 foo ../outside",
+        "rg -d 2 foo ../outside",
+        # After `--`, the first token is the pattern even if it looks like a flag.
+        "grep -- -x ../outside",
+        # GNU/BSD grep accept abbreviated long options; an abbreviation is never trusted.
+        "grep --exclude-f ../outside foo .",
+        "grep --regex foo ../outside",
+        # BSD grep's --context takes its value only via `=`, GNU's also as a separate token.
+        "grep --context 3 ../outside .",
+        # `rg --files` takes no pattern: every positional is a path to list.
+        "rg --files ../outside",
+    ],
+)
+def test_grep_rg_separate_option_values_are_never_taken_as_the_pattern(
+    worktree_with_outside_file, command
+):
+    policy = ShellPolicy([], root=worktree_with_outside_file)
+    assert policy.denial_reason(command) == "forbidden"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rg --ignore-file .ignore foo .",
+        "grep -A 3 foo src",
+        "grep -A 3 /api/ src",
+        "grep --max-count 2 /api/ src",
+        "rg -g '*.py' /api/ src",
+        "rg --type py /api/ src",
+        "grep -rn -- /api/ src",
+    ],
+)
+def test_grep_rg_pattern_after_consumed_option_values_is_still_excluded(
+    worktree_with_outside_file, command
+):
+    assert ShellPolicy([], root=worktree_with_outside_file).is_allowed(command)
+
+
 def test_symlink_escaping_the_worktree_is_forbidden(tmp_path):
     outside = tmp_path.parent / "outside-secret.txt"
     outside.write_text("secret")
