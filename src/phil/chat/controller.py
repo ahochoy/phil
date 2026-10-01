@@ -75,7 +75,7 @@ PROMPTS = {
 # The transcript's `stage` label for a non-command input typed at each chat stage (4a's labels).
 TRANSCRIPT_STAGES = {
     "idle": "goal", "intake": "goal", "planning": "goal", "running": "goal", "questions": "answers",
-    "routing": "goal", "answering": "goal", "confirm_fix": "goal",
+    "routing": "goal", "answering": "goal",
 }
 GOAL_JOB_STAGES = ("routing", "intake", "planning", "answering")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
@@ -156,6 +156,8 @@ class ChatController:
         # The last few turns ("you: …" / "phil: …"), for the router and the answerer.
         self._recent: deque[str] = deque(maxlen=RECENT_TURNS)
         self._route: Route | None = None  # how the current goal was routed
+        self._clarifications: list[str] = []  # the user's answers to intake's questions for this goal
+        self._prior_turns: list[str] = []  # the chat turns before this goal's message
         self._fix_offer: tuple[str, str] | None = None  # (question, diagnosis) the confirm_fix question is about
         self.state = ChatState()
         self.events: queue.Queue[ChatEvent] = queue.Queue()
@@ -444,7 +446,7 @@ class ChatController:
         if stage == "idle":
             self._begin_goal(text)
         elif stage in GOAL_JOB_STAGES:
-            self._replacement = text
+            self._replacement, self._replacement_forced = text, None
             self._parent_stage = stage
             self._set_stage("confirm_replace")
         elif stage == "questions":
@@ -512,6 +514,7 @@ class ChatController:
         elif self.stage == "edit":
             self._set_stage("approval")
         elif self.stage == "confirm_replace":
+            self._replacement, self._replacement_forced = "", None
             self.console.print("[phil.muted]Keeping the current goal.[/]")
             self._set_stage(self._parent_stage)
         elif self.stage in ("paused", "hint"):
@@ -529,7 +532,7 @@ class ChatController:
 
     def _reset_goal(self) -> None:
         self._goal, self._goal_text, self._rounds, self._draft, self._revising = None, "", 0, None, False
-        self._route = None
+        self._route, self._clarifications, self._prior_turns = None, [], []
 
     def _forced_input(self, raw: str, forced: str, rest: str) -> None:
         """A message prefixed with /ask, /quick or /full: a goal whose depth skips the router."""
@@ -570,7 +573,7 @@ class ChatController:
         self._next_generation()
         self._reset_goal()
         self._goal_text = text
-        chat = list(self._recent)  # the turns before this message
+        chat = self._prior_turns = list(self._recent)  # the turns before this message
         self._recent.append(f"you: {text[:TURN_CHARS]}")
         if forced is not None:
             self._routed(Route(forced, "forced", "forced", text, None))
@@ -646,8 +649,7 @@ class ChatController:
         self._answer_calls += 1
         call, generation = self._answer_calls, self._generation
         self._step("answering", generation)
-        # The turns before this question (the last one in `_recent` is the question itself).
-        context = "\n".join(list(self._recent)[:-1][-CONTEXT_TURNS:])
+        context = "\n".join(self._prior_turns[-CONTEXT_TURNS:])
         root, overview = self.info.root, self.overview
 
         def fn(ctx: AgentContext) -> dict:
@@ -714,7 +716,11 @@ class ChatController:
             return
         intake_decides = self._route is not None and self._route.depth is None
         if intake_decides and goal.depth == "answer" and not goal.open_questions:
-            self._answer_job(self._goal_text)  # the router left the depth to intake, which chose an answer
+            # The router left the depth to intake, which chose an answer; it sees the user's clarifications.
+            question = self._goal_text
+            if self._clarifications:
+                question += "\n\nClarification: " + "\n".join(self._clarifications)
+            self._answer_job(question)
             return
         self._plan(goal)
 
@@ -724,6 +730,8 @@ class ChatController:
         if text.lower() == "go":
             self._plan(self._goal)
             return
+        self._clarifications.append(text)
+        self._recent.append(f"you: {text[:TURN_CHARS]}")
         self._set_stage("intake")
         self._intake_job(self._goal_text, previous=self._goal, answers=[text])
 
@@ -875,7 +883,7 @@ class ChatController:
             self._reset_goal()
             self._set_stage("idle")
             raise  # reported by the loop's error handler
-        depth = self._route.depth if self._route else None
+        depth = (self._route.depth if self._route else None) or (self._goal.depth if self._goal else None)
         self._safe_note("approved", plan_version=draft.version, answer=answer, run_id=record.run_id, depth=depth)
         self._recent.append(f"phil: planned {plan.keyword}")
         run_id = escape(record.run_id)

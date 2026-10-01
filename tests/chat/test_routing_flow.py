@@ -159,6 +159,8 @@ def test_diagnosis_offers_a_fix_and_enter_plans_it(calc_repo):
     [answer] = [e for e in transcript(calc_repo) if e["kind"] == "answer"]
     assert answer["text"] == "The env var is unset." and answer["files"] == ["calc.py"]
     assert answer["task_class"] == "diagnosis"
+    users = [(e["stage"], e["text"]) for e in transcript(calc_repo) if e["kind"] == "user"]
+    assert users[:2] == [("goal", "why does calc crash?"), ("confirm_fix", "")]
 
 
 def test_declining_the_fix_returns_to_idle(calc_repo):
@@ -280,3 +282,76 @@ def test_forced_message_while_routing_keeps_its_depth_when_it_replaces(calc_repo
     assert "Feature · full plan" not in text
     assert factory.remaining()["intake"] == 1
     assert pending == []
+
+
+def test_a_plain_replacement_after_a_kept_forced_one_is_routed(calc_repo):
+    def ctrl_c(controller):
+        raise KeyboardInterrupt()
+
+    submit, run_next, pending = deferred()
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        [
+            "add subtract",  # routing is held
+            "/full add auth",  # a forced replacement...
+            ctrl_c,  # ...not taken: keep the current goal
+            run_next,  # goal 1 is routed; its intake is held
+            "add multiply",  # a plain replacement during intake
+            "y",
+            run_next,  # goal 1's intake (stale)
+            run_next,  # goal 2's routing
+            run_next,  # goal 2's intake
+            run_next,  # goal 2's plan
+            "n",
+        ],
+        {
+            "route": [route("feature"), route("feature")],
+            "intake": [goal(), goal("Add multiply")],
+            "architect": [plan()],
+            "critic": [critique()],
+        },
+        submit=submit,
+    )
+    assert "Forced:" not in text
+    assert "Goal: Add multiply" in text and pending == []
+    notes = [e for e in transcript(calc_repo) if e["kind"] == "route"]
+    assert [n["source"] for n in notes] == ["llm", "llm"]
+
+
+def test_clarifications_reach_the_answer_when_intake_chooses_one(calc_repo):
+    seen = {}
+    text, spawned, runs, factory, _ = run_chat(
+        calc_repo,
+        ["why does the page fail?", "the login page", peek(seen)],
+        {
+            "route": [route("diagnosis", needs_detail=0.8)],
+            "intake": [goal(open_questions=["Which page?"]), goal("Explain the login failure", depth="answer")],
+            "answer": [Answer(text="The session cookie expires.")],
+        },
+    )
+    assert "Unclear request · asking first" in text and "The session cookie expires." in text
+    [answer] = payloads(factory, "answer")
+    assert "why does the page fail?" in answer and "Clarification: the login page" in answer
+    assert seen["recent"] == [
+        "you: why does the page fail?", "you: the login page", "phil: The session cookie expires.",
+    ]
+    assert seen["stage"] == "confirm_fix"  # the router's class was a diagnosis
+
+
+def test_an_intake_decided_run_records_its_depth(calc_repo):
+    text, spawned, runs, *_ = run_chat(
+        calc_repo,
+        ["add subtract", "y"],
+        {"route": [route("feature", confidence=0.3)], **FULL_SCRIPT, "intake": [goal(depth="full")]},
+    )
+    [approved] = [e for e in transcript(calc_repo) if e["kind"] == "approved"]
+    assert approved["depth"] == "full" and approved["run_id"] == runs[0].run_id
+
+
+def test_a_forced_prefix_at_approval_asks_to_finish_first(calc_repo):
+    seen = {}
+    text, spawned, runs, factory, _ = run_chat(
+        calc_repo, ["add subtract", "/ask what is calc", peek(seen)], FULL_SCRIPT
+    )
+    assert "Finish the current goal first, or press Ctrl-C to cancel it." in text
+    assert seen["stage"] == "approval"
