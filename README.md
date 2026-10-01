@@ -4,6 +4,42 @@ Phil is a CLI coding agent built around explicit contracts between agents, manag
 
 Design: `docs/superpowers/specs/2026-09-23-phil-v1-design.md`
 
+## Getting started
+
+The first time you run `phil` in a terminal, in a repo with no models configured, setup
+starts automatically:
+
+    cd your-repo
+    phil
+
+It walks you through choosing a provider, saving its API key, picking a `high` and `low`
+model (with suggestions, where there are any — see below), and checking that each model
+actually answers, then writes `~/.phil/config.toml` and starts the chat. Run it again any
+time to change providers or models:
+
+    phil setup
+
+Setup only ever edits `~/.phil/config.toml`, never a repo's `phil.toml`. It keeps your other
+settings and comments, prefilling what it can from the current global file, and cancelling
+(Ctrl-C or Ctrl-D, at any prompt) leaves the file untouched. An empty answer at the key prompt
+doesn't cancel: it skips storing the key, and setup carries on and writes your model choices.
+A key pasted by mistake at any other prompt is refused without being shown or saved.
+
+Suggested `high`/`low` models exist for OpenRouter, OpenAI and Anthropic; Google has none yet
+— setup asks you to type a model id by hand. Ollama offers whatever you have installed, and a
+custom OpenAI-compatible provider offers whatever it serves. The `classifier` tier isn't part
+of setup yet and has no suggestion; set it by hand under `[models]` until it's wired up in M3.
+
+    phil keys set <provider>      # store a provider's API key in the OS keychain
+    phil keys list                # where each provider's key would come from: env or keychain
+    phil keys remove <provider>   # delete a provider's stored key
+
+A key is always read from its environment variable first; only when that variable isn't set
+does Phil fall back to a key stored in the keychain. So an exported variable always wins over
+a stored one. When no keychain is available here (containers, some CI, headless boxes), both
+`phil setup` and `phil keys set` tell you to export the variable instead of trying to store it
+— see Configuration → Keys below for the full rule.
+
 ## Configuration
 
 Settings resolve in layers, each overriding the last: built-in defaults, then your global
@@ -41,10 +77,10 @@ all:
 test_cmd = "uv run pytest"
 ```
 
-API keys are never read from or written to a config file, only from an environment variable
-named in `[providers.<name>] api_key_env` (or a built-in provider's own default, e.g.
-`OPENROUTER_API_KEY`) — Phil reads that variable at call time. A guided `phil setup` and
-keychain-stored keys are planned; see the follow-ups doc linked from the roadmap.
+API keys are never read from or written to a config file, only resolved by name: each provider
+names an environment variable in `[providers.<name>] api_key_env` (or uses a built-in
+provider's own default, e.g. `OPENROUTER_API_KEY`), and Phil resolves that variable's value at
+call time — see Keys below for where from.
 
 ### Tiers
 
@@ -121,6 +157,30 @@ shows as unknown (see Observability).
 Every provider's own SDK retries are off (`max_retries=0`), so Phil's retry middleware is the
 only retry policy that runs — except the Google kind, which is built with `max_retries=1`
 (its SDK treats `0` as "use its own default retries", not "none").
+
+### Keys
+
+Each provider's API key comes from an environment variable — the environment first, then, as
+a fallback, the OS keychain (through `keyring`). A stored key is only used when the variable
+isn't exported; an exported variable always wins, even over a stored key for the same
+provider.
+
+    phil keys set <provider>      # prompts for the key (input hidden), stores it in the keychain
+    phil keys list                # every provider this config uses, and where its key comes
+                                   # from: env, keychain, or missing
+    phil keys remove <provider>   # deletes the keychain entry only — any environment variable
+                                   # of the same name is untouched
+
+`phil setup` offers to save a key the same way, during its key step, and skips the offer
+when the variable is already set in the environment. When no keychain is available here
+(headless environments, containers, some CI), both `phil setup` and `phil keys set` say so and
+tell you to export the variable instead of trying to store it. `phil keys` works anywhere, not
+only inside a repository.
+
+Commands agents run (the shell tool, gates and tests) get neither the key variables nor Phil's
+stored keys: their environment drops secret-looking variables and pins `keyring` to its null
+backend, so code they run can't read a stored key through `keyring`. That can't stop a
+malicious test from reaching the OS keychain directly, so review what agents add.
 
 ### Checking your models
 

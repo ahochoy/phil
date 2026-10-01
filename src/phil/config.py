@@ -237,12 +237,15 @@ class PhilConfig(_Section):
             return "low"
         return tier
 
-    def missing_keys(self, roles: tuple[str, ...], environ: Mapping[str, str]) -> list[str]:
+    def missing_keys(self, roles: tuple[str, ...], environ: Mapping[str, str] | None = None) -> list[str]:
         """What stops the models resolved for `roles` from being called, one message each, in role
         order: an unknown provider, or a provider whose key variable `environ` lacks (with the roles
-        that use it). Unset models are `missing_models`' to report."""
+        that use it). `environ` defaults to the environment, then the keychain. Unset models are
+        `missing_models`' to report."""
         from phil.agents.providers import UnknownProvider, missing_key_message, provider_for_model
+        from phil.key_store import key_lookup
 
+        resolved_environ = environ if environ is not None else key_lookup()
         # In first-seen order: an unknown-provider message, or (provider, env var) -> roles needing the key.
         problems: dict[str | tuple[str, str], list[str]] = {}
         for role in roles:
@@ -256,7 +259,7 @@ class PhilConfig(_Section):
                 problems.setdefault(str(exc), [])
                 continue
             env = provider.api_key_env
-            if env and not environ.get(env):
+            if env and not resolved_environ.get(env):
                 users = problems.setdefault((provider.name, env), [])
                 if role not in users:
                     users.append(role)

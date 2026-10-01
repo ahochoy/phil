@@ -86,6 +86,22 @@ def test_chat_requires_the_provider_api_key(calc_repo, monkeypatch):
     assert "openrouter needs OPENROUTER_API_KEY (used by" in result.output
 
 
+def test_the_chat_key_check_passes_with_a_store_only_key(calc_repo, monkeypatch):
+    from phil.key_store import set_key
+
+    (calc_repo / "phil.toml").write_text(
+        "[models]\n" + "".join(f'{r} = "openai:gpt-5-mini"\n' for r in ROLES)
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("PHIL_AGENT_FACTORY", "tests.chat.chat_scenarios:factory")
+    monkeypatch.setenv("PHIL_TEST_SCENARIO", "approve")
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    set_key("OPENAI_API_KEY", "sk-TESTSECRET-stored")
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="add subtract\ny\n")
+    assert result.exit_code == 0, result.output
+    assert "OPENAI_API_KEY" not in result.output
+
+
 def test_chat_refuses_an_unknown_provider(calc_repo, monkeypatch):
     (calc_repo / "phil.toml").write_text('[models]\nhigh = "nowhere:x"\nlow = "ollama:test-model"\n')
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")

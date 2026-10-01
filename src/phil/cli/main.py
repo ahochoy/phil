@@ -1,3 +1,4 @@
+import getpass
 import importlib
 import json
 import logging
@@ -18,6 +19,7 @@ from phil import __version__
 from phil.chat.approval import git_policy_note, launch_problems, terminated
 from phil.config import (
     CHAT_ROLES,
+    ROLES,
     RUN_ROLES,
     ConfigError,
     PhilConfig,
@@ -46,7 +48,12 @@ logger.addHandler(logging.NullHandler())
 app = typer.Typer(add_completion=False, help="Phil: a contract-driven coding agent.")
 models_app = typer.Typer(help="Check the configured models.")
 app.add_typer(models_app, name="models")
+keys_app = typer.Typer(help="Store, list and remove provider API keys.")
+app.add_typer(keys_app, name="keys")
 console = make_console()
+
+# `getpass.getpass` itself, as a module attribute tests can monkeypatch.
+_read_secret = getpass.getpass
 
 # A pending run whose row was updated more recently than this is assumed to still be starting
 # (its worker process hasn't written a pid/heartbeat yet); older than this, treat it as a worker
@@ -92,6 +99,18 @@ def _resolve(ctx: typer.Context) -> RepoInfo:
         raise typer.Exit(1) from exc
 
 
+def _config_root(ctx: typer.Context) -> Path:
+    """The directory whose settings apply, for commands that also work outside a repository
+    (`phil setup`, `phil keys`): `--repo`'s repository (exiting 1 if it isn't one), else the
+    repository around the current directory, else the current directory itself."""
+    if ctx.obj.get("repo"):
+        return _resolve(ctx).root
+    try:
+        return resolve_repo(Path.cwd()).root
+    except RepoError:
+        return Path.cwd()
+
+
 def _open_project(ctx: typer.Context) -> tuple[RepoInfo, sqlite3.Connection]:
     info = _resolve(ctx)
     return info, connect(ProjectPaths(info.slug).db_path)
@@ -106,7 +125,7 @@ def _load_config(root: Path, overrides: list[str]) -> PhilConfig:
 
 
 def _require_api_keys(config: PhilConfig, roles: tuple[str, ...]) -> None:
-    problems = config.missing_keys(roles, os.environ)
+    problems = config.missing_keys(roles)
     if problems:
         for problem in problems:
             console.print(f"[phil.error]{escape(problem)}[/]")
@@ -114,6 +133,12 @@ def _require_api_keys(config: PhilConfig, roles: tuple[str, ...]) -> None:
 
 
 def _is_tty() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _interactive() -> bool:
+    """Whether this process can run setup's prompts in a real terminal (patched in tests)."""
+    # The auto-start test seam (needs both stdin and stdout); kept apart from `_is_tty`, which chat tests patch.
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
@@ -171,10 +196,19 @@ def _chat(ctx: typer.Context) -> None:
     info, conn = _open_project(ctx)
     overrides = ctx.obj.get("overrides", [])
     config = _load_config(info.root, overrides)
+    if _interactive() and config.missing_model_messages(CHAT_ROLES + RUN_ROLES):
+        console.print("Phil isn't set up yet. Let's choose your models (about a minute).")
+        if _run_setup(ctx, info.root):
+            config = _load_config(info.root, overrides)
+        else:
+            for message in config.missing_model_messages(CHAT_ROLES):
+                console.print(f"[phil.error]{escape(message)}[/]")
+            raise typer.Exit(1)
     missing = config.missing_model_messages(CHAT_ROLES)
     if missing:
         for message in missing:
             console.print(f"[phil.error]{escape(message)}[/]")
+        console.print("Run phil setup to choose your models.")
         raise typer.Exit(1)
     # The chat starts runs too, and their worker inherits this environment.
     _require_api_keys(config, CHAT_ROLES + RUN_ROLES)
@@ -347,6 +381,8 @@ def run_plan(
     if problems:
         for problem in problems:
             console.print(f"[phil.error]{escape(terminated(problem))}[/]")
+        if config.missing_model_messages(RUN_ROLES):
+            console.print("Run phil setup to choose your models.")
         raise typer.Exit(1)
     _require_api_keys(config, RUN_ROLES)
     if base is not None:
@@ -440,6 +476,7 @@ def models_check(ctx: typer.Context) -> None:
             f"{escape(str(global_config_path()))} or phil.toml.[/]",
             soft_wrap=True,
         )
+        console.print("Run phil setup to choose your models.")
         raise typer.Exit(1)
     for result in results:
         if result.ok:
@@ -451,6 +488,160 @@ def models_check(ctx: typer.Context) -> None:
         console.print(line, soft_wrap=True, highlight=False)
     if not all(result.ok for result in results):
         raise typer.Exit(1)
+
+
+def _setup_io():
+    """Setup's terminal IO (patched in tests, where CliRunner has no real terminal)."""
+    from phil.setup.io import TerminalSetupIO
+
+    return TerminalSetupIO(console)
+
+
+def _run_setup(ctx: typer.Context, root: Path) -> bool:
+    """Build and run setup for `root`'s config, exactly as `phil setup` does: `phil setup`
+    itself and bare `phil`'s auto-start both call this. True if it wrote the global config;
+    False if the user cancelled."""
+    from phil.agents.check import check_models
+    from phil.setup import catalog, write
+    from phil.setup.flow import run_setup
+
+    try:
+        config = load_config(root, overrides=ctx.obj.get("overrides", []))
+    except ConfigError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]", soft_wrap=True)
+        global_path = str(global_config_path())
+        if str(exc).startswith(f"Invalid {global_path}"):
+            console.print(f"Fix {escape(global_path)} or move it aside, then run phil setup again.", soft_wrap=True)
+        raise typer.Exit(1) from exc
+    try:
+        factory = _factory_from_env()
+    except Exception as exc:
+        console.print(
+            f"[phil.error]cannot load PHIL_AGENT_FACTORY: {escape(type(exc).__name__)}: {escape(str(exc))}[/]"
+        )
+        raise typer.Exit(1) from exc
+    # The helpers are looked up when called, so tests can replace them on their modules.
+    return run_setup(
+        _setup_io(),
+        config=config,
+        check=lambda candidate: check_models(candidate, factory=factory, repo_root=root),
+        catalog=lambda: catalog.openrouter_catalog(),
+        ollama=lambda base_url: catalog.ollama_models(base_url),
+        write=lambda path, **fields: write.write_global_config(path, **fields),
+    )
+
+
+@app.command("setup")
+def setup_command(ctx: typer.Context) -> None:
+    """Choose a provider, store its key and pick your models (edits ~/.phil/config.toml)."""
+    if not _run_setup(ctx, _config_root(ctx)):
+        raise typer.Exit(1)
+
+
+def _resolve_keyed_provider(config: PhilConfig, name: str):
+    """`resolve_provider(config, name)`, exiting 1 on an unknown provider (the same message
+    `missing_keys` reports) or on a provider that takes no key."""
+    from phil.agents.providers import UnknownProvider, resolve_provider
+
+    try:
+        spec = resolve_provider(config, name)
+    except UnknownProvider as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    if spec.api_key_env is None:
+        console.print(f"[phil.error]{escape(spec.name)} doesn't use a key.[/]")
+        raise typer.Exit(1)
+    return spec
+
+
+@keys_app.command("set")
+def keys_set(ctx: typer.Context, provider: str) -> None:
+    """Store a provider's API key in the keychain."""
+    from phil.key_store import KeyStoreError, set_key
+
+    root = _config_root(ctx)
+    config = _load_config(root, ctx.obj.get("overrides", []))
+    spec = _resolve_keyed_provider(config, provider)
+    var = spec.api_key_env
+    value = _read_secret(f"{var}: ").strip()
+    if not value:
+        console.print("Nothing saved.")
+        return
+    try:
+        set_key(var, value)
+    except KeyStoreError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    suffix = (
+        f" (the environment value still wins while {var} is exported)" if os.environ.get(var) else ""
+    )
+    console.print(f"Saved {escape(var)} for {escape(spec.name)} in the keychain.{escape(suffix)}")
+
+
+def _providers_to_list(config: PhilConfig):
+    """Every provider some role's model uses, every provider under `[providers]`, and every
+    built-in provider whose key source isn't None — de-duplicated, in that order."""
+    from phil.agents.providers import BUILTIN_PROVIDERS, UnknownProvider, provider_for_model, resolve_provider
+    from phil.key_store import key_source
+
+    seen: dict[str, object] = {}
+
+    def add(spec) -> None:
+        seen.setdefault(spec.name, spec)
+
+    for role in ROLES:
+        try:
+            model = config.model_for(role)
+        except ConfigError:
+            continue
+        try:
+            add(provider_for_model(config, model, role))
+        except UnknownProvider:
+            continue
+    for name in config.providers:
+        try:
+            add(resolve_provider(config, name))
+        except UnknownProvider:
+            continue
+    for name, builtin in BUILTIN_PROVIDERS.items():
+        if builtin.api_key_env and key_source(builtin.api_key_env) is not None:
+            add(resolve_provider(config, name))
+    return list(seen.values())
+
+
+@keys_app.command("list")
+def keys_list(ctx: typer.Context) -> None:
+    """Show where each provider's key comes from. Never shows a value."""
+    from phil.key_store import key_source
+
+    root = _config_root(ctx)
+    config = _load_config(root, ctx.obj.get("overrides", []))
+    for spec in _providers_to_list(config):
+        if spec.api_key_env is None:
+            console.print(f"{escape(spec.name)}  (no key needed)", soft_wrap=True, highlight=False)
+            continue
+        source = key_source(spec.api_key_env) or "missing"
+        console.print(f"{escape(spec.name)}  {escape(spec.api_key_env)}  {source}", soft_wrap=True, highlight=False)
+
+
+@keys_app.command("remove")
+def keys_remove(ctx: typer.Context, provider: str) -> None:
+    """Remove a provider's API key from the keychain."""
+    from phil.key_store import KeyStoreError, delete_key
+
+    root = _config_root(ctx)
+    config = _load_config(root, ctx.obj.get("overrides", []))
+    spec = _resolve_keyed_provider(config, provider)
+    var = spec.api_key_env
+    try:
+        removed = delete_key(var)
+    except KeyStoreError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    if removed:
+        console.print(f"Removed {escape(var)} from the keychain.")
+    else:
+        console.print(f"No {escape(var)} in the keychain.")
 
 
 @app.command("_worker", hidden=True)

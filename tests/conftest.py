@@ -79,6 +79,46 @@ def no_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def memory_keyring(monkeypatch):
+    # Children spawned by `spawn_worker` (e.g. in tests/run/test_launch.py and
+    # tests/cli/test_stop_command.py) don't inherit the `set_keyring` call below — each is a
+    # fresh process that auto-detects its own backend on first use. Without this, a worker
+    # process would fall through to the real OS keychain. `PYTHON_KEYRING_BACKEND` is `keyring`'s
+    # own env var for pinning the backend; children that build their env from `os.environ` (via
+    # `worker_env`, or by inheriting it outright when `env=None`) pick it up automatically.
+    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.null.Keyring")
+
+    import keyring
+    from keyring.backend import KeyringBackend
+
+    class MemoryKeyring(KeyringBackend):
+        priority = 1
+
+        def __init__(self):
+            super().__init__()
+            self.store: dict[tuple[str, str], str] = {}
+
+        def get_password(self, service, username):
+            return self.store.get((service, username))
+
+        def set_password(self, service, username, password):
+            self.store[(service, username)] = password
+
+        def delete_password(self, service, username):
+            from keyring.errors import PasswordDeleteError
+
+            if (service, username) not in self.store:
+                raise PasswordDeleteError(username)
+            del self.store[(service, username)]
+
+    previous = keyring.get_keyring()
+    backend = MemoryKeyring()
+    keyring.set_keyring(backend)
+    yield backend
+    keyring.set_keyring(previous)
+
+
 @pytest.fixture
 def git_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "target"

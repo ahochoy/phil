@@ -72,6 +72,7 @@ def test_models_check_hints_when_no_models_are_configured(git_repo, monkeypatch)
     assert result.exit_code == 1
     assert "No models configured" in result.output
     assert "models.high" in result.output
+    assert "Run phil setup to choose your models." in result.output
 
 
 def test_models_check_skips_global_tiers_that_a_legacy_repo_config_overrides(git_repo, monkeypatch):

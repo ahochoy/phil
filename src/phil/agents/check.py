@@ -1,7 +1,6 @@
 """`phil models check`: one tiny real call per model a role uses, through the agent path Phil uses."""
 
 import json
-import os
 import tempfile
 import time
 from collections.abc import Callable
@@ -15,6 +14,7 @@ from phil.agents.providers import missing_key_message, provider_for_model
 from phil.agents.spec import AgentSpec
 from phil.config import ROLES, TIERS, ConfigError, PhilConfig
 from phil.contracts import Contract
+from phil.key_store import key_lookup
 from phil.packets import build_packet
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
@@ -108,7 +108,7 @@ def _check_one(ctx: AgentContext, model: str, labels: list[str], call: int) -> t
     try:
         # Checked here so the errors name the tiers and roles using the model, not the check's own role.
         provider = provider_for_model(ctx.config, model, labels[0])
-        if provider.api_key_env and not os.environ.get(provider.api_key_env):
+        if provider.api_key_env and not key_lookup().get(provider.api_key_env):
             return False, missing_key_message(provider.name, provider.api_key_env, labels)
         output = invoke_agent(
             MODEL_CHECK, packet, ctx, node="model_check", call=call,

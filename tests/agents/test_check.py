@@ -122,6 +122,18 @@ def test_a_missing_key_names_the_labels_that_use_the_model(tmp_path, monkeypatch
     assert result.detail == "openai needs OPENAI_API_KEY (used by high, low)."
 
 
+def test_the_precheck_passes_with_a_store_only_key(tmp_path, monkeypatch):
+    from phil.key_store import set_key
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    set_key("OPENAI_API_KEY", "sk-TESTSECRET-stored")
+    config = PhilConfig(models={"low": "openai:gpt-x"})
+    factory = ScriptedAgentFactory({"model_check": [OK]})
+    [result] = check_models(config, factory=factory, repo_root=tmp_path)
+    assert result.ok
+    assert factory.remaining() == {"model_check": 0}
+
+
 def test_only_models_some_role_resolves_to_are_checked(tmp_path):
     # A global high/low under a legacy repo config that sets all six roles: the tiers are unused.
     models = {"high": "ollama:big", "low": "ollama:small"} | {role: "ollama:legacy" for role in ROLES}

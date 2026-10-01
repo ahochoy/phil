@@ -397,9 +397,18 @@ def is_secret_name(name: str) -> bool:
     return any(token in _SECRET_TOKENS or token.endswith(_SECRET_SUFFIXES) for token in tokens)
 
 
+# `keyring`'s own variable for pinning its backend. Agent-run commands get the null backend, so
+# code they run can't read Phil's stored keys through `keyring` (stripping the env vars alone
+# would leave that way round).
+KEYRING_BACKEND_VAR = "PYTHON_KEYRING_BACKEND"
+NULL_KEYRING_BACKEND = "keyring.backends.null.Keyring"
+
+
 def child_env(environ: Mapping[str, str], pass_env: Iterable[str] = ()) -> dict[str, str]:
     allowed = set(pass_env)
-    return {name: value for name, value in environ.items() if name in allowed or not is_secret_name(name)}
+    env = {name: value for name, value in environ.items() if name in allowed or not is_secret_name(name)}
+    env[KEYRING_BACKEND_VAR] = NULL_KEYRING_BACKEND
+    return env
 
 
 def _matches_pattern(argv: list[str], pattern_tokens: list[str]) -> bool:
