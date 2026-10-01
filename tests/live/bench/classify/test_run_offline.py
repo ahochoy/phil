@@ -3,11 +3,17 @@
 `judge_llm` replaced). No network, no models."""
 
 import json
+from pathlib import Path
+
+import httpx
+import pytest
 
 from phil.config import ConfigError
 from phil.key_store import KeyStoreError
 from phil.routing.jev import JevError
 from tests.live.bench.classify import run
+
+JEV_FIXTURE = json.loads((Path(__file__).parents[3] / "routing" / "fixtures" / "jev_ok.json").read_text())
 
 # A summary with every condition comfortably passing, to flip one at a time below.
 JEV_PASSING = {"depth_accuracy": 0.85, "answer_as_change": 0, "latency_p95_ms": 50, "cost_per_100": 1.0}
@@ -165,6 +171,49 @@ def test_the_llm_backend_uses_the_low_model_when_the_classifier_is_jev(monkeypat
     config = PhilConfig(models={"low": "openrouter:l", "classifier": "typesafe:jev-latest"})
     [record] = run.run_backend("llm", [CASE], config)
     assert seen == ["openrouter:l"] and record["model"] == "openrouter:l"
+
+
+def _jev_transport(monkeypatch, body: dict) -> None:
+    """Route every `httpx.Client` `judge_jev` builds through a `MockTransport` that returns
+    `body`, however it's called -- `_run_jev` passes no `transport` of its own."""
+    real_client = httpx.Client
+
+    def fake_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", fake_client)
+
+
+def test_the_jev_backend_records_usage_and_cost_from_the_response(monkeypatch):
+    from phil.config import PhilConfig
+
+    _jev_transport(monkeypatch, JEV_FIXTURE)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-TESTSECRET0123456789abcdefABCDEF")
+    monkeypatch.setattr(run, "phil_sha", lambda: "test")
+    config = PhilConfig(models={"classifier": "typesafe:jev-latest"})
+
+    [record] = run.run_backend("jev", [CASE], config)
+
+    assert record["input_tokens"] == 412
+    assert record["output_tokens"] == 3
+    assert record["cost_usd"] == pytest.approx(412 * 0.042 / 1e6)
+
+
+def test_the_jev_backend_leaves_cost_unknown_when_the_response_carries_no_usage(monkeypatch):
+    from phil.config import PhilConfig
+
+    body = {key: value for key, value in JEV_FIXTURE.items() if key != "usage"}
+    _jev_transport(monkeypatch, body)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-TESTSECRET0123456789abcdefABCDEF")
+    monkeypatch.setattr(run, "phil_sha", lambda: "test")
+    config = PhilConfig(models={"classifier": "typesafe:jev-latest"})
+
+    [record] = run.run_backend("jev", [CASE], config)
+
+    assert record["input_tokens"] == 0
+    assert record["output_tokens"] == 0
+    assert record["cost_usd"] is None
 
 
 def test_error_value_keeps_a_configerror_message_since_it_never_carries_a_key_value():

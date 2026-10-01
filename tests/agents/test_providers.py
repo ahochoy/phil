@@ -252,6 +252,18 @@ def test_typesafe_is_a_builtin_systemone_provider():
     assert spec.kind == SYSTEMONE == "systemone"
     assert spec.base_url == "https://api.typesafe.ai/v1"
     assert spec.api_key_env == "TYPESAFE_API_KEY"
+    # TypeSafe's published Jev price: $0.042 per million input tokens, output free.
+    assert spec.input_per_mtok == 0.042
+    assert spec.output_per_mtok == 0.0
+
+
+def test_a_users_typesafe_entry_can_override_the_built_in_jev_price(tmp_path):
+    from phil.config import load_config
+
+    (tmp_path / "phil.toml").write_text("[providers.typesafe]\ninput_per_mtok = 0.1\n")
+    spec = resolve_provider(load_config(tmp_path), "typesafe")
+    assert spec.input_per_mtok == 0.1
+    assert spec.output_per_mtok == 0.0  # the built-in field, not overridden
 
 
 def test_systemone_never_builds_a_chat_model():

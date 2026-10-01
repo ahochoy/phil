@@ -37,7 +37,10 @@ BUILTIN_PROVIDERS: dict[str, ProviderSpec] = {
     "anthropic": ProviderSpec("anthropic", "anthropic", None, "ANTHROPIC_API_KEY", None, None),
     "google": ProviderSpec("google", "google", None, "GOOGLE_API_KEY", None, None),
     "ollama": ProviderSpec("ollama", "openai", "http://localhost:11434/v1", None, 0.0, 0.0),
-    "typesafe": ProviderSpec("typesafe", SYSTEMONE, "https://api.typesafe.ai/v1", "TYPESAFE_API_KEY", None, None),
+    # TypeSafe's published price for Jev as of 2026-10-01: $0.042 per million input tokens, output free.
+    "typesafe": ProviderSpec(
+        "typesafe", SYSTEMONE, "https://api.typesafe.ai/v1", "TYPESAFE_API_KEY", 0.042, 0.0
+    ),
 }
 # Older names kept working for existing configs.
 ALIASES = {"google_genai": "google"}

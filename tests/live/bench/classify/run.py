@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Literal
 
 from phil.agents.invoke import AgentContext
-from phil.agents.providers import provider_for_model, split_model
+from phil.agents.providers import estimate_cost, provider_for_model, split_model
 from phil.config import ConfigError, PhilConfig, RoutingConfig
 from phil.key_store import KeyStoreError, key_lookup
 from phil.routing.jev import JevError, judge_jev
@@ -119,7 +119,17 @@ def _run_jev(cases: list[dict], config: PhilConfig) -> list[dict]:
             judgement = judge_jev(
                 spec, model_name, _state(case), timeout_s=config.routing.jev_timeout_s, environ=key_lookup()
             )
-            records.append(_record(case, "jev", model, latency_ms=judgement.latency_ms, judgement=judgement))
+            if judgement.usage is not None:
+                input_tokens, output_tokens = judgement.usage.input_tokens, judgement.usage.output_tokens
+                cost_usd = estimate_cost(spec, input_tokens, output_tokens)
+            else:  # the response carried no usage
+                input_tokens, output_tokens, cost_usd = 0, 0, None
+            records.append(
+                _record(
+                    case, "jev", model, latency_ms=judgement.latency_ms, judgement=judgement,
+                    input_tokens=input_tokens, output_tokens=output_tokens, cost_usd=cost_usd,
+                )
+            )
         except Exception as exc:  # one bad case never stops the other 39
             latency_ms = int((time.monotonic() - started) * 1000)
             records.append(_record(case, "jev", model, latency_ms=latency_ms, error=_error_value(exc)))

@@ -272,6 +272,8 @@ classifier = "typesafe:jev-latest"
 
     phil keys set typesafe   # prompts for TYPESAFE_API_KEY, stored in the keychain
 
+Jev costs $0.042 per million input tokens; output is free (TypeSafe pricing, Oct 2026).
+
 If Jev errors (a timeout, an auth or rate-limit response, or a malformed reply), that one
 message falls back to your `low` model automatically — Phil prints a dim `Router
 unavailable ({reason}); using your low model.` note and carries on; routing never blocks the
