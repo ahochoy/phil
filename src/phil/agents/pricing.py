@@ -58,6 +58,7 @@ class PriceBook:
         self._loaded = False
         self._failed_at: float | None = None
         self._prices: dict[str, Price] = {}
+        self._catalog: list[tuple[str, float | None, float | None]] = []
 
     def _write_cache_atomically(self, data: dict) -> None:
         # Fetched-at time comes from our own (possibly injected) clock, not the file's mtime,
@@ -111,6 +112,21 @@ class PriceBook:
             prices[model_id] = price
         return prices
 
+    def _parse_catalog(self, data: dict) -> list[tuple[str, float | None, float | None]]:
+        """Every model in the list, in its order: (id, input, output), prices in USD per million
+        tokens, or None where the entry has no usable price (missing, malformed or a router's "-1")."""
+        catalog: list[tuple[str, float | None, float | None]] = []
+        for entry in data.get("data", []):
+            model_id = entry.get("id")
+            if not model_id or not isinstance(model_id, str):
+                continue
+            price = self._prices.get(model_id)
+            if price is None:
+                catalog.append((model_id, None, None))
+            else:
+                catalog.append((model_id, price.prompt * 1e6, price.completion * 1e6))
+        return catalog
+
     def _load(self) -> None:
         if self._loaded:
             return
@@ -140,6 +156,7 @@ class PriceBook:
             self._prices = {}
             return
         self._prices = self._parse(data)
+        self._catalog = self._parse_catalog(data)
         self._loaded = True
 
     def price(self, model: str) -> Price | None:
@@ -152,6 +169,16 @@ class PriceBook:
             return self._prices.get(model_id)
         except Exception:
             return None
+
+    def models(self) -> list[tuple[str, float | None, float | None]]:
+        """The OpenRouter catalog, loading the book if needed: (id, input, output) per model in the
+        list's order, prices in USD per million tokens (None when unpriced). Empty when unavailable."""
+        try:
+            with self._lock:
+                self._load()
+                return list(self._catalog)
+        except Exception:
+            return []
 
     def estimate(self, model: str, input_tokens: int, output_tokens: int) -> float | None:
         try:

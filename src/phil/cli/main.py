@@ -460,6 +460,42 @@ def models_check(ctx: typer.Context) -> None:
         raise typer.Exit(1)
 
 
+def _setup_io():
+    """Setup's terminal IO (patched in tests, where CliRunner has no real terminal)."""
+    from phil.setup.io import TerminalSetupIO
+
+    return TerminalSetupIO(console)
+
+
+@app.command("setup")
+def setup_command(ctx: typer.Context) -> None:
+    """Choose a provider, store its key and pick your models (edits ~/.phil/config.toml)."""
+    from phil.agents.check import check_models
+    from phil.setup.flow import run_setup
+
+    if ctx.obj.get("repo"):
+        root = _resolve(ctx).root
+    else:
+        # Setup is often the first thing run, and not necessarily inside a repository.
+        try:
+            root = resolve_repo(Path.cwd()).root
+        except RepoError:
+            root = Path.cwd()
+    config = _load_config(root, ctx.obj.get("overrides", []))
+    try:
+        factory = _factory_from_env()
+    except Exception as exc:
+        console.print(
+            f"[phil.error]cannot load PHIL_AGENT_FACTORY: {escape(type(exc).__name__)}: {escape(str(exc))}[/]"
+        )
+        raise typer.Exit(1) from exc
+    wrote = run_setup(
+        _setup_io(), config=config, check=lambda candidate: check_models(candidate, factory=factory, repo_root=root)
+    )
+    if not wrote:
+        raise typer.Exit(1)
+
+
 def _resolve_keyed_provider(config: PhilConfig, name: str):
     """`resolve_provider(config, name)`, exiting 1 on an unknown provider (the same message
     `missing_keys` reports) or on a provider that takes no key."""

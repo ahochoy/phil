@@ -21,6 +21,8 @@ dependencies = [
     "langchain-anthropic>=1.7.5",
     "langchain-google-genai>=4.4.0",
     "keyring>=25.7.0",
+    "tomlkit>=0.15.1",
+    "httpx>=0.28.1",
 ]
 
 [project.scripts]
