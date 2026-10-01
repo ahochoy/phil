@@ -23,3 +23,14 @@ class RouteJudgement(Contract):
     needs_detail: float = Field(
         ge=0, le=1, description="Probability (0 to 1) the user must be asked something before work can start."
     )
+
+
+class AnswerInput(Contract):
+    question: str
+    context: str = ""  # e.g. an earlier diagnosis, or the last few chat turns
+    repo_overview: str = ""
+
+
+class Answer(Contract):
+    text: str = Field(description="The answer, in plain prose; short unless the question needs more.")
+    files: list[str] = Field(default=[], description="Repo-relative files the answer relies on.")

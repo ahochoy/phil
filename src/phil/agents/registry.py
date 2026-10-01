@@ -15,7 +15,10 @@ from phil.contracts import (
     TesterInput,
     TesterReport,
 )
-from phil.contracts.routing import RouteInput, RouteJudgement
+from phil.contracts.routing import Answer, AnswerInput, RouteInput, RouteJudgement
+
+# The answerer's model-call budget: its last allowed call must answer (see phil.agents.factory).
+ANSWER_MAX_MODEL_CALLS = 12
 
 SPECS: dict[str, AgentSpec] = {
     "intake": AgentSpec("intake", "orchestrator", IntakeInput, Goal, harness="lean", end_on_text=True),
@@ -29,6 +32,10 @@ SPECS: dict[str, AgentSpec] = {
     "btw": AgentSpec("btw", "orchestrator", BtwInput, Brief, writes_files=False),
     "route": AgentSpec(
         "route", "classifier", RouteInput, RouteJudgement, harness="lean", shared_prompt=False, end_on_text=True
+    ),
+    "answer": AgentSpec(
+        "answer", "answerer", AnswerInput, Answer, tools=("shell",), harness="light", shared_prompt=False,
+        read_only_shell=True, max_model_calls=ANSWER_MAX_MODEL_CALLS,
     ),
 }
 

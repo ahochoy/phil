@@ -53,7 +53,70 @@ def build_agent(
     without one, `model`'s provider must be a built-in."""
     if spec.harness == "lean":
         return _build_lean_agent(spec, model, tools, timeout_s, provider)
+    if spec.harness == "light":
+        return _build_light_agent(spec, model, workdir, tools, timeout_s, provider)
     return _build_deep_agent(spec, model, workdir, tools, timeout_s, provider)
+
+
+READ_TOOLS = ("ls", "read_file", "glob", "grep")
+ANSWER_NOW = "Your tool budget is used up. Answer now with what you have found, and say what you didn't check."
+
+
+def _call_budget_middleware(max_calls: int) -> Any:
+    """On the last allowed model call, remove the tools and tell the model to answer, so a
+    capped agent still returns its structured output instead of hitting a recursion limit.
+    (ToolStrategy adds its structured-output tool after this middleware runs, so `tools=[]`
+    leaves the model exactly one tool: the answer.)"""
+    from langchain.agents.middleware import AgentMiddleware
+
+    class CallBudget(AgentMiddleware):
+        def wrap_model_call(self, request: Any, handler: Any) -> Any:
+            calls = sum(1 for m in request.state["messages"] if getattr(m, "type", None) == "ai")
+            if calls >= max_calls - 1:
+                request = request.override(tools=[], system_prompt=f"{request.system_prompt}\n\n{ANSWER_NOW}")
+            return handler(request)
+
+    return CallBudget()
+
+
+def _build_light_agent(
+    spec: AgentSpec,
+    model: str,
+    workdir: Path | None,
+    tools: list[Callable[..., str]],
+    timeout_s: int,
+    provider: ProviderSpec | None,
+) -> Any:
+    if workdir is None:
+        raise ValueError(f"{spec.name} uses the light harness, which needs a workdir")
+    if spec.writes_files:
+        # The write tools would need filesystem_permissions (.git and phil.toml denied); M3b adds
+        # them through FilesystemMiddleware(_permissions=...).
+        raise ValueError("light harness with writes_files is not supported yet")
+    from deepagents.backends.filesystem import FilesystemBackend
+    from deepagents.middleware.filesystem import FilesystemMiddleware
+    from langchain.agents import create_agent
+
+    from phil.agents.model_retry import PhilModelRetryMiddleware
+
+    filesystem = FilesystemMiddleware(
+        backend=FilesystemBackend(root_dir=workdir, virtual_mode=True),
+        tools=list(READ_TOOLS),
+        # deepagents offloads oversized tool results and user messages to the backend, which here
+        # is the repository itself: a read-only agent must not write there.
+        tool_token_limit_before_evict=None,
+        human_message_token_limit_before_evict=None,
+    )
+    middleware: list[Any] = [filesystem, PhilModelRetryMiddleware()]
+    if spec.max_model_calls is not None:
+        middleware.append(_call_budget_middleware(spec.max_model_calls))
+    return create_agent(
+        chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
+        tools=tools,
+        system_prompt=load_prompt(spec),
+        response_format=_tool_strategy(spec),
+        middleware=middleware,
+    )
 
 
 def _build_lean_agent(
