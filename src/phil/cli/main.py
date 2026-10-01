@@ -59,6 +59,7 @@ _read_secret = getpass.getpass
 # (its worker process hasn't written a pid/heartbeat yet); older than this, treat it as a worker
 # that never started and let `phil resume` continue it from scratch.
 PENDING_STALE_AFTER_S = 30.0
+FULL_FROM_TERMINAL = "full is only available in the chat that started this run; answer retry or abort."
 
 SET_HELP = "Override a setting for this command, e.g. --set run.max_cost_usd=5 (repeatable)."
 
@@ -703,6 +704,10 @@ def resume(
                 f"[phil.error]unknown action {escape(repr(action))}; choose one of: {escape(', '.join(options))}[/]"
             )
             raise typer.Exit(2)
+        if action == "full":
+            # Planning the goal fully needs the chat that holds it.
+            console.print(f"[phil.error]{FULL_FROM_TERMINAL}[/]")
+            raise typer.Exit(1)
         decision = {"action": action} | ({"hint": hint} if hint else {})
         spawn_worker(info.root, run_id, "resume", decision)
         console.print(f"Resuming [phil.id]{escape(run_id)}[/] with {escape(action)}.")

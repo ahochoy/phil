@@ -57,6 +57,9 @@ def test_architect_prompt_documents_prior_attempt():
     spec = get_spec("architect")
     prompt = load_prompt(spec)
     assert "prior_attempt" in prompt
+    # It applies to the first plan too, so it has its own section before "Revisions".
+    section = prompt.index("## Prior attempt")
+    assert section < prompt.index("`prior_attempt`") < prompt.index("## Revisions")
 
 
 def test_answer_prompt_documents_diagnosis():

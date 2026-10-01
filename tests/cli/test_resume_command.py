@@ -132,3 +132,15 @@ def test_resume_refuses_while_a_spawned_worker_is_starting(run):
     assert result.exit_code == 1
     assert "already has a running worker" in result.output
     assert spawned == []
+
+
+def test_full_is_refused_from_the_terminal(run):
+    repo, run_id, conn, events, spawned = run
+    update_run(conn, run_id, state="running")
+    update_run(conn, run_id, state="escalated", needs_attention="FIX-001 failed 2 attempts")
+    events.append("escalation", escalation={"summary": "FIX-001 failed 2 attempts", "options": ["full", "retry", "abort"]})
+    result = invoke(repo, run_id, "--action", "full")
+    assert result.exit_code == 1
+    message = "full is only available in the chat that started this run; answer retry or abort."
+    assert message in " ".join(result.output.split())
+    assert spawned == []

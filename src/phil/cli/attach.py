@@ -99,7 +99,9 @@ def attach(
         if record.state == "escalated" and not alive:
             latest = events.latest("escalation")
             escalation = latest["escalation"] if latest else {"summary": record.needs_attention or "", "options": ["abort"]}
-            action = io.choose(_prompt(escalation), escalation["options"])
+            # `full` plans the goal again, which only the chat that started the run can do.
+            options = [option for option in escalation["options"] if option != "full"]
+            action = io.choose(_prompt(escalation), options)
             decision: dict = {"action": action}
             if action == "retry":
                 hint = io.ask_hint()

@@ -2,7 +2,9 @@
 
 import json
 
+from phil.chat.controller import WAKE
 from phil.contracts import Task
+from phil.contracts.results import AttemptWorklog
 from phil.contracts.routing import Answer
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
@@ -11,6 +13,7 @@ from phil.store.runs import get_run
 from phil.repo import resolve_repo
 from tests.chat.conftest import critique, goal, plan
 from tests.chat.test_controller import FULL_SCRIPT, run_chat, transcript
+from tests.chat.test_controller_run import escalate, set_state
 from tests.chat.test_routing_flow import FIX_PROMPT, payloads, peek, route
 from tests.helpers import run_git
 
@@ -314,6 +317,133 @@ def test_a_forced_ask_that_is_not_a_diagnosis_gets_no_offer(calc_repo):
     )
     assert FIX_PROMPT not in prompts
     assert seen["stage"] == "idle"
+
+
+MOVING = "Moving this to a full plan, with what the quick attempt learned."
+QUICK_OPTIONS = ("full", "retry", "abort")
+TRIED = "Renamed ad to add; the gate still failed on test_sum"
+
+
+def quick_then_full_scripts():
+    return {"route": [route("simple_change")], "intake": [quick_goal()], **PLANNERS}
+
+
+def aborted(handoff=None):
+    """The resume worker took the `full` answer: it wrote the handoff (unless None) and aborted the run."""
+
+    def step(controller):
+        if handoff is not None:
+            path = ProjectPaths(controller.info.slug).run_dir(controller._run_id) / "handoff" / "prior_attempt.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(handoff if isinstance(handoff, str) else json.dumps(handoff))
+        set_state(controller, "aborted", needs_attention="moved to a full plan")
+        controller._watcher.poll_once()
+        return WAKE
+
+    return step
+
+
+def worklog():
+    return AttemptWorklog(files_changed=["calc.py"], notes=[TRIED]).model_dump(mode="json")
+
+
+def test_full_at_a_quick_runs_pause_resumes_it_with_full(calc_repo):
+    detectable(calc_repo)
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["fix the typo in calc", escalate("FIX-001 failed 2 attempts", QUICK_OPTIONS), "full"],
+        quick_then_full_scripts(),
+    )
+    [run] = runs
+    assert [(m, d) for _, m, d in spawned] == [("start", None), ("resume", {"action": "full"})]
+    assert prompts[2] == "FIX-001 failed 2 attempts — full / retry / abort › "
+    assert MOVING in text
+    assert text.index(MOVING) < text.index(f"Resuming {run.run_id} with full.")
+
+
+def test_the_aborted_quick_run_is_planned_fully_with_its_worklogs(calc_repo):
+    detectable(calc_repo)
+    handoff = {"worklogs": [worklog(), {"bogus": 1}], "open_issues": []}
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["fix the typo in calc", escalate("FIX-001 failed 2 attempts", QUICK_OPTIONS), "full", aborted(handoff), "y"],
+        quick_then_full_scripts(),
+    )
+    quick_id = spawned[0][0]
+    [architect] = payloads(factory, "architect")
+    assert TRIED in architect and "bogus" not in architect  # the invalid worklog is skipped
+    assert "Fix the typo in calc" in architect  # the original goal
+    assert factory.remaining() == {"route": 0, "intake": 0, "architect": 0, "critic": 0}
+    assert APPROVE in prompts
+    # The quick run's own completion notice and PR offer aren't shown: the move-to-full line, then planning.
+    assert f"Run {quick_id} was aborted." not in text and "Open a PR" not in text
+    assert text.index(MOVING) < text.index("Planning…") < text.index("Plan CALC v1")
+    full_id = spawned[-1][0]
+    assert [(m, d) for _, m, d in spawned] == [("start", None), ("resume", {"action": "full"}), ("start", None)]
+    assert full_id != quick_id
+    assert run_depth(calc_repo, quick_id) == "quick" and run_depth(calc_repo, full_id) == "full"
+    assert {r.run_id for r in runs} == {quick_id, full_id}
+    [approved] = notes(calc_repo, "approved")
+    assert approved["depth"] == "full" and approved["run_id"] == full_id
+    assert notes(calc_repo, "prior_attempt_unreadable") == []
+
+
+def test_a_missing_handoff_still_plans_without_a_prior_attempt(calc_repo):
+    detectable(calc_repo)
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["fix the typo in calc", escalate("FIX-001 failed 2 attempts", QUICK_OPTIONS), "full", aborted(), "y"],
+        quick_then_full_scripts(),
+    )
+    [architect] = payloads(factory, "architect")
+    assert field("prior_attempt", []) in architect
+    assert "Plan CALC v1" in text and APPROVE in prompts
+    [unreadable] = notes(calc_repo, "prior_attempt_unreadable")
+    assert unreadable["run_id"] == spawned[0][0] and "FileNotFoundError" in unreadable["error"]
+    assert run_depth(calc_repo, spawned[-1][0]) == "full"
+
+
+def test_an_unreadable_handoff_still_plans(calc_repo):
+    detectable(calc_repo)
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["fix the typo in calc", escalate("FIX-001 failed 2 attempts", QUICK_OPTIONS), "full", aborted("{not json"), "n"],
+        quick_then_full_scripts(),
+    )
+    [architect] = payloads(factory, "architect")
+    assert field("prior_attempt", []) in architect
+    assert APPROVE in prompts
+    [unreadable] = notes(calc_repo, "prior_attempt_unreadable")
+    assert "JSONDecodeError" in unreadable["error"]
+
+
+def test_abort_at_a_quick_runs_pause_is_not_moved_to_full(calc_repo):
+    detectable(calc_repo)
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["fix the typo in calc", escalate("FIX-001 failed 2 attempts", QUICK_OPTIONS), "abort", aborted()],
+        quick_then_full_scripts(),
+    )
+    quick_id = spawned[0][0]
+    assert MOVING not in text and "Planning…" not in text
+    assert f"Run {quick_id} was aborted." in text
+    assert factory.remaining()["architect"] == 1
+
+
+def test_full_after_the_run_moved_on_is_forgotten(calc_repo):
+    def moved_on_then_full(controller):
+        set_state(controller, "running")  # not polled yet: the chat still shows the question
+        return "full"
+
+    detectable(calc_repo)
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["fix the typo in calc", escalate("FIX-001 failed 2 attempts", QUICK_OPTIONS), moved_on_then_full, aborted()],
+        quick_then_full_scripts(),
+    )
+    assert "The run moved on; nothing to answer." in text
+    assert [m for _, m, _ in spawned] == ["start"]
+    assert f"Run {spawned[0][0]} was aborted." in text and "Planning…" not in text
 
 
 def test_the_full_paths_approved_run_records_full(calc_repo):

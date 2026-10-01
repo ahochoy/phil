@@ -1,3 +1,4 @@
+import json
 import logging
 import queue
 import shutil
@@ -9,6 +10,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
@@ -33,6 +35,7 @@ from phil.chat.state import ChatState, RunView
 from phil.chat.watcher import RunWatcher
 from phil.config import ConfigError, PhilConfig, load_config
 from phil.contracts import Goal, Plan, PlanCritique, Ref, RunStatus
+from phil.contracts.results import AttemptWorklog
 from phil.contracts.routing import Answer
 from phil.publish import publisher as publishing
 from phil.publish.service import PrChange, PublishRefused, change_line, publish_run, sweep_prs
@@ -74,6 +77,7 @@ PROMPTS = {
     "confirm_fix": "Fix it? [Enter = quick fix / full = plan it / n] › ",
 }
 QUICK_FALLBACK = "Couldn't plan this as a quick change; planning it fully."
+MOVING_TO_FULL = "Moving this to a full plan, with what the quick attempt learned."
 # The transcript's `stage` label for a non-command input typed at each chat stage (4a's labels).
 TRANSCRIPT_STAGES = {
     "idle": "goal", "intake": "goal", "planning": "goal", "running": "goal", "questions": "answers",
@@ -189,6 +193,8 @@ class ChatController:
         # The pause was answered and a resume worker spawned; the question comes back if the worker
         # exits without taking the run (the watcher re-posts the same escalation).
         self._answer_sent = False
+        # (goal text, goal) of a quick run answered with `full`: its aborted run_done plans the goal fully.
+        self._full_handoff: tuple[str, Goal | None] | None = None
         self._worker_alive, self._worker_starting = worker_alive, worker_starting
         self._lost = False  # the watcher saw the worker stop responding
         self._btw_calls = 0
@@ -795,7 +801,7 @@ class ChatController:
         self._set_stage("intake")
         self._intake_job(self._goal_text, previous=self._goal, answers=[text])
 
-    def _plan(self, goal: Goal) -> None:
+    def _plan(self, goal: Goal, prior_attempt: Sequence[AttemptWorklog] = ()) -> None:
         if goal.open_questions:
             self.console.print(f"[phil.muted]Planning with open questions: {len(goal.open_questions)}[/]")
         render_goal(self.console, goal)
@@ -808,7 +814,7 @@ class ChatController:
             self._step("snapshot", generation)
             tree = self._snapshot(generation)
             on_step = lambda step: self._step(step, generation)  # noqa: E731
-            return {"draft": self.planner.draft(goal, tree, on_step=on_step, ctx=ctx)}
+            return {"draft": self.planner.draft(goal, tree, on_step=on_step, ctx=ctx, prior_attempt=prior_attempt)}
 
         self._job("plan_ready", fn)
 
@@ -1069,7 +1075,7 @@ class ChatController:
             self.console.print(
                 f"[phil.warn]The worker exited without resuming the run; see {escape(str(log))}[/]"
             )
-        self._pause, self._answer_sent = escalation, False
+        self._pause, self._answer_sent, self._full_handoff = escalation, False, None
         self.state.set_paused(True)
         self._safe_note("run_paused", run_id=self._run_id, escalation=escalation)
         self.console.print(
@@ -1095,7 +1101,13 @@ class ChatController:
         if choice == "retry":
             self._set_stage("hint")
             return
+        if choice == "full":
+            # The quick run ends as aborted; its run_done starts full planning of the same goal.
+            self._full_handoff = (self._goal_text, self._goal)
+            self.console.print(MOVING_TO_FULL)
         self._resume_run({"action": choice})
+        if not self._answer_sent:
+            self._full_handoff = None  # the run moved on or the worker didn't start: nothing to hand off
 
     def _hint(self, text: str) -> None:
         self._resume_run({"action": "retry"} | ({"hint": text} if text else {}))
@@ -1147,10 +1159,39 @@ class ChatController:
             self._done_seen = True
             self._run_id = None
             self._reset_goal()  # the chat takes its next goal
+        handoff, self._full_handoff = self._full_handoff, None
+        if handoff is not None and handoff[1] is not None and state == "aborted":
+            self._move_to_full(run_id, handoff)  # no notice or PR offer for the quick run
+            return
         self._set_stage("idle")
         self._run_notice(run_id, state, data)
         if state == "completed":
             self._offer_pr(run_id)
+
+    def _move_to_full(self, run_id: str, handoff: tuple[str, Goal | None]) -> None:
+        """A quick run answered with `full` ended: plan its goal fully, with what the attempt learned."""
+        worklogs = self._prior_attempt(run_id)
+        self._forget_run()
+        self._goal_text, self._goal = handoff
+        self._plan(self._goal, prior_attempt=worklogs)
+
+    def _prior_attempt(self, run_id: str) -> list[AttemptWorklog]:
+        """The quick run's worklogs from its handoff; [] (with a note) when it's missing or unreadable."""
+        path = ProjectPaths(self.info.slug).run_dir(run_id) / "handoff" / "prior_attempt.json"
+        try:
+            items = json.loads(path.read_text())["worklogs"]
+            if not isinstance(items, list):
+                raise TypeError(f"worklogs is a {type(items).__name__}, not a list")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self._safe_note("prior_attempt_unreadable", run_id=run_id, error=f"{type(exc).__name__}: {exc}")
+            return []
+        worklogs = []
+        for item in items:
+            try:
+                worklogs.append(AttemptWorklog.model_validate(item))
+            except ValidationError:
+                logger.warning("skipped an invalid worklog in %s", path, exc_info=True)
+        return worklogs
 
     def _run_notice(self, run_id: str, state: str, data: dict) -> None:
         rid = escape(run_id)
