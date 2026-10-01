@@ -1,3 +1,4 @@
+import getpass
 import importlib
 import json
 import logging
@@ -18,6 +19,7 @@ from phil import __version__
 from phil.chat.approval import git_policy_note, launch_problems, terminated
 from phil.config import (
     CHAT_ROLES,
+    ROLES,
     RUN_ROLES,
     ConfigError,
     PhilConfig,
@@ -46,7 +48,12 @@ logger.addHandler(logging.NullHandler())
 app = typer.Typer(add_completion=False, help="Phil: a contract-driven coding agent.")
 models_app = typer.Typer(help="Check the configured models.")
 app.add_typer(models_app, name="models")
+keys_app = typer.Typer(help="Store, list and remove provider API keys.")
+app.add_typer(keys_app, name="keys")
 console = make_console()
+
+# `getpass.getpass` itself, as a module attribute tests can monkeypatch.
+_read_secret = getpass.getpass
 
 # A pending run whose row was updated more recently than this is assumed to still be starting
 # (its worker process hasn't written a pid/heartbeat yet); older than this, treat it as a worker
@@ -451,6 +458,112 @@ def models_check(ctx: typer.Context) -> None:
         console.print(line, soft_wrap=True, highlight=False)
     if not all(result.ok for result in results):
         raise typer.Exit(1)
+
+
+def _resolve_keyed_provider(config: PhilConfig, name: str):
+    """`resolve_provider(config, name)`, exiting 1 on an unknown provider (the same message
+    `missing_keys` reports) or on a provider that takes no key."""
+    from phil.agents.providers import UnknownProvider, resolve_provider
+
+    try:
+        spec = resolve_provider(config, name)
+    except UnknownProvider as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    if spec.api_key_env is None:
+        console.print(f"[phil.error]{escape(spec.name)} doesn't use a key.[/]")
+        raise typer.Exit(1)
+    return spec
+
+
+@keys_app.command("set")
+def keys_set(ctx: typer.Context, provider: str) -> None:
+    """Store a provider's API key in the keychain."""
+    from phil.key_store import KeyStoreError, set_key
+
+    info = _resolve(ctx)
+    config = _load_config(info.root, ctx.obj.get("overrides", []))
+    spec = _resolve_keyed_provider(config, provider)
+    var = spec.api_key_env
+    value = _read_secret(f"{var}: ")
+    if not value:
+        console.print("Nothing saved.")
+        return
+    try:
+        set_key(var, value)
+    except KeyStoreError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    suffix = (
+        f" (the environment value still wins while {var} is exported)" if os.environ.get(var) else ""
+    )
+    console.print(f"Saved {escape(var)} for {escape(spec.name)} in the keychain.{escape(suffix)}")
+
+
+def _providers_to_list(config: PhilConfig):
+    """Every provider some role's model uses, every provider under `[providers]`, and every
+    built-in provider whose key source isn't None — de-duplicated, in that order."""
+    from phil.agents.providers import BUILTIN_PROVIDERS, UnknownProvider, provider_for_model, resolve_provider
+    from phil.key_store import key_source
+
+    seen: dict[str, object] = {}
+
+    def add(spec) -> None:
+        seen.setdefault(spec.name, spec)
+
+    for role in ROLES:
+        try:
+            model = config.model_for(role)
+        except ConfigError:
+            continue
+        try:
+            add(provider_for_model(config, model, role))
+        except UnknownProvider:
+            continue
+    for name in config.providers:
+        try:
+            add(resolve_provider(config, name))
+        except UnknownProvider:
+            continue
+    for name, builtin in BUILTIN_PROVIDERS.items():
+        if builtin.api_key_env and key_source(builtin.api_key_env) is not None:
+            add(resolve_provider(config, name))
+    return list(seen.values())
+
+
+@keys_app.command("list")
+def keys_list(ctx: typer.Context) -> None:
+    """Show where each provider's key comes from. Never shows a value."""
+    from phil.key_store import key_source
+
+    info = _resolve(ctx)
+    config = _load_config(info.root, ctx.obj.get("overrides", []))
+    for spec in _providers_to_list(config):
+        if spec.api_key_env is None:
+            console.print(f"{escape(spec.name)}  (no key needed)", soft_wrap=True, highlight=False)
+            continue
+        source = key_source(spec.api_key_env) or "missing"
+        console.print(f"{escape(spec.name)}  {escape(spec.api_key_env)}  {source}", soft_wrap=True, highlight=False)
+
+
+@keys_app.command("remove")
+def keys_remove(ctx: typer.Context, provider: str) -> None:
+    """Remove a provider's API key from the keychain."""
+    from phil.key_store import KeyStoreError, delete_key
+
+    info = _resolve(ctx)
+    config = _load_config(info.root, ctx.obj.get("overrides", []))
+    spec = _resolve_keyed_provider(config, provider)
+    var = spec.api_key_env
+    try:
+        removed = delete_key(var)
+    except KeyStoreError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
+    if removed:
+        console.print(f"Removed {escape(var)} from the keychain.")
+    else:
+        console.print(f"No {escape(var)} in the keychain.")
 
 
 @app.command("_worker", hidden=True)
