@@ -195,10 +195,13 @@ def test_an_openrouter_search_also_offers_the_id_as_typed(tmp_path):
 
 
 def test_a_tier_no_role_maps_to_is_shown_as_unused(tmp_path, git_repo):
-    (git_repo / "phil.toml").write_text('[tiers]\norchestrator = "high"\nimplementer = "high"\ntester = "high"\n')
+    # Every high-tier role remapped to "low", so no role maps through "high" and it's reported as
+    # unused. ("low" can't be used for this: the classifier role falls back to it whenever it has
+    # no model of its own, so "low" is always in use once it's set.)
+    (git_repo / "phil.toml").write_text('[tiers]\narchitect = "low"\ncritic = "low"\nreviewer = "low"\n')
     wrote, io, _ = setup(["", SECRET, "", ""], tmp_path, config=load_config(git_repo))
     assert wrote is True
-    assert f"– low  {SUGGESTED_LOW}  unused (no role maps to it)" in io.lines
+    assert f"– high  {SUGGESTED_HIGH}  unused (no role maps to it)" in io.lines
 
 
 def test_a_write_error_is_said_and_nothing_is_reported_as_written(tmp_path):

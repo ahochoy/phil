@@ -3,7 +3,17 @@ from pathlib import Path
 
 import pytest
 
-from phil.config import ConfigError, PhilConfig, effective_toml, global_config_path, load_config, parse_override
+from phil.config import (
+    CHAT_ROLES,
+    DEFAULT_TIERS,
+    ROLES,
+    ConfigError,
+    PhilConfig,
+    effective_toml,
+    global_config_path,
+    load_config,
+    parse_override,
+)
 from phil.store.paths import phil_home
 from tests.helpers import TEST_MODELS
 
@@ -376,3 +386,43 @@ def test_effective_toml_prints_no_empty_table_headers(tmp_path):
     text = effective_toml(load_config(tmp_path))
     assert "[providers]\n" not in text
     assert '[providers.lab]\nkind = "openai"  # from phil.toml\n' in text
+
+
+def test_classifier_and_answerer_roles_resolve_through_their_tiers():
+    config = PhilConfig(models={"high": "openrouter:h", "low": "openrouter:l"})
+    assert "classifier" in ROLES and "answerer" in ROLES
+    assert DEFAULT_TIERS["classifier"] == "classifier"
+    assert config.model_for("classifier") == "openrouter:l"  # classifier tier falls back to low
+    assert config.model_owner("classifier") == "low"
+    assert config.model_for("answerer") == "openrouter:l"
+    assert "answerer" in CHAT_ROLES and "classifier" not in CHAT_ROLES
+
+
+def test_routing_defaults_and_bounds():
+    config = PhilConfig()
+    assert config.routing.confidence_threshold == 0.5
+    assert config.routing.detail_threshold == 0.6
+    assert config.routing.jev_timeout_s == 5.0
+    with pytest.raises(ValueError):
+        PhilConfig.model_validate({"routing": {"confidence_threshold": 1.5}})
+    with pytest.raises(ValueError):
+        PhilConfig.model_validate({"routing": {"jev_timeout_s": 0}})
+
+
+def test_typesafe_classifier_is_allowed():
+    config = PhilConfig(models={"low": "openrouter:l", "classifier": "typesafe:jev-latest"})
+    assert config.model_for("classifier") == "typesafe:jev-latest"
+    assert config.is_systemone("classifier") is True
+    assert config.is_systemone("orchestrator") is False
+
+
+@pytest.mark.parametrize(
+    "models",
+    [
+        {"low": "typesafe:jev-latest"},  # every low role, not just the classifier
+        {"low": "openrouter:l", "orchestrator": "typesafe:jev-latest"},
+    ],
+)
+def test_typesafe_on_any_other_role_is_a_config_error(models):
+    with pytest.raises(ValueError, match="typesafe.*only.*classifier"):
+        PhilConfig(models=models)

@@ -44,13 +44,14 @@ def test_role_keys_that_override_their_tier_are_checked_too(tmp_path):
     config = PhilConfig(
         models={"high": "ollama:big", "low": "ollama:small", "classifier": "ollama:tiny", "critic": "ollama:judge"}
     )
-    factory = ScriptedAgentFactory({"model_check": [OK, OK, OK]})
+    factory = ScriptedAgentFactory({"model_check": [OK, OK, OK, OK]})
     results = check_models(config, factory=factory, repo_root=tmp_path)
     assert [(r.label, r.model) for r in results] == [
         ("high", "ollama:big"),
         ("low", "ollama:small"),
         ("role:critic", "ollama:judge"),
-    ]  # no role maps to classifier, so it isn't called
+        ("role:classifier", "ollama:tiny"),  # the classifier role's own key, not the bare tier
+    ]
     assert factory.remaining() == {"model_check": 0}
 
 
@@ -135,7 +136,9 @@ def test_the_precheck_passes_with_a_store_only_key(tmp_path, monkeypatch):
 
 
 def test_only_models_some_role_resolves_to_are_checked(tmp_path):
-    # A global high/low under a legacy repo config that sets all six roles: the tiers are unused.
+    # A global high/low under a legacy repo config that sets every role: the tiers are unused.
+    # The dict also sets models["classifier"] (since "classifier" is one of ROLES), which is the
+    # same key as the classifier tier bucket, so that tier shows up as unused too.
     models = {"high": "ollama:big", "low": "ollama:small"} | {role: "ollama:legacy" for role in ROLES}
     config = PhilConfig(models=models)
     assert check_targets(config) == [("ollama:legacy", [f"role:{role}" for role in ROLES])]
@@ -143,12 +146,18 @@ def test_only_models_some_role_resolves_to_are_checked(tmp_path):
     [result] = check_models(config, factory=factory, repo_root=tmp_path)
     assert (result.model, result.ok) == ("ollama:legacy", True)
     assert factory.remaining() == {"model_check": 0}
-    assert unused_tiers(config) == [("high", "ollama:big"), ("low", "ollama:small")]
+    assert unused_tiers(config) == [
+        ("high", "ollama:big"), ("low", "ollama:small"), ("classifier", "ollama:legacy"),
+    ]
 
 
 def test_a_tier_no_role_maps_to_is_unused(tmp_path):
+    # Setting models["classifier"] sets both the classifier tier's bucket model and (since
+    # "classifier" is also a role) the classifier role's own model, so both appear: the role's
+    # own key is checked directly (label "role:classifier"), and the bare tier is still reported
+    # as unused (no OTHER role is tier-remapped onto it).
     config = PhilConfig(models={"high": "ollama:big", "low": "ollama:small", "classifier": "ollama:tiny"})
-    assert [model for model, _ in check_targets(config)] == ["ollama:big", "ollama:small"]
+    assert [model for model, _ in check_targets(config)] == ["ollama:big", "ollama:small", "ollama:tiny"]
     assert unused_tiers(config) == [("classifier", "ollama:tiny")]
 
 
@@ -158,6 +167,7 @@ def test_a_tier_remapped_role_labels_its_new_tier(tmp_path):
         tiers={"tester": "classifier"},
     )
     assert check_targets(config) == [
-        ("ollama:big", ["high"]), ("ollama:small", ["low"]), ("ollama:tiny", ["classifier"]),
+        ("ollama:big", ["high"]), ("ollama:small", ["low"]),
+        ("ollama:tiny", ["classifier", "role:classifier"]),  # tester's remap, and the classifier role itself
     ]
     assert unused_tiers(config) == []

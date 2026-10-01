@@ -88,4 +88,7 @@ def test_models_check_skips_global_tiers_that_a_legacy_repo_config_overrides(git
         f"✓ {labels}  ollama:legacy  <t>",
         "– high  ollama:big  unused (no role maps to it)",
         "– low  ollama:small  unused (no role maps to it)",
+        # the repo's `classifier = "ollama:legacy"` role key is also the classifier tier's bucket;
+        # it's checked under role:classifier (above), so the bare tier shows unused too.
+        "– classifier  ollama:legacy  unused (no role maps to it)",
     ]
