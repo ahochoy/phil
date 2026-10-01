@@ -72,11 +72,11 @@ class Classifier(Protocol):
 {
   "request": "<the user's message>",
   "chat": ["<up to the last 4 turns, each trimmed to 400 chars>"],
-  "repo": {"languages": [], "test_cmd": "...", "check_cmds": [], "file_count": 0}
+  "repo": {"test_cmd": "npm test", "files": ["<up to 60 tracked paths>"], "file_count": 0}
 }
 ```
 
-The `repo` fields come from the existing detection (`repo_detect`); M3 adds nothing new there.
+The `repo` fields come from what Phil already has: `detect_test_cmd` and `git ls-files`. M3 adds no new detection.
 
 ### 3.3 Questions asked
 
@@ -124,9 +124,9 @@ Evaluated in order:
 
 - A new role, **`answerer`**, on the `low` tier (`DEFAULT_TIERS`). It is a deep agent with **read-only** tools only:
   - `ls`, `read_file`, `glob`, `grep`;
-  - M1's read-only shell allowlist.
+  - a shell tool limited to M1's read-only commands. The project allowlist (`shell.allow`, e.g. `pytest`) does not apply, because running tests can write files.
 
-  It has no write or edit tools, no general-purpose sub-agent and no summarization.
+  It has no write or edit tools, no general-purpose sub-agent and no summarization. It reads the live repository root, so uncommitted edits are visible.
 - **Call cap:** 12 model calls, enforced through the recursion limit. At the cap, it answers with what it has found so far and says so.
 - **Output contract:** `Answer {text: str, files: list[str]}`. It is shown in chat and recorded in the chat log. It creates no run, worktree or commit.
 - **Diagnosis:** the reply ends with `Fix it? (Enter = quick fix, /full = plan it)`. Accepting starts the quick or full path, with the answer passed to intake as context.
@@ -151,6 +151,10 @@ Evaluated in order:
   ```
 
   Choosing Jev runs the M2b hidden key prompt and writes only `[models] classifier`.
+
+### 3.8 Between M3a and M3b
+
+M3a routes and records the `quick` depth, but quick goals still go through the full pipeline until M3b lands. The status line says `Simple change · planning`, not "quick path", so it doesn't claim a shortcut that isn't there yet. Diagnosis's `Fix it?` offer starts a normal goal.
 
 ## 4. Quick path (M3b)
 
