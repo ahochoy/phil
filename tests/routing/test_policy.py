@@ -27,6 +27,10 @@ def test_every_class_has_a_depth_and_other_has_none():
         ("fix the typo", (None, "fix the typo")),
         ("/asking is not an override", (None, "/asking is not an override")),
         ("/btw hi", (None, "/btw hi")),
+        ("/ask\nwhat does calc do", ("answer", "what does calc do")),
+        ("/ask\twhat does calc do", ("answer", "what does calc do")),
+        ("/full\n\n add auth\nwith tokens", ("full", "add auth\nwith tokens")),
+        ("  /quick  ", ("quick", "")),
     ],
 )
 def test_parse_override(text, expected):

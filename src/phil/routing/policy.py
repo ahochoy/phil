@@ -20,12 +20,12 @@ class Route:
 
 def parse_override(text: str) -> tuple[str | None, str]:
     """(forced depth, the rest of the message) for `/ask`, `/quick` or `/full` as the first word
-    (any case); (None, text) otherwise."""
-    head, _, rest = text.strip().partition(" ")
-    depth = OVERRIDES.get(head.lower())
+    (any case, followed by any whitespace); (None, text) otherwise."""
+    parts = text.strip().split(maxsplit=1)
+    depth = OVERRIDES.get(parts[0].lower()) if parts else None
     if depth is None:
         return None, text
-    return depth, rest.strip()
+    return depth, parts[1].strip() if len(parts) > 1 else ""
 
 
 def decide(
