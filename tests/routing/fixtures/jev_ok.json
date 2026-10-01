@@ -1,0 +1,15 @@
+{
+  "model": "jev-latest",
+  "answers": {
+    "task_class": {
+      "type": "choice",
+      "choice": "simple_change",
+      "probabilities": {"question": 0.02, "diagnosis": 0.01, "small_operation": 0.05, "simple_change": 0.86,
+                        "focused_fix": 0.03, "feature": 0.01, "refactor": 0.005, "design": 0.005,
+                        "broad_project": 0.005, "other": 0.005},
+      "confidence": 0.81
+    },
+    "needs_detail": {"type": "noul", "noul": 0.07}
+  },
+  "usage": {"input_tokens": 412, "output_tokens": 3}
+}
