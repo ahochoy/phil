@@ -12,8 +12,9 @@ OVERRIDES = {"/ask": "answer", "/quick": "quick", "/full": "full"}
 @dataclass(frozen=True)
 class Route:
     depth: str | None  # None: intake decides
-    source: str  # "forced", "jev", "llm" or "intake"
-    reason: str  # "forced", "class", "needs_detail", "other", "low_confidence" or "unavailable"
+    source: str  # "forced" (a /ask, /quick or /full prefix), "fix_offer", "jev", "llm" or "intake"
+    # "forced" (the depth wasn't classified), "class", "needs_detail", "other", "low_confidence" or "unavailable"
+    reason: str
     text: str  # the message, without an override prefix
     judgement: Judgement | None
 

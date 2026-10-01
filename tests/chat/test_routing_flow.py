@@ -122,6 +122,13 @@ def test_forced_prefix_skips_the_router(calc_repo):
     assert note["task_class"] is None and note["confidence"] is None and note["latency_ms"] is None
 
 
+def test_forced_quick_says_it_is_planning(calc_repo):
+    text, *_ = run_chat(calc_repo, ["/quick fix the typo", "n"], FULL_SCRIPT)
+    assert "Forced: quick · planning" in text and "Forced: quick path" not in text
+    [note] = [e for e in transcript(calc_repo) if e["kind"] == "route"]
+    assert (note["depth"], note["source"]) == ("quick", "forced")
+
+
 def test_forced_ask_answers_directly(calc_repo):
     text, spawned, runs, factory, _ = run_chat(
         calc_repo, ["/ASK what is calc"], {"answer": [Answer(text="A calculator.")], **FULL_SCRIPT}
@@ -151,7 +158,7 @@ def test_diagnosis_offers_a_fix_and_enter_plans_it(calc_repo):
     )
     assert "Diagnosis · answering" in text and "The env var is unset." in text
     assert FIX_PROMPT in prompts
-    assert "Forced: quick path" in text
+    assert "Fix · planning" in text and "Forced:" not in text
     [intake] = payloads(factory, "intake")
     assert "why does calc crash?" in intake
     assert "Diagnosis so far:" in intake and "The env var is unset." in intake
@@ -161,6 +168,8 @@ def test_diagnosis_offers_a_fix_and_enter_plans_it(calc_repo):
     assert answer["task_class"] == "diagnosis"
     users = [(e["stage"], e["text"]) for e in transcript(calc_repo) if e["kind"] == "user"]
     assert users[:2] == [("goal", "why does calc crash?"), ("confirm_fix", "")]
+    notes = [e for e in transcript(calc_repo) if e["kind"] == "route"]
+    assert [(n["depth"], n["source"]) for n in notes] == [("answer", "llm"), ("quick", "fix_offer")]
 
 
 def test_declining_the_fix_returns_to_idle(calc_repo):

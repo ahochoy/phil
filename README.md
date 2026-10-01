@@ -245,7 +245,9 @@ sets one of three paths:
   review and PR flow.
 
 The status line under your message says which path was taken and why, e.g. `Simple change ·
-planning  (/quick and /full force a path)` or `Forced: full path`. Force a path yourself by
+planning  (/quick and /full force a path)`, `Forced: full path` or `Forced: quick · planning`
+(a forced quick goal is planned like any other until M3b). Accepting a diagnosis's `Fix it?`
+offer says `Fix · planning`. Force a path yourself by
 starting your message with `/ask`, `/quick` or `/full` — the prefix is stripped and the
 classifier is skipped entirely. When the request is too ambiguous to route (a missing
 target, conflicting goals, or no way to tell what done means), Phil asks first instead of

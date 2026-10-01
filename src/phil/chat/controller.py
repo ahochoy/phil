@@ -560,7 +560,9 @@ class ChatController:
         else:
             self.console.print("Finish the current goal first, or press Ctrl-C to cancel it.")
 
-    def _begin_goal(self, text: str, forced: str | None = None) -> None:
+    def _begin_goal(self, text: str, forced: str | None = None, source: str = "forced") -> None:
+        """Start a goal: routed, or at the `forced` depth (`source` says who forced it: the user's
+        prefix, "forced", or an accepted fix offer, "fix_offer")."""
         if self._run_id is not None:
             # A new goal replaces a failed or stopped run the chat was offering to /resume.
             record = get_run(self.conn, self._run_id)
@@ -576,7 +578,7 @@ class ChatController:
         chat = self._prior_turns = list(self._recent)  # the turns before this message
         self._recent.append(f"you: {text[:TURN_CHARS]}")
         if forced is not None:
-            self._routed(Route(forced, "forced", "forced", text, None))
+            self._routed(Route(forced, source, "forced", text, None))
             return
         self._set_stage("routing")
         self._route_job(text, chat)
@@ -631,8 +633,11 @@ class ChatController:
             self._intake_job(route.text)
 
     def _status_line(self, route: Route) -> str:
+        if route.source == "fix_offer":
+            return "Fix · planning"  # M3b: the quick path
         if route.source == "forced":
-            return f"Forced: {route.depth} path"
+            # Until M3b's quick engine, a forced quick goal is planned like any other.
+            return "Forced: quick · planning" if route.depth == "quick" else f"Forced: {route.depth} path"
         if route.reason == "needs_detail":
             return "Unclear request · asking first"
         if route.depth is None:
@@ -691,7 +696,7 @@ class ChatController:
         choice = text.lower()
         if choice in ("", "y", "yes") and offer is not None:
             question, diagnosis = offer
-            self._begin_goal(f"{question}\n\nDiagnosis so far:\n{diagnosis}", forced="quick")
+            self._begin_goal(f"{question}\n\nDiagnosis so far:\n{diagnosis}", forced="quick", source="fix_offer")
         elif choice in ("", "y", "yes", "n", "no"):
             self._set_stage("idle")
         else:
