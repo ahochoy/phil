@@ -228,6 +228,66 @@ Reopen a chat later:
     phil --resume <chat-id>   # reopen a specific chat directly
     phil --new                # skip the list and start a new chat
 
+## Routing
+
+Each message is classified into a task class (question, diagnosis, a small operation, a
+simple change, a focused fix, a feature, a refactor, design work, or a broad project), which
+sets one of three paths:
+
+- **answer** — a question or diagnosis: a read-only agent answers, with no run, worktree or
+  commit.
+- **quick** — a small, well-specified change: until M3b lands, this still goes through the
+  full planning pipeline (the status line says "planning", not "quick path", so it doesn't
+  claim a shortcut that isn't there yet).
+- **full** — a feature, refactor, design question or broad project: the normal plan, run,
+  review and PR flow.
+
+The status line under your message says which path was taken and why, e.g. `Simple change ·
+planning  (/quick and /full force a path)` or `Forced: full path`. Force a path yourself by
+starting your message with `/ask`, `/quick` or `/full` — the prefix is stripped and the
+classifier is skipped entirely. When the request is too ambiguous to route (a missing
+target, conflicting goals, or no way to tell what done means), Phil asks first instead of
+guessing.
+
+Routing is decided by a classifier, not by the model doing the work. By default it's your
+`low` model, called the same way the chat's other agents are. For faster, cheaper routing,
+configure TypeSafe's Jev instead:
+
+```toml
+[models]
+classifier = "typesafe:jev-latest"
+```
+
+    phil keys set typesafe   # prompts for TYPESAFE_API_KEY, stored in the keychain
+
+If Jev errors (a timeout, an auth or rate-limit response, or a malformed reply), that one
+message falls back to your `low` model automatically — Phil prints a dim `Router
+unavailable (<reason>); using your low model.` note and carries on; routing never blocks the
+chat. `phil models check` pings a configured `typesafe` classifier the same way it checks
+every other model.
+
+Two thresholds under `[routing]` (defaults shown) control how readily routing defers to
+intake instead of guessing:
+
+```toml
+[routing]
+confidence_threshold = 0.5   # below it, intake decides the depth instead of the classifier
+detail_threshold = 0.6       # at or above it, intake asks you something first
+jev_timeout_s = 5.0          # Jev's connect/read timeout; no retries inside the adapter
+```
+
+A classifier benchmark (`tests/live/bench/classify/`) compares the Jev and low-model
+backends on about 40 labelled requests — class and depth accuracy, the worst error (a
+question routed to a change), `needs_detail` precision/recall, latency, cost, and a
+threshold sweep:
+
+    PHIL_BENCH_CONFIG=~/Code/phil-bench.toml uv run pytest -m bench tests/live/bench/classify -n 0
+    uv run python -m tests.live.bench.classify.run --report
+
+`--report` replays the stored answers (no new calls) and prints each backend's numbers, the
+threshold sweep, and spec §5.1's decision rule for whether Jev is worth recommending over
+the low model.
+
 ## Pull requests and cleanup
 
 Needs the `gh` CLI installed and logged in (`gh auth login`) and an `origin` remote. Without
