@@ -381,3 +381,80 @@ def test_a_rerun_prefills_a_custom_provider(tmp_path):
     config = written(tmp_path)
     assert config.models == {"high": "lab:big", "low": "lab:small"}
     assert config.providers["lab"].base_url == "http://lab/v1"
+
+
+# A key pasted at a non-secret prompt is never echoed, written or sent (final review A1/A2).
+
+PLANTED = "sk-proj-TESTSECRET0123456789abcdefABCDEF"
+KEY_WARNING = (
+    "That looks like an API key — it isn't shown or saved here. "
+    "Enter it at the key prompt (or phil keys set <provider>)."
+)
+
+
+def assert_never_leaked(io, check):
+    assert KEY_WARNING in io.lines
+    assert all(PLANTED not in line for line in io.lines)
+    if global_config_path().exists():
+        assert PLANTED not in global_config_path().read_text()
+    assert all(PLANTED not in repr(config.model_dump()) for config in check.configs)
+
+
+def test_a_key_at_the_custom_key_variable_prompt_is_refused(tmp_path, memory_keyring):
+    answers = ["Custom", "lab", "http://lab:8000/v1", PLANTED, "", SECRET, "big", "small"]
+    wrote, io, check = setup(answers, tmp_path)
+    assert wrote is True
+    assert_never_leaked(io, check)
+    assert written(tmp_path).providers["lab"].api_key_env == "LAB_API_KEY"
+    assert memory_keyring.store == {(SERVICE, "LAB_API_KEY"): SECRET}
+
+
+def test_a_key_at_the_custom_name_and_base_url_prompts_is_refused(tmp_path, memory_keyring):
+    answers = ["Custom", PLANTED, "lab", PLANTED, "http://lab:8000/v1", "", SECRET, "big", "small"]
+    wrote, io, check = setup(answers, tmp_path)
+    assert wrote is True
+    assert_never_leaked(io, check)
+    assert io.lines.count(KEY_WARNING) == 2
+
+
+def test_the_custom_key_variable_must_be_upper_case_and_is_not_echoed(tmp_path, memory_keyring):
+    answers = ["Custom", "lab", "http://lab:8000/v1", "lab_key", "LAB_KEY", SECRET, "big", "small"]
+    wrote, io, _ = setup(answers, tmp_path)
+    assert wrote is True
+    assert any("isn't a valid variable name" in line for line in io.lines)
+    assert all("lab_key" not in line for line in io.lines)
+    assert written(tmp_path).providers["lab"].api_key_env == "LAB_KEY"
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        ["OpenAI", SECRET, PLANTED, "gpt-x", "gpt-y"],  # the high model
+        ["OpenAI", SECRET, "gpt-x", PLANTED, "gpt-y"],  # the low model
+        ["OpenAI", SECRET, f"openai:{PLANTED}", "gpt-x", "gpt-y"],  # behind the provider prefix
+    ],
+)
+def test_a_key_at_a_model_prompt_is_refused(tmp_path, memory_keyring, answers):
+    wrote, io, check = setup(answers, tmp_path)
+    assert wrote is True
+    assert_never_leaked(io, check)
+    assert written(tmp_path).models == {"high": "openai:gpt-x", "low": "openai:gpt-y"}
+
+
+@pytest.mark.parametrize("typed", [PLANTED, f"openrouter:{PLANTED}"])
+def test_a_key_at_the_openrouter_search_is_refused(tmp_path, memory_keyring, typed):
+    wrote, io, check = setup(["", SECRET, typed, "", typed, ""], tmp_path)
+    assert wrote is True
+    assert_never_leaked(io, check)
+    assert io.lines.count(KEY_WARNING) == 2
+    assert "Fetching the OpenRouter model list…" not in io.lines  # nothing was searched
+    assert written(tmp_path).models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW}
+
+
+def test_a_key_when_choosing_a_model_after_a_failed_check_is_refused(tmp_path, memory_keyring):
+    check = FakeCheck(bad={SUGGESTED_HIGH})
+    answers = ["", SECRET, "", "", "Choose a different", PLANTED, "openai/gpt-6-sol"]
+    wrote, io, check = setup(answers, tmp_path, check=check)
+    assert wrote is True
+    assert_never_leaked(io, check)
+    assert written(tmp_path).models["high"] == "openrouter:openai/gpt-6-sol"

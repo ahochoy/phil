@@ -13,6 +13,7 @@ from phil.agents.providers import ALIASES, is_known_provider, resolve_provider, 
 from phil.config import REPO_SOURCE, ROLES, PhilConfig, global_config_path
 from phil.key_store import KeyStoreError, key_source, keychain_available, set_key
 from phil.setup.catalog import CatalogModel, ollama_models, openrouter_catalog, search_openrouter
+from phil.setup.guard import KEY_WARNING, looks_like_key
 from phil.setup.io import SetupCancelled, SetupIO
 from phil.setup.suggestions import SUGGESTIONS
 from phil.setup.write import write_global_config
@@ -28,7 +29,7 @@ PROVIDER_CHOICES: list[tuple[str, str]] = [
     (CUSTOM, "Custom OpenAI-compatible"),
 ]
 NAME_PATTERN = re.compile(r"[a-z][a-z0-9_-]*")
-VAR_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+VAR_PATTERN = re.compile(r"[A-Z][A-Z0-9_]*")
 NEXT_STEPS = (
     "Next: `phil` starts a chat, `phil config` shows your settings, "
     "`phil keys list` shows where each key comes from."
@@ -46,6 +47,16 @@ class _Provider:
     custom: bool = False  # a [providers.<name>] table setup writes
     fields: dict[str, object] = field(default_factory=dict)
     installed: list[str] = field(default_factory=list)  # Ollama's models
+
+
+def _ask(io: SetupIO, prompt: str, default: str | None = None) -> str:
+    """`io.ask` for a non-secret answer: one that looks like an API key is refused, never echoed,
+    and asked for again, so it can't reach the config file, a message or a check call."""
+    while True:
+        answer = io.ask(prompt, default=default)
+        if not looks_like_key(answer):
+            return answer
+        io.say(KEY_WARNING)
 
 
 def _check_models(config: PhilConfig):
@@ -153,7 +164,7 @@ def _ollama_provider(io: SetupIO, config: PhilConfig, ollama: Callable[[str], li
 
 def _custom_provider(io: SetupIO, config: PhilConfig, current: str | None) -> _Provider:
     while True:
-        name = io.ask("Provider name (lowercase, e.g. lab)", default=current)
+        name = _ask(io, "Provider name (lowercase, e.g. lab)", default=current)
         if not NAME_PATTERN.fullmatch(name):
             io.say(
                 f'"{name}" isn\'t a valid provider name: use lowercase letters, digits, "-" and "_", '
@@ -165,7 +176,7 @@ def _custom_provider(io: SetupIO, config: PhilConfig, current: str | None) -> _P
             break
     entry = config.providers.get(name)
     while True:
-        base_url = io.ask("Base URL (e.g. http://localhost:8000/v1)", default=entry.base_url if entry else None)
+        base_url = _ask(io, "Base URL (e.g. http://localhost:8000/v1)", default=entry.base_url if entry else None)
         if base_url:
             break
         io.say("Enter the server's OpenAI-compatible base URL.")
@@ -174,14 +185,15 @@ def _custom_provider(io: SetupIO, config: PhilConfig, current: str | None) -> _P
     else:
         default_var = f"{name.upper().replace('-', '_')}_API_KEY"
     while True:
-        var = io.ask("Environment variable for its API key (none for no key)", default=default_var)
+        var = _ask(io, "Environment variable for its API key (none for no key)", default=default_var)
         if var.lower() == "none":
             api_key_env = None
             break
         if VAR_PATTERN.fullmatch(var):
             api_key_env = var
             break
-        io.say(f'"{var}" isn\'t a valid variable name.')
+        # Not echoed: whatever was typed here might be part of a key.
+        io.say('That isn\'t a valid variable name: use capital letters, digits and "_", starting with a letter.')
     kind = entry.kind if entry is not None and entry.kind else "openai"
     fields: dict[str, object] = {"kind": kind, "base_url": base_url, "api_key_env": api_key_env}
     return _Provider(name, api_key_env, custom=True, fields=fields)
@@ -265,7 +277,7 @@ def _model_step(
         return _openrouter_model(io, tier, default, catalog)
     prefix = f"{provider.name}:"
     while True:
-        answer = io.ask(f"{tier} model", default=default)
+        answer = _ask(io, f"{tier} model", default=default)
         if answer:
             return answer if answer.startswith(prefix) else prefix + answer
         io.say(f"Enter a model id, e.g. {prefix}<model>.")
@@ -290,7 +302,7 @@ def _describe(model: CatalogModel) -> str:
 
 def _openrouter_model(io: SetupIO, tier: str, default: str | None, catalog: _LazyCatalog) -> str:
     while True:
-        answer = io.ask(f"{tier} model", default=default)
+        answer = _ask(io, f"{tier} model", default=default)
         if not answer:
             io.say("Enter an OpenRouter model id, or part of one to search.")
             continue
