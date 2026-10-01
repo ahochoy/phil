@@ -99,7 +99,7 @@ One request per message, with two questions answered in parallel:
   The same descriptions and examples go into the prompt. `probabilities` is one-hot on the chosen class. This is the default when no `typesafe` classifier is configured.
 - **`fake`:** scripted judgements, for tests.
 
-**Failure:** any `jev` error (timeout, a 401/422/429/529 response, a malformed body, or a missing key) falls back to `llm` for that message. Phil shows one dim status line (`Router unavailable (429); using your low model.`) and records the error class. Routing never blocks chat. A `llm` failure falls through to intake (§3.5).
+**Failure:** any `jev` error (timeout, a 401/422/429/529 response, a malformed body, or a missing key) falls back to `llm` for that message. Phil shows one dim status line (`Router unavailable (429); using your low model.`) and records the error class. Routing never blocks chat. A `llm` failure falls through to intake (§3.5); when Jev failed first (or there is no `low` model to fall back to), the line reads `Router unavailable ({reason}); intake decides.` and the route record keeps the reason.
 
 ### 3.5 Routing policy (code, not model)
 

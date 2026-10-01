@@ -4,9 +4,10 @@ import phil.chat.controller as controller_mod
 from phil.config import PhilConfig
 from phil.contracts.routing import Answer, RouteJudgement
 from phil.routing import Judgement
+from phil.routing.classify import Classification
 from tests.chat.conftest import critique, goal, plan
 from tests.chat.test_controller import FULL_SCRIPT, deferred, run_chat, transcript
-from tests.helpers import TEST_MODELS
+from tests.helpers import TEST_MODEL, TEST_MODELS
 
 FIX_PROMPT = "Fix it? [Enter = plan the fix / n] › "
 
@@ -228,7 +229,9 @@ def test_router_unavailable_line_when_jev_fails(calc_repo, monkeypatch):
         task_class="question", probabilities={"question": 1.0}, confidence=0.9, needs_detail=0.1, source="llm",
         latency_ms=5, usage=None, fallback_reason="http 429",
     )
-    monkeypatch.setattr(controller_mod, "classify", lambda ctx, state, **kw: judgement)
+    monkeypatch.setattr(
+        controller_mod, "classify", lambda ctx, state, **kw: Classification(judgement, fallback_reason="http 429")
+    )
     config = PhilConfig(models={**TEST_MODELS, "classifier": "typesafe:jev-latest"})
     text, *_ = run_chat(
         calc_repo, ["what does calc do?"], {"answer": [Answer(text="It sums.")]}, config=config
@@ -237,6 +240,32 @@ def test_router_unavailable_line_when_jev_fails(calc_repo, monkeypatch):
     assert "Question · answering" in text
     [note] = [e for e in transcript(calc_repo) if e["kind"] == "route"]
     assert note["fallback_reason"] == "http 429"
+
+
+def test_router_unavailable_line_when_jev_and_the_llm_fallback_both_fail(calc_repo, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)  # Jev fails: missing key
+    config = PhilConfig(models={**TEST_MODELS, "low": TEST_MODEL, "classifier": "typesafe:jev-latest"})
+    text, spawned, runs, factory, _ = run_chat(
+        calc_repo, ["add subtract", "n"], {"route": [RuntimeError("down")], **FULL_SCRIPT}, config=config
+    )
+    assert "Router unavailable (missing key); intake decides." in text
+    assert "using your low model" not in text
+    assert "Not sure how big this is · intake decides" in text
+    assert factory.remaining()["route"] == 0  # the low model was tried
+    [note] = [e for e in transcript(calc_repo) if e["kind"] == "route"]
+    assert (note["source"], note["reason"], note["fallback_reason"]) == ("intake", "unavailable", "missing key")
+
+
+def test_router_unavailable_line_when_jev_fails_and_there_is_no_low_model(calc_repo, monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    config = PhilConfig(models={**TEST_MODELS, "classifier": "typesafe:jev-latest"})  # no low tier
+    text, spawned, runs, factory, _ = run_chat(
+        calc_repo, ["add subtract", "n"], {"route": [route("question")], **FULL_SCRIPT}, config=config
+    )
+    assert "Router unavailable (missing key); intake decides." in text
+    assert factory.remaining()["route"] == 1  # no llm fallback was tried
+    [note] = [e for e in transcript(calc_repo) if e["kind"] == "route"]
+    assert (note["source"], note["reason"], note["fallback_reason"]) == ("intake", "unavailable", "missing key")
 
 
 def test_route_note_is_recorded(calc_repo):

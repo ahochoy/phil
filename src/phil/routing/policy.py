@@ -17,6 +17,7 @@ class Route:
     reason: str
     text: str  # the message, without an override prefix
     judgement: Judgement | None
+    fallback_reason: str | None = None  # why Jev failed, when it did
 
 
 def parse_override(text: str) -> tuple[str | None, str]:

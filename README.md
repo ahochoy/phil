@@ -267,7 +267,8 @@ classifier = "typesafe:jev-latest"
 If Jev errors (a timeout, an auth or rate-limit response, or a malformed reply), that one
 message falls back to your `low` model automatically — Phil prints a dim `Router
 unavailable ({reason}); using your low model.` note and carries on; routing never blocks the
-chat. `phil models check` pings a configured `typesafe` classifier the same way it checks
+chat. If the low model fails too, or there is none, the note reads `Router unavailable
+({reason}); intake decides.` instead. `phil models check` pings a configured `typesafe` classifier the same way it checks
 every other model.
 
 Two thresholds under `[routing]` (defaults shown) control how readily routing defers to

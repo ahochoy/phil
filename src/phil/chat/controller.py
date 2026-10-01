@@ -592,23 +592,22 @@ class ChatController:
         root = self.info.root
 
         def fn(ctx: AgentContext) -> dict:
-            return {"judgement": classify(ctx, route_state(text, chat, root), call=call), "text": text}
+            return {"classification": classify(ctx, route_state(text, chat, root), call=call), "text": text}
 
         self._job("route_ready", fn)
 
     def _on_route_ready(self, data: dict) -> None:
-        judgement = data["judgement"]
+        judgement, fallback_reason = data["classification"].judgement, data["classification"].fallback_reason
         depth, reason = decide(
             judgement,
             confidence_threshold=self.config.routing.confidence_threshold,
             detail_threshold=self.config.routing.detail_threshold,
         )
         source = judgement.source if depth is not None else "intake"
-        if judgement is not None and judgement.fallback_reason:
-            self.console.print(
-                f"[phil.muted]Router unavailable ({escape(judgement.fallback_reason)}); using your low model.[/]"
-            )
-        self._routed(Route(depth, source, reason, data["text"], judgement))
+        if fallback_reason:
+            then = "using your low model" if judgement is not None else "intake decides"
+            self.console.print(f"[phil.muted]Router unavailable ({escape(fallback_reason)}); {then}.[/]")
+        self._routed(Route(depth, source, reason, data["text"], judgement, fallback_reason))
 
     def _routed(self, route: Route) -> None:
         """Record the route, say which path the message takes, and start it."""
@@ -623,7 +622,7 @@ class ChatController:
             confidence=j.confidence if j else None,
             needs_detail=j.needs_detail if j else None,
             latency_ms=j.latency_ms if j else None,
-            fallback_reason=j.fallback_reason if j else None,
+            fallback_reason=route.fallback_reason,
         )
         self.console.print(f"[phil.muted]{escape(self._status_line(route))}[/]")
         if route.depth == "answer":
