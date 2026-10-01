@@ -99,6 +99,18 @@ def _resolve(ctx: typer.Context) -> RepoInfo:
         raise typer.Exit(1) from exc
 
 
+def _config_root(ctx: typer.Context) -> Path:
+    """The directory whose settings apply, for commands that also work outside a repository
+    (`phil setup`, `phil keys`): `--repo`'s repository (exiting 1 if it isn't one), else the
+    repository around the current directory, else the current directory itself."""
+    if ctx.obj.get("repo"):
+        return _resolve(ctx).root
+    try:
+        return resolve_repo(Path.cwd()).root
+    except RepoError:
+        return Path.cwd()
+
+
 def _open_project(ctx: typer.Context) -> tuple[RepoInfo, sqlite3.Connection]:
     info = _resolve(ctx)
     return info, connect(ProjectPaths(info.slug).db_path)
@@ -126,6 +138,7 @@ def _is_tty() -> bool:
 
 def _interactive() -> bool:
     """Whether this process can run setup's prompts in a real terminal (patched in tests)."""
+    # The auto-start test seam (needs both stdin and stdout); kept apart from `_is_tty`, which chat tests patch.
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
@@ -521,15 +534,7 @@ def _run_setup(ctx: typer.Context, root: Path) -> bool:
 @app.command("setup")
 def setup_command(ctx: typer.Context) -> None:
     """Choose a provider, store its key and pick your models (edits ~/.phil/config.toml)."""
-    if ctx.obj.get("repo"):
-        root = _resolve(ctx).root
-    else:
-        # Setup is often the first thing run, and not necessarily inside a repository.
-        try:
-            root = resolve_repo(Path.cwd()).root
-        except RepoError:
-            root = Path.cwd()
-    if not _run_setup(ctx, root):
+    if not _run_setup(ctx, _config_root(ctx)):
         raise typer.Exit(1)
 
 
@@ -554,11 +559,11 @@ def keys_set(ctx: typer.Context, provider: str) -> None:
     """Store a provider's API key in the keychain."""
     from phil.key_store import KeyStoreError, set_key
 
-    info = _resolve(ctx)
-    config = _load_config(info.root, ctx.obj.get("overrides", []))
+    root = _config_root(ctx)
+    config = _load_config(root, ctx.obj.get("overrides", []))
     spec = _resolve_keyed_provider(config, provider)
     var = spec.api_key_env
-    value = _read_secret(f"{var}: ")
+    value = _read_secret(f"{var}: ").strip()
     if not value:
         console.print("Nothing saved.")
         return
@@ -609,8 +614,8 @@ def keys_list(ctx: typer.Context) -> None:
     """Show where each provider's key comes from. Never shows a value."""
     from phil.key_store import key_source
 
-    info = _resolve(ctx)
-    config = _load_config(info.root, ctx.obj.get("overrides", []))
+    root = _config_root(ctx)
+    config = _load_config(root, ctx.obj.get("overrides", []))
     for spec in _providers_to_list(config):
         if spec.api_key_env is None:
             console.print(f"{escape(spec.name)}  (no key needed)", soft_wrap=True, highlight=False)
@@ -624,8 +629,8 @@ def keys_remove(ctx: typer.Context, provider: str) -> None:
     """Remove a provider's API key from the keychain."""
     from phil.key_store import KeyStoreError, delete_key
 
-    info = _resolve(ctx)
-    config = _load_config(info.root, ctx.obj.get("overrides", []))
+    root = _config_root(ctx)
+    config = _load_config(root, ctx.obj.get("overrides", []))
     spec = _resolve_keyed_provider(config, provider)
     var = spec.api_key_env
     try:

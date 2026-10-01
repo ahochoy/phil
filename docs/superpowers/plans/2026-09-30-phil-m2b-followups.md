@@ -20,7 +20,14 @@ Deferred items from implementing plan M2b ("setup and keys"). Plan:
 
 ## Key storage (Task 1)
 
-- Each key lookup re-reads the keychain; there is no cache.
+- Each key lookup re-reads the keychain; there is no cache. Add a per-process cache for
+  keychain lookups if a locked keychain turns out to prompt repeatedly.
+
+## Final review
+
+- **The chat prompt has no key guard.** A key typed into the chat reaches the transcript and
+  the model. Reuse `phil.setup.guard.looks_like_key` there to refuse it, as setup does.
+- **deepagents 0.7.21 is available** (keep-current rule): upgrade it, or record why not.
 
 ## `phil keys` (Task 2)
 

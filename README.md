@@ -21,7 +21,9 @@ time to change providers or models:
 
 Setup only ever edits `~/.phil/config.toml`, never a repo's `phil.toml`. It keeps your other
 settings and comments, prefilling what it can from the current global file, and cancelling
-(Ctrl-C, or an empty answer at the key prompt) leaves the file untouched.
+(Ctrl-C or Ctrl-D, at any prompt) leaves the file untouched. An empty answer at the key prompt
+doesn't cancel: it skips storing the key, and setup carries on and writes your model choices.
+A key pasted by mistake at any other prompt is refused without being shown or saved.
 
 Suggested `high`/`low` models exist for OpenRouter, OpenAI and Anthropic; Google has none yet
 — setup asks you to type a model id by hand. Ollama offers whatever you have installed, and a
@@ -169,10 +171,16 @@ provider.
     phil keys remove <provider>   # deletes the keychain entry only — any environment variable
                                    # of the same name is untouched
 
-`phil setup` offers to save a key the same way, during its provider step, and skips the offer
+`phil setup` offers to save a key the same way, during its key step, and skips the offer
 when the variable is already set in the environment. When no keychain is available here
 (headless environments, containers, some CI), both `phil setup` and `phil keys set` say so and
-tell you to export the variable instead of trying to store it.
+tell you to export the variable instead of trying to store it. `phil keys` works anywhere, not
+only inside a repository.
+
+Commands agents run (the shell tool, gates and tests) get neither the key variables nor Phil's
+stored keys: their environment drops secret-looking variables and pins `keyring` to its null
+backend, so code they run can't read a stored key through `keyring`. That can't stop a
+malicious test from reaching the OS keychain directly, so review what agents add.
 
 ### Checking your models
 

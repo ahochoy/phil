@@ -94,3 +94,45 @@ def test_keys_remove_prints_both_messages(git_repo, monkeypatch):
     result = runner.invoke(cli.app, ["--repo", str(git_repo), "keys", "remove", "openai"])
     assert result.exit_code == 0, result.output
     assert result.output == "Removed OPENAI_API_KEY from the keychain.\n"
+
+
+def test_keys_set_strips_the_value(git_repo, monkeypatch):
+    wide(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    stub_secret(monkeypatch, "  sk-TESTSECRET-123 \n")
+    result = runner.invoke(cli.app, ["--repo", str(git_repo), "keys", "set", "openai"])
+    assert result.exit_code == 0, result.output
+    assert get_key("OPENAI_API_KEY") == "sk-TESTSECRET-123"
+
+
+def test_keys_set_treats_a_blank_value_as_empty(git_repo, monkeypatch):
+    wide(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    stub_secret(monkeypatch, "   ")
+    result = runner.invoke(cli.app, ["--repo", str(git_repo), "keys", "set", "openai"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "Nothing saved.\n"
+    assert get_key("OPENAI_API_KEY") is None
+
+
+def test_keys_commands_work_outside_a_repository(tmp_path, monkeypatch):
+    wide(monkeypatch)
+    outside = tmp_path / "not-a-repo"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    stub_secret(monkeypatch, "sk-TESTSECRET-123")
+
+    result = runner.invoke(cli.app, ["keys", "set", "openai"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "Saved OPENAI_API_KEY for openai in the keychain.\n"
+
+    result = runner.invoke(cli.app, ["keys", "list"])
+    assert result.exit_code == 0, result.output
+    assert "openai  OPENAI_API_KEY  keychain" in result.output.splitlines()
+    assert "sk-TESTSECRET-123" not in result.output
+
+    result = runner.invoke(cli.app, ["keys", "remove", "openai"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "Removed OPENAI_API_KEY from the keychain.\n"
+    assert get_key("OPENAI_API_KEY") is None
