@@ -250,12 +250,12 @@ sets one of three paths:
   no critic), and the one-task plan is shown as a single line with the run starting straight
   away — no approval prompt. The run uses a light implementer (writes allowed, no sub-agent,
   no summarization, capped at 15 model calls per attempt) and skips the tester, at up to 2
-  attempts. One lean review follows; any findings reopen the task as a check task for a single
-  fix attempt, committed as `<id>: fix after review`, then the run ends either way (unfixed
-  findings stay listed as open issues). If the gate still fails after 2 attempts, or the fix
-  attempt doesn't clear it, you're offered `full` (plan the same goal properly, from the base
-  branch, with the quick attempt's worklogs carried over), `retry` or `abort` — a run started
-  with `phil run` rather than a chat only offers `retry`/`abort`.
+  attempts. One lean review follows; blocker and major findings reopen the task as a check task
+  for a single fix attempt, committed as `<id>: fix after review`, then the run ends either way
+  (minor findings, and any left unfixed, stay listed as open issues in the summary). If the gate
+  still fails after 2 attempts, or the fix attempt doesn't clear it, you're offered `full` (plan
+  the same goal properly, from the base branch, with the quick attempt's worklogs carried over),
+  `retry` or `abort` — a quick run with no chat offers only `retry`/`abort`.
 - **full** — a feature, refactor, design question or broad project: the normal plan, run,
   review and PR flow.
 
