@@ -127,7 +127,7 @@ def test_a_goal_typed_at_the_question_is_kept(calc_repo, fake):
         FULL_SCRIPT,
     )
     assert f"No PR. `phil pr {runs[0].run_id}` opens one later." in text
-    assert seen["stage"] == ("intake", "add multiply")
+    assert seen["stage"] == ("routing", "add multiply")
     assert fake.calls == []
 
 

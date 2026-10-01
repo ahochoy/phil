@@ -322,7 +322,7 @@ def test_btw_answers_during_planning(calc_repo):
     text, spawned, runs, factory, prompts = run_chat(
         calc_repo,
         [
-            "add subtract", run_next,  # intake done; the plan job is held
+            "add subtract", run_next, run_next,  # routed and intake done; the plan job is held
             "/btw where is add?",
             run_btw,
             peek(seen, "after", lambda c: (c.stage, c.state.view().btw_pending, len(pending))),
@@ -404,7 +404,7 @@ def test_recover_to_idle_bumps_the_generation(calc_repo, monkeypatch):
     seen = {}
     text, *_ = run_chat(
         calc_repo,
-        ["add subtract", peek(seen, "before", lambda c: c._generation), run_next,
+        ["add subtract", peek(seen, "before", lambda c: c._generation), run_next, run_next,
          peek(seen, "after", lambda c: (c._generation, c.stage))],
         FULL_SCRIPT,
         submit=submit,
@@ -607,7 +607,9 @@ def test_reopen_restores_the_agent_call_counters(calc_repo):
     directory = session_dir(calc_repo)
     before = artifact_files(directory)
     state = json.loads((directory / "state.json").read_text())
-    assert state["counters"] == {"intake": 1, "planner_calls": 1, "planner_version": 1, "btw": 0}
+    assert state["counters"] == {
+        "intake": 1, "planner_calls": 1, "planner_version": 1, "btw": 0, "route": 1, "answer": 0,
+    }
     text, *_ = reopen(
         calc_repo, ["/btw hi", "edit", "two tasks", "n"],
         {"architect": [plan(n=2)], "critic": [critique()], "btw": [Brief(headline="hello")]},
@@ -623,7 +625,7 @@ def test_reopen_restores_the_agent_call_counters(calc_repo):
 def test_reopen_during_a_revision_returns_to_approval(calc_repo):
     submit, run_next, pending = deferred()
     run_chat(
-        calc_repo, ["add subtract", run_next, run_next, "edit", "two tasks"], FULL_SCRIPT, submit=submit
+        calc_repo, ["add subtract", run_next, run_next, run_next, "edit", "two tasks"], FULL_SCRIPT, submit=submit
     )  # EOF while the revision is pending
     state = json.loads((session_dir(calc_repo) / "state.json").read_text())
     assert state["stage"] == "approval" and state["plan"]["keyword"] == "CALC"
@@ -649,8 +651,8 @@ def test_chat_cost_reaches_the_toolbar(calc_repo):
     assert cost == (0.0, "reported")
     conn = connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path)
     rows = conn.execute("SELECT DISTINCT layer, chat_id FROM telemetry").fetchall()
-    assert [tuple(row) for row in rows] == [("chat", chat_id)]  # intake, architect, critic all tagged
-    assert conn.execute("SELECT COUNT(*) FROM telemetry").fetchone()[0] == 3
+    assert [tuple(row) for row in rows] == [("chat", chat_id)]  # route, intake, architect, critic all tagged
+    assert conn.execute("SELECT COUNT(*) FROM telemetry").fetchone()[0] == 4
 
 
 def test_run_cost_counts_toward_the_chat(calc_repo):
