@@ -20,9 +20,10 @@ time to change providers or models:
     phil setup
 
 Setup only ever edits `~/.phil/config.toml`, never a repo's `phil.toml`. It keeps your other
-settings and comments, prefilling what it can from the current global file, and cancelling
-(Ctrl-C or Ctrl-D, at any prompt) leaves the file untouched. An empty answer at the key prompt
-doesn't cancel: it skips storing the key, and setup carries on and writes your model choices.
+settings and comments, prefilling what it can from the current global file. Ctrl-C or Ctrl-D
+cancel at any step and save nothing — no config, no key. Keys you enter are saved to the
+keychain only when setup finishes; an empty answer at the key prompt doesn't cancel, it just
+skips entering one, and setup carries on and writes your model choices.
 A key pasted by mistake at any other prompt is refused without being shown or saved.
 
 Suggested `high`/`low` models exist for OpenRouter, OpenAI and Anthropic; Google has none yet

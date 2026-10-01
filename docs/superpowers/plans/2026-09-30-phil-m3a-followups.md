@@ -60,3 +60,7 @@ Deferred items from implementing plan M3a ("routing"). Plan:
 - **The answerer's hard stop bounds one question at about 28 model calls**
   (2 × (12 + 2): two contract attempts, each the 12-call cap plus 2 grace calls). State
   this in M3b's spec update.
+
+## User decisions
+
+- Setup holds entered keys until it finishes; cancel saves nothing (user decision 2026-10-01).

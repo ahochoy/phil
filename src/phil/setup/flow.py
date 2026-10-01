@@ -1,7 +1,12 @@
 """The guided setup: provider, key, models, check, write (spec §3.3).
 
-Keys go only to the keychain, through `set_key`; they are never said, written or logged."""
+Keys go only to the keychain, through `set_key`, and only once setup finishes writing the
+config: every key entered along the way is held in memory (via `pending_keys`) so the model
+and classifier checks can use it, but nothing is saved until the end. Cancelling at any step
+(Ctrl-C or end of input) saves nothing and writes nothing. Keys are never said, written or
+logged."""
 
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -12,7 +17,7 @@ from tomlkit.exceptions import TOMLKitError
 
 from phil.agents.providers import ALIASES, is_known_provider, resolve_provider, split_model
 from phil.config import REPO_SOURCE, ROLES, PhilConfig, global_config_path
-from phil.key_store import KeyStoreError, key_source, keychain_available, set_key
+from phil.key_store import KeyStoreError, key_source, keychain_available, pending_keys, set_key
 from phil.routing.jev import JevError, ping_jev
 from phil.setup.catalog import CatalogModel, ollama_models, openrouter_catalog, search_openrouter
 from phil.setup.guard import KEY_WARNING, looks_like_key
@@ -50,14 +55,6 @@ class _Provider:
     custom: bool = False  # a [providers.<name>] table setup writes
     fields: dict[str, object] = field(default_factory=dict)
     installed: list[str] = field(default_factory=list)  # Ollama's models
-
-
-@dataclass
-class _KeySaved:
-    """Mutable: true once any key this run has needed (the provider's, or the classifier's) is
-    saved to the keychain, so a later cancellation reports it correctly."""
-
-    value: bool = False
 
 
 def _ask(io: SetupIO, prompt: str, default: str | None = None) -> str:
@@ -99,7 +96,8 @@ def run_setup(
 ) -> bool:
     """Walk through setup and write the global config. True if it wrote the file; False if the
     user cancelled (Ctrl-C or end of input, at a prompt or not) or the file couldn't be written.
-    Only a key the user entered may have been saved by then; the config file is untouched."""
+    Every key entered along the way is held in memory only; cancelling, or a failed write,
+    saves nothing and leaves the keychain untouched."""
     target = path or global_config_path()
     # Only the global file's own values are setup's to pre-fill: a repo's phil.toml or `--set`
     # values aren't what this rerun edits.
@@ -111,20 +109,21 @@ def run_setup(
     run_classifier_check = (
         classifier_check if classifier_check is not None else partial(_default_classifier_check, config)
     )
-    key_saved = _KeySaved()
+    pending: dict[str, str] = {}
+    to_save: list[tuple[str, str]] = []
     try:
         provider = _provider_step(io, config, saved, ollama)
-        if _key_step(io, provider):
-            key_saved.value = True
+        key = _key_step(io, provider)
+        if key is not None and provider.api_key_env is not None:
+            pending[provider.api_key_env] = key
+            to_save.append((provider.api_key_env, provider.name))
         models_catalog = _LazyCatalog(io, catalog)
         models = {tier: _model_step(io, saved, provider, tier, models_catalog) for tier in SETUP_TIERS}
-        models = _check_step(io, config, saved, provider, models, check, models_catalog)
-        models = models | _classifier_step(io, config, target, run_classifier_check, key_saved)
+        with pending_keys(pending):
+            models = _check_step(io, config, saved, provider, models, check, models_catalog)
+        models = models | _classifier_step(io, config, target, run_classifier_check, pending, to_save)
     except (SetupCancelled, KeyboardInterrupt):
-        if key_saved.value:
-            io.say("Setup cancelled; the key was saved, nothing else was written.")
-        else:
-            io.say("Setup cancelled; nothing was written.")
+        io.say("Setup cancelled; nothing was saved.")
         return False
     try:
         write(
@@ -134,10 +133,26 @@ def run_setup(
             provider_fields=provider.fields if provider.custom else {},
         )
     except (OSError, TOMLKitError) as exc:
-        io.say(f"Couldn't write {target}: {_error_text(exc)}")
+        io.say(f"Couldn't write {target}: {_error_text(exc)}. Nothing was saved.")
         return False
+    _save_pending_keys(io, target, to_save, pending)
     _summarise(io, config, provider, models, target)
     return True
+
+
+def _save_pending_keys(io: SetupIO, target: Path, to_save: list[tuple[str, str]], pending: dict[str, str]) -> None:
+    """Save every key setup collected, now that `target` is written. A failure doesn't stop the
+    others: the config is already written, so setup still reports success overall."""
+    for var, provider_name in to_save:
+        try:
+            set_key(var, pending[var])
+        except KeyStoreError as exc:
+            io.say(
+                f"Wrote {target}, but couldn't save {var}: {exc}. Export {var}, or run phil keys set {provider_name}."
+            )
+            continue
+        suffix = f" (the environment value still wins while {var} is exported)" if os.environ.get(var) else ""
+        io.say(f"Saved {var} for {provider_name} in the keychain.{suffix}")
 
 
 def _error_text(exc: Exception) -> str:
@@ -230,32 +245,29 @@ def _custom_provider(io: SetupIO, config: PhilConfig, current: str | None) -> _P
 # 2. Key
 
 
-def _key_step(io: SetupIO, provider: _Provider) -> bool:
-    """Make sure the provider's key can be found. True if a key was saved to the keychain."""
+def _key_step(io: SetupIO, provider: _Provider) -> str | None:
+    """Make sure the provider's key can be found. Returns the entered key (held in memory,
+    saved to the keychain only once setup finishes), or None if none was entered, the key was
+    kept, or it comes from the environment."""
     var = provider.api_key_env
     if var is None:
-        return False
+        return None
     source = key_source(var)
     if source is not None:
         io.say(f"Using {var} from {source}.")
         if source != "keychain":
-            return False
+            return None
         if io.choose(f"Keep the saved {var}, or replace it?", ["Keep it", "Replace it"]) == 0:
-            return False
+            return None
     elif not keychain_available():
         io.say(f"No keychain is available here; export {var} instead.")
-        return False
+        return None
     value = io.secret(f"{var} (input hidden)")
     if not value:
         io.say(f"No key entered. Export {var}, or run `phil keys set {provider.name}` later.")
-        return False
-    try:
-        set_key(var, value)
-    except KeyStoreError as exc:
-        io.say(str(exc))
-        return False
-    io.say(f"Saved {var} for {provider.name} in the keychain.")
-    return True
+        return None
+    io.say(f"Got it: {var} will be saved to the keychain when setup finishes.")
+    return value
 
 
 # 3. Models
@@ -440,12 +452,17 @@ def _check_step(
 
 
 def _classifier_step(
-    io: SetupIO, config: PhilConfig, target: Path, classifier_check: Callable[[], str | None], key_saved: _KeySaved
+    io: SetupIO,
+    config: PhilConfig,
+    target: Path,
+    classifier_check: Callable[[], str | None],
+    pending: dict[str, str],
+    to_save: list[tuple[str, str]],
 ) -> dict[str, str]:
     """Offer a fast TypeSafe classifier for routing. Empty when the user keeps using the low
     model (the default); `{"classifier": CLASSIFIER_MODEL}` when TypeSafe Jev is chosen and kept.
-    `key_saved` is set when TypeSafe's own key is saved here, so a later cancellation still
-    reports it."""
+    A TypeSafe key entered here is added to `pending`/`to_save`, held in memory like every other
+    key, and saved only once setup finishes."""
     current = config.models.get("classifier") if config.sources.get("models.classifier") == str(target) else None
     options = ([f"Keep {current}"] if current else []) + [
         "Your low model (default)", "TypeSafe Jev (fast routing; needs TYPESAFE_API_KEY)",
@@ -455,9 +472,12 @@ def _classifier_step(
         if current and choice.startswith("Your low model"):
             io.say(f"models.classifier = {current} stays in {target}; remove it there to route with your low model.")
         return {}
-    if _key_step(io, _Provider("typesafe", "TYPESAFE_API_KEY")):
-        key_saved.value = True
-    reason = classifier_check()
+    key = _key_step(io, _Provider("typesafe", "TYPESAFE_API_KEY"))
+    if key is not None:
+        pending["TYPESAFE_API_KEY"] = key
+        to_save.append(("TYPESAFE_API_KEY", "typesafe"))
+    with pending_keys(pending):
+        reason = classifier_check()
     if reason is not None:
         io.say(f"✗ classifier  {CLASSIFIER_MODEL}  {reason}")
         if io.choose("TypeSafe Jev failed the check.",

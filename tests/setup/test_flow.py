@@ -96,6 +96,56 @@ def test_a_fresh_openrouter_setup_stores_the_key_writes_the_tiers_and_checks_onc
     assert all(SECRET not in line for line in io.lines)
     assert str(global_config_path()) in "\n".join(io.lines)
     assert any("phil keys list" in line for line in io.lines)
+    wrote_index = io.lines.index("Got it: OPENROUTER_API_KEY will be saved to the keychain when setup finishes.")
+    assert wrote_index < io.lines.index("Saved OPENROUTER_API_KEY for openrouter in the keychain.")
+
+
+def test_the_check_runs_with_the_pending_key_before_anything_is_saved(tmp_path, memory_keyring):
+    from phil.key_store import key_lookup
+
+    seen: dict[str, object] = {}
+
+    def check(config):
+        seen["key"] = key_lookup().get("OPENROUTER_API_KEY")
+        seen["store_during_check"] = dict(memory_keyring.store)
+        return FakeCheck()(config)
+
+    wrote, io, _ = setup(["", SECRET, "", "", ""], tmp_path, check=check)
+    assert wrote is True
+    assert seen["key"] == SECRET
+    assert seen["store_during_check"] == {}  # nothing saved yet while the check is running
+    assert memory_keyring.store == {(SERVICE, "OPENROUTER_API_KEY"): SECRET}
+
+
+def test_keys_are_saved_only_after_the_config_is_written(tmp_path, memory_keyring, monkeypatch):
+    import phil.setup.flow as flow_module
+    from phil.setup.write import write_global_config
+
+    order: list[str] = []
+    real_set_key = flow_module.set_key
+
+    def recording_set_key(var, value):
+        order.append(f"set_key:{var}")
+        real_set_key(var, value)
+
+    monkeypatch.setattr(flow_module, "set_key", recording_set_key)
+
+    def recording_write(path, **kwargs):
+        order.append("write")
+        write_global_config(path, **kwargs)
+
+    wrote, io, _ = setup(
+        ["", SECRET, "", "", "TypeSafe", TYPESAFE_SECRET],
+        tmp_path, classifier_check=lambda: None, write=recording_write,
+    )
+    assert wrote is True
+    assert order == ["write", "set_key:OPENROUTER_API_KEY", "set_key:TYPESAFE_API_KEY"]
+    assert memory_keyring.store == {
+        (SERVICE, "OPENROUTER_API_KEY"): SECRET,
+        (SERVICE, "TYPESAFE_API_KEY"): TYPESAFE_SECRET,
+    }
+    assert "Saved OPENROUTER_API_KEY for openrouter in the keychain." in io.lines
+    assert "Saved TYPESAFE_API_KEY for typesafe in the keychain." in io.lines
 
 
 def test_an_existing_env_key_is_not_asked_for(tmp_path, monkeypatch, memory_keyring):
@@ -144,7 +194,7 @@ def test_a_missing_key_in_the_check_can_cancel(tmp_path, no_keychain):
     wrote, io, _ = setup(["", "", "", "Cancel"], tmp_path, check=check)
     assert wrote is False
     assert not global_config_path().exists()
-    assert "Setup cancelled; nothing was written." in io.lines
+    assert "Setup cancelled; nothing was saved." in io.lines
 
 
 def test_a_key_left_empty_then_missing_in_the_check(tmp_path):
@@ -154,7 +204,7 @@ def test_a_key_left_empty_then_missing_in_the_check(tmp_path):
     assert not any("Choose a different" in line for line in io.lines)
 
 
-def test_a_key_store_error_is_said_and_setup_carries_on(tmp_path, monkeypatch):
+def test_a_key_store_error_after_the_write_is_said_and_setup_still_reports_success(tmp_path, monkeypatch, memory_keyring):
     from phil.key_store import KeyStoreError
 
     def failing(var, value):
@@ -163,7 +213,14 @@ def test_a_key_store_error_is_said_and_setup_carries_on(tmp_path, monkeypatch):
     monkeypatch.setattr("phil.setup.flow.set_key", failing)
     wrote, io, _ = setup(["", SECRET, "", "", ""], tmp_path)
     assert wrote is True
-    assert "Couldn't save OPENROUTER_API_KEY to the keychain: OSError" in io.lines
+    assert written(tmp_path).models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW}
+    assert (
+        f"Wrote {global_config_path()}, but couldn't save OPENROUTER_API_KEY: "
+        "Couldn't save OPENROUTER_API_KEY to the keychain: OSError. "
+        "Export OPENROUTER_API_KEY, or run phil keys set openrouter."
+    ) in io.lines
+    assert memory_keyring.store == {}
+    assert all(SECRET not in line for line in io.lines)
 
 
 def test_openrouter_typed_text_searches_the_catalog(tmp_path):
@@ -205,14 +262,16 @@ def test_a_tier_no_role_maps_to_is_shown_as_unused(tmp_path, git_repo):
     assert f"– high  {SUGGESTED_HIGH}  unused (no role maps to it)" in io.lines
 
 
-def test_a_write_error_is_said_and_nothing_is_reported_as_written(tmp_path):
+def test_a_write_error_is_said_and_nothing_is_reported_as_written(tmp_path, memory_keyring):
     def failing_write(path, **kwargs):
         raise OSError("Read-only file system")
 
     wrote, io, _ = setup(["", SECRET, "", "", ""], tmp_path, write=failing_write)
     assert wrote is False
-    assert f"Couldn't write {global_config_path()}: Read-only file system" in io.lines
+    assert f"Couldn't write {global_config_path()}: Read-only file system. Nothing was saved." in io.lines
     assert not any(line.startswith("Wrote ") for line in io.lines)
+    assert not any(line.startswith("Saved ") for line in io.lines)
+    assert memory_keyring.store == {}
 
 
 def test_a_toml_error_in_the_write_is_said(tmp_path):
@@ -226,11 +285,13 @@ def test_a_toml_error_in_the_write_is_said(tmp_path):
     assert any(line.startswith(f"Couldn't write {global_config_path()}: ") for line in io.lines)
 
 
-def test_ctrl_c_during_the_check_cancels(tmp_path):
+def test_ctrl_c_during_the_check_cancels(tmp_path, memory_keyring):
     wrote, io, _ = setup(["", SECRET, "", ""], tmp_path, check=FakeCheck(interrupt=True))
     assert wrote is False
     assert not global_config_path().exists()
-    assert "Setup cancelled; the key was saved, nothing else was written." in io.lines
+    assert "Setup cancelled; nothing was saved." in io.lines
+    assert memory_keyring.store == {}
+    assert all(SECRET not in line for line in io.lines)
 
 
 def test_ctrl_c_during_the_catalog_fetch_cancels(tmp_path):
@@ -239,7 +300,7 @@ def test_ctrl_c_during_the_catalog_fetch_cancels(tmp_path):
 
     wrote, io, _ = setup(["", "", "gpt"], tmp_path, catalog=interrupted)
     assert wrote is False
-    assert "Setup cancelled; nothing was written." in io.lines
+    assert "Setup cancelled; nothing was saved." in io.lines
 
 
 def test_the_ollama_path_picks_installed_models(tmp_path, memory_keyring):
@@ -310,30 +371,29 @@ def test_a_failed_check_can_be_kept_anyway(tmp_path):
     assert written(tmp_path).models["high"] == SUGGESTED_HIGH
 
 
-NOTHING_WRITTEN = "Setup cancelled; nothing was written."
-KEY_SAVED = "Setup cancelled; the key was saved, nothing else was written."
+CANCELLED = "Setup cancelled; nothing was saved."
 
 
 @pytest.mark.parametrize(
-    ("answers", "message"),
+    "answers",
     [
-        ([], NOTHING_WRITTEN),  # at the provider choice
-        ([""], NOTHING_WRITTEN),  # at the key prompt, before set_key
-        (["", SECRET], KEY_SAVED),  # at the high model
-        (["", SECRET, ""], KEY_SAVED),  # at the low model
-        (["", SECRET, "", ""], KEY_SAVED),  # at the failed-check choice
-        (["Custom", "lab"], NOTHING_WRITTEN),  # inside the custom provider questions
-        (["Ollama"], NOTHING_WRITTEN),  # at the unreachable-Ollama choice
+        [],  # at the provider choice
+        [""],  # at the key prompt, before any key is entered
+        ["", SECRET],  # at the high model, after a key was entered
+        ["", SECRET, ""],  # at the low model
+        ["", SECRET, "", ""],  # at the failed-check choice
+        ["Custom", "lab"],  # inside the custom provider questions
+        ["Ollama"],  # at the unreachable-Ollama choice
     ],
 )
-def test_a_cancel_at_any_step_writes_nothing(tmp_path, memory_keyring, answers, message):
+def test_a_cancel_at_any_step_writes_nothing(tmp_path, memory_keyring, answers):
     check = FakeCheck(bad={SUGGESTED_HIGH})
     wrote, io, _ = setup(answers, tmp_path, check=check, ollama=FakeOllama(None))
     assert wrote is False
     assert not global_config_path().exists()
-    assert message in io.lines
-    if message == NOTHING_WRITTEN:
-        assert memory_keyring.store == {}
+    assert CANCELLED in io.lines
+    assert memory_keyring.store == {}
+    assert all(SECRET not in line for line in io.lines)
 
 
 def test_a_rerun_prefills_the_current_models_and_ignores_role_keys_in_the_check(tmp_path, git_repo, memory_keyring):
@@ -532,27 +592,28 @@ def test_a_failing_classifier_check_can_be_kept_anyway(tmp_path, memory_keyring)
 TYPESAFE_SECRET = "sk-TESTSECRET-typesafe"
 
 
-def test_cancelling_after_the_classifier_key_is_saved_reports_it(tmp_path, memory_keyring):
+def test_cancelling_after_the_classifier_key_is_entered_saves_nothing(tmp_path, memory_keyring):
     # Cancelled (end of scripted input) at the "TypeSafe Jev failed the check." choice, after a
-    # new TypeSafe key was saved: the cancel message must say so (M2b), not "nothing was written".
+    # new TypeSafe key was entered (on top of the provider's own): neither key is saved, and the
+    # config is never written (replaces the old M2b "the key was saved" message).
     answers = ["", SECRET, "", "", "TypeSafe", TYPESAFE_SECRET]
     wrote, io, _ = setup(answers, tmp_path, classifier_check=lambda: "http 401")
     assert wrote is False
-    assert "Setup cancelled; the key was saved, nothing else was written." in io.lines
+    assert "Setup cancelled; nothing was saved." in io.lines
     assert not global_config_path().exists()
-    assert memory_keyring.store[(SERVICE, "OPENROUTER_API_KEY")] == SECRET
-    assert memory_keyring.store[(SERVICE, "TYPESAFE_API_KEY")] == TYPESAFE_SECRET
+    assert memory_keyring.store == {}
+    assert all(SECRET not in line and TYPESAFE_SECRET not in line for line in io.lines)
 
 
-def test_cancelling_with_no_new_key_saved_reports_nothing_written(tmp_path, monkeypatch, memory_keyring):
-    # Both keys already come from the environment, so neither _key_step saves anything; the same
-    # cancellation point then reports "nothing was written".
+def test_cancelling_when_both_keys_come_from_the_environment(tmp_path, monkeypatch, memory_keyring):
+    # Both keys already come from the environment, so neither key step has anything to hold
+    # pending; the same cancellation point reports the same "nothing was saved" message.
     monkeypatch.setenv("OPENROUTER_API_KEY", SECRET)
     monkeypatch.setenv("TYPESAFE_API_KEY", TYPESAFE_SECRET)
     answers = ["", "", "", "TypeSafe"]
     wrote, io, _ = setup(answers, tmp_path, classifier_check=lambda: "http 401")
     assert wrote is False
-    assert "Setup cancelled; nothing was written." in io.lines
+    assert "Setup cancelled; nothing was saved." in io.lines
     assert not global_config_path().exists()
     assert memory_keyring.store == {}
 

@@ -1,4 +1,5 @@
-"""Provider API key storage: the environment first, then the OS keychain, through `keyring`.
+"""Provider API key storage: the environment first, then a `pending_keys` overlay, then the OS
+keychain, through `keyring`.
 
 `keyring` is imported lazily inside each function: this module (and everything that imports
 it) must stay importable without `keyring` (or its platform backends) being loaded, and this
@@ -9,11 +10,30 @@ Values are never printed or logged. `key_source` reports only where a value came
 import logging
 import os
 from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Literal
 
 SERVICE = "phil"
 
 logger = logging.getLogger(__name__)
+
+_pending: ContextVar[Mapping[str, str]] = ContextVar("_pending", default={})
+
+
+@contextmanager
+def pending_keys(keys: Mapping[str, str]) -> Iterator[None]:
+    """Within the block, `get_key` / `key_lookup()` / `key_source` see `keys` as if stored: the
+    environment still wins, then these pending values, then the keychain. Nothing is written.
+    Used by setup so the model check can use a key the user has entered but that isn't saved yet.
+
+    Nesting merges the mappings (the inner block's values winning over the outer's for the same
+    variable); the previous overlay is restored on exit, including when the block raises."""
+    token = _pending.set({**_pending.get(), **keys})
+    try:
+        yield
+    finally:
+        _pending.reset(token)
 
 
 class KeyStoreError(Exception):
@@ -47,19 +67,26 @@ def _keychain_get(var: str) -> str | None:
     return value or None
 
 
-def key_source(var: str) -> Literal["env", "keychain"] | None:
+def key_source(var: str) -> Literal["env", "pending", "keychain"] | None:
     """Where `var`'s value would come from: `env` if `os.environ` has it (non-empty), else
-    `keychain` if the keychain has a non-empty value for it, else None."""
+    `pending` if a `pending_keys` overlay has it (non-empty), else `keychain` if the keychain
+    has a non-empty value for it, else None."""
     if os.environ.get(var):
         return "env"
+    if _pending.get().get(var):
+        return "pending"
     if _keychain_get(var):
         return "keychain"
     return None
 
 
 def get_key(var: str) -> str | None:
-    """`var`'s value: the environment first, then the keychain. None if neither has it."""
+    """`var`'s value: the environment first, then a `pending_keys` overlay, then the keychain.
+    None if none of them has it."""
     value = os.environ.get(var)
+    if value:
+        return value
+    value = _pending.get().get(var)
     if value:
         return value
     return _keychain_get(var)
@@ -102,8 +129,9 @@ def delete_key(var: str) -> bool:
 
 class KeyLookup(Mapping[str, str]):
     """A read-only mapping that resolves each variable through `get_key`: the environment
-    first, then the keychain. `__iter__`/`__len__` only cover `os.environ` — enough for `.get`,
-    which is all that callers (`build_chat_model`, `missing_keys`) use."""
+    first, then a `pending_keys` overlay, then the keychain. `__iter__`/`__len__` only cover
+    `os.environ` — enough for `.get`, which is all that callers (`build_chat_model`,
+    `missing_keys`) use."""
 
     def __getitem__(self, var: str) -> str:
         value = get_key(var)
