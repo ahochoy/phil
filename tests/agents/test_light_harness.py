@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage, SystemMessage
 from phil.agents.factory import ANSWER_NOW, BUDGET_GRACE_CALLS, READ_TOOLS, _call_budget_middleware, build_agent
 from phil.agents.invoke import AgentContext, ContractViolation, invoke_agent
 from phil.agents.registry import ANSWER_MAX_MODEL_CALLS, get_spec
-from phil.agents.spec import load_prompt
+from phil.agents.spec import FINISH_NOW, load_prompt
 from phil.contracts import ImplementInput, TaskResult
 from phil.contracts.routing import Answer, AnswerInput
 from phil.packets import build_packet
@@ -260,6 +260,31 @@ def test_the_capped_last_call_keeps_only_the_answer_tool_and_still_answers(tmp_p
     assert set(READ_TOOLS) | {"Answer"} <= set(model.bound[0]) and model.bound[0] == model.bound[1]
     assert model.bound[2] == ["Answer"]
     assert "Answer now" in model.systems[2] and "Answer now" not in model.systems[1]
+
+
+def test_each_capped_spec_has_its_own_cap_message():
+    assert get_spec("answer").cap_message == ANSWER_NOW
+    assert get_spec("quick_implementer").cap_message == FINISH_NOW
+    assert FINISH_NOW == (
+        "Your tool budget is nearly used up. Finish the change now and return your result; "
+        "say what you didn't get to."
+    )
+
+
+def test_call_budget_uses_the_message_it_is_given():
+    seen = []
+    _call_budget_middleware(1, FINISH_NOW).wrap_model_call(Req(0), lambda r: seen.append(r.system_message.content))
+    assert seen == [f"base\n\n{FINISH_NOW}"]
+
+
+def test_the_capped_quick_implementer_is_told_to_finish_the_change(tmp_path, monkeypatch):
+    spec = dataclasses.replace(get_spec("quick_implementer"), max_model_calls=2)
+    model = ToolRecordingModel(script=[tool_call("ls", {"path": "/"}, "c1"), _task_result("c2")])
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: model)
+    agent = build_agent(spec, "openrouter:x", tmp_path, [])
+    agent.invoke({"messages": [{"role": "user", "content": "add notes"}]})
+    assert FINISH_NOW in model.systems[1] and FINISH_NOW not in model.systems[0]
+    assert ANSWER_NOW not in model.systems[1]
 
 
 def test_an_uncapped_light_agent_keeps_its_tools(tmp_path, monkeypatch):

@@ -1,4 +1,4 @@
-from phil.agents.spec import AgentSpec
+from phil.agents.spec import ANSWER_NOW, FINISH_NOW, AgentSpec
 from phil.contracts import (
     ArchitectInput,
     Brief,
@@ -37,11 +37,12 @@ SPECS: dict[str, AgentSpec] = {
     ),
     "answer": AgentSpec(
         "answer", "answerer", AnswerInput, Answer, tools=("shell",), harness="light", shared_prompt=False,
-        read_only_shell=True, max_model_calls=ANSWER_MAX_MODEL_CALLS,
+        read_only_shell=True, max_model_calls=ANSWER_MAX_MODEL_CALLS, cap_message=ANSWER_NOW,
     ),
     "quick_implementer": AgentSpec(
         "quick_implementer", "implementer", ImplementInput, TaskResult, tools=("shell",), writes_files=True,
         harness="light", max_model_calls=QUICK_IMPLEMENTER_MAX_MODEL_CALLS, prompt_name="implementer",
+        cap_message=FINISH_NOW,
     ),
 }
 

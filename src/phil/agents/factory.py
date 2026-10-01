@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from phil.agents.providers import ProviderSpec, build_chat_model, resolve_provider, split_model
-from phil.agents.spec import AgentSpec, load_prompt
+from phil.agents.spec import ANSWER_NOW, AgentSpec, load_prompt
 
 
 def _case_variants(name: str) -> list[str]:
@@ -78,7 +78,6 @@ def build_agent(
 
 READ_TOOLS = ("ls", "read_file", "glob", "grep")
 WRITE_TOOLS = ("write_file", "edit_file", "delete")
-ANSWER_NOW = "Your tool budget is used up. Answer now with what you have found, and say what you didn't check."
 
 
 BUDGET_GRACE_CALLS = 2  # capped calls allowed to fix an invalid answer before the hard stop
@@ -88,24 +87,24 @@ def _ai_calls(messages: list[Any]) -> int:
     return sum(1 for m in messages if getattr(m, "type", None) == "ai")
 
 
-def _with_answer_now(system_message: Any) -> Any:
-    """`system_message` (or none) with ANSWER_NOW appended. Plain-string content stays a plain
+def _with_cap_message(system_message: Any, message: str) -> Any:
+    """`system_message` (or none) with `message` appended. Plain-string content stays a plain
     string (OpenAI-compatible servers can reject list content); block content keeps its blocks."""
     from langchain_core.messages import SystemMessage
 
     content = system_message.content if system_message is not None else ""
     if isinstance(content, str):
-        return SystemMessage(f"{content}\n\n{ANSWER_NOW}" if content else ANSWER_NOW)
+        return SystemMessage(f"{content}\n\n{message}" if content else message)
     blocks = list(system_message.content_blocks)
-    blocks.append({"type": "text", "text": f"\n\n{ANSWER_NOW}" if blocks else ANSWER_NOW})
+    blocks.append({"type": "text", "text": f"\n\n{message}" if blocks else message})
     return SystemMessage(content_blocks=blocks)
 
 
-def _call_budget_middleware(max_calls: int) -> Any:
+def _call_budget_middleware(max_calls: int, message: str = ANSWER_NOW) -> Any:
     """Cap an agent's model calls at `max_calls`, softly and then hard.
 
-    Soft: from call `max_calls` on, remove the tools and tell the model to answer, so a capped
-    agent still returns its structured output. (ToolStrategy adds its structured-output tool after
+    Soft: from call `max_calls` on, remove the tools and add `message` (the spec's cap_message)
+    telling the model to answer, so a capped agent still returns its structured output. (ToolStrategy adds its structured-output tool after
     this middleware runs, so `tools=[]` leaves the model exactly one tool: the answer.)
 
     Hard: an invalid answer is sent back to the model (ToolStrategy's handle_errors), and so is a
@@ -121,7 +120,7 @@ def _call_budget_middleware(max_calls: int) -> Any:
 
     def capped(request: Any) -> Any:
         if _ai_calls(request.state["messages"]) >= max_calls - 1:
-            return request.override(tools=[], system_message=_with_answer_now(request.system_message))
+            return request.override(tools=[], system_message=_with_cap_message(request.system_message, message))
         return request
 
     def stop(state: Any) -> dict[str, Any] | None:
@@ -176,7 +175,7 @@ def _build_light_agent(
     )
     middleware: list[Any] = [filesystem, PhilModelRetryMiddleware()]
     if spec.max_model_calls is not None:
-        middleware.append(_call_budget_middleware(spec.max_model_calls))
+        middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
     return create_agent(
         chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=tools,
