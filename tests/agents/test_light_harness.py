@@ -7,6 +7,8 @@ from langchain_core.messages import AIMessage, SystemMessage
 from phil.agents.factory import ANSWER_NOW, BUDGET_GRACE_CALLS, READ_TOOLS, _call_budget_middleware, build_agent
 from phil.agents.invoke import AgentContext, ContractViolation, invoke_agent
 from phil.agents.registry import ANSWER_MAX_MODEL_CALLS, get_spec
+from phil.agents.spec import load_prompt
+from phil.contracts import ImplementInput, TaskResult
 from phil.contracts.routing import Answer, AnswerInput
 from phil.packets import build_packet
 from tests.agents.test_model_retry import ScriptedChatModel, tool_call
@@ -34,10 +36,70 @@ def _tool_names(agent) -> set[str]:
     return set(bound)
 
 
-def test_light_harness_refuses_a_spec_that_writes_files(tmp_path):
-    spec = dataclasses.replace(get_spec("answer"), writes_files=True)
-    with pytest.raises(ValueError, match="writes_files"):
-        build_agent(spec, "openrouter:x", tmp_path, [])
+def test_quick_implementer_spec():
+    spec = get_spec("quick_implementer")
+    assert (spec.harness, spec.role, spec.writes_files, spec.max_model_calls) == ("light", "implementer", True, 15)
+    assert spec.tools == ("shell",) and spec.read_only_shell is False
+    assert (spec.in_contract, spec.out_contract) == (ImplementInput, TaskResult)
+    assert load_prompt(spec) == load_prompt(get_spec("implementer"))  # same prompt text
+
+
+def _task_result(call_id: str):
+    return tool_call(
+        "TaskResult",
+        {
+            "phase": "green",
+            "summary": "Wrote notes.",
+            "files_changed": ["notes.txt"],
+            "tests_added": [],
+            "self_check": {"assumptions": [], "evidence": [], "risks": [], "unverified": [], "out_of_scope": []},
+        },
+        call_id,
+    )
+
+
+def test_a_writing_light_agent_gets_write_tools_with_git_and_phil_toml_denied(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("[core]\n")
+    (tmp_path / "phil.toml").write_text("[run]\n")
+    model = ToolRecordingModel(
+        script=[
+            tool_call("write_file", {"file_path": "/notes.txt", "content": "hello\n"}, "w1"),
+            tool_call("write_file", {"file_path": "/.git/config", "content": "evil\n"}, "w2"),
+            tool_call("write_file", {"file_path": "/phil.toml", "content": "evil\n"}, "w3"),
+            tool_call("edit_file", {"file_path": "/phil.toml", "old_string": "[run]", "new_string": "x"}, "w4"),
+            _task_result("a1"),
+        ]
+    )
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: model)
+    agent = build_agent(get_spec("quick_implementer"), "openrouter:x", tmp_path, [])
+    assert {"write_file", "edit_file"} <= _tool_names(agent)
+    result = agent.invoke({"messages": [{"role": "user", "content": "write notes"}]})
+    assert {"write_file", "edit_file"} <= set(model.bound[0])
+
+    assert result["structured_response"].files_changed == ["notes.txt"]
+    assert (tmp_path / "notes.txt").read_text() == "hello\n"
+    assert (tmp_path / ".git" / "config").read_text() == "[core]\n"
+    assert (tmp_path / "phil.toml").read_text() == "[run]\n"
+    replies = {m.tool_call_id: m.text for m in result["messages"] if m.type == "tool"}
+    assert "permission denied" not in replies["w1"]
+    for call_id, path in (("w2", "/.git/config"), ("w3", "/phil.toml"), ("w4", "/phil.toml")):
+        assert f"permission denied for write on {path}" in replies[call_id]
+
+
+def test_a_writing_light_agent_still_writes_nothing_on_its_own(tmp_path, monkeypatch):
+    # Eviction stays off for a writing agent too: deepagents would write large tool results and
+    # user messages into the backend root (the repo), bypassing the permission rules.
+    (tmp_path / "big.txt").write_text(("line " + "y" * 200 + "\n") * 2000)  # grep output well over the limit
+    model = ToolRecordingModel(
+        script=[tool_call("grep", {"pattern": "line", "path": "/"}, "c1"), _task_result("c2")]
+    )
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: model)
+    agent = build_agent(get_spec("quick_implementer"), "openrouter:x", tmp_path, [])
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    agent.invoke({"messages": [{"role": "user", "content": "x" * 300_000}]})
+    assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
+    assert not (tmp_path / "large_tool_results").exists()
 
 
 def test_light_harness_needs_a_workdir():

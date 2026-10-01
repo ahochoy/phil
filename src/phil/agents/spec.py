@@ -27,6 +27,9 @@ class AgentSpec:
     end_on_text: bool = False
     read_only_shell: bool = False  # shell runs only M1's read-only commands (no project allowlist)
     max_model_calls: int | None = None  # light only: the last allowed call must answer
+    # The prompt file's stem when it differs from `name`, for a spec that reuses another's prompt
+    # (the quick implementer reads implementer.md).
+    prompt_name: str | None = None
 
 
 def _read_prompt(filename: str) -> str:
@@ -34,7 +37,7 @@ def _read_prompt(filename: str) -> str:
 
 
 def load_prompt(spec: AgentSpec) -> str:
-    own = _read_prompt(f"{spec.name}.md").rstrip()
+    own = _read_prompt(f"{spec.prompt_name or spec.name}.md").rstrip()
     if not spec.shared_prompt:
         return f"{own}\n"
     return f"{own}\n\n{_read_prompt('_shared.md').rstrip()}\n"

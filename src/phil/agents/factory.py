@@ -138,10 +138,6 @@ def _build_light_agent(
 ) -> Any:
     if workdir is None:
         raise ValueError(f"{spec.name} uses the light harness, which needs a workdir")
-    if spec.writes_files:
-        # The write tools would need filesystem_permissions (.git and phil.toml denied); M3b adds
-        # them through FilesystemMiddleware(_permissions=...).
-        raise ValueError("light harness with writes_files is not supported yet")
     from deepagents.backends.filesystem import FilesystemBackend
     from deepagents.middleware.filesystem import FilesystemMiddleware
     from langchain.agents import create_agent
@@ -150,11 +146,14 @@ def _build_light_agent(
 
     filesystem = FilesystemMiddleware(
         backend=FilesystemBackend(root_dir=workdir, virtual_mode=True),
-        tools=list(READ_TOOLS),
+        # A writing spec gets every file tool (FilesystemBackend has no `execute`, so that stays
+        # hidden); the write tools check the permissions below, which deny .git and phil.toml.
+        tools="all" if spec.writes_files else list(READ_TOOLS),
         # deepagents offloads oversized tool results and user messages to the backend, which here
-        # is the repository itself: a read-only agent must not write there.
+        # is the repository itself, and those writes skip the permission rules: keep it off.
         tool_token_limit_before_evict=None,
         human_message_token_limit_before_evict=None,
+        _permissions=filesystem_permissions(spec),
     )
     middleware: list[Any] = [filesystem, PhilModelRetryMiddleware()]
     if spec.max_model_calls is not None:
