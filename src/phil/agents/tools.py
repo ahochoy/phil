@@ -5,7 +5,7 @@ from pathlib import Path
 
 from phil.config import ShellConfig
 from phil.store.artifacts import ArtifactStore
-from phil.workspace.shell import ShellPolicy, child_env, run_command, truncate_output
+from phil.workspace.shell import READ_ONLY, ShellPolicy, child_env, run_command, truncate_output
 
 
 @dataclass
@@ -27,7 +27,9 @@ def make_shell_tool(
     extra_allow: Iterable[str] = (),
     approved: Iterable[str] = (),
 ) -> Callable[[str], str]:
+    extra_allow, approved = tuple(extra_allow), tuple(approved)
     policy = ShellPolicy(shell.allow, extra_allow=extra_allow, approved=approved, root=workdir)
+    read_only = not (shell.allow or extra_allow or approved)
     env = child_env(os.environ, shell.pass_env) | {"PYTHONDONTWRITEBYTECODE": "1"}
 
     def run_shell(command: str) -> str:
@@ -49,6 +51,8 @@ def make_shell_tool(
             )
         if reason is not None:
             log.denied.append(command)
+            if read_only:
+                return f"DENIED: `{command}` is not read-only. Only read-only commands run here: {', '.join(READ_ONLY)}"
             allowed = ", ".join(shell.allow)
             return f"DENIED: `{command}` is not on the allowlist. Allowed patterns: {allowed}"
         log.commands.append(command)

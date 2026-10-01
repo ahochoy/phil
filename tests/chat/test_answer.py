@@ -41,6 +41,16 @@ def test_read_only_shell_denies_project_commands_and_writes(tmp_path):
     assert run("touch y").startswith("DENIED")
 
 
+def test_read_only_denial_names_the_read_only_commands(tmp_path):
+    from phil.agents.invoke import _shell_for
+    from phil.workspace.shell import READ_ONLY
+
+    config = PhilConfig(models={"low": "openrouter:l"})
+    denied = _shell_for(get_spec("answer"), config, tmp_path, CommandLog())("pytest")
+    assert "Only read-only commands run here: " + ", ".join(READ_ONLY) in denied
+    assert "Allowed patterns" not in denied
+
+
 def test_a_writing_spec_keeps_the_project_allowlist_and_approvals(tmp_path):
     from phil.agents.invoke import _shell_for
 

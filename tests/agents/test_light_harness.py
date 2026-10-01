@@ -1,10 +1,14 @@
+import asyncio
 import dataclasses
 
 import pytest
+from langchain_core.messages import AIMessage, SystemMessage
 
-from phil.agents.factory import READ_TOOLS, _call_budget_middleware, build_agent
-from phil.agents.registry import get_spec
-from phil.contracts.routing import Answer
+from phil.agents.factory import ANSWER_NOW, BUDGET_GRACE_CALLS, READ_TOOLS, _call_budget_middleware, build_agent
+from phil.agents.invoke import AgentContext, ContractViolation, invoke_agent
+from phil.agents.registry import ANSWER_MAX_MODEL_CALLS, get_spec
+from phil.contracts.routing import Answer, AnswerInput
+from phil.packets import build_packet
 from tests.agents.test_model_retry import ScriptedChatModel, tool_call
 
 
@@ -41,25 +45,79 @@ def test_light_harness_needs_a_workdir():
         build_agent(get_spec("answer"), "openrouter:x", None, [])
 
 
+class Req:
+    def __init__(self, n, system_message=SystemMessage(content="base")):
+        self.state = {"messages": [AIMessage(content="")] * n}
+        self.tools = ["ls", "read_file"]
+        self.system_message = system_message
+
+    def override(self, **kw):
+        r = Req(len(self.state["messages"]), kw.get("system_message", self.system_message))
+        r.tools = kw.get("tools", self.tools)
+        return r
+
+
 def test_call_budget_forces_an_answer_on_the_last_call():
     mw = _call_budget_middleware(3)
     seen = []
-
-    class Req:
-        def __init__(self, n):
-            self.state = {"messages": [type("AI", (), {"type": "ai"})()] * n}
-            self.tools = ["ls", "read_file"]
-            self.system_prompt = "base"
-
-        def override(self, **kw):
-            r = Req(len(self.state["messages"]))
-            r.tools, r.system_prompt = kw.get("tools", self.tools), kw.get("system_prompt", self.system_prompt)
-            return r
-
     for n in (0, 1, 2):
-        mw.wrap_model_call(Req(n), lambda r: seen.append((r.tools, r.system_prompt)))
-    assert seen[0][0] == ["ls", "read_file"] and seen[1][0] == ["ls", "read_file"]
-    assert seen[2][0] == [] and "Answer now" in seen[2][1]
+        mw.wrap_model_call(Req(n), lambda r: seen.append((r.tools, r.system_message.text)))
+    assert seen[0] == (["ls", "read_file"], "base") and seen[1] == (["ls", "read_file"], "base")
+    assert seen[2][0] == [] and seen[2][1].startswith("base\n\n") and "Answer now" in seen[2][1]
+
+
+def test_call_budget_without_a_system_prompt_adds_only_the_instruction():
+    seen = []
+    _call_budget_middleware(1).wrap_model_call(Req(0, None), lambda r: seen.append(r.system_message.text))
+    assert seen == [ANSWER_NOW]
+
+
+def test_call_budget_async_twin_caps_too():
+    seen = []
+
+    async def handler(r):
+        seen.append(r.tools)
+
+    asyncio.run(_call_budget_middleware(3).awrap_model_call(Req(2), handler))
+    assert seen == [[]]
+
+
+def _invalid_answers(n: int) -> list:
+    # Missing the required `text`: ToolStrategy sends the error back and the model tries again.
+    return [tool_call("Answer", {"files": []}, f"c{i}") for i in range(n)]
+
+
+def test_the_hard_stop_ends_a_model_that_never_answers_validly(tmp_path, monkeypatch):
+    spec = dataclasses.replace(get_spec("answer"), max_model_calls=3)
+    model = ToolRecordingModel(script=[tool_call("ls", {"path": "/"}, "l1"), *_invalid_answers(50)])
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: model)
+    agent = build_agent(spec, "openrouter:x", tmp_path, [])
+    result = agent.invoke({"messages": [{"role": "user", "content": "what?"}]})
+    assert result.get("structured_response") is None
+    assert len(model.received) == 3 + BUDGET_GRACE_CALLS == 5
+
+
+def test_the_hard_stop_also_holds_for_an_async_invoke(tmp_path, monkeypatch):
+    spec = dataclasses.replace(get_spec("answer"), max_model_calls=3)
+    model = ToolRecordingModel(script=[tool_call("ls", {"path": "/"}, "l1"), *_invalid_answers(50)])
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: model)
+    agent = build_agent(spec, "openrouter:x", tmp_path, [])
+    result = asyncio.run(agent.ainvoke({"messages": [{"role": "user", "content": "what?"}]}))
+    assert result.get("structured_response") is None
+    assert len(model.received) == 5
+    assert model.bound[2:] == [["Answer"]] * 3  # every call from the cap on has only the answer tool
+
+
+def test_invoke_agent_bounds_a_never_answering_answerer(tmp_path, monkeypatch, config, conn):
+    # Each attempt stops at max_model_calls + grace; invoke_agent records the rejection and makes
+    # its single contract retry, so one ask is bounded at 2 * (12 + 2) model calls.
+    model = ToolRecordingModel(script=_invalid_answers(100))
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: model)
+    ctx = AgentContext(config=config, conn=conn, layer="chat", workdir=tmp_path, factory=build_agent)
+    packet = build_packet("answerer", AnswerInput(question="what?"), budget_tokens=4000)
+    with pytest.raises(ContractViolation):
+        invoke_agent(get_spec("answer"), packet, ctx, node="answer")
+    assert len(model.received) == 2 * (ANSWER_MAX_MODEL_CALLS + BUDGET_GRACE_CALLS) == 28
 
 
 class ToolRecordingModel(ScriptedChatModel):

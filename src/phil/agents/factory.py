@@ -62,19 +62,64 @@ READ_TOOLS = ("ls", "read_file", "glob", "grep")
 ANSWER_NOW = "Your tool budget is used up. Answer now with what you have found, and say what you didn't check."
 
 
+BUDGET_GRACE_CALLS = 2  # capped calls allowed to fix an invalid answer before the hard stop
+
+
+def _ai_calls(messages: list[Any]) -> int:
+    return sum(1 for m in messages if getattr(m, "type", None) == "ai")
+
+
+def _with_answer_now(system_message: Any) -> Any:
+    """`system_message` (or none) with ANSWER_NOW appended as a text block, keeping its blocks."""
+    from langchain_core.messages import SystemMessage
+
+    blocks = list(system_message.content_blocks) if system_message is not None else []
+    blocks.append({"type": "text", "text": f"\n\n{ANSWER_NOW}" if blocks else ANSWER_NOW})
+    return SystemMessage(content_blocks=blocks)
+
+
 def _call_budget_middleware(max_calls: int) -> Any:
-    """On the last allowed model call, remove the tools and tell the model to answer, so a
-    capped agent still returns its structured output instead of hitting a recursion limit.
-    (ToolStrategy adds its structured-output tool after this middleware runs, so `tools=[]`
-    leaves the model exactly one tool: the answer.)"""
-    from langchain.agents.middleware import AgentMiddleware
+    """Cap an agent's model calls at `max_calls`, softly and then hard.
+
+    Soft: from call `max_calls` on, remove the tools and tell the model to answer, so a capped
+    agent still returns its structured output. (ToolStrategy adds its structured-output tool after
+    this middleware runs, so `tools=[]` leaves the model exactly one tool: the answer.)
+
+    Hard: an invalid answer is sent back to the model (ToolStrategy's handle_errors), and so is a
+    plain-text one, so the soft cap alone could loop until LangGraph's recursion limit. Once
+    `max_calls + BUDGET_GRACE_CALLS` calls are made, the loop ends without another model call and
+    with no structured response; invoke_agent then records the rejected output and makes its
+    single contract retry. One invoke_agent is thus bounded at
+    `max_attempts * (max_calls + BUDGET_GRACE_CALLS)` model calls (2 * 14 = 28 for the answerer),
+    not counting per-call transient retries."""
+    from langchain.agents.middleware import AgentMiddleware, hook_config
+
+    hard_stop = max_calls + BUDGET_GRACE_CALLS
+
+    def capped(request: Any) -> Any:
+        if _ai_calls(request.state["messages"]) >= max_calls - 1:
+            return request.override(tools=[], system_message=_with_answer_now(request.system_message))
+        return request
+
+    def stop(state: Any) -> dict[str, Any] | None:
+        if state.get("structured_response") is None and _ai_calls(state["messages"]) >= hard_stop:
+            return {"jump_to": "end"}
+        return None
 
     class CallBudget(AgentMiddleware):
+        @hook_config(can_jump_to=["end"])
+        def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+            return stop(state)
+
+        @hook_config(can_jump_to=["end"])
+        async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+            return stop(state)
+
         def wrap_model_call(self, request: Any, handler: Any) -> Any:
-            calls = sum(1 for m in request.state["messages"] if getattr(m, "type", None) == "ai")
-            if calls >= max_calls - 1:
-                request = request.override(tools=[], system_prompt=f"{request.system_prompt}\n\n{ANSWER_NOW}")
-            return handler(request)
+            return handler(capped(request))
+
+        async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+            return await handler(capped(request))
 
     return CallBudget()
 
