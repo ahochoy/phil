@@ -185,7 +185,8 @@ Revised 2026-10-01 against the code M3a shipped. The user approved these points 
     - There's no sub-agent and no summarization.
     - A hard stop applies: the call budget's soft step is at `max_model_calls`, and the hard stop 2 calls later, with **`max_model_calls = 15` per attempt**.
   - **Lean review, once.**
-    - Blocking or major findings aren't turned into tasks (`issues_to_tasks` isn't used). The run reopens the same task with the findings as `last_problems`, makes **one** fix attempt, reruns the gate, and commits.
+    - Blocking or major findings aren't turned into tasks (`issues_to_tasks` isn't used). The run reopens the same task as a check task, with each finding added to its acceptance criteria as `Review: <note>`. It makes **one** fix attempt, reruns the gate, and commits the fix as `<id>: fix after review`. The fix may edit test files that the original task created or changed; every other test file stays frozen.
+    - If the run is aborted or moved to full while fixing, the findings stay listed in the run's open issues as `not fixed after review`.
     - There is no second review after the fix.
     - Minor findings appear only in the summary.
 
