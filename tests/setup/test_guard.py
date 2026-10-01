@@ -20,6 +20,7 @@ PLANTED = "sk-proj-TESTSECRET0123456789abcdefABCDEF"
         "r8_TESTSECRET",
         "hf_TESTSECRET",
         "TESTSECRET0123456789abcdefABCDEF0123",  # a long, prefix-less token of letters and digits
+        "TESTsecret0123456789TESTsecret0123456789",  # a 40-character mixed-case token
         "openrouter:sk-or-v1-TESTSECRET",  # a key typed after a provider prefix
         f"  {PLANTED}  ",
     ],
@@ -37,6 +38,8 @@ def test_keys_are_recognised(text):
         "openai/gpt-6-sol",
         "google/gemini-3.8-flash",
         "llama3.1:8b",
+        "gemini-2.5-flash-lite-preview-06-17",  # real bare Google ids: long, but all lower case
+        "gemini-2.5-flash-preview-native-audio-dialog",
         "ollama:qwen3:32b",
         "gpt-x",
         "claude-sonnet-5",

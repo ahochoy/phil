@@ -383,12 +383,32 @@ def test_a_rerun_prefills_a_custom_provider(tmp_path):
     assert config.providers["lab"].base_url == "http://lab/v1"
 
 
+def test_a_rerun_keeps_a_saved_lower_case_key_variable_but_a_typed_one_must_be_upper_case(tmp_path):
+    global_config_path().parent.mkdir(parents=True)
+    global_config_path().write_text(
+        '[models]\nhigh = "lab:big"\nlow = "lab:small"\n'
+        '[providers.lab]\nkind = "openai"\nbase_url = "http://lab/v1"\napi_key_env = "lab_key"\n'
+    )
+    # Enter at the variable prompt keeps the saved name, even though it isn't upper case.
+    wrote, io, _ = setup(["", "", "", "", "", "", ""], tmp_path)
+    assert wrote is True
+    assert not any("isn't a valid variable name" in line for line in io.lines)
+    assert written(tmp_path).providers["lab"].api_key_env == "lab_key"
+
+    # Typing a different lower-case name is still refused.
+    wrote, io, _ = setup(["", "", "", "other_key", "OTHER_KEY", "", "", ""], tmp_path)
+    assert wrote is True
+    assert any("isn't a valid variable name" in line for line in io.lines)
+    assert written(tmp_path).providers["lab"].api_key_env == "OTHER_KEY"
+
+
 # A key pasted at a non-secret prompt is never echoed, written or sent (final review A1/A2).
 
 PLANTED = "sk-proj-TESTSECRET0123456789abcdefABCDEF"
 KEY_WARNING = (
     "That looks like an API key — it isn't shown or saved here. "
-    "Enter it at the key prompt (or phil keys set <provider>)."
+    "Enter it at the key prompt (or phil keys set <provider>). "
+    "If it's a model id, enter it as <provider>:<id>."
 )
 
 

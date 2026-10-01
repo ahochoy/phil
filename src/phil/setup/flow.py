@@ -189,7 +189,8 @@ def _custom_provider(io: SetupIO, config: PhilConfig, current: str | None) -> _P
         if var.lower() == "none":
             api_key_env = None
             break
-        if VAR_PATTERN.fullmatch(var):
+        # The existing entry's own name is kept on a rerun, even if it predates the upper-case rule.
+        if VAR_PATTERN.fullmatch(var) or (entry is not None and var == entry.api_key_env):
             api_key_env = var
             break
         # Not echoed: whatever was typed here might be part of a key.
