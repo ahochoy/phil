@@ -1,3 +1,5 @@
+import pytest
+
 from phil.agents.registry import get_spec
 from phil.agents.spec import load_prompt
 from phil.config import CHAT_ROLES, RUN_ROLES, ROLES
@@ -22,3 +24,17 @@ def test_intake_input_defaults():
 def test_chat_and_run_roles_cover_all_roles_except_the_classifier():
     # The classifier isn't a chat or run role: routing falls back to the low model, then to intake.
     assert set(CHAT_ROLES) | set(RUN_ROLES) == set(ROLES) - {"classifier"}
+
+
+def test_goal_depth_is_optional_and_typed():
+    assert Goal(objective="x").depth is None
+    assert Goal(objective="x", depth="answer").depth == "answer"
+    with pytest.raises(ValueError):
+        Goal(objective="x", depth="medium")
+
+
+def test_intake_prompt_documents_depth():
+    from phil.agents.spec import load_prompt
+    spec = get_spec("intake")
+    prompt = load_prompt(spec)
+    assert "depth" in prompt
