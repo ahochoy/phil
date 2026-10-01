@@ -94,7 +94,10 @@ def test_run_prints_the_exact_missing_model_line(calc_repo, tmp_path, monkeypatc
     )
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path))])
     assert result.exit_code == 1
-    assert result.output == "No model for reviewer (tier high). Set models.high in ~/.phil/config.toml or phil.toml.\n"
+    assert result.output == (
+        "No model for reviewer (tier high). Set models.high in ~/.phil/config.toml or phil.toml.\n"
+        "Run phil setup to choose your models.\n"
+    )
     assert runs_for(calc_repo) == []
 
 

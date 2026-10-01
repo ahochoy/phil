@@ -124,6 +124,11 @@ def _is_tty() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def _interactive() -> bool:
+    """Whether this process can run setup's prompts in a real terminal (patched in tests)."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def _terminal(toolbar):
     """The live terminal IO (patched in tests, where CliRunner has no real terminal)."""
     from phil.chat.terminal import TerminalIO
@@ -178,10 +183,19 @@ def _chat(ctx: typer.Context) -> None:
     info, conn = _open_project(ctx)
     overrides = ctx.obj.get("overrides", [])
     config = _load_config(info.root, overrides)
+    if _interactive() and config.missing_model_messages(CHAT_ROLES + RUN_ROLES):
+        console.print("Phil isn't set up yet. Let's choose your models (about a minute).")
+        if _run_setup(ctx, info.root):
+            config = _load_config(info.root, overrides)
+        else:
+            for message in config.missing_model_messages(CHAT_ROLES):
+                console.print(f"[phil.error]{escape(message)}[/]")
+            raise typer.Exit(1)
     missing = config.missing_model_messages(CHAT_ROLES)
     if missing:
         for message in missing:
             console.print(f"[phil.error]{escape(message)}[/]")
+        console.print("Run phil setup to choose your models.")
         raise typer.Exit(1)
     # The chat starts runs too, and their worker inherits this environment.
     _require_api_keys(config, CHAT_ROLES + RUN_ROLES)
@@ -354,6 +368,8 @@ def run_plan(
     if problems:
         for problem in problems:
             console.print(f"[phil.error]{escape(terminated(problem))}[/]")
+        if config.missing_model_messages(RUN_ROLES):
+            console.print("Run phil setup to choose your models.")
         raise typer.Exit(1)
     _require_api_keys(config, RUN_ROLES)
     if base is not None:
@@ -447,6 +463,7 @@ def models_check(ctx: typer.Context) -> None:
             f"{escape(str(global_config_path()))} or phil.toml.[/]",
             soft_wrap=True,
         )
+        console.print("Run phil setup to choose your models.")
         raise typer.Exit(1)
     for result in results:
         if result.ok:
@@ -467,21 +484,14 @@ def _setup_io():
     return TerminalSetupIO(console)
 
 
-@app.command("setup")
-def setup_command(ctx: typer.Context) -> None:
-    """Choose a provider, store its key and pick your models (edits ~/.phil/config.toml)."""
+def _run_setup(ctx: typer.Context, root: Path) -> bool:
+    """Build and run setup for `root`'s config, exactly as `phil setup` does: `phil setup`
+    itself and bare `phil`'s auto-start both call this. True if it wrote the global config;
+    False if the user cancelled."""
     from phil.agents.check import check_models
     from phil.setup import catalog, write
     from phil.setup.flow import run_setup
 
-    if ctx.obj.get("repo"):
-        root = _resolve(ctx).root
-    else:
-        # Setup is often the first thing run, and not necessarily inside a repository.
-        try:
-            root = resolve_repo(Path.cwd()).root
-        except RepoError:
-            root = Path.cwd()
     try:
         config = load_config(root, overrides=ctx.obj.get("overrides", []))
     except ConfigError as exc:
@@ -498,7 +508,7 @@ def setup_command(ctx: typer.Context) -> None:
         )
         raise typer.Exit(1) from exc
     # The helpers are looked up when called, so tests can replace them on their modules.
-    wrote = run_setup(
+    return run_setup(
         _setup_io(),
         config=config,
         check=lambda candidate: check_models(candidate, factory=factory, repo_root=root),
@@ -506,7 +516,20 @@ def setup_command(ctx: typer.Context) -> None:
         ollama=lambda base_url: catalog.ollama_models(base_url),
         write=lambda path, **fields: write.write_global_config(path, **fields),
     )
-    if not wrote:
+
+
+@app.command("setup")
+def setup_command(ctx: typer.Context) -> None:
+    """Choose a provider, store its key and pick your models (edits ~/.phil/config.toml)."""
+    if ctx.obj.get("repo"):
+        root = _resolve(ctx).root
+    else:
+        # Setup is often the first thing run, and not necessarily inside a repository.
+        try:
+            root = resolve_repo(Path.cwd()).root
+        except RepoError:
+            root = Path.cwd()
+    if not _run_setup(ctx, root):
         raise typer.Exit(1)
 
 
