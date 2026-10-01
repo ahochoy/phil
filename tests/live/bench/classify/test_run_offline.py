@@ -1,9 +1,12 @@
 """Offline tests for run.py's helpers: `decision_rule`, `_latest_per_case`,
-`append_record`/`results_path`, and the llm backend's model choice (with `judge_llm` replaced).
-No network, no models."""
+`append_record`/`results_path`, `_error_value`, and the llm backend's model choice (with
+`judge_llm` replaced). No network, no models."""
 
 import json
 
+from phil.config import ConfigError
+from phil.key_store import KeyStoreError
+from phil.routing.jev import JevError
 from tests.live.bench.classify import run
 
 # A summary with every condition comfortably passing, to flip one at a time below.
@@ -162,3 +165,28 @@ def test_the_llm_backend_uses_the_low_model_when_the_classifier_is_jev(monkeypat
     config = PhilConfig(models={"low": "openrouter:l", "classifier": "typesafe:jev-latest"})
     [record] = run.run_backend("llm", [CASE], config)
     assert seen == ["openrouter:l"] and record["model"] == "openrouter:l"
+
+
+def test_error_value_keeps_a_configerror_message_since_it_never_carries_a_key_value():
+    exc = ConfigError("openrouter needs OPENROUTER_API_KEY (used by classifier).")
+    assert run._error_value(exc) == "ConfigError: openrouter needs OPENROUTER_API_KEY (used by classifier)."
+
+
+def test_error_value_keeps_a_keystoreerror_message_for_the_same_reason():
+    exc = KeyStoreError("No keychain is available here; export OPENROUTER_API_KEY instead.")
+    assert run._error_value(exc) == "KeyStoreError: No keychain is available here; export OPENROUTER_API_KEY instead."
+
+
+def test_error_value_only_keeps_the_first_line_of_a_multiline_configerror():
+    exc = ConfigError("Invalid phil.toml: line one\nline two")
+    assert run._error_value(exc) == "ConfigError: Invalid phil.toml: line one"
+
+
+def test_error_value_keeps_jeverrors_reason():
+    exc = JevError("http 429")
+    assert run._error_value(exc) == "JevError: http 429"
+
+
+def test_error_value_drops_a_generic_exceptions_text_which_could_carry_anything():
+    exc = RuntimeError("secret sk-proj-abcdefg")
+    assert run._error_value(exc) == "RuntimeError"

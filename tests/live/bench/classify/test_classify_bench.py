@@ -42,4 +42,4 @@ def test_classify_bench(backend):
     summary = run_and_record(backend, load_cases(), Path(config).expanduser())
     if summary is None:
         pytest.skip(f"{backend}: not configured (no TYPESAFE_API_KEY for jev)")
-    assert summary["n"] == 40 and summary["errors"] < 40
+    assert summary["n"] == 40 and summary["errors"] < 40, summary["errors_by_kind"]

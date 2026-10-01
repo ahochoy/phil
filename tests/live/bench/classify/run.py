@@ -20,8 +20,8 @@ from typing import Literal
 
 from phil.agents.invoke import AgentContext
 from phil.agents.providers import provider_for_model, split_model
-from phil.config import PhilConfig, RoutingConfig
-from phil.key_store import key_lookup
+from phil.config import ConfigError, PhilConfig, RoutingConfig
+from phil.key_store import KeyStoreError, key_lookup
 from phil.routing.jev import JevError, judge_jev
 from phil.routing.llm import judge_llm
 from phil.routing.types import Judgement
@@ -53,10 +53,19 @@ def _state(case: dict) -> dict:
 
 
 def _error_value(exc: Exception) -> str:
-    """The exception's class name, plus `JevError.reason` for a `JevError` -- never `str(exc)`,
-    which could otherwise carry something sensitive from an HTTP client or a model SDK."""
+    """The exception's class name, plus a message when showing one is safe.
+
+    Phil's own `ConfigError` and `KeyStoreError` are written to name variables, providers,
+    roles and models -- never a key value -- so their text (just the first line, in case a
+    wrapped validation error spans several) is safe to record. `JevError.reason` is likewise
+    written to be safe. Any other exception's `str()` isn't under Phil's control -- it could
+    carry a provider's raw response or an HTTP client's exception text -- so only its class name
+    is kept."""
     if isinstance(exc, JevError):
         return f"{type(exc).__name__}: {exc.reason}"
+    if isinstance(exc, (ConfigError, KeyStoreError)):
+        first_line = next(iter(str(exc).splitlines()), "")
+        return f"{type(exc).__name__}: {first_line}"
     return type(exc).__name__
 
 
@@ -222,7 +231,13 @@ def decision_rule(jev: dict, llm: dict) -> dict:
 def _print_summary(backend: str, summary: dict, sweep: list[dict]) -> None:
     print(f"--- {backend} ---")
     for key, value in summary.items():
+        if key == "errors_by_kind":
+            continue
         print(f"  {key}: {value}")
+    if summary.get("errors_by_kind"):
+        print("  errors:")
+        for kind, count in summary["errors_by_kind"].items():
+            print(f"    {kind}: {count}")
     print("  sweep (confidence_threshold -> depth_accuracy, intake_rate):")
     for row in sweep:
         print(f"    {row['threshold']}: {row['depth_accuracy']:.3f}, {row['intake_rate']:.3f}")

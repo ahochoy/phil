@@ -83,6 +83,7 @@ def test_summarise_every_field():
     assert summary == {
         "n": 9,
         "errors": 1,
+        "errors_by_kind": {"JevError: timeout": 1},
         "class_accuracy": 5 / 8,  # 8 non-error records; q-01, d-01, s-01, r-01, o-01 match
         # q-01, d-01, s-01, r-01 route to their expected depth; v-01 is ambiguous, so intake counts too
         "depth_accuracy": 5 / 9,
@@ -120,6 +121,7 @@ def test_summarise_with_no_records():
     summary = metrics.summarise([], confidence_threshold=CONFIDENCE_THRESHOLD, detail_threshold=DETAIL_THRESHOLD)
     assert summary["n"] == 0
     assert summary["errors"] == 0
+    assert summary["errors_by_kind"] == {}
     assert summary["class_accuracy"] == 0.0
     assert summary["depth_accuracy"] == 0.0
     assert summary["intake_rate"] == 0.0

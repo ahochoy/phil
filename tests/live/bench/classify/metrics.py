@@ -4,6 +4,7 @@
 (`phil.routing.decide`) over already-recorded judgements, so a threshold sweep costs nothing."""
 
 import math
+from collections import Counter
 
 from phil.routing.policy import decide
 from phil.routing.types import Judgement
@@ -52,6 +53,7 @@ def summarise(records: list[dict], *, confidence_threshold: float, detail_thresh
     """Accuracy, confusion, detail precision/recall, latency and cost over `records` (spec §5.1)."""
     n = len(records)
     errors = sum(1 for record in records if record.get("error"))
+    errors_by_kind = dict(Counter(record["error"] for record in records if record.get("error")))
     non_error = [record for record in records if not record.get("error")]
     class_correct = sum(1 for record in non_error if record.get("task_class") == record.get("expected_class"))
     class_accuracy = class_correct / len(non_error) if non_error else 0.0
@@ -100,6 +102,7 @@ def summarise(records: list[dict], *, confidence_threshold: float, detail_thresh
     return {
         "n": n,
         "errors": errors,
+        "errors_by_kind": errors_by_kind,
         "class_accuracy": class_accuracy,
         "depth_accuracy": depth_accuracy,
         "intake_rate": intake_rate,

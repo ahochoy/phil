@@ -183,6 +183,13 @@ stored keys: their environment drops secret-looking variables and pins `keyring`
 backend, so code they run can't read a stored key through `keyring`. That can't stop a
 malicious test from reaching the OS keychain directly, so review what agents add.
 
+The opt-in live and bench tests (see Development and Benchmark below) are the one exception:
+they read keys stored with `phil keys set` / `phil setup`, the same as a normal run, so no
+`--env-file` or exported variable is needed just to point them at a key you've already saved.
+An exported variable, or `uv run --env-file …`, still wins, letting you point a single run at a
+different key. Either way, a live test can only read a stored key — it can never change or
+remove one.
+
 ### Checking your models
 
     phil models check
@@ -285,7 +292,8 @@ jev_timeout_s = 5.0          # Jev's connect/read timeout; no retries inside the
 A classifier benchmark (`tests/live/bench/classify/`) compares the Jev and low-model
 backends on about 40 labelled requests — class and depth accuracy, the worst error (a
 question routed to a change), `needs_detail` precision/recall, latency, cost, and a
-threshold sweep:
+threshold sweep. It uses whichever keys you've already stored (or exported) for the models in
+`PHIL_BENCH_CONFIG`'s `[models]` — no `--env-file` is needed:
 
     PHIL_BENCH_CONFIG=~/Code/phil-bench.toml uv run pytest -m bench tests/live/bench/classify -n 0
     uv run python -m tests.live.bench.classify.run --report
@@ -472,10 +480,15 @@ To use `phil` from any repo, install it as an editable tool. Reinstall after dep
 
 The original LangGraph prototype is kept in `prototype/` for reference and is not part of the package.
 
-Live tests call a real model through OpenRouter and are skipped by default:
+Live tests call a real model through OpenRouter and are skipped by default. They read the key
+you've already stored with `phil keys set openrouter` (or `phil setup`), the same way a normal
+run does, so there's nothing to source first:
 
-    set -a; source .env; set +a
     uv run pytest -m live
+
+An exported `OPENROUTER_API_KEY`, or `uv run --env-file … pytest -m live`, still wins over a
+stored key, letting you point a run at a different one. Either way, a live test can only read
+a stored key — it never changes or removes one.
 
 Tests run in parallel with pytest-xdist; use `uv run pytest -n 0` to run serially when debugging.
 
