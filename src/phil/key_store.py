@@ -68,27 +68,36 @@ def get_key(var: str) -> str | None:
 def set_key(var: str, value: str) -> None:
     """Store `value` for `var` in the keychain.
 
-    Raises `KeyStoreError` when no keychain is available here."""
+    Raises `KeyStoreError` when no keychain is available here, or when the keychain raises
+    anything while storing the value (the error class name is included, never the value)."""
     if not keychain_available():
         raise KeyStoreError(f"No keychain is available here; export {var} instead.")
-    import keyring
+    try:
+        import keyring
 
-    keyring.set_password(SERVICE, var, value)
+        keyring.set_password(SERVICE, var, value)
+    except Exception as exc:
+        raise KeyStoreError(f"Couldn't save {var} to the keychain: {type(exc).__name__}") from exc
 
 
 def delete_key(var: str) -> bool:
-    """Delete `var`'s keychain entry. True if one was deleted, False if there wasn't one."""
-    import keyring
-    from keyring.errors import PasswordDeleteError
+    """Delete `var`'s keychain entry. True if one was deleted, False if there wasn't one.
 
+    Raises `KeyStoreError` when no keychain is available here, or when the keychain raises
+    anything other than `PasswordDeleteError` while removing the entry (the error class name is
+    included, never the value)."""
+    if not keychain_available():
+        raise KeyStoreError(f"No keychain is available here; export {var} instead.")
     try:
+        import keyring
+        from keyring.errors import PasswordDeleteError
+
         keyring.delete_password(SERVICE, var)
         return True
     except PasswordDeleteError:
         return False
-    except Exception:
-        logger.debug("keyring delete failed for %s", var, exc_info=True)
-        return False
+    except Exception as exc:
+        raise KeyStoreError(f"Couldn't remove {var} from the keychain: {type(exc).__name__}") from exc
 
 
 class KeyLookup(Mapping[str, str]):

@@ -81,6 +81,14 @@ def no_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def memory_keyring(monkeypatch):
+    # Children spawned by `spawn_worker` (e.g. in tests/run/test_launch.py and
+    # tests/cli/test_stop_command.py) don't inherit the `set_keyring` call below — each is a
+    # fresh process that auto-detects its own backend on first use. Without this, a worker
+    # process would fall through to the real OS keychain. `PYTHON_KEYRING_BACKEND` is `keyring`'s
+    # own env var for pinning the backend; children that build their env from `os.environ` (via
+    # `worker_env`, or by inheriting it outright when `env=None`) pick it up automatically.
+    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.null.Keyring")
+
     import keyring
     from keyring.backend import KeyringBackend
 
