@@ -42,9 +42,18 @@ def settle(engine: RunEngine, snapshot: Any) -> RunOutcome:
 
 
 def start(
-    engine: RunEngine, graph: Any, *, plan: Plan, base_sha: str, test_cmd: str, config_test_cmd: str | None = None
+    engine: RunEngine,
+    graph: Any,
+    *,
+    plan: Plan,
+    base_sha: str,
+    test_cmd: str,
+    config_test_cmd: str | None = None,
+    depth: str = "full",
 ) -> RunOutcome:
-    return _drive(engine, graph, initial_state(engine.deps.run_id, plan, base_sha, test_cmd, config_test_cmd))
+    return _drive(
+        engine, graph, initial_state(engine.deps.run_id, plan, base_sha, test_cmd, config_test_cmd, depth)
+    )
 
 
 def resume(engine: RunEngine, graph: Any, decision: dict, update: dict | None = None) -> RunOutcome:

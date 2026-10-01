@@ -182,7 +182,7 @@ def run_worker(
             test_cmd = plan.test_cmd or config.project.test_cmd or _detect(engine, record.base_sha) or ""
             outcome = runner.start(
                 engine, graph, plan=plan, base_sha=record.base_sha, test_cmd=test_cmd,
-                config_test_cmd=config.project.test_cmd,
+                config_test_cmd=config.project.test_cmd, depth=record.depth or "full",
             )
         elif mode == "resume":
             switch = _test_cmd_switch(snapshot.values, config, run_id)

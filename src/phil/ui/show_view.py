@@ -143,8 +143,9 @@ def render_show(console: Console, conn: sqlite3.Connection, paths: ProjectPaths,
     the refs (so the caller can print one by number)."""
     record = get_run(conn, run_id)
     assert record is not None
+    depth_segment = f" · {escape(record.depth)}" if record.depth else ""
     console.print(
-        f"Run [phil.id]{escape(run_id)}[/] · {escape(record.keyword)} · {escape(record.state)} · "
+        f"Run [phil.id]{escape(run_id)}[/] · {escape(record.keyword)}{depth_segment} · {escape(record.state)} · "
         f"{escape(record.base_sha[:8])}..{escape(record.branch)} · {record.tasks_done}/{record.tasks_total} tasks"
     )
 

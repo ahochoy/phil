@@ -163,6 +163,21 @@ def test_claim_run_from_resumable_states(conn, state):
     assert claim_run(conn, "r-0001", 111, "2026-01-01T00:00:00+00:00") is True
 
 
+def test_create_run_records_depth(conn):
+    record = create_run(
+        conn, run_id="r-0001", keyword="FIX", base_sha="a" * 40, worktree=Path("/wt"), tasks_total=1, depth="quick"
+    )
+    assert record.depth == "quick"
+    assert get_run(conn, "r-0001").depth == "quick"
+
+
+def test_a_run_without_depth_reads_as_none(conn):
+    record = create_run(
+        conn, run_id="r-0002", keyword="FIX", base_sha="a" * 40, worktree=Path("/wt"), tasks_total=1
+    )
+    assert record.depth is None
+
+
 def test_runs_record_the_chat_that_started_them(conn):
     create_run(conn, run_id="r-0001", keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=1, chat_id="c-1")
     create_run(conn, run_id="r-0002", keyword="MAPS", base_sha="abc", worktree=Path("/wt2"), tasks_total=1)

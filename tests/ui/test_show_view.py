@@ -4,14 +4,16 @@ from phil.run.launch import prepare_run
 from phil.run.worker import run_worker
 from phil.store.db import connect
 from phil.store.paths import ProjectPaths
+from phil.store.runs import create_run
 from phil.ui.show_view import render_show, show_refs
 from phil.ui.theme import make_console
 from tests.run.conftest import calc_plan, review, tester_report, write_green, write_red
 
 
-def finished_run(calc_repo):
+def finished_run(calc_repo, *, depth: str | None = None):
     info = resolve_repo(calc_repo)
-    record = prepare_run(info, calc_plan(), info.head_sha)
+    kwargs = {} if depth is None else {"depth": depth}
+    record = prepare_run(info, calc_plan(), info.head_sha, **kwargs)
     factory = ScriptedAgentFactory(
         {"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]}
     )
@@ -92,6 +94,30 @@ def test_render_show_reports_no_issues_recorded_for_a_malformed_json_file(calc_r
     console = make_console(record=True, width=160)
     render_show(console, conn, paths, record.run_id)
     assert "none recorded" in console.export_text()
+
+
+def test_render_show_header_shows_the_depth_when_the_run_has_one(calc_repo):
+    info, record, paths = finished_run(calc_repo, depth="quick")
+    conn = connect(paths.db_path)
+    console = make_console(record=True, width=160)
+    render_show(console, conn, paths, record.run_id)
+    assert "· quick ·" in console.export_text()
+
+
+def test_render_show_header_omits_depth_for_a_null_depth_run(calc_repo):
+    # A run created before M3b (or by create_run with no `depth` arg) has depth=NULL.
+    info = resolve_repo(calc_repo)
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    create_run(
+        conn, run_id="r-0001", keyword="CALC", base_sha=info.head_sha, worktree=paths.worktree_dir("r-0001"),
+        tasks_total=1,
+    )
+    console = make_console(record=True, width=160)
+    render_show(console, conn, paths, "r-0001")
+    text = console.export_text()
+    assert "· quick ·" not in text
+    assert "· full ·" not in text
 
 
 def test_show_refs_skips_a_file_deleted_between_listing_and_stat(calc_repo, monkeypatch):

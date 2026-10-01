@@ -726,7 +726,7 @@ def test_show_and_more_after_a_run(calc_repo):
     assert "# Run summary" in text and "- [x] CALC-001 [done]" in text  # /more 1 prints the file as-is
     assert "No detail #9. Use /show to list them." in text
     assert "Usage: /more <n>" in text
-    assert f"Run {run_id} · CALC · completed" in text  # /show renders the chat's last run
+    assert f"Run {run_id} · CALC · full · completed" in text  # /show renders the chat's last run
     assert text.count("- [x] CALC-001 [done]") == 2  # /more 1 and /show's task list
 
 
