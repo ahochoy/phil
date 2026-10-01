@@ -193,7 +193,7 @@ Revised 2026-10-01 against the code M3a shipped. The user approved these points 
 ### 4.3 Moving up to full
 
 - **Trigger:** the gate still fails after 2 attempts, or the fix attempt doesn't clear the gate.
-- **Escalation options:** `["full", "retry", "abort"]` for runs started from a chat; `["retry", "abort"]` for runs started with `phil run`. Choosing `full` in the chat:
+- **Escalation options:** `["full", "retry", "abort"]` for runs started from a chat; `["retry", "abort"]` for a quick run with no chat. `phil run` itself always starts full runs. Choosing `full` in the chat:
   1. ends the quick run as aborted (through the normal resume path);
   2. sends the original goal and the quick run's worklogs to the architect (`ArchitectInput` gains an optional `prior_attempt: list[AttemptWorklog]`);
   3. runs the normal architect, critic and approval flow;
@@ -214,7 +214,7 @@ Unchanged, apart from the classifier call at the front and the recorded depth.
 - **The "Fix it?" prompt** becomes `Fix it? [Enter = quick fix / full = plan it / n]`.
   - Enter or `y` starts a quick goal with the diagnosis as context.
   - `full` starts a full goal.
-  - A forced `/ask` whose answer was a diagnosis also gets the offer. The answerer's reply decides whether it was one, because forced answers have no classifier class.
+  - Any answer the answerer marks as a diagnosis (`Answer.diagnosis`) also gets the offer, including a forced `/ask`, which has no classifier class.
 
 ## 5. Benchmarks
 
