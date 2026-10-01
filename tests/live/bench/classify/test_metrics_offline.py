@@ -84,7 +84,8 @@ def test_summarise_every_field():
         "n": 9,
         "errors": 1,
         "class_accuracy": 5 / 8,  # 8 non-error records; q-01, d-01, s-01, r-01, o-01 match
-        "depth_accuracy": 4 / 9,  # q-01, d-01, s-01, r-01 route to their expected depth
+        # q-01, d-01, s-01, r-01 route to their expected depth; v-01 is ambiguous, so intake counts too
+        "depth_accuracy": 5 / 9,
         "intake_rate": 3 / 9,  # v-01 (needs_detail), o-01 (needs_detail), x-01 (error)
         "confusion": {
             "answer": {"answer": 2, "quick": 1},
@@ -105,7 +106,8 @@ def test_summarise_every_field():
 
 def test_sweep_replays_summarise_at_each_confidence_threshold():
     rows = metrics.sweep(RECORDS, thresholds=(0.9,), detail_threshold=DETAIL_THRESHOLD)
-    assert rows == [{"threshold": 0.9, "depth_accuracy": 2 / 9, "intake_rate": 6 / 9}]
+    # q-01 and r-01 clear 0.9; v-01 (ambiguous) goes to intake, which counts as correct
+    assert rows == [{"threshold": 0.9, "depth_accuracy": 3 / 9, "intake_rate": 6 / 9}]
 
 
 def test_sweep_default_thresholds():
@@ -122,3 +124,22 @@ def test_summarise_with_no_records():
     assert summary["depth_accuracy"] == 0.0
     assert summary["intake_rate"] == 0.0
     assert summary["cost_per_100"] is None
+
+
+def _ambiguous(case_id: str, task_class: str, needs_detail: float) -> dict:
+    return {
+        "case_id": case_id, "backend": "llm", "expected_class": "simple_change", "expected_depth": "quick",
+        "ambiguous": True, "task_class": task_class, "probabilities": {}, "confidence": 0.9,
+        "needs_detail": needs_detail, "latency_ms": 10, "cost_usd": 0.0, "error": None,
+    }
+
+
+def test_an_ambiguous_case_is_depth_correct_at_intake_or_its_own_depth():
+    records = [
+        _ambiguous("a-1", "feature", 0.9),  # needs_detail: intake, correct for an ambiguous case
+        _ambiguous("a-2", "simple_change", 0.1),  # its own expected depth (quick): correct
+        _ambiguous("a-3", "question", 0.1),  # answer: wrong
+        _ambiguous("a-4", "feature", 0.1),  # full: wrong
+    ]
+    summary = metrics.summarise(records, confidence_threshold=0.5, detail_threshold=0.6)
+    assert summary["depth_accuracy"] == 2 / 4

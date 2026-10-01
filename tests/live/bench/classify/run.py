@@ -118,7 +118,8 @@ def _run_jev(cases: list[dict], config: PhilConfig) -> list[dict]:
 
 
 def _run_llm(cases: list[dict], config: PhilConfig) -> list[dict]:
-    model = config.tier_model("low")
+    # The configured classifier when it's an LLM; the low model (routing's fallback) when it's Jev.
+    model = config.tier_model("low") if config.is_systemone("classifier") else config.model_for("classifier")
     records = []
     with tempfile.TemporaryDirectory(prefix="phil-bench-classify-") as scratch:
         conn = connect(Path(scratch) / "bench.db")
@@ -195,8 +196,8 @@ def _latest_per_case(records: list[dict]) -> list[dict]:
 
 def decision_rule(jev: dict, llm: dict) -> dict:
     """Spec §5.1's decision rule: is Jev worth recommending over the llm backend? All four
-    conditions must hold; an unknown cost on either side makes the verdict undecided rather
-    than yes or no."""
+    conditions must hold. Any known condition failing makes it "no"; only when every known
+    condition passes does an unknown cost on either side make it undecided."""
     depth_ok = jev["depth_accuracy"] >= llm["depth_accuracy"] - DEPTH_ACCURACY_SLACK
     answer_as_change_ok = jev["answer_as_change"] <= llm["answer_as_change"]
     latency_ok = jev["latency_p95_ms"] <= llm["latency_p95_ms"] / LATENCY_FACTOR
@@ -209,10 +210,12 @@ def decision_rule(jev: dict, llm: dict) -> dict:
         "p95_latency_at_most_a_third_of_llm": latency_ok,
         "cost_per_100_lower_than_llm": cost_ok,
     }
-    if cost_unknown:
+    if not (depth_ok and answer_as_change_ok and latency_ok) or cost_ok is False:
+        verdict = "no"  # a known condition failed: an unknown cost can't rescue it
+    elif cost_unknown:
         verdict = "undecided (cost unknown)"
     else:
-        verdict = "yes" if depth_ok and answer_as_change_ok and latency_ok and cost_ok else "no"
+        verdict = "yes"
     return {"conditions": conditions, "verdict": verdict}
 
 

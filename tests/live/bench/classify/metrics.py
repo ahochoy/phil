@@ -34,6 +34,11 @@ def _routed_depth(record: dict, *, confidence_threshold: float, detail_threshold
     return depth or "intake"
 
 
+def _depth_correct(depth: str, record: dict) -> bool:
+    """Routed to the case's expected depth; for an ambiguous case, deferring to intake is right too."""
+    return depth == record["expected_depth"] or (depth == "intake" and bool(record.get("ambiguous")))
+
+
 def _percentile(values: list[int], p: float) -> int:
     """The `p`th percentile by nearest rank; 0 for an empty list."""
     if not values:
@@ -55,7 +60,7 @@ def summarise(records: list[dict], *, confidence_threshold: float, detail_thresh
         (_routed_depth(record, confidence_threshold=confidence_threshold, detail_threshold=detail_threshold), record)
         for record in records
     ]
-    depth_correct = sum(1 for depth, record in routed if depth == record["expected_depth"])
+    depth_correct = sum(1 for depth, record in routed if _depth_correct(depth, record))
     depth_accuracy = depth_correct / n if n else 0.0
     intake_count = sum(1 for depth, _ in routed if depth == "intake")
     intake_rate = intake_count / n if n else 0.0

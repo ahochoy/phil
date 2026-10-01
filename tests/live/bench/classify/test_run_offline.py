@@ -1,5 +1,6 @@
-"""Offline tests for run.py's pure helpers: `decision_rule`, `_latest_per_case`, and
-`append_record`/`results_path`. No network, no models."""
+"""Offline tests for run.py's helpers: `decision_rule`, `_latest_per_case`,
+`append_record`/`results_path`, and the llm backend's model choice (with `judge_llm` replaced).
+No network, no models."""
 
 import json
 
@@ -76,6 +77,14 @@ def test_decision_rule_undecided_when_llms_cost_is_unknown():
     assert result["verdict"] == "undecided (cost unknown)"
 
 
+def test_decision_rule_no_when_a_known_condition_fails_even_with_cost_unknown():
+    jev = {**JEV_PASSING, "latency_p95_ms": 150, "cost_per_100": None}  # too slow; cost unknown
+    result = run.decision_rule(jev, LLM_BASELINE)
+    assert result["conditions"]["p95_latency_at_most_a_third_of_llm"] is False
+    assert result["conditions"]["cost_per_100_lower_than_llm"] == "unknown"
+    assert result["verdict"] == "no"
+
+
 def test_decision_rule_exactly_2_points_lower_passes():
     jev = {**JEV_PASSING, "depth_accuracy": 0.83}  # llm 0.85 - 0.02 == 0.83, exactly at the slack
     result = run.decision_rule(jev, LLM_BASELINE)
@@ -116,3 +125,40 @@ def test_append_record_writes_to_the_env_override(tmp_path, monkeypatch):
         {"case_id": "q-01", "backend": "llm"},
         {"case_id": "d-01", "backend": "jev"},
     ]
+
+
+def _capture_llm_model(monkeypatch) -> list:
+    from phil.routing.types import Judgement
+
+    seen = []
+
+    def fake_judge_llm(ctx, state, *, model=None, call=1):
+        seen.append(model)
+        return Judgement(task_class="question", probabilities={"question": 1.0}, confidence=0.9,
+                         needs_detail=0.1, source="llm", latency_ms=1, usage=None)
+
+    monkeypatch.setattr(run, "judge_llm", fake_judge_llm)
+    monkeypatch.setattr(run, "phil_sha", lambda: "test")
+    return seen
+
+
+CASE = {"id": "q-01", "request": "what is calc?", "repo": {"test_cmd": None, "files": [], "file_count": 0},
+        "expected_class": "question", "expected_depth": "answer", "ambiguous": False}
+
+
+def test_the_llm_backend_uses_a_configured_llm_classifier(monkeypatch):
+    from phil.config import PhilConfig
+
+    seen = _capture_llm_model(monkeypatch)
+    config = PhilConfig(models={"low": "openrouter:l", "classifier": "openrouter:c"})
+    [record] = run.run_backend("llm", [CASE], config)
+    assert seen == ["openrouter:c"] and record["model"] == "openrouter:c"
+
+
+def test_the_llm_backend_uses_the_low_model_when_the_classifier_is_jev(monkeypatch):
+    from phil.config import PhilConfig
+
+    seen = _capture_llm_model(monkeypatch)
+    config = PhilConfig(models={"low": "openrouter:l", "classifier": "typesafe:jev-latest"})
+    [record] = run.run_backend("llm", [CASE], config)
+    assert seen == ["openrouter:l"] and record["model"] == "openrouter:l"
