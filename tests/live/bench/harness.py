@@ -1,12 +1,17 @@
-"""Run one benchmark case through Phil's real code paths: the chat's planner, then a foreground worker.
+"""Run one benchmark case through Phil's real code paths: the router, then the path it picks.
 
-`run_case` copies a fixture into a fresh git repo, plans the goal with the real `Planner`, starts the
-run with `prepare_run` and drives it with `run_worker` (as the chat's spawned worker would), checks the
-result on the run's worktree, and appends one JSON record to the results file.
+`run_case` copies a fixture into a fresh git repo, classifies and routes the goal exactly as the chat
+does (`classify` then `decide`), and runs whichever path the router chose:
 
-Planning starts at the architect: intake is not run, so the case's goal goes to the architect as the
-objective (a benchmark goal has no open questions to ask). The architect reads an exported snapshot of
-the base commit, as in the chat, and the chat's start gate (`launch_problems`) is applied before the run.
+- **quick**: intake writes the one task (as `route_depth="quick"`), then the one-task plan and a
+  foreground quick run — falling back to the architect, as the chat does, if the task doesn't make a
+  valid plan or the start gate finds a problem.
+- **full** (or the router leaving it to intake): the architect and critic plan the goal directly (a
+  benchmark goal has no open questions to ask, so intake itself is skipped here), then a foreground run.
+- **answer**: the read-only answerer, on a snapshot of the working tree; no run, no commits.
+
+Planning reads an exported snapshot of the base commit, as in the chat, and the chat's start gate
+(`launch_problems`) is applied before any run.
 """
 
 import json
@@ -21,21 +26,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from phil.agents.invoke import AgentContext, AgentFactory
-from phil.chat.approval import launch_problems
+from phil.chat.answer import ask_answer
+from phil.chat.approval import effective_test_cmd, launch_problems
 from phil.chat.overview import repo_overview
-from phil.chat.planning import Planner
-from phil.chat.snapshot import export_tree
+from phil.chat.planning import Planner, intake, quick_plan
+from phil.chat.snapshot import export_tree, export_worktree
 import phil.config
 from phil.config import ROLES, ConfigError, PhilConfig, load_config
 from phil.contracts import Goal, Plan
 from phil.repo import resolve_repo
+from phil.repo_detect import detect_test_cmd
+from phil.routing import decide, route_state
+from phil.routing.classify import classify
 from phil.run.launch import prepare_run
 from phil.run.worker import run_worker
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
-from phil.store.telemetry import chat_usage
 from phil.tomlw import dump_toml
 from tests.live.bench.cases import FIXTURES, Case
 from tests.live.bench.report import results_path
@@ -100,21 +108,23 @@ def _init_repo(case: Case, work: Path, config: dict) -> Path:
     return root.resolve()
 
 
-def _usage(conn, chat_id: str, totals) -> dict:
-    # The same rows chat_usage totals: the chat's own calls and those of every run it started.
+def _usage(conn, chat_id: str, run_id: str | None) -> dict:
+    """The chat's own calls plus its run's. A run's telemetry carries no `chat_id` (phil.store.db
+    SCHEMA), so `run_id` is matched directly rather than through a `runs` subselect."""
     row = conn.execute(
         "SELECT COUNT(*) AS calls, COALESCE(SUM(input_tokens), 0) AS tokens_in,"
         " COALESCE(SUM(output_tokens), 0) AS tokens_out, COALESCE(SUM(model_calls), 0) AS model_calls,"
-        " COALESCE(SUM(retries), 0) AS retries FROM telemetry"
-        " WHERE (layer = 'chat' AND chat_id = ?) OR run_id IN (SELECT run_id FROM runs WHERE chat_id = ?)",
-        (chat_id, chat_id),
+        " COALESCE(SUM(retries), 0) AS retries, COALESCE(SUM(cost_usd), 0.0) AS cost_usd,"
+        " COALESCE(MAX(CASE cost_source WHEN 'unknown' THEN 2 WHEN 'estimated' THEN 1 ELSE 0 END), 0) AS cost_rank"
+        " FROM telemetry WHERE chat_id = ? OR run_id = ?",
+        (chat_id, run_id),
     ).fetchone()
     return {
         "calls": int(row["calls"]),
         "tokens_in": int(row["tokens_in"]),
         "tokens_out": int(row["tokens_out"]),
-        "cost_usd": totals.cost_usd,
-        "cost_source": totals.cost_source,
+        "cost_usd": round(float(row["cost_usd"]), 6),
+        "cost_source": ("reported", "estimated", "unknown")[row["cost_rank"]],
         "model_calls": int(row["model_calls"]),
         "retries": int(row["retries"]),
     }
@@ -155,6 +165,24 @@ def append_record(record: dict) -> None:
         out.write(json.dumps(record) + "\n")
 
 
+def _quick_plan_for(goal: Goal, config: PhilConfig, tree: Path, root: Path) -> tuple[Plan | None, list[str]]:
+    """The quick run's plan, or `None` and why not: the same checks the chat's approval makes before
+    a run starts (mirrors `ChatController._quick_plan`, spec §4.1, without importing the controller)."""
+    if goal.task is None:
+        return None, ["intake wrote no quick task"]
+    draft = quick_plan(goal, None)
+    if draft is None:
+        return None, ["the quick task doesn't make a valid plan"]
+    # Detect from the base commit's snapshot, as the chat does, only when neither the task nor
+    # phil.toml already names a test command.
+    detection_root = tree if not draft.test_cmd and not config.project.test_cmd else None
+    plan = quick_plan(goal, effective_test_cmd(draft, config, detection_root)[0])
+    if plan is None:
+        return None, ["the quick task doesn't make a valid plan"]
+    problems = launch_problems(plan, config, detection_root, check_root=detection_root or root)
+    return (None, problems) if problems else (plan, [])
+
+
 def run_case(case: Case, config_path: Path, work: Path, *, factory: AgentFactory | None = None) -> dict:
     """Plan and run `case` end to end, then append and return its record. `factory=None` uses real models.
 
@@ -181,28 +209,85 @@ def _run_case(case: Case, config_path: Path, work: Path, *, factory: AgentFactor
     run_id: str | None = None
     error: str | None = None
     refused = False
+    quick_fallback = False
+    answer_files: list[str] = []
+    depth: str | None = None
     try:
-        # Like the chat: the architect reads the base commit's tracked files, never the live tree.
-        tree = export_tree(info.root, info.head_sha, chat_dir / "tree" / info.head_sha[:12])
-        plan = Planner(ctx, repo_overview(info.root)).draft(Goal(objective=case.goal), tree=tree).plan
-        problems = launch_problems(plan, ctx.config, tree)  # detects on the snapshot, as the chat does
-        if problems:  # the chat would refuse to start this run
-            refused, error = True, "; ".join(problems)
-        else:
-            run_id = prepare_run(info, plan, info.head_sha, chat_id=chat_id).run_id
+        judgement = classify(ctx, route_state(case.goal, [], info.root)).judgement
+        depth, _ = decide(
+            judgement,
+            confidence_threshold=ctx.config.routing.confidence_threshold,
+            detail_threshold=ctx.config.routing.detail_threshold,
+        )
+        overview = repo_overview(info.root)
+        # Like the chat: the architect (and quick-plan detection) reads the base commit's tracked
+        # files, never the live tree. The answer path needs no snapshot of it.
+        tree: Path | None = None
+        if depth != "answer":
+            tree = export_tree(info.root, info.head_sha, chat_dir / "tree" / info.head_sha[:12])
+        if depth == "answer":
+            answer_tree = chat_dir / "tree" / "answer"
+            try:
+                # The answerer reads a working-tree snapshot, never the live root, as the chat does.
+                snapshot = export_worktree(info.root, answer_tree)
+                answer = ask_answer(ctx, case.goal, root=snapshot, overview=overview)
+            finally:
+                shutil.rmtree(answer_tree, ignore_errors=True)
+            answer_files = answer.files
+        elif depth == "quick":
+            # As in the chat: the hint comes from the live root, the run itself from the snapshot
+            # (a known mismatch, tracked in the M3b follow-ups).
+            goal = intake(
+                ctx, case.goal, overview=overview, route_depth="quick", detected_test_cmd=detect_test_cmd(info.root),
+            )
+            quick, problems = _quick_plan_for(goal, ctx.config, tree, info.root)
+            if quick is None:
+                quick_fallback = True
+                plan = Planner(ctx, overview).draft(goal, tree=tree).plan
+                full_problems = launch_problems(plan, ctx.config, tree)
+                if full_problems:
+                    refused, error = True, "; ".join(full_problems)
+                else:
+                    run_id = prepare_run(info, plan, info.head_sha, chat_id=chat_id, depth="full").run_id
+            else:
+                plan = quick
+                run_id = prepare_run(info, plan, info.head_sha, chat_id=chat_id, depth="quick").run_id
+        else:  # "full", or the router left it to intake: today's architect path (spec §5.2)
+            plan = Planner(ctx, overview).draft(Goal(objective=case.goal), tree=tree).plan
+            problems = launch_problems(plan, ctx.config, tree)  # detects on the snapshot, as the chat does
+            if problems:  # the chat would refuse to start this run
+                refused, error = True, "; ".join(problems)
+            else:
+                run_id = prepare_run(info, plan, info.head_sha, chat_id=chat_id, depth="full").run_id
+        if run_id is not None:
             outcome = run_worker(info.root, run_id, "start", factory=factory)
             if outcome.escalation is not None:
                 error = outcome.escalation.get("error") or outcome.escalation.get("summary")
     except Exception as exc:  # the record says what went wrong; the benchmark carries on
         error = f"{type(exc).__name__}: {exc}"
     minutes = round((time.monotonic() - started) / 60, 2)
+    routed_depth = depth or "intake"
     try:
         run = get_run(conn, run_id) if run_id else None
-        state = run.state if run else "launch_refused" if refused else "planning_failed"
-        if error is None and state != "completed" and run is not None:
+        if run is not None:
+            state = run.state
+        elif refused:
+            state = "launch_refused"
+        elif depth == "answer":
+            state = "answer_failed" if error else "answered"
+        else:
+            state = "planning_failed"
+        if error is None and state not in ("completed", "answered") and run is not None:
             error = run.needs_attention
-        # Checked on the run's worktree before anything cleans it up. An escalated run answered nothing.
-        passed = state == "completed" and run is not None and case.passed(Path(run.worktree))
+        if depth == "answer":
+            # Checked on the repo itself: the answer path starts no run and makes no commits.
+            passed = (
+                error is None and case.passed(info.root)
+                and (case.expect_file is None or case.expect_file in answer_files)
+            )
+        else:
+            # Checked on the run's worktree before anything cleans it up. An escalated run answered nothing.
+            passed = state == "completed" and run is not None and case.passed(Path(run.worktree))
         record = {
             "case": case.name,
             "ts": ts,
@@ -211,10 +296,14 @@ def _run_case(case: Case, config_path: Path, work: Path, *, factory: AgentFactor
             "tasks": len(plan.tasks) if plan else 0,
             "modes": _modes(plan),
             "expect_modes": list(case.expect_modes),
+            "routed_depth": routed_depth,
+            "expect_depth": case.expect_depth,
+            "quick_fallback": quick_fallback,
+            "files": answer_files,
             "state": state,
             "passed": passed,
             "minutes": minutes,
-            **_usage(conn, chat_id, chat_usage(conn, chat_id)),
+            **_usage(conn, chat_id, run_id),
             "run_id": run_id,
             "chat_id": chat_id,
             "error": error,

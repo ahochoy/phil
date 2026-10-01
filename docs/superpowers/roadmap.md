@@ -45,7 +45,8 @@ quick.
 - **M3b — Quick path (in progress).** The quick depth gets its own lighter run: one task, no architect or
   critic round, no sub-agent or summarization, a lean one-pass review that patches findings
   directly instead of becoming new TDD tasks, and tighter retries, with escalation to a full
-  run when the quick attempt doesn't clear the gate.
+  run when the quick attempt doesn't clear the gate. [Plan](plans/2026-10-01-phil-m3b-quick-path.md) ·
+  [followups](plans/2026-10-01-phil-m3b-followups.md).
 - Designed from M1's benchmark numbers.
 
 ### M4 — Permissions

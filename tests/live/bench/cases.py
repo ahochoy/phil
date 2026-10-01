@@ -21,6 +21,10 @@ class Case:
     passed: Callable[[Path], bool]
     # Per-fixture phil.toml overrides, merged over the baseline and the benchmark config.
     config: dict = field(default_factory=dict)
+    # What the router should pick (spec §5.2): "quick", "full" or "answer". Asserted in test_bench.
+    expect_depth: str = "full"
+    # Answer cases only: a repo-relative path the answer's `files` must include.
+    expect_file: str | None = None
 
 
 def _exits_zero(command: list[str], cwd: Path) -> bool:
@@ -56,11 +60,22 @@ def _site_typo(tree: Path) -> bool:
     )
 
 
+def _explain_module(root: Path) -> bool:
+    """No run, no commits: `root`'s history still ends at `_init_repo`'s last commit."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "log", "-1", "--format=%s"], capture_output=True, text=True, timeout=10, check=False
+    )
+    return result.returncode == 0 and result.stdout.strip() == "Configure phil"
+
+
 # The site has no test script: its build is the check, as a user would configure in their own site repo.
 SITE_CONFIG = {"project": {"test_cmd": "node build.mjs"}}
 
 CASES: list[Case] = [
-    Case("py-multiply", "py-calc", "Add a multiply(a, b) function to calc.", ("tdd",), _py_multiply),
+    Case(
+        "py-multiply", "py-calc", "Add a multiply(a, b) function to calc.", ("tdd",), _py_multiply,
+        expect_depth="quick",
+    ),
     Case(
         "site-meta-tag",
         "static-site",
@@ -68,8 +83,15 @@ CASES: list[Case] = [
         ("check",),
         _site_meta_tag,
         SITE_CONFIG,
+        expect_depth="quick",
     ),
     Case(
-        "site-typo", "static-site", "Fix the typo 'Welcom' in the page heading.", ("check",), _site_typo, SITE_CONFIG
+        "site-typo", "static-site", "Fix the typo 'Welcom' in the page heading.", ("check",), _site_typo, SITE_CONFIG,
+        expect_depth="quick",
+    ),
+    # The fixture's module is a package (`calc/__init__.py`), not a bare `calc.py`; `divide` lives there.
+    Case(
+        "explain-module", "py-calc", "What does calc.divide do when the divisor is zero?", (), _explain_module,
+        expect_depth="answer", expect_file="calc/__init__.py",
     ),
 ]
