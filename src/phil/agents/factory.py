@@ -70,10 +70,14 @@ def _ai_calls(messages: list[Any]) -> int:
 
 
 def _with_answer_now(system_message: Any) -> Any:
-    """`system_message` (or none) with ANSWER_NOW appended as a text block, keeping its blocks."""
+    """`system_message` (or none) with ANSWER_NOW appended. Plain-string content stays a plain
+    string (OpenAI-compatible servers can reject list content); block content keeps its blocks."""
     from langchain_core.messages import SystemMessage
 
-    blocks = list(system_message.content_blocks) if system_message is not None else []
+    content = system_message.content if system_message is not None else ""
+    if isinstance(content, str):
+        return SystemMessage(f"{content}\n\n{ANSWER_NOW}" if content else ANSWER_NOW)
+    blocks = list(system_message.content_blocks)
     blocks.append({"type": "text", "text": f"\n\n{ANSWER_NOW}" if blocks else ANSWER_NOW})
     return SystemMessage(content_blocks=blocks)
 

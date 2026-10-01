@@ -72,6 +72,30 @@ def test_call_budget_without_a_system_prompt_adds_only_the_instruction():
     assert seen == [ANSWER_NOW]
 
 
+def test_a_string_system_prompt_stays_a_plain_string():
+    # OpenAI-compatible servers can reject list content in a system message.
+    seen = []
+    _call_budget_middleware(1).wrap_model_call(Req(0), lambda r: seen.append(r.system_message.content))
+    assert seen == [f"base\n\n{ANSWER_NOW}"]
+
+
+def test_a_block_system_prompt_keeps_its_blocks():
+    blocks = [{"type": "text", "text": "base"}, {"type": "text", "text": "more"}]
+    seen = []
+    _call_budget_middleware(1).wrap_model_call(
+        Req(0, SystemMessage(content=blocks)), lambda r: seen.append(r.system_message.content)
+    )
+    [content] = seen
+    assert isinstance(content, list) and content[:2] == blocks
+    assert content[2]["type"] == "text" and content[2]["text"] == f"\n\n{ANSWER_NOW}"
+
+
+def test_no_system_prompt_gives_a_plain_string():
+    seen = []
+    _call_budget_middleware(1).wrap_model_call(Req(0, None), lambda r: seen.append(r.system_message.content))
+    assert seen == [ANSWER_NOW]
+
+
 def test_call_budget_async_twin_caps_too():
     seen = []
 
