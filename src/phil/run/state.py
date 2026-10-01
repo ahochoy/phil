@@ -47,6 +47,7 @@ class RunState(TypedDict, total=False):
     patching: bool
     patched_issues: list[dict[str, Any]]
     moved_to_full: bool
+    patch_editable_tests: list[str]
 
 
 def initial_state(

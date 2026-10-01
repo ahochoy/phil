@@ -309,10 +309,15 @@ class RunEngine:
         })
         tasks = list(plan.tasks)
         tasks[index] = reopened
+        # The fix may edit the tests the task itself added or changed: they're part of the change
+        # under review. Every other test file stays frozen.
+        changed = self.worktrees.changed_files(self.deps.worktree, since=state["task_base_sha"])
+        globs = self.deps.config.project.test_globs
         return {
             "plan": plan.model_copy(update={"tasks": tasks}).model_dump(),
             "patching": True,
             "patched_issues": [issue.model_dump() for issue in blocking],
+            "patch_editable_tests": [path for path in changed if is_test_path(path, globs)],
             "open_issues": [*state.get("open_issues", []), *(issue.model_dump() for issue in minor)],
             "next": "pick_task",
         }
@@ -325,13 +330,36 @@ class RunEngine:
             for issue in state.get("patched_issues", [])
         ]
 
+    def _abandon_patch(self, state: RunState) -> dict:
+        """Ending a quick run during its fix after review: the findings stay open at their own
+        severity, and the reopened task is DONE again, since its original commit stands."""
+        if not state.get("patching"):
+            return {}
+        unfixed = [
+            {**issue, "note": f"not fixed after review: {issue['note']}"} for issue in state.get("patched_issues", [])
+        ]
+        plan = with_task_status(load_plan(state), state["task_index"], "DONE")
+        return {
+            "plan": plan.model_dump(),
+            "open_issues": [*state.get("open_issues", []), *unfixed],
+            "patching": False,
+        }
+
+    @staticmethod
+    def _editable_tests(state: RunState, snapshot: dict[str, str]) -> dict[str, str]:
+        """A test snapshot without the files a fix after review may edit (none otherwise)."""
+        if not state.get("patching"):
+            return snapshot
+        editable = set(state.get("patch_editable_tests", []))
+        return {path: digest for path, digest in snapshot.items() if path not in editable}
+
     def _write_handoff(self, state: RunState) -> None:
         """What the quick run tried, for the full run that takes over: worklogs in task order, and
-        the open issues, including any review findings the fix didn't get past the gate."""
+        the open issues (with any review findings the fix didn't get past the gate)."""
         worklogs = state.get("worklogs", {})
         payload = {
             "worklogs": [worklogs[task.id] for task in load_plan(state).tasks if task.id in worklogs],
-            "open_issues": [*state.get("open_issues", []), *state.get("patched_issues", [])],
+            "open_issues": state.get("open_issues", []),
         }
         self.deps.artifacts.write_json("handoff", "prior_attempt", payload)
 
@@ -573,8 +601,8 @@ class RunEngine:
             problems = verify_check(
                 report,
                 check,
-                state.get("red_snapshot", {}),
-                snapshot_tests(worktree, changed, globs),
+                self._editable_tests(state, state.get("red_snapshot", {})),
+                self._editable_tests(state, snapshot_tests(worktree, changed, globs)),
                 state.get("base_passed"),
                 state.get("base_skipped"),
             )
@@ -661,11 +689,12 @@ class RunEngine:
                 "budget_warned": False,
                 "next": escalation["resume_to"],
             }
+        abandoned = self._abandon_patch(state)
         if action == "full":
             # The quick run ends here; the chat plans the goal properly, starting from this handoff.
-            self._write_handoff(state)
-            return {**cleared, "status": "aborted", "moved_to_full": True, "next": "finish"}
-        return {**cleared, "status": "aborted", "next": "finish"}
+            self._write_handoff({**state, **abandoned})
+            return {**cleared, **abandoned, "status": "aborted", "moved_to_full": True, "next": "finish"}
+        return {**cleared, **abandoned, "status": "aborted", "next": "finish"}
 
     def route_after_escalate(self, state: RunState) -> str:
         return state["next"]
@@ -675,9 +704,11 @@ class RunEngine:
         index = state["task_index"]
         task = plan.tasks[index]
         worktree = self.deps.worktree
+        patching = bool(state.get("patching"))
+        message = f"{task.id}: fix after review" if patching else f"{task.id}: {task.description}"
         if self.worktrees.changed_files(worktree, since=self.worktrees.head(worktree)):
             try:
-                self._commit(f"{task.id}: {task.description}", bypass=state.get("commit_bypass", False))
+                self._commit(message, bypass=state.get("commit_bypass", False))
             except GitError as exc:
                 config = self.deps.config.git
                 detail = self._first_stderr_line(exc)
@@ -703,6 +734,7 @@ class RunEngine:
             "base_passed": passed.passed_count,
             "base_skipped": passed.skipped_count,
             "commit_bypass": False,
+            "patching": False,  # the fix is in: a later escalation gets the normal attempt limit
         }
 
     def _run_tester(self, state: RunState, diff_base: str, node: str) -> dict:

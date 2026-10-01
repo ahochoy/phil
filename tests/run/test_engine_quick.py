@@ -139,8 +139,80 @@ def test_full_action_aborts_and_writes_the_handoff(quick_harness):
     handoff = json.loads((harness.deps.artifacts.run_dir / "handoff" / "prior_attempt.json").read_text())
     assert len(handoff["worklogs"]) == 1
     assert handoff["worklogs"][0] == final["worklogs"]["CALC-001"]
-    assert FINDING in [issue["note"] for issue in handoff["open_issues"]]
+    unfixed = {"severity": "major", "note": f"not fixed after review: {FINDING}"}
+    assert any(unfixed.items() <= issue.items() for issue in handoff["open_issues"])
     assert harness.run_record().state == "aborted"
+
+
+def test_abort_while_patching_keeps_the_findings_and_the_task_done(quick_harness):
+    harness = failed_fix_harness(quick_harness)
+    harness.start()
+    final = harness.resume({"action": "abort"})
+    assert final["status"] == "aborted"
+    assert load_plan(final).tasks[0].status == "DONE"
+    note = f"not fixed after review: {FINDING}"
+    assert {"severity": "major", "note": note}.items() <= final["open_issues"][-1].items()
+    summary = (harness.deps.artifacts.run_dir / "summary.md").read_text()
+    assert f"- (major) {note}" in summary
+    assert "- [x] CALC-001" in summary
+
+
+def test_the_fix_commits_on_top_of_the_task(quick_harness, calc_repo):
+    harness = quick_harness({
+        "quick_implementer": [write_red, write_green, add_docstring],
+        "reviewer": [review("changes", [Issue(severity="major", note=FINDING)])],
+    })
+    final = harness.start()
+    assert final["patching"] is False
+    log = run_git(calc_repo, "log", "--format=%s", f"{harness.base_sha}..phil/{RUN_ID}").splitlines()
+    assert log == ["CALC-001: fix after review", "CALC-001: Add subtract"]
+
+
+def test_retry_while_patching_keeps_the_limit_at_one(quick_harness):
+    harness = quick_harness(
+        {
+            "quick_implementer": [write_red, write_green, bad_green, bad_green, add_docstring],
+            "reviewer": [review("changes", [Issue(severity="major", note=FINDING)])],
+        },
+        chat_id=CHAT_ID,
+    )
+    harness.start()
+    escalation = harness.resume({"action": "retry"})["__interrupt__"][0].value
+    assert escalation["summary"] == "CALC-001's fix after review didn't pass the gate"
+    final = harness.resume({"action": "retry"})
+    assert final["status"] == "completed"
+    assert harness.factory.remaining() == {"quick_implementer": 0, "reviewer": 0}
+
+
+def edit_own_test(turn: Turn) -> TaskResult:
+    test = turn.workdir / "tests" / "test_sub.py"
+    test.write_text(test.read_text() + "\n\ndef test_subtract_negative():\n    assert subtract(1, 3) == -2\n")
+    return task_result("green", ["tests/test_sub.py"])
+
+
+def edit_other_test(turn: Turn) -> TaskResult:
+    test = turn.workdir / "tests" / "test_calc.py"
+    test.write_text(test.read_text() + "\n\ndef test_add_zero():\n    assert add(0, 0) == 0\n")
+    return task_result("green", ["tests/test_calc.py"])
+
+
+def test_the_fix_may_edit_the_tasks_own_tests(quick_harness):
+    harness = quick_harness({
+        "quick_implementer": [write_red, write_green, edit_own_test],
+        "reviewer": [review("changes", [Issue(severity="major", note="test a negative result")])],
+    })
+    final = harness.start()
+    assert final["status"] == "completed"
+    assert final["patch_editable_tests"] == ["tests/test_sub.py"]
+
+
+def test_the_fix_may_not_edit_other_tests(quick_harness):
+    harness = quick_harness({
+        "quick_implementer": [write_red, write_green, edit_other_test],
+        "reviewer": [review("changes", [Issue(severity="major", note="test add with zeros")])],
+    })
+    escalation = harness.start()["__interrupt__"][0].value
+    assert "check task modified test files: tests/test_calc.py" in escalation["problems"]
 
 
 def test_full_runs_unchanged(make_harness):
