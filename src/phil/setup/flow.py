@@ -12,6 +12,7 @@ from tomlkit.exceptions import TOMLKitError
 from phil.agents.providers import ALIASES, is_known_provider, resolve_provider, split_model
 from phil.config import REPO_SOURCE, ROLES, PhilConfig, global_config_path
 from phil.key_store import KeyStoreError, key_source, keychain_available, set_key
+from phil.routing.jev import JevError, ping_jev
 from phil.setup.catalog import CatalogModel, ollama_models, openrouter_catalog, search_openrouter
 from phil.setup.guard import KEY_WARNING, looks_like_key
 from phil.setup.io import SetupCancelled, SetupIO
@@ -19,6 +20,7 @@ from phil.setup.suggestions import SUGGESTIONS
 from phil.setup.write import write_global_config
 
 SETUP_TIERS = ("high", "low")
+CLASSIFIER_MODEL = "typesafe:jev-latest"
 CUSTOM = "custom"
 PROVIDER_CHOICES: list[tuple[str, str]] = [
     ("openrouter", "OpenRouter (recommended: one key for many models)"),
@@ -65,6 +67,16 @@ def _check_models(config: PhilConfig):
     return check_models(config, repo_root=Path.cwd())
 
 
+def _default_classifier_check(config: PhilConfig) -> str | None:
+    """Pings the typesafe classifier model with `ping_jev`; `None` if it answered, else the reason."""
+    provider = resolve_provider(config, "typesafe")
+    try:
+        ping_jev(provider, split_model(CLASSIFIER_MODEL)[1], timeout_s=config.routing.jev_timeout_s)
+    except JevError as exc:
+        return exc.reason
+    return None
+
+
 def run_setup(
     io: SetupIO,
     *,
@@ -74,6 +86,7 @@ def run_setup(
     ollama: Callable[[str], list[str] | None] = ollama_models,
     write: Callable[..., None] = write_global_config,
     path: Path | None = None,
+    classifier_check: Callable[[], str | None] | None = None,
 ) -> bool:
     """Walk through setup and write the global config. True if it wrote the file; False if the
     user cancelled (Ctrl-C or end of input, at a prompt or not) or the file couldn't be written.
@@ -86,6 +99,9 @@ def run_setup(
         for tier in SETUP_TIERS
         if tier in config.models and config.sources.get(f"models.{tier}") == str(target)
     }
+    run_classifier_check = classifier_check
+    if run_classifier_check is None:
+        run_classifier_check = lambda: _default_classifier_check(config)  # noqa: E731
     key_saved = False
     try:
         provider = _provider_step(io, config, saved, ollama)
@@ -93,6 +109,7 @@ def run_setup(
         models_catalog = _LazyCatalog(io, catalog)
         models = {tier: _model_step(io, saved, provider, tier, models_catalog) for tier in SETUP_TIERS}
         models = _check_step(io, config, saved, provider, models, check, models_catalog)
+        models = models | _classifier_step(io, config, target, run_classifier_check)
     except (SetupCancelled, KeyboardInterrupt):
         if key_saved:
             io.say("Setup cancelled; the key was saved, nothing else was written.")
@@ -412,11 +429,38 @@ def _check_step(
             return models
 
 
+def _classifier_step(
+    io: SetupIO, config: PhilConfig, target: Path, classifier_check: Callable[[], str | None]
+) -> dict[str, str]:
+    """Offer a fast TypeSafe classifier for routing. Empty when the user keeps using the low
+    model (the default); `{"classifier": CLASSIFIER_MODEL}` when TypeSafe Jev is chosen and kept."""
+    current = config.models.get("classifier") if config.sources.get("models.classifier") == str(target) else None
+    options = ([f"Keep {current}"] if current else []) + [
+        "Your low model (default)", "TypeSafe Jev (fast routing; needs TYPESAFE_API_KEY)",
+    ]
+    choice = options[io.choose("Route requests with a fast classifier?", options)]
+    if choice.startswith("Keep ") or choice.startswith("Your low model"):
+        if current and choice.startswith("Your low model"):
+            io.say(f"models.classifier = {current} stays in {target}; remove it there to route with your low model.")
+        return {}
+    _key_step(io, _Provider("typesafe", "TYPESAFE_API_KEY"))
+    reason = classifier_check()
+    if reason is not None:
+        io.say(f"✗ classifier  {CLASSIFIER_MODEL}  {reason}")
+        if io.choose("TypeSafe Jev failed the check.",
+                     ["Use your low model instead", "Keep TypeSafe Jev anyway"]) == 0:
+            return {}
+    else:
+        io.say(f"✓ classifier  {CLASSIFIER_MODEL}")
+    return {"classifier": CLASSIFIER_MODEL}
+
+
 # 5. Summary
 
 
 def _summarise(io: SetupIO, config: PhilConfig, provider: _Provider, models: dict[str, str], path: Path) -> None:
-    io.say(f"Wrote models.high = {models['high']} and models.low = {models['low']} to {path}.")
+    classifier = f" and models.classifier = {models['classifier']}" if "classifier" in models else ""
+    io.say(f"Wrote models.high = {models['high']} and models.low = {models['low']}{classifier} to {path}.")
     if provider.custom:
         written = ", ".join(f"{key} = {value}" for key, value in provider.fields.items() if value is not None)
         io.say(f"Also wrote [providers.{provider.name}]: {written}.")

@@ -83,12 +83,11 @@ def test_models_check_skips_global_tiers_that_a_legacy_repo_config_overrides(git
     result = runner.invoke(cli.app, ["--repo", str(git_repo), "models", "check"])
     assert result.exit_code == 0, result.output
     lines = [re.sub(r"\d+\.\ds$", "<t>", line) for line in result.output.splitlines()]
-    labels = ", ".join(f"role:{role}" for role in ROLES)
+    # the repo's `classifier = "ollama:legacy"` key is the classifier tier itself (not a role
+    # override), so it's labelled "classifier" and that tier is in use, not unused.
+    labels = ", ".join(["classifier"] + [f"role:{role}" for role in ROLES if role != "classifier"])
     assert lines == [
         f"✓ {labels}  ollama:legacy  <t>",
         "– high  ollama:big  unused (no role maps to it)",
         "– low  ollama:small  unused (no role maps to it)",
-        # the repo's `classifier = "ollama:legacy"` role key is also the classifier tier's bucket;
-        # it's checked under role:classifier (above), so the bare tier shows unused too.
-        "– classifier  ollama:legacy  unused (no role maps to it)",
     ]

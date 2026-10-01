@@ -25,7 +25,7 @@ def use(monkeypatch, answers):
 
 def test_setup_writes_the_global_config_and_exits_0(git_repo, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", SECRET)
-    io = use(monkeypatch, ["OpenAI", "gpt-big", "gpt-small"])
+    io = use(monkeypatch, ["OpenAI", "gpt-big", "gpt-small", ""])
     result = runner.invoke(cli.app, ["--repo", str(git_repo), "setup"])
     assert result.exit_code == 0, result.output
     assert load_config(git_repo).models == {"high": "openai:gpt-big", "low": "openai:gpt-small"}
@@ -36,7 +36,7 @@ def test_setup_writes_the_global_config_and_exits_0(git_repo, monkeypatch):
 
 def test_setup_runs_outside_a_repository(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", SECRET)
-    use(monkeypatch, ["OpenAI", "gpt-big", "gpt-small"])
+    use(monkeypatch, ["OpenAI", "gpt-big", "gpt-small", ""])
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli.app, ["setup"])
     assert result.exit_code == 0, result.output
@@ -55,7 +55,7 @@ def test_set_overrides_are_not_prefilled(git_repo, monkeypatch):
     from phil.setup.suggestions import SUGGESTIONS
 
     monkeypatch.setenv("OPENAI_API_KEY", SECRET)
-    io = use(monkeypatch, ["OpenAI", "", ""])
+    io = use(monkeypatch, ["OpenAI", "", "", ""])
     result = runner.invoke(
         cli.app,
         ["--repo", str(git_repo), "--set", "models.high=openai:gpt-now", "--set", "models.low=openai:gpt-lo", "setup"],
@@ -86,7 +86,7 @@ def test_a_broken_repo_config_is_reported_without_blaming_the_global_file(git_re
 
 def test_a_write_failure_exits_1_without_a_traceback(git_repo, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", SECRET)
-    io = use(monkeypatch, ["OpenAI", "", ""])
+    io = use(monkeypatch, ["OpenAI", "", "", ""])
 
     def failing_write(path, **kwargs):
         raise PermissionError(13, "Permission denied")

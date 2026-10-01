@@ -1,3 +1,4 @@
+import httpx
 from langchain_core.messages import AIMessage
 
 from phil.agents.check import CHECK_WORD, CheckResult, ModelCheck, check_models, check_targets, unused_tiers
@@ -49,8 +50,8 @@ def test_role_keys_that_override_their_tier_are_checked_too(tmp_path):
     assert [(r.label, r.model) for r in results] == [
         ("high", "ollama:big"),
         ("low", "ollama:small"),
+        ("classifier", "ollama:tiny"),  # [models] classifier is the classifier tier, not a role override
         ("role:critic", "ollama:judge"),
-        ("role:classifier", "ollama:tiny"),  # the classifier role's own key, not the bare tier
     ]
     assert factory.remaining() == {"model_check": 0}
 
@@ -136,29 +137,28 @@ def test_the_precheck_passes_with_a_store_only_key(tmp_path, monkeypatch):
 
 
 def test_only_models_some_role_resolves_to_are_checked(tmp_path):
-    # A global high/low under a legacy repo config that sets every role: the tiers are unused.
-    # The dict also sets models["classifier"] (since "classifier" is one of ROLES), which is the
-    # same key as the classifier tier bucket, so that tier shows up as unused too.
+    # A global high/low under a legacy repo config that sets every role: the tiers are unused,
+    # except classifier, whose [models] key is the classifier tier itself (not a role override),
+    # so the classifier role resolving through it keeps that tier used.
     models = {"high": "ollama:big", "low": "ollama:small"} | {role: "ollama:legacy" for role in ROLES}
     config = PhilConfig(models=models)
-    assert check_targets(config) == [("ollama:legacy", [f"role:{role}" for role in ROLES])]
+    assert check_targets(config) == [
+        ("ollama:legacy", ["classifier"] + [f"role:{role}" for role in ROLES if role != "classifier"]),
+    ]
     factory = ScriptedAgentFactory({"model_check": [OK]})
     [result] = check_models(config, factory=factory, repo_root=tmp_path)
     assert (result.model, result.ok) == ("ollama:legacy", True)
     assert factory.remaining() == {"model_check": 0}
-    assert unused_tiers(config) == [
-        ("high", "ollama:big"), ("low", "ollama:small"), ("classifier", "ollama:legacy"),
-    ]
+    assert unused_tiers(config) == [("high", "ollama:big"), ("low", "ollama:small")]
 
 
-def test_a_tier_no_role_maps_to_is_unused(tmp_path):
-    # Setting models["classifier"] sets both the classifier tier's bucket model and (since
-    # "classifier" is also a role) the classifier role's own model, so both appear: the role's
-    # own key is checked directly (label "role:classifier"), and the bare tier is still reported
-    # as unused (no OTHER role is tier-remapped onto it).
+def test_the_classifier_tier_is_not_unused_when_the_role_resolves_through_it(tmp_path):
+    # Setting models["classifier"] sets the classifier tier directly: the classifier role
+    # resolves through it (label "classifier", not "role:classifier"), so the tier is in use and
+    # is never reported as unused, even though no OTHER role is tier-remapped onto it.
     config = PhilConfig(models={"high": "ollama:big", "low": "ollama:small", "classifier": "ollama:tiny"})
     assert [model for model, _ in check_targets(config)] == ["ollama:big", "ollama:small", "ollama:tiny"]
-    assert unused_tiers(config) == [("classifier", "ollama:tiny")]
+    assert unused_tiers(config) == []
 
 
 def test_a_tier_remapped_role_labels_its_new_tier(tmp_path):
@@ -168,6 +168,26 @@ def test_a_tier_remapped_role_labels_its_new_tier(tmp_path):
     )
     assert check_targets(config) == [
         ("ollama:big", ["high"]), ("ollama:small", ["low"]),
-        ("ollama:tiny", ["classifier", "role:classifier"]),  # tester's remap, and the classifier role itself
+        # tester's remap onto the classifier tier, and the classifier role itself, share one label.
+        ("ollama:tiny", ["classifier"]),
     ]
     assert unused_tiers(config) == []
+
+
+def test_check_pings_a_typesafe_classifier(tmp_path, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "k")
+    ok = {"answers": {"ping": {"type": "choice", "choice": "yes", "probabilities": {"yes": 1.0}, "confidence": 1.0}}}
+    config = PhilConfig(models={"classifier": "typesafe:jev-latest"})
+    results = check_models(config, repo_root=tmp_path,
+                           jev_transport=httpx.MockTransport(lambda r: httpx.Response(200, json=ok)))
+    [result] = [r for r in results if r.model == "typesafe:jev-latest"]
+    assert result.ok and result.label == "classifier"
+
+
+def test_check_reports_a_failing_typesafe_classifier_plainly(tmp_path, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "k")
+    config = PhilConfig(models={"classifier": "typesafe:jev-latest"})
+    results = check_models(config, repo_root=tmp_path,
+                           jev_transport=httpx.MockTransport(lambda r: httpx.Response(401)))
+    [result] = [r for r in results if r.model == "typesafe:jev-latest"]
+    assert not result.ok and result.detail == "TypeSafe refused the request (http 401): check TYPESAFE_API_KEY."
