@@ -28,7 +28,7 @@ from phil.chat.events import ChatEvent
 from phil.chat.overview import repo_overview
 from phil.chat.planning import Planner, PlanDraft, intake
 from phil.chat.session import ChatSession
-from phil.chat.snapshot import export_tree
+from phil.chat.snapshot import export_tree, export_worktree
 from phil.chat.state import ChatState, RunView
 from phil.chat.watcher import RunWatcher
 from phil.config import ConfigError, PhilConfig, load_config
@@ -651,12 +651,18 @@ class ChatController:
         self._step("answering", generation)
         context = "\n".join(self._prior_turns[-CONTEXT_TURNS:])
         root, overview = self.info.root, self.overview
+        tree = self.session.dir / "tree" / f"answer{call}"
 
         def fn(ctx: AgentContext) -> dict:
-            return {
-                "answer": ask_answer(ctx, question, root=root, overview=overview, context=context, call=call),
-                "question": question,
-            }
+            # The answerer reads a working-tree snapshot, never the live root: uncommitted edits are
+            # visible, ignored files (.env, .venv, local keys) are not. Removed once answered; the
+            # chat's end removes all of tree/ in any case.
+            try:
+                snapshot = export_worktree(root, tree)
+                answer = ask_answer(ctx, question, root=snapshot, overview=overview, context=context, call=call)
+            finally:
+                shutil.rmtree(tree, ignore_errors=True)
+            return {"answer": answer, "question": question}
 
         self._job("answer_ready", fn, failed="answer_failed")
 

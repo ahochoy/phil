@@ -126,7 +126,7 @@ Evaluated in order:
   - `ls`, `read_file`, `glob`, `grep`;
   - a shell tool limited to M1's read-only commands. The project allowlist (`shell.allow`, e.g. `pytest`) does not apply, because running tests can write files.
 
-  It has no write or edit tools, no general-purpose sub-agent and no summarization. It reads the live repository root, so uncommitted edits are visible.
+  It has no write or edit tools, no general-purpose sub-agent and no summarization. It reads a snapshot of the working tree (tracked and untracked, non-ignored files), so uncommitted edits are visible and ignored files such as `.env` are not.
 - **Call cap:** 12 model calls, enforced through the recursion limit. At the cap, it answers with what it has found so far and says so.
 - **Output contract:** `Answer {text: str, files: list[str]}`. It is shown in chat and recorded in the chat log. It creates no run, worktree or commit.
 - **Diagnosis:** the reply ends with `Fix it? (Enter = quick fix, /full = plan it)`. Accepting starts the quick or full path, with the answer passed to intake as context.

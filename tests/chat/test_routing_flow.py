@@ -355,3 +355,31 @@ def test_a_forced_prefix_at_approval_asks_to_finish_first(calc_repo):
     )
     assert "Finish the current goal first, or press Ctrl-C to cancel it." in text
     assert seen["stage"] == "approval"
+
+
+def test_the_answerer_reads_a_working_tree_snapshot_not_the_live_root(calc_repo):
+    planted = "sk-PLANTED-not-a-real-secret-0042"
+    secret_name = ".env"
+    with (calc_repo / ".gitignore").open("a") as f:
+        f.write(f"{secret_name}\n")
+    (calc_repo / secret_name).write_text(f"OPENROUTER_API_KEY={planted}\n")
+    (calc_repo / "calc.py").write_text("def add(a, b):\n    return a - b  # wip\n")
+    seen = {}
+
+    def answer(turn):
+        tree = turn.workdir
+        seen["tree"] = tree
+        seen["calc"] = (tree / "calc.py").read_text()
+        seen["secret_exists"] = (tree / secret_name).exists()
+        seen["shell"] = turn.tools["run_shell"](f"cat {secret_name}")
+        return Answer(text="It subtracts now.")
+
+    text, *_ = run_chat(calc_repo, ["/ask what does add do?"], {"answer": [answer], **FULL_SCRIPT})
+    assert "It subtracts now." in text
+    tree = seen["tree"]
+    assert not tree.resolve().is_relative_to(calc_repo.resolve())  # never the live root
+    assert tree.parent.name == "tree"  # under the chat session's snapshot directory
+    assert seen["calc"] == "def add(a, b):\n    return a - b  # wip\n"  # uncommitted edits are visible
+    assert seen["secret_exists"] is False
+    assert planted not in seen["shell"]
+    assert not tree.exists()  # removed after the answer

@@ -235,7 +235,9 @@ simple change, a focused fix, a feature, a refactor, design work, or a broad pro
 sets one of three paths:
 
 - **answer** — a question or diagnosis: a read-only agent answers, with no run, worktree or
-  commit.
+  commit. It reads a snapshot of the working tree (tracked and untracked, non-ignored files),
+  so uncommitted edits are visible and ignored files such as `.env` are not. Without an
+  `answerer` model of its own (`low`, or `[models] answerer`) it uses the orchestrator's.
 - **quick** — a small, well-specified change: until M3b lands, this still goes through the
   full planning pipeline (the status line says "planning", not "quick path", so it doesn't
   claim a shortcut that isn't there yet).
