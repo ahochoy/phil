@@ -125,9 +125,14 @@ def test_a_fix_that_changes_nothing_is_labelled_not_changed(quick_harness, calc_
     assert final["status"] == "completed"
     log = run_git(calc_repo, "log", "--format=%s", f"{harness.base_sha}..phil/{RUN_ID}").splitlines()
     assert log == ["CALC-001: Add subtract"]
+    note = f"not changed after review: {FINDING}"
     notes = [issue["note"] for issue in final["open_issues"]]
-    assert f"not changed after review: {FINDING}" in notes
-    assert not any(note.startswith("fixed after review") for note in notes)
+    assert note in notes
+    assert not any(n.startswith("fixed after review") for n in notes)
+    unchanged = next(i for i in final["open_issues"] if i["note"] == note)
+    assert unchanged["severity"] == "major"  # the original finding's severity, not downgraded
+    summary = (harness.deps.artifacts.run_dir / "summary.md").read_text()
+    assert f"- (major) {note}" in summary
 
 
 def test_a_quick_plan_with_more_than_one_task_is_not_patched(quick_harness):

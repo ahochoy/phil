@@ -326,12 +326,17 @@ class RunEngine:
 
     def _patched_as_open(self, state: RunState) -> list[dict]:
         """The findings a quick run fixed after review, which no second review checked. A fix that
-        changed nothing since the reviewed commit (no fix commit) is labelled as such."""
+        changed nothing since the reviewed commit (no fix commit) is labelled as such and keeps its
+        original severity, since a known blocker or major finding was never actually addressed."""
         reviewed = state.get("reviewed_sha")
         unchanged = bool(reviewed) and not self.worktrees.changed_files(self.deps.worktree, since=reviewed)
-        label = "not changed after review" if unchanged else "fixed after review (unverified)"
+        if unchanged:
+            return [
+                {**issue, "note": f"not changed after review: {issue['note']}"}
+                for issue in state.get("patched_issues", [])
+            ]
         return [
-            {**issue, "severity": "minor", "note": f"{label}: {issue['note']}"}
+            {**issue, "severity": "minor", "note": f"fixed after review (unverified): {issue['note']}"}
             for issue in state.get("patched_issues", [])
         ]
 
