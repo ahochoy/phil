@@ -57,11 +57,11 @@ We built a benchmark of 40 labelled requests: questions, diagnoses, typos, fixes
 |---|---|---|
 | Correct path | 87.5% | 90% |
 | Questions treated as changes | 0 | 0 |
-| Features sent down the light path | 0 | 1 |
-| Typical / slowest response time | 0.21 s / 0.33 s | 1.6 s / 2.8 s |
-| Cost per 100 messages | less | about $0.03 |
+| Features sent down the light path | 1 | 1 |
+| Typical / slowest response time | 0.18 s / 0.32 s | 1.6 s / 2.8 s |
+| Cost per 100 messages | $0.0055 | $0.034 |
 
-Jev was about 8.5× faster, cheaper, and never made a risky mistake. Every miss it made was cautious: it handed a clear request to intake to double-check. The fast model's one miss was the riskier kind.
+Jev was about 8.5× faster and about 6× cheaper. Both models made the same single risky mistake: "add a multiply function with tests" went down the light path. That one is debatable, and we labelled it as a feature on purpose. Every other Jev miss was cautious: it handed a clear request to intake to double-check.
 
 But the gap on accuracy was exactly one request out of 40, which is 2.5 points. So by the rule we'd written, **the verdict is no.** We kept it. Changing the rule after seeing the results would defeat the point of writing it first.
 
