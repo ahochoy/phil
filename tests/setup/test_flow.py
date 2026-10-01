@@ -22,17 +22,21 @@ class FakeCheck:
     """Results for the candidate's tiers, the same shape `check_models` gives: one per distinct
     model, labelled with the tiers that use it. Models in `bad` fail."""
 
-    def __init__(self, bad=()):
+    def __init__(self, bad=(), detail="no", interrupt=False):
         self.bad = set(bad)
+        self.detail = detail
+        self.interrupt = interrupt
         self.configs = []
 
     def __call__(self, config):
         self.configs.append(config)
+        if self.interrupt:
+            raise KeyboardInterrupt
         labels: dict[str, list[str]] = {}
         for tier in ("high", "low"):
             labels.setdefault(config.models[tier], []).append(tier)
         return [
-            CheckResult(", ".join(tiers), model, model not in self.bad, 0.1, "no" if model in self.bad else "")
+            CheckResult(", ".join(tiers), model, model not in self.bad, 0.1, self.detail if model in self.bad else "")
             for model, tiers in labels.items()
         ]
 
@@ -53,17 +57,26 @@ def no_provider_keys(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
-def setup(answers, tmp_path, *, check=None, ollama=None, config=None):
+def setup(answers, tmp_path, *, check=None, ollama=None, config=None, catalog=None, **kwargs):
     io = ScriptedSetupIO(answers)
     check = check or FakeCheck()
     wrote = run_setup(
         io,
         config=config or load_config(tmp_path),
         check=check,
-        catalog=lambda: CATALOG,
+        catalog=catalog or (lambda: CATALOG),
         ollama=ollama or FakeOllama(),
+        **kwargs,
     )
     return wrote, io, check
+
+
+@pytest.fixture
+def no_keychain(monkeypatch):
+    import keyring
+    from keyring.backends.fail import Keyring as FailKeyring
+
+    monkeypatch.setattr(keyring, "get_keyring", lambda: FailKeyring())
 
 
 def written(tmp_path):
@@ -74,6 +87,7 @@ def test_a_fresh_openrouter_setup_stores_the_key_writes_the_tiers_and_checks_onc
     wrote, io, check = setup(["", SECRET, "", ""], tmp_path)
     assert wrote is True
     assert memory_keyring.store == {(SERVICE, "OPENROUTER_API_KEY"): SECRET}
+    assert "Saved OPENROUTER_API_KEY for openrouter in the keychain." in io.lines
     config = written(tmp_path)
     assert config.models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW}
     assert len(check.configs) == 1
@@ -105,15 +119,39 @@ def test_a_keychain_key_can_be_kept_or_replaced(tmp_path, memory_keyring):
     assert memory_keyring.store[(SERVICE, "OPENROUTER_API_KEY")] == SECRET
 
 
-def test_no_keychain_says_so_and_carries_on(tmp_path, monkeypatch):
-    import keyring
-    from keyring.backends.fail import Keyring as FailKeyring
-
-    keyring.set_keyring(FailKeyring())
+def test_no_keychain_says_so_and_carries_on(tmp_path, no_keychain):
     wrote, io, _ = setup(["", "", ""], tmp_path)  # no key is asked for: there is nowhere to keep it
     assert wrote is True
     assert "No keychain is available here; export OPENROUTER_API_KEY instead." in io.lines
     assert not [kind for kind, _ in io.prompts if kind == "secret"]
+
+
+MISSING_KEY = "openrouter needs OPENROUTER_API_KEY (used by high, low)."
+
+
+def test_a_missing_key_in_the_check_repeats_the_hint_instead_of_offering_another_model(tmp_path, no_keychain):
+    check = FakeCheck(bad={SUGGESTED_HIGH, SUGGESTED_LOW}, detail=MISSING_KEY)
+    wrote, io, _ = setup(["", "", "", "Keep"], tmp_path, check=check)
+    assert wrote is True
+    assert len(check.configs) == 1
+    assert not any("Choose a different" in line for line in io.lines)
+    assert "OPENROUTER_API_KEY isn't set: export OPENROUTER_API_KEY, or run `phil keys set openrouter`." in io.lines
+    assert written(tmp_path).models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW}
+
+
+def test_a_missing_key_in_the_check_can_cancel(tmp_path, no_keychain):
+    check = FakeCheck(bad={SUGGESTED_HIGH}, detail=MISSING_KEY)
+    wrote, io, _ = setup(["", "", "", "Cancel"], tmp_path, check=check)
+    assert wrote is False
+    assert not global_config_path().exists()
+    assert "Setup cancelled; nothing was written." in io.lines
+
+
+def test_a_key_left_empty_then_missing_in_the_check(tmp_path):
+    check = FakeCheck(bad={SUGGESTED_HIGH}, detail=MISSING_KEY)
+    wrote, io, _ = setup(["", "", "", "", "Keep"], tmp_path, check=check)
+    assert wrote is True
+    assert not any("Choose a different" in line for line in io.lines)
 
 
 def test_a_key_store_error_is_said_and_setup_carries_on(tmp_path, monkeypatch):
@@ -133,6 +171,71 @@ def test_openrouter_typed_text_searches_the_catalog(tmp_path):
     assert wrote is True
     assert written(tmp_path).models == {"high": "openrouter:openai/gpt-6-luna", "low": "openrouter:openai/gpt-6-sol"}
     assert any("openai/gpt-6-sol  $2.00/$10.00 per M" in line for line in io.lines)
+    assert io.lines.count("Fetching the OpenRouter model list…") == 1
+
+
+def test_the_catalog_is_not_fetched_when_the_defaults_are_accepted(tmp_path):
+    wrote, io, _ = setup(["", SECRET, "", ""], tmp_path)
+    assert wrote is True
+    assert "Fetching the OpenRouter model list…" not in io.lines
+
+
+@pytest.mark.parametrize("typed", ["vendor/brand-new", "openrouter:vendor/brand-new"])
+def test_an_openrouter_id_with_no_match_can_be_used_as_typed(tmp_path, typed):
+    wrote, io, _ = setup(["", SECRET, typed, "Use", ""], tmp_path)
+    assert wrote is True
+    assert "  1. Use 'vendor/brand-new' as typed" in io.lines
+    assert written(tmp_path).models["high"] == "openrouter:vendor/brand-new"
+
+
+def test_an_openrouter_search_also_offers_the_id_as_typed(tmp_path):
+    wrote, _, _ = setup(["", SECRET, "gpt-6-s", "Use", ""], tmp_path)
+    assert wrote is True
+    assert written(tmp_path).models["high"] == "openrouter:gpt-6-s"
+
+
+def test_a_tier_no_role_maps_to_is_shown_as_unused(tmp_path, git_repo):
+    (git_repo / "phil.toml").write_text('[tiers]\norchestrator = "high"\nimplementer = "high"\ntester = "high"\n')
+    wrote, io, _ = setup(["", SECRET, "", ""], tmp_path, config=load_config(git_repo))
+    assert wrote is True
+    assert f"– low  {SUGGESTED_LOW}  unused (no role maps to it)" in io.lines
+
+
+def test_a_write_error_is_said_and_nothing_is_reported_as_written(tmp_path):
+    def failing_write(path, **kwargs):
+        raise OSError("Read-only file system")
+
+    wrote, io, _ = setup(["", SECRET, "", ""], tmp_path, write=failing_write)
+    assert wrote is False
+    assert f"Couldn't write {global_config_path()}: Read-only file system" in io.lines
+    assert not any(line.startswith("Wrote ") for line in io.lines)
+
+
+def test_a_toml_error_in_the_write_is_said(tmp_path):
+    from tomlkit.exceptions import ParseError
+
+    def failing_write(path, **kwargs):
+        raise ParseError(1, 1, "bad")
+
+    wrote, io, _ = setup(["", SECRET, "", ""], tmp_path, write=failing_write)
+    assert wrote is False
+    assert any(line.startswith(f"Couldn't write {global_config_path()}: ") for line in io.lines)
+
+
+def test_ctrl_c_during_the_check_cancels(tmp_path):
+    wrote, io, _ = setup(["", SECRET, "", ""], tmp_path, check=FakeCheck(interrupt=True))
+    assert wrote is False
+    assert not global_config_path().exists()
+    assert "Setup cancelled; the key was saved, nothing else was written." in io.lines
+
+
+def test_ctrl_c_during_the_catalog_fetch_cancels(tmp_path):
+    def interrupted():
+        raise KeyboardInterrupt
+
+    wrote, io, _ = setup(["", "", "gpt"], tmp_path, catalog=interrupted)
+    assert wrote is False
+    assert "Setup cancelled; nothing was written." in io.lines
 
 
 def test_the_ollama_path_picks_installed_models(tmp_path, memory_keyring):
@@ -203,25 +306,29 @@ def test_a_failed_check_can_be_kept_anyway(tmp_path):
     assert written(tmp_path).models["high"] == SUGGESTED_HIGH
 
 
+NOTHING_WRITTEN = "Setup cancelled; nothing was written."
+KEY_SAVED = "Setup cancelled; the key was saved, nothing else was written."
+
+
 @pytest.mark.parametrize(
-    "answers",
+    ("answers", "message"),
     [
-        [],  # at the provider choice
-        [""],  # at the key prompt, before set_key
-        ["", SECRET],  # at the high model
-        ["", SECRET, ""],  # at the low model
-        ["", SECRET, "", ""],  # at the failed-check choice
-        ["Custom", "lab"],  # inside the custom provider questions
-        ["Ollama"],  # at the unreachable-Ollama choice
+        ([], NOTHING_WRITTEN),  # at the provider choice
+        ([""], NOTHING_WRITTEN),  # at the key prompt, before set_key
+        (["", SECRET], KEY_SAVED),  # at the high model
+        (["", SECRET, ""], KEY_SAVED),  # at the low model
+        (["", SECRET, "", ""], KEY_SAVED),  # at the failed-check choice
+        (["Custom", "lab"], NOTHING_WRITTEN),  # inside the custom provider questions
+        (["Ollama"], NOTHING_WRITTEN),  # at the unreachable-Ollama choice
     ],
 )
-def test_a_cancel_at_any_step_writes_nothing(tmp_path, memory_keyring, answers):
+def test_a_cancel_at_any_step_writes_nothing(tmp_path, memory_keyring, answers, message):
     check = FakeCheck(bad={SUGGESTED_HIGH})
     wrote, io, _ = setup(answers, tmp_path, check=check, ollama=FakeOllama(None))
     assert wrote is False
     assert not global_config_path().exists()
-    assert any("nothing was written" in line for line in io.lines)
-    if len(answers) < 2:
+    assert message in io.lines
+    if message == NOTHING_WRITTEN:
         assert memory_keyring.store == {}
 
 
@@ -244,6 +351,23 @@ def test_a_rerun_prefills_the_current_models_and_ignores_role_keys_in_the_check(
     assert "critic" not in check.configs[0].models
     assert global_config_path().read_text().startswith("# mine")
     assert any("critic" in line for line in io.lines)  # the role override is pointed out
+
+
+def test_repo_and_set_values_are_not_prefilled(tmp_path, git_repo):
+    (git_repo / "phil.toml").write_text('[models]\nhigh = "openrouter:openai/gpt-6-sol"\n')
+    config = load_config(git_repo, overrides=["models.low=openrouter:openai/gpt-6-luna"])
+    wrote, io, _ = setup(["", SECRET, "", ""], tmp_path, config=config)
+    assert wrote is True
+    assert written(tmp_path).models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW}
+    assert "Note: phil.toml sets models.high here, which overrides the global file." in io.lines
+    assert not any("--set" in line for line in io.lines)
+
+
+def test_a_repo_provider_does_not_become_the_default_provider(tmp_path, git_repo):
+    (git_repo / "phil.toml").write_text('[models]\nhigh = "openai:gpt-x"\n')
+    wrote, _, _ = setup(["", SECRET, "", ""], tmp_path, config=load_config(git_repo))
+    assert wrote is True
+    assert written(tmp_path).models["high"] == SUGGESTED_HIGH
 
 
 def test_a_rerun_prefills_a_custom_provider(tmp_path):

@@ -1,3 +1,5 @@
+import pytest
+
 from phil.config import load_config
 from phil.setup.write import HEADER, write_global_config
 
@@ -113,9 +115,51 @@ def test_the_write_is_atomic(phil_home, monkeypatch):
         raise OSError("disk full")
 
     monkeypatch.setattr(os, "replace", broken_replace)
-    try:
+    with pytest.raises(OSError, match="disk full"):
         write_global_config(path, models={"high": "openai:new"}, provider_name=None, provider_fields={})
-    except OSError:
-        pass
     assert path.read_text() == '[models]\nhigh = "openai:old"\n'
     assert [p.name for p in phil_home.iterdir()] == ["config.toml"]  # no temp file left behind
+
+
+def test_the_write_is_flushed_to_disk_before_the_replace(phil_home, monkeypatch):
+    import os
+
+    events = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(os, "fsync", lambda fd: (events.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(os, "replace", lambda src, dst: (events.append("replace"), real_replace(src, dst))[1])
+    write_global_config(phil_home / "config.toml", models={"high": "a:b"}, provider_name=None, provider_fields={})
+    assert events == ["fsync", "replace"]
+
+
+def test_a_symlinked_config_is_written_through_to_its_target(tmp_path, phil_home):
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    target = dotfiles / "phil.toml"
+    target.write_text("# tracked in my dotfiles\n")
+    phil_home.mkdir()
+    link = phil_home / "config.toml"
+    link.symlink_to(target)
+    write_global_config(link, models={"high": "a:b", "low": "a:c"}, provider_name=None, provider_fields={})
+    assert link.is_symlink()
+    assert target.read_text().startswith("# tracked in my dotfiles")
+    assert 'high = "a:b"' in target.read_text()
+
+
+def test_the_file_keeps_its_permission_mode(phil_home):
+    import stat
+
+    phil_home.mkdir()
+    path = phil_home / "config.toml"
+    path.write_text("[run]\n")
+    path.chmod(0o640)
+    write_global_config(path, models={"high": "a:b"}, provider_name=None, provider_fields={})
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+def test_a_new_file_is_private(phil_home):
+    import stat
+
+    path = phil_home / "config.toml"
+    write_global_config(path, models={"high": "a:b"}, provider_name=None, provider_fields={})
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600

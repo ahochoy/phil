@@ -2,6 +2,7 @@
 
 import contextlib
 import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -56,12 +57,22 @@ def write_global_config(
 
 
 def _write_atomically(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".config-", suffix=".toml")
+    """Replace `path`'s content with `text` atomically. A symlink is followed, so its target is
+    rewritten and the link kept; an existing file keeps its permission mode (a new one is 0o600)."""
+    target = path.resolve() if path.is_symlink() else path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(target.stat().st_mode)
+    except FileNotFoundError:
+        mode = 0o600
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".config-", suffix=".toml")
     try:
         with os.fdopen(fd, "w") as handle:
+            os.fchmod(handle.fileno(), mode)
             handle.write(text)
-        os.replace(tmp, path)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)

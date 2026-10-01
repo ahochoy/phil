@@ -471,6 +471,7 @@ def _setup_io():
 def setup_command(ctx: typer.Context) -> None:
     """Choose a provider, store its key and pick your models (edits ~/.phil/config.toml)."""
     from phil.agents.check import check_models
+    from phil.setup import catalog, write
     from phil.setup.flow import run_setup
 
     if ctx.obj.get("repo"):
@@ -481,7 +482,14 @@ def setup_command(ctx: typer.Context) -> None:
             root = resolve_repo(Path.cwd()).root
         except RepoError:
             root = Path.cwd()
-    config = _load_config(root, ctx.obj.get("overrides", []))
+    try:
+        config = load_config(root, overrides=ctx.obj.get("overrides", []))
+    except ConfigError as exc:
+        console.print(f"[phil.error]{escape(str(exc))}[/]", soft_wrap=True)
+        global_path = str(global_config_path())
+        if str(exc).startswith(f"Invalid {global_path}"):
+            console.print(f"Fix {escape(global_path)} or move it aside, then run phil setup again.", soft_wrap=True)
+        raise typer.Exit(1) from exc
     try:
         factory = _factory_from_env()
     except Exception as exc:
@@ -489,8 +497,14 @@ def setup_command(ctx: typer.Context) -> None:
             f"[phil.error]cannot load PHIL_AGENT_FACTORY: {escape(type(exc).__name__)}: {escape(str(exc))}[/]"
         )
         raise typer.Exit(1) from exc
+    # The helpers are looked up when called, so tests can replace them on their modules.
     wrote = run_setup(
-        _setup_io(), config=config, check=lambda candidate: check_models(candidate, factory=factory, repo_root=root)
+        _setup_io(),
+        config=config,
+        check=lambda candidate: check_models(candidate, factory=factory, repo_root=root),
+        catalog=lambda: catalog.openrouter_catalog(),
+        ollama=lambda base_url: catalog.ollama_models(base_url),
+        write=lambda path, **fields: write.write_global_config(path, **fields),
     )
     if not wrote:
         raise typer.Exit(1)

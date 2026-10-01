@@ -58,6 +58,21 @@ def test_a_terminal_reads_secrets_with_getpass(monkeypatch):
     assert io.secret("KEY") == "sk-TESTSECRET-123"
 
 
+def test_an_ambiguous_prefix_asks_again(monkeypatch, capsys):
+    options = ["OpenRouter (recommended)", "OpenAI", "Keep it", "Keep it anyway"]
+    io, _, _ = terminal(monkeypatch, ["open", "openr", "keep it", "Keep"])
+    assert io.choose("Pick", options) == 0  # "open" is refused, then "openr"
+    assert "Enter a number from 1 to 4." in capsys.readouterr().out
+    assert io.choose("Pick", options) == 2  # an exact option wins over a longer one it starts
+    with pytest.raises(IndexError):  # "Keep" is ambiguous and the answers run out
+        io.choose("Pick", options)
+
+
+def test_scripted_io_refuses_an_ambiguous_prefix():
+    with pytest.raises(AssertionError):
+        ScriptedSetupIO(["Open"]).choose("Pick", ["OpenRouter", "OpenAI"])
+
+
 def test_scripted_io_runs_out_into_a_cancel():
     io = ScriptedSetupIO(["2", "Thr"])
     assert io.choose("Pick", ["one", "two", "three"]) == 1

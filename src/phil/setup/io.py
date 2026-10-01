@@ -33,18 +33,20 @@ def _ask_text(prompt: str, default: str | None) -> str:
 
 
 def _pick(answer: str, options: list[str], default: int) -> int | None:
-    """The option `answer` names: Enter for `default`, a 1-based number, or the start of an
-    option's text (ignoring case). None if it names none."""
+    """The option `answer` names: Enter for `default`, a 1-based number, an option's text, or
+    the start of exactly one option's text (all ignoring case). None if it names none, or if
+    it starts more than one option."""
     answer = answer.strip()
     if not answer:
         return default
     if answer.isdigit():
         index = int(answer) - 1
         return index if 0 <= index < len(options) else None
-    for index, option in enumerate(options):
-        if option.lower().startswith(answer.lower()):
-            return index
-    return None
+    lowered = [option.lower() for option in options]
+    if answer.lower() in lowered:
+        return lowered.index(answer.lower())
+    starts = [index for index, option in enumerate(lowered) if option.startswith(answer.lower())]
+    return starts[0] if len(starts) == 1 else None
 
 
 class TerminalSetupIO:
@@ -120,7 +122,7 @@ class ScriptedSetupIO:
         answer = self._next("choose", prompt)
         index = _pick(answer, options, default)
         if index is None:
-            raise AssertionError(f"scripted answer {answer!r} names none of {options}")
+            raise AssertionError(f"scripted answer {answer!r} names none (or more than one) of {options}")
         return index
 
     def secret(self, prompt: str) -> str:
