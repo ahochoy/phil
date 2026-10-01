@@ -373,6 +373,9 @@ def test_the_aborted_quick_run_is_planned_fully_with_its_worklogs(calc_repo):
     [architect] = payloads(factory, "architect")
     assert TRIED in architect and "bogus" not in architect  # the invalid worklog is skipped
     assert "Fix the typo in calc" in architect  # the original goal
+    # Planned as a full goal: the quick task isn't there to bias the architect.
+    assert field("depth", "full") in architect and field("task", None) in architect
+    assert "add is spelt right" not in architect
     assert factory.remaining() == {"route": 0, "intake": 0, "architect": 0, "critic": 0}
     assert APPROVE in prompts
     # The quick run's own completion notice and PR offer aren't shown: the move-to-full line, then planning.
@@ -386,6 +389,44 @@ def test_the_aborted_quick_run_is_planned_fully_with_its_worklogs(calc_repo):
     [approved] = notes(calc_repo, "approved")
     assert approved["depth"] == "full" and approved["run_id"] == full_id
     assert notes(calc_repo, "prior_attempt_unreadable") == []
+
+
+def test_an_edit_after_moving_to_full_still_sends_the_worklogs(calc_repo):
+    detectable(calc_repo)
+    handoff = {"worklogs": [worklog()], "open_issues": []}
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        [
+            "fix the typo in calc", escalate("FIX-001 failed 2 attempts", QUICK_OPTIONS), "full", aborted(handoff),
+            "edit", "split it in two", "n",
+        ],
+        {
+            "route": [route("simple_change")], "intake": [quick_goal()],
+            "architect": [plan(), plan()], "critic": [critique(), critique()],
+        },
+    )
+    first, revision = payloads(factory, "architect")
+    assert TRIED in first and TRIED in revision
+    assert "split it in two" in revision
+    assert "Plan dropped." in text
+
+
+def test_a_new_goal_after_moving_to_full_has_no_prior_attempt(calc_repo):
+    detectable(calc_repo)
+    handoff = {"worklogs": [worklog()], "open_issues": []}
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        [
+            "fix the typo in calc", escalate("FIX-001 failed 2 attempts", QUICK_OPTIONS), "full", aborted(handoff),
+            "n", "add subtract", "n",
+        ],
+        {
+            "route": [route("simple_change"), route("feature")], "intake": [quick_goal(), goal()],
+            "architect": [plan(), plan()], "critic": [critique(), critique()],
+        },
+    )
+    first, second = payloads(factory, "architect")
+    assert TRIED in first and TRIED not in second
 
 
 def test_a_missing_handoff_still_plans_without_a_prior_attempt(calc_repo):

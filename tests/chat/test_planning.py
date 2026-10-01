@@ -150,6 +150,16 @@ def test_draft_sends_prior_attempt_to_the_architect(chat_ctx, tmp_path):
     assert "tried X, failed because Y" in str(architect)
 
 
+def test_revise_sends_prior_attempt_to_the_architect(chat_ctx, tmp_path):
+    factory = ScriptedAgentFactory({"architect": [plan(), plan()], "critic": [critique(), critique()]})
+    worklog = AttemptWorklog(files_changed=["calc.py"], notes=["tried X, failed because Y"])
+    planner = Planner(chat_ctx(factory), "overview")
+    draft = planner.draft(goal(), tmp_path, prior_attempt=[worklog])
+    planner.revise(goal(), draft, "smaller tasks", tmp_path, prior_attempt=[worklog])
+    revision = [p for role, p in factory.calls if role == "architect"][-1]
+    assert "tried X, failed because Y" in str(revision) and "smaller tasks" in str(revision)
+
+
 def test_draft_sends_prior_attempt_to_both_the_first_plan_and_a_revision(chat_ctx, tmp_path):
     factory = ScriptedAgentFactory({
         "architect": [plan(n=1), plan(n=2)],

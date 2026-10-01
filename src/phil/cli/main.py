@@ -695,13 +695,15 @@ def resume(
         latest = run_events(ProjectPaths(info.slug), run_id).latest("escalation")
         escalation = latest["escalation"] if latest else {"summary": record.needs_attention or "", "options": []}
         options = escalation["options"]
+        # `full` is listed only in the chat that started the run; an explicit --action full is refused below.
+        shown = [option for option in options if option != "full"]
         if action is None:
             console.print(escape(escalation["summary"]))
-            console.print(f"[phil.error]choose --action: {escape(', '.join(options))}[/]")
+            console.print(f"[phil.error]choose --action: {escape(', '.join(shown))}[/]")
             raise typer.Exit(2)
         if action not in options:
             console.print(
-                f"[phil.error]unknown action {escape(repr(action))}; choose one of: {escape(', '.join(options))}[/]"
+                f"[phil.error]unknown action {escape(repr(action))}; choose one of: {escape(', '.join(shown))}[/]"
             )
             raise typer.Exit(2)
         if action == "full":

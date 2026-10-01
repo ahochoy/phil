@@ -190,6 +190,7 @@ class Planner:
         on_step: Callable[[str], None] | None = None,
         *,
         ctx: AgentContext | None = None,
+        prior_attempt: Sequence[AttemptWorklog] = (),
     ) -> PlanDraft:
         request = PlanCritique(
             verdict="revise",
@@ -197,4 +198,4 @@ class Planner:
             notes=[],
             self_check=_empty_check(),
         )
-        return self._cycle(goal, draft.plan, request, tree, on_step, ctx)
+        return self._cycle(goal, draft.plan, request, tree, on_step, ctx, prior_attempt)

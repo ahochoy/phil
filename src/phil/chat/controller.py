@@ -175,6 +175,7 @@ class ChatController:
         self._step_lock = threading.Lock()
         self._goal: Goal | None = None
         self._goal_text = ""
+        self._prior_attempt: list[AttemptWorklog] = []  # a failed quick attempt's worklogs, once moved to full
         self._rounds = 0
         self._draft: PlanDraft | None = None
         self._shown_test_cmd: str | None = None  # the effective test command in the last plan render
@@ -541,6 +542,7 @@ class ChatController:
     def _reset_goal(self) -> None:
         self._goal, self._goal_text, self._rounds, self._draft, self._revising = None, "", 0, None, False
         self._route, self._clarifications, self._prior_turns = None, [], []
+        self._prior_attempt = []
 
     def _forced_input(self, raw: str, forced: str, rest: str) -> None:
         """A message prefixed with /ask, /quick or /full: a goal whose depth skips the router."""
@@ -919,7 +921,7 @@ class ChatController:
         if not feedback:
             self._set_stage("approval")
             return
-        goal, draft = self._goal, self._draft
+        goal, draft, prior_attempt = self._goal, self._draft, self._prior_attempt
         self.console.print("[phil.muted]Revising…[/]")
         self._revising = True
         self._set_stage("planning")
@@ -929,7 +931,8 @@ class ChatController:
             self._step("snapshot", generation)
             tree = self._snapshot(generation)
             revised = self.planner.revise(
-                goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation), ctx=ctx
+                goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation), ctx=ctx,
+                prior_attempt=prior_attempt,
             )
             return {"draft": revised}
 
@@ -1170,12 +1173,15 @@ class ChatController:
 
     def _move_to_full(self, run_id: str, handoff: tuple[str, Goal | None]) -> None:
         """A quick run answered with `full` ended: plan its goal fully, with what the attempt learned."""
-        worklogs = self._prior_attempt(run_id)
+        worklogs = self._read_prior_attempt(run_id)
         self._forget_run()
-        self._goal_text, self._goal = handoff
+        goal_text, goal = handoff
+        # Planned as a full goal: the quick task would bias the architect; the worklogs say what was tried.
+        self._goal_text, self._goal = goal_text, goal.model_copy(update={"depth": "full", "task": None})
+        self._prior_attempt = worklogs  # kept for the goal's lifetime, so an edit at approval sees them too
         self._plan(self._goal, prior_attempt=worklogs)
 
-    def _prior_attempt(self, run_id: str) -> list[AttemptWorklog]:
+    def _read_prior_attempt(self, run_id: str) -> list[AttemptWorklog]:
         """The quick run's worklogs from its handoff; [] (with a note) when it's missing or unreadable."""
         path = ProjectPaths(self.info.slug).run_dir(run_id) / "handoff" / "prior_attempt.json"
         try:
