@@ -8,11 +8,12 @@ from phil.contracts import Plan, PlanCritique, Review, TaskResult, TesterReport
 
 def test_registry_covers_chat_and_run_roles():
     # Check registered agent names
-    assert set(SPECS) == {"intake", "architect", "critic", "implementer", "tester", "reviewer", "btw"}
+    assert set(SPECS) == {"intake", "architect", "critic", "implementer", "tester", "reviewer", "btw", "route"}
     # Check that agents reference the correct roles. "answerer" is a chat role with no registered
-    # graph agent yet: routing (a later M3a task) answers it directly, not through this registry.
+    # graph agent yet: routing answers it directly, not through this registry. "classifier" is not
+    # a chat or run role, but "route" (the LLM routing backend) registers it here.
     agent_roles = {spec.role for spec in SPECS.values()}
-    assert agent_roles == (set(CHAT_ROLES) | set(RUN_ROLES)) - {"answerer"}
+    assert agent_roles == (set(CHAT_ROLES) | set(RUN_ROLES) | {"classifier"}) - {"answerer"}
 
 
 @pytest.mark.parametrize(
@@ -56,7 +57,7 @@ def test_unknown_spec_raises():
 
 def test_only_judging_and_intake_roles_use_the_lean_harness():
     lean = {name for name, spec in SPECS.items() if spec.harness == "lean"}
-    assert lean == {"intake", "critic", "reviewer"}
+    assert lean == {"intake", "critic", "reviewer", "route"}
     assert all(not SPECS[name].tools and not SPECS[name].writes_files for name in lean)
 
 

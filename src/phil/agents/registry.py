@@ -15,6 +15,7 @@ from phil.contracts import (
     TesterInput,
     TesterReport,
 )
+from phil.contracts.routing import RouteInput, RouteJudgement
 
 SPECS: dict[str, AgentSpec] = {
     "intake": AgentSpec("intake", "orchestrator", IntakeInput, Goal, harness="lean", end_on_text=True),
@@ -26,6 +27,9 @@ SPECS: dict[str, AgentSpec] = {
     "tester": AgentSpec("tester", "tester", TesterInput, TesterReport, tools=("shell",), writes_files=True),
     "reviewer": AgentSpec("reviewer", "reviewer", ReviewInput, Review, harness="lean", end_on_text=True),
     "btw": AgentSpec("btw", "orchestrator", BtwInput, Brief, writes_files=False),
+    "route": AgentSpec(
+        "route", "classifier", RouteInput, RouteJudgement, harness="lean", shared_prompt=False, end_on_text=True
+    ),
 }
 
 
