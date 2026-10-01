@@ -160,10 +160,30 @@ def test_ordinary_names_are_kept(name):
     assert not is_secret_name(name)
 
 
+NULL_KEYRING = {"PYTHON_KEYRING_BACKEND": "keyring.backends.null.Keyring"}
+
+
 def test_child_env_strips_secrets_but_honours_pass_env():
     environ = {"PATH": "/bin", "OPENROUTER_API_KEY": "sk-1", "DATABASE_TOKEN": "t"}
-    assert child_env(environ) == {"PATH": "/bin"}
-    assert child_env(environ, pass_env=["DATABASE_TOKEN"]) == {"PATH": "/bin", "DATABASE_TOKEN": "t"}
+    assert child_env(environ) == {"PATH": "/bin"} | NULL_KEYRING
+    assert child_env(environ, pass_env=["DATABASE_TOKEN"]) == {"PATH": "/bin", "DATABASE_TOKEN": "t"} | NULL_KEYRING
+
+
+def test_child_env_pins_the_null_keyring_even_over_the_parent_or_pass_env():
+    environ = {"PATH": "/bin", "PYTHON_KEYRING_BACKEND": "keyring.backends.fail.Keyring"}
+    assert child_env(environ, pass_env=["PYTHON_KEYRING_BACKEND"]) == {"PATH": "/bin"} | NULL_KEYRING
+
+
+def test_a_child_command_sees_only_the_null_keyring(tmp_path, monkeypatch):
+    # The parent pins a different backend, so only child_env can make the child report the null one.
+    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.fail.Keyring")
+    script = tmp_path / "show_backend.py"
+    script.write_text("import keyring\nprint(type(keyring.get_keyring()).__module__)\n")
+    result = run_command(
+        f"{PY} {shlex.quote(str(script))}", cwd=tmp_path, timeout_s=30, env=child_env(os.environ)
+    )
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == "keyring.backends.null"
 
 
 def test_run_command_hides_secrets_by_default(tmp_path, monkeypatch):
