@@ -3,6 +3,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from phil.contracts.base import Contract, Part
+from phil.contracts.planning import Task
 
 
 class Ref(Part):
@@ -22,6 +23,7 @@ class Goal(Contract):
     open_questions: list[str] = []
     story_ref: str | None = None
     depth: Literal["answer", "quick", "full"] | None = Field(default=None, description="how much process the work needs: `answer` (a question or a \"why is X broken\" diagnosis, no change), `quick` (one small, well-specified change), or `full` (anything needing design, several files, or a plan). Leave null while `open_questions` is non-empty.")
+    task: Task | None = Field(default=None, description="Only for depth quick: the one task that does the whole change.")
 
 
 class Brief(Contract):

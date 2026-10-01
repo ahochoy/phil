@@ -5,8 +5,11 @@ from pydantic import ValidationError
 
 from phil.contracts import (
     ALL_CONTRACTS,
+    Answer,
+    ArchitectInput,
     AttemptWorklog,
     Brief,
+    Goal,
     Plan,
     SelfCheck,
     Task,
@@ -176,3 +179,24 @@ def test_implement_input_carries_an_optional_worklog_and_diff():
 
     implement = ImplementInput(task=make_task(), phase="green", test_cmd="pytest")
     assert (implement.worklog, implement.diff) == (None, "")
+
+
+def test_goal_task_is_optional_and_typed():
+    assert Goal(objective="x").task is None
+    task = make_task()
+    assert Goal(objective="x", task=task).task == task
+
+
+def test_architect_input_prior_attempt_defaults_to_empty():
+    assert ArchitectInput(goal=Goal(objective="x")).prior_attempt == []
+
+
+def test_architect_input_carries_prior_attempt_worklogs():
+    worklog = AttemptWorklog(files_changed=["a.py"], notes=["tried X"])
+    architect_input = ArchitectInput(goal=Goal(objective="x"), prior_attempt=[worklog])
+    assert architect_input.prior_attempt == [worklog]
+
+
+def test_answer_diagnosis_defaults_to_false():
+    assert Answer(text="because of the bug in x.py").diagnosis is False
+    assert Answer(text="because of the bug in x.py", diagnosis=True).diagnosis is True

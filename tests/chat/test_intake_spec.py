@@ -19,6 +19,12 @@ def test_intake_input_defaults():
     assert data["previous_goal"] is None
     assert data["answers"] == []
     assert data["repo_overview"] == ""
+    assert data["route_depth"] is None
+    assert data["detected_test_cmd"] is None
+
+
+def test_goal_task_defaults_to_none():
+    assert Goal(objective="x").task is None
 
 
 def test_chat_and_run_roles_cover_all_roles_except_the_classifier_and_answerer():
@@ -39,3 +45,21 @@ def test_intake_prompt_documents_depth():
     spec = get_spec("intake")
     prompt = load_prompt(spec)
     assert "depth" in prompt
+
+
+def test_intake_prompt_documents_task():
+    spec = get_spec("intake")
+    prompt = load_prompt(spec)
+    assert "`task`" in prompt
+
+
+def test_architect_prompt_documents_prior_attempt():
+    spec = get_spec("architect")
+    prompt = load_prompt(spec)
+    assert "prior_attempt" in prompt
+
+
+def test_answer_prompt_documents_diagnosis():
+    spec = get_spec("answer")
+    prompt = load_prompt(spec)
+    assert "diagnosis" in prompt

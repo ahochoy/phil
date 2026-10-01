@@ -14,6 +14,9 @@ class ArchitectInput(Contract):
     previous_plan: Plan | None = None
     critique: PlanCritique | None = None
     detected_test_cmd: str | None = None
+    prior_attempt: list[AttemptWorklog] = Field(
+        default=[], description="When set, a quick attempt at this goal failed; its worklogs say what was tried and why it failed."
+    )
 
 
 class CriticInput(Contract):
@@ -26,6 +29,8 @@ class IntakeInput(Contract):
     previous_goal: Goal | None = None
     answers: list[str] = []
     repo_overview: str = ""
+    route_depth: Literal["answer", "quick", "full"] | None = None
+    detected_test_cmd: str | None = None
 
 
 class ImplementInput(Contract):

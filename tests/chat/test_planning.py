@@ -1,5 +1,6 @@
 from phil.agents.fake import ScriptedAgentFactory
-from phil.chat.planning import Planner, intake
+from phil.chat.planning import Planner, intake, quick_plan
+from phil.contracts import AttemptWorklog, Task
 from tests.chat.conftest import critique, goal, issue, plan
 
 
@@ -12,6 +13,44 @@ def test_intake_passes_message_answers_and_previous_goal(chat_ctx, tmp_path):
     assert second.open_questions == []
     payload = str(factory.calls[1][1])
     assert "calc.py" in payload and "Which file?" in payload
+
+
+def test_intake_passes_route_depth_and_detected_test_cmd(chat_ctx):
+    factory = ScriptedAgentFactory({"intake": [goal()]})
+    ctx = chat_ctx(factory)
+    intake(ctx, "add subtract", overview="", route_depth="quick", detected_test_cmd="uv run pytest -q")
+    payload = str(factory.calls[0][1])
+    assert '"route_depth": "quick"' in payload
+    assert '"detected_test_cmd": "uv run pytest -q"' in payload
+
+
+def _task(task_id="CALC-001") -> Task:
+    return Task(id=task_id, description="Add subtract", acceptance_criteria=["subtract works"])
+
+
+def test_quick_plan_builds_a_one_task_plan_whose_keyword_is_the_task_prefix():
+    result = quick_plan(goal(task=_task()), "uv run pytest -q")
+    assert result is not None
+    assert result.keyword == "CALC"
+    assert result.tasks == [_task()]
+    assert result.test_cmd == "uv run pytest -q"
+
+
+def test_quick_plan_returns_none_without_a_task():
+    assert quick_plan(goal(), "uv run pytest -q") is None
+
+
+def test_quick_plan_returns_none_for_an_invalid_task_id():
+    bad_task = Task.model_construct(
+        id="toolongkeyword-001",
+        description="Add subtract",
+        acceptance_criteria=["subtract works"],
+        files_hint=[],
+        status="TODO",
+        verify="tdd",
+        check_cmd=None,
+    )
+    assert quick_plan(goal(task=bad_task), None) is None
 
 
 def test_draft_accepts_an_ok_critique(chat_ctx, tmp_path):
@@ -101,3 +140,22 @@ def test_architect_hint_is_null_when_nothing_is_detected(chat_ctx, tmp_path):
     Planner(chat_ctx(factory), "overview").draft(goal(), tmp_path)
     [architect] = [p for role, p in factory.calls if role == "architect"]
     assert '"detected_test_cmd": null' in str(architect)
+
+
+def test_draft_sends_prior_attempt_to_the_architect(chat_ctx, tmp_path):
+    factory = ScriptedAgentFactory({"architect": [plan()], "critic": [critique()]})
+    worklog = AttemptWorklog(files_changed=["calc.py"], notes=["tried X, failed because Y"])
+    Planner(chat_ctx(factory), "overview").draft(goal(), tmp_path, prior_attempt=[worklog])
+    [architect] = [p for role, p in factory.calls if role == "architect"]
+    assert "tried X, failed because Y" in str(architect)
+
+
+def test_draft_sends_prior_attempt_to_both_the_first_plan_and_a_revision(chat_ctx, tmp_path):
+    factory = ScriptedAgentFactory({
+        "architect": [plan(n=1), plan(n=2)],
+        "critic": [critique("revise", [issue("too big", "CALC-001")]), critique()],
+    })
+    worklog = AttemptWorklog(files_changed=["calc.py"], notes=["tried X, failed because Y"])
+    Planner(chat_ctx(factory), "overview").draft(goal(), tmp_path, prior_attempt=[worklog])
+    architect_payloads = [p for role, p in factory.calls if role == "architect"]
+    assert all("tried X, failed because Y" in str(p) for p in architect_payloads)
