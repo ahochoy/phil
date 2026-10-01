@@ -183,10 +183,13 @@ def load_results(path: Path | None = None) -> list[dict]:
 
 
 def _latest_per_case(records: list[dict]) -> list[dict]:
-    """The latest run's records: the newest record for each case id, in file order."""
-    by_case: dict[str, dict] = {}
+    """The newest record for each (case id, backend) pair, in file order. "Newest" means the
+    last one in `records` -- the newest record across the whole results file, not one batch:
+    there's no explicit "run id" grouping every case from a single invocation together, so a
+    partial or interrupted run can leave a mix of ages behind this picks the latest of."""
+    by_case: dict[tuple[str, str | None], dict] = {}
     for record in records:
-        by_case[record["case_id"]] = record
+        by_case[(record["case_id"], record.get("backend"))] = record
     return list(by_case.values())
 
 
@@ -224,9 +227,10 @@ def _print_summary(backend: str, summary: dict, sweep: list[dict]) -> None:
 
 def _report(records: list[dict]) -> None:
     thresholds = RoutingConfig()
+    latest = _latest_per_case(records)
     summaries: dict[str, dict] = {}
     for backend in ("jev", "llm"):
-        backend_records = _latest_per_case([r for r in records if r.get("backend") == backend])
+        backend_records = [record for record in latest if record.get("backend") == backend]
         if not backend_records:
             print(f"--- {backend}: no results ---")
             continue
