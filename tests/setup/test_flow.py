@@ -144,8 +144,10 @@ def test_keys_are_saved_only_after_the_config_is_written(tmp_path, memory_keyrin
         (SERVICE, "OPENROUTER_API_KEY"): SECRET,
         (SERVICE, "TYPESAFE_API_KEY"): TYPESAFE_SECRET,
     }
-    assert "Saved OPENROUTER_API_KEY for openrouter in the keychain." in io.lines
-    assert "Saved TYPESAFE_API_KEY for typesafe in the keychain." in io.lines
+    # The printed lines read in the same order: "wrote the config" before "saved the key".
+    wrote_line = next(i for i, line in enumerate(io.lines) if line.startswith("Wrote "))
+    assert wrote_line < io.lines.index("Saved OPENROUTER_API_KEY for openrouter in the keychain.")
+    assert wrote_line < io.lines.index("Saved TYPESAFE_API_KEY for typesafe in the keychain.")
 
 
 def test_an_existing_env_key_is_not_asked_for(tmp_path, monkeypatch, memory_keyring):
@@ -205,22 +207,22 @@ def test_a_key_left_empty_then_missing_in_the_check(tmp_path):
 
 
 def test_a_key_store_error_after_the_write_is_said_and_setup_still_reports_success(tmp_path, monkeypatch, memory_keyring):
-    from phil.key_store import KeyStoreError
+    import keyring
 
-    def failing(var, value):
-        raise KeyStoreError(f"Couldn't save {var} to the keychain: OSError")
+    def explode(service, username, password):
+        raise RuntimeError("boom")
 
-    monkeypatch.setattr("phil.setup.flow.set_key", failing)
+    monkeypatch.setattr(keyring, "set_password", explode)
     wrote, io, _ = setup(["", SECRET, "", "", ""], tmp_path)
     assert wrote is True
     assert written(tmp_path).models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW}
     assert (
-        f"Wrote {global_config_path()}, but couldn't save OPENROUTER_API_KEY: "
-        "Couldn't save OPENROUTER_API_KEY to the keychain: OSError. "
+        "Couldn't save OPENROUTER_API_KEY to the keychain (RuntimeError). "
         "Export OPENROUTER_API_KEY, or run phil keys set openrouter."
     ) in io.lines
     assert memory_keyring.store == {}
     assert all(SECRET not in line for line in io.lines)
+    assert all("boom" not in line for line in io.lines)
 
 
 def test_openrouter_typed_text_searches_the_catalog(tmp_path):
@@ -568,6 +570,28 @@ def test_choosing_typesafe_jev_asks_for_its_key_and_writes_the_classifier_model(
            "openrouter:google/gemini-3.8-flash and models.classifier = typesafe:jev-latest " \
            f"to {global_config_path()}." in io.lines
     assert all(SECRET not in line for line in io.lines)
+
+
+def test_the_classifier_check_runs_with_the_pending_typesafe_key_before_anything_is_saved(tmp_path, memory_keyring):
+    from phil.key_store import key_lookup
+
+    seen: dict[str, object] = {}
+
+    def classifier_check():
+        seen["key"] = key_lookup().get("TYPESAFE_API_KEY")
+        seen["store_during_check"] = dict(memory_keyring.store)
+        return None
+
+    wrote, io, _ = setup(
+        ["", SECRET, "", "", "TypeSafe", "sk-TESTSECRET-typesafe"], tmp_path, classifier_check=classifier_check
+    )
+    assert wrote is True
+    assert seen["key"] == "sk-TESTSECRET-typesafe"
+    assert seen["store_during_check"] == {}  # nothing saved yet while the classifier check runs
+    assert memory_keyring.store == {
+        (SERVICE, "OPENROUTER_API_KEY"): SECRET,
+        (SERVICE, "TYPESAFE_API_KEY"): "sk-TESTSECRET-typesafe",
+    }
 
 
 def test_a_failing_classifier_check_offers_to_fall_back_to_the_low_model(tmp_path, memory_keyring):

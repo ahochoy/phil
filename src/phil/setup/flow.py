@@ -6,7 +6,6 @@ and classifier checks can use it, but nothing is saved until the end. Cancelling
 (Ctrl-C or end of input) saves nothing and writes nothing. Keys are never said, written or
 logged."""
 
-import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -135,24 +134,28 @@ def run_setup(
     except (OSError, TOMLKitError) as exc:
         io.say(f"Couldn't write {target}: {_error_text(exc)}. Nothing was saved.")
         return False
-    _save_pending_keys(io, target, to_save, pending)
+    # The config is written before any key: `_summarise` says so first, then each pending key is
+    # saved — so the user reads "wrote the config" before "saved the key", in that true order.
     _summarise(io, config, provider, models, target)
+    _save_pending_keys(io, to_save, pending)
     return True
 
 
-def _save_pending_keys(io: SetupIO, target: Path, to_save: list[tuple[str, str]], pending: dict[str, str]) -> None:
-    """Save every key setup collected, now that `target` is written. A failure doesn't stop the
-    others: the config is already written, so setup still reports success overall."""
+def _save_pending_keys(io: SetupIO, to_save: list[tuple[str, str]], pending: dict[str, str]) -> None:
+    """Save every key setup collected, now that the config is written. A failure doesn't stop
+    the others: the config is already written, so setup still reports success overall."""
     for var, provider_name in to_save:
         try:
             set_key(var, pending[var])
         except KeyStoreError as exc:
+            reason = (
+                type(exc.__cause__).__name__ if exc.__cause__ is not None else "no keychain is available here"
+            )
             io.say(
-                f"Wrote {target}, but couldn't save {var}: {exc}. Export {var}, or run phil keys set {provider_name}."
+                f"Couldn't save {var} to the keychain ({reason}). Export {var}, or run phil keys set {provider_name}."
             )
             continue
-        suffix = f" (the environment value still wins while {var} is exported)" if os.environ.get(var) else ""
-        io.say(f"Saved {var} for {provider_name} in the keychain.{suffix}")
+        io.say(f"Saved {var} for {provider_name} in the keychain.")
 
 
 def _error_text(exc: Exception) -> str:
