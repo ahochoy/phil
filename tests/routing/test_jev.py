@@ -121,3 +121,22 @@ def test_ping_sends_a_tiny_choice():
 
     ping_jev(SPEC, "jev-latest", timeout_s=5, environ=ENV, transport=transport(handler))
     assert set(seen["body"]["questions"]) == {"ping"}
+
+
+def test_a_request_that_cant_be_built_is_a_jev_error_without_the_key():
+    key = "ts-“smart”-quote"
+    with pytest.raises(JevError) as info:
+        judge_jev(SPEC, "jev-latest", STATE, timeout_s=5, environ={"TYPESAFE_API_KEY": key},
+                  transport=transport(lambda r: httpx.Response(200, json=FIXTURE)))
+    assert info.value.reason == "request failed" and str(info.value) == "request failed"
+    assert key not in str(info.value) and "“" not in str(info.value)
+    assert info.value.__suppress_context__
+
+
+def test_a_non_string_choice_is_malformed():
+    body = json.loads(json.dumps(FIXTURE))
+    body["answers"]["task_class"]["choice"] = ["question"]
+    with pytest.raises(JevError) as info:
+        judge_jev(SPEC, "jev-latest", STATE, timeout_s=5, environ=ENV,
+                  transport=transport(lambda r: httpx.Response(200, json=body)))
+    assert info.value.reason == "malformed"

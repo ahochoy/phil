@@ -66,7 +66,7 @@ def parse_response(body: object) -> tuple[str, dict[str, float], float, float, U
         confidence = task_class["confidence"]
     except (KeyError, TypeError):
         raise JevError("malformed") from None
-    if choice not in CLASSES or not isinstance(probabilities, dict):
+    if not isinstance(choice, str) or choice not in CLASSES or not isinstance(probabilities, dict):
         raise JevError("malformed")
     probs = {str(k): _probability(v) for k, v in probabilities.items()}
     usage = None
@@ -100,6 +100,10 @@ def _post(
         raise JevError("timeout") from None
     except httpx.HTTPError:
         raise JevError("network") from None
+    except Exception:
+        # Anything else building or sending the request (e.g. a key with a non-ASCII character makes
+        # the header unencodable). Its message could quote the key, so none of it survives.
+        raise JevError("request failed") from None
     if response.status_code != 200:
         raise JevError(f"http {response.status_code}")
     try:

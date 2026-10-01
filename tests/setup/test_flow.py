@@ -577,3 +577,11 @@ def test_a_key_pasted_at_the_classifier_choice_prompt_is_refused(tmp_path):
     with pytest.raises(AssertionError):
         run_setup(io, config=load_config(tmp_path), check=FakeCheck(), catalog=lambda: CATALOG, ollama=FakeOllama())
     assert all(PLANTED not in line for line in io.lines)
+
+
+def test_the_default_classifier_check_reports_an_unsendable_key_without_it(monkeypatch):
+    from phil.config import PhilConfig
+    from phil.setup.flow import _default_classifier_check
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-“smart”-quote")
+    assert _default_classifier_check(PhilConfig()) == "request failed"

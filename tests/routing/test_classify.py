@@ -51,3 +51,13 @@ def test_jev_failure_falls_back_to_the_low_model(tmp_path):
 def test_llm_failure_returns_none(tmp_path):
     factory = FakeAgentFactory([RuntimeError("boom"), RuntimeError("boom")])
     assert classify(ctx(tmp_path, {"low": "openrouter:l", "high": "openrouter:h"}, factory), STATE) is None
+
+
+def test_a_request_failure_falls_back_to_the_low_model(tmp_path):
+    models = {"low": "openrouter:l", "high": "openrouter:h", "classifier": "typesafe:jev-latest"}
+    t = httpx.MockTransport(lambda r: httpx.Response(200, json=FIXTURE))
+    factory = FakeAgentFactory([LLM_SAYS])
+    j = classify(ctx(tmp_path, models, factory), STATE, transport=t,
+                 environ={"TYPESAFE_API_KEY": "ts-“smart”-quote"})
+    assert j.source == "llm" and j.fallback_reason == "request failed"
+    assert factory.built == [("route", "openrouter:l")]
