@@ -49,6 +49,12 @@ def _probability(value: object) -> float:
     return float(value)
 
 
+def _token_count(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        raise JevError("malformed")
+    return int(value)
+
+
 def parse_response(body: object) -> tuple[str, dict[str, float], float, float, Usage | None]:
     """(choice, probabilities, confidence, needs_detail, usage); raises JevError("malformed")."""
     try:
@@ -66,7 +72,12 @@ def parse_response(body: object) -> tuple[str, dict[str, float], float, float, U
     usage = None
     raw_usage = body.get("usage") if isinstance(body, dict) else None
     if isinstance(raw_usage, dict):
-        usage = Usage(int(raw_usage.get("input_tokens", 0)), int(raw_usage.get("output_tokens", 0)))
+        try:
+            input_tokens = _token_count(raw_usage.get("input_tokens", 0))
+            output_tokens = _token_count(raw_usage.get("output_tokens", 0))
+            usage = Usage(input_tokens, output_tokens)
+        except JevError:
+            raise
     return choice, probs, _probability(confidence), _probability(noul), usage
 
 

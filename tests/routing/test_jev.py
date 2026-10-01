@@ -84,6 +84,15 @@ def test_timeout_and_network_errors():
                      "needs_detail": {"noul": 0.1}}},  # out of range
         {"answers": {"task_class": {"choice": "question", "probabilities": {}, "confidence": 0.9}}},  # no noul
         "not json",
+        # Malformed usage fields
+        {"model": "jev-latest", "answers": {"task_class": {"choice": "question", "probabilities": {}, "confidence": 0.9},
+                                            "needs_detail": {"noul": 0.1}}, "usage": {"input_tokens": "abc", "output_tokens": 3}},  # string token
+        {"model": "jev-latest", "answers": {"task_class": {"choice": "question", "probabilities": {}, "confidence": 0.9},
+                                            "needs_detail": {"noul": 0.1}}, "usage": {"input_tokens": None, "output_tokens": 3}},  # null token
+        {"model": "jev-latest", "answers": {"task_class": {"choice": "question", "probabilities": {}, "confidence": 0.9},
+                                            "needs_detail": {"noul": 0.1}}, "usage": {"input_tokens": -1, "output_tokens": 3}},  # negative token
+        {"model": "jev-latest", "answers": {"task_class": {"choice": "question", "probabilities": {}, "confidence": 0.9},
+                                            "needs_detail": {"noul": 0.1}}, "usage": {"input_tokens": True, "output_tokens": 3}},  # bool token
     ],
 )
 def test_malformed_bodies(body):
