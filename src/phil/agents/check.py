@@ -124,7 +124,6 @@ def _jev_detail(provider: ProviderSpec, exc: JevError) -> str:
 def _check_one(
     ctx: AgentContext, model: str, labels: list[str], call: int, jev_transport: object | None
 ) -> tuple[bool, str]:
-    packet = build_packet("model_check", ModelCheckInput(word=CHECK_WORD), budget_tokens=1_000)
     try:
         # Checked here so the errors name the tiers and roles using the model, not the check's own role.
         provider = provider_for_model(ctx.config, model, labels[0])
@@ -137,6 +136,7 @@ def _check_one(
             except JevError as exc:
                 return False, _jev_detail(provider, exc)
             return True, ""
+        packet = build_packet("model_check", ModelCheckInput(word=CHECK_WORD), budget_tokens=1_000)
         output = invoke_agent(
             MODEL_CHECK, packet, ctx, node="model_check", call=call,
             model=model, max_attempts=1, transient_retries=False,

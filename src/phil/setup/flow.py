@@ -5,6 +5,7 @@ Keys go only to the keychain, through `set_key`; they are never said, written or
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 
 from tomlkit.exceptions import TOMLKitError
@@ -49,6 +50,14 @@ class _Provider:
     custom: bool = False  # a [providers.<name>] table setup writes
     fields: dict[str, object] = field(default_factory=dict)
     installed: list[str] = field(default_factory=list)  # Ollama's models
+
+
+@dataclass
+class _KeySaved:
+    """Mutable: true once any key this run has needed (the provider's, or the classifier's) is
+    saved to the keychain, so a later cancellation reports it correctly."""
+
+    value: bool = False
 
 
 def _ask(io: SetupIO, prompt: str, default: str | None = None) -> str:
@@ -99,19 +108,20 @@ def run_setup(
         for tier in SETUP_TIERS
         if tier in config.models and config.sources.get(f"models.{tier}") == str(target)
     }
-    run_classifier_check = classifier_check
-    if run_classifier_check is None:
-        run_classifier_check = lambda: _default_classifier_check(config)  # noqa: E731
-    key_saved = False
+    run_classifier_check = (
+        classifier_check if classifier_check is not None else partial(_default_classifier_check, config)
+    )
+    key_saved = _KeySaved()
     try:
         provider = _provider_step(io, config, saved, ollama)
-        key_saved = _key_step(io, provider)
+        if _key_step(io, provider):
+            key_saved.value = True
         models_catalog = _LazyCatalog(io, catalog)
         models = {tier: _model_step(io, saved, provider, tier, models_catalog) for tier in SETUP_TIERS}
         models = _check_step(io, config, saved, provider, models, check, models_catalog)
-        models = models | _classifier_step(io, config, target, run_classifier_check)
+        models = models | _classifier_step(io, config, target, run_classifier_check, key_saved)
     except (SetupCancelled, KeyboardInterrupt):
-        if key_saved:
+        if key_saved.value:
             io.say("Setup cancelled; the key was saved, nothing else was written.")
         else:
             io.say("Setup cancelled; nothing was written.")
@@ -430,10 +440,12 @@ def _check_step(
 
 
 def _classifier_step(
-    io: SetupIO, config: PhilConfig, target: Path, classifier_check: Callable[[], str | None]
+    io: SetupIO, config: PhilConfig, target: Path, classifier_check: Callable[[], str | None], key_saved: _KeySaved
 ) -> dict[str, str]:
     """Offer a fast TypeSafe classifier for routing. Empty when the user keeps using the low
-    model (the default); `{"classifier": CLASSIFIER_MODEL}` when TypeSafe Jev is chosen and kept."""
+    model (the default); `{"classifier": CLASSIFIER_MODEL}` when TypeSafe Jev is chosen and kept.
+    `key_saved` is set when TypeSafe's own key is saved here, so a later cancellation still
+    reports it."""
     current = config.models.get("classifier") if config.sources.get("models.classifier") == str(target) else None
     options = ([f"Keep {current}"] if current else []) + [
         "Your low model (default)", "TypeSafe Jev (fast routing; needs TYPESAFE_API_KEY)",
@@ -443,7 +455,8 @@ def _classifier_step(
         if current and choice.startswith("Your low model"):
             io.say(f"models.classifier = {current} stays in {target}; remove it there to route with your low model.")
         return {}
-    _key_step(io, _Provider("typesafe", "TYPESAFE_API_KEY"))
+    if _key_step(io, _Provider("typesafe", "TYPESAFE_API_KEY")):
+        key_saved.value = True
     reason = classifier_check()
     if reason is not None:
         io.say(f"✗ classifier  {CLASSIFIER_MODEL}  {reason}")

@@ -529,6 +529,34 @@ def test_a_failing_classifier_check_can_be_kept_anyway(tmp_path, memory_keyring)
     assert written(tmp_path).models["classifier"] == "typesafe:jev-latest"
 
 
+TYPESAFE_SECRET = "sk-TESTSECRET-typesafe"
+
+
+def test_cancelling_after_the_classifier_key_is_saved_reports_it(tmp_path, memory_keyring):
+    # Cancelled (end of scripted input) at the "TypeSafe Jev failed the check." choice, after a
+    # new TypeSafe key was saved: the cancel message must say so (M2b), not "nothing was written".
+    answers = ["", SECRET, "", "", "TypeSafe", TYPESAFE_SECRET]
+    wrote, io, _ = setup(answers, tmp_path, classifier_check=lambda: "http 401")
+    assert wrote is False
+    assert "Setup cancelled; the key was saved, nothing else was written." in io.lines
+    assert not global_config_path().exists()
+    assert memory_keyring.store[(SERVICE, "OPENROUTER_API_KEY")] == SECRET
+    assert memory_keyring.store[(SERVICE, "TYPESAFE_API_KEY")] == TYPESAFE_SECRET
+
+
+def test_cancelling_with_no_new_key_saved_reports_nothing_written(tmp_path, monkeypatch, memory_keyring):
+    # Both keys already come from the environment, so neither _key_step saves anything; the same
+    # cancellation point then reports "nothing was written".
+    monkeypatch.setenv("OPENROUTER_API_KEY", SECRET)
+    monkeypatch.setenv("TYPESAFE_API_KEY", TYPESAFE_SECRET)
+    answers = ["", "", "", "TypeSafe"]
+    wrote, io, _ = setup(answers, tmp_path, classifier_check=lambda: "http 401")
+    assert wrote is False
+    assert "Setup cancelled; nothing was written." in io.lines
+    assert not global_config_path().exists()
+    assert memory_keyring.store == {}
+
+
 def test_a_rerun_with_an_existing_classifier_offers_to_keep_it(tmp_path, memory_keyring):
     memory_keyring.store[(SERVICE, "OPENROUTER_API_KEY")] = SECRET
     global_config_path().parent.mkdir(parents=True)
