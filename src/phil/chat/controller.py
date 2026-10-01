@@ -804,6 +804,9 @@ class ChatController:
         self._intake_job(self._goal_text, previous=self._goal, answers=[text])
 
     def _plan(self, goal: Goal, prior_attempt: Sequence[AttemptWorklog] = ()) -> None:
+        # The architect plans from scratch: a stray intake task (a fallen-back quick task, or one written
+        # on a full route) never reaches it.
+        goal = goal.model_copy(update={"task": None})
         if goal.open_questions:
             self.console.print(f"[phil.muted]Planning with open questions: {len(goal.open_questions)}[/]")
         render_goal(self.console, goal)

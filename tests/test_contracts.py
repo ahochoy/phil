@@ -181,10 +181,28 @@ def test_implement_input_carries_an_optional_worklog_and_diff():
     assert (implement.worklog, implement.diff) == (None, "")
 
 
-def test_goal_task_is_optional_and_typed():
+def test_goal_task_is_optional_and_accepts_a_task():
     assert Goal(objective="x").task is None
     task = make_task()
-    assert Goal(objective="x", task=task).task == task
+    assert Goal(objective="x", task=task).task.model_dump() == task.model_dump(exclude={"status"})
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{"id": "calc-1"}, {"verify": "check"}, {"acceptance_criteria": []}],
+    ids=["malformed-id", "check-without-cmd", "no-criteria"],
+)
+def test_goal_keeps_a_quick_task_a_plan_would_reject(fields):
+    # Intake's whole goal must survive a bad quick task; quick_plan rejects it later (Ruling R9).
+    task = {"id": "CALC-001", "description": "d", "acceptance_criteria": ["c"]} | fields
+    assert Goal.model_validate({"objective": "x", "task": task}).task.model_dump(include=set(fields)) == fields
+
+
+def test_goal_quick_task_still_lists_the_verify_modes():
+    schema = Goal.model_json_schema()["$defs"]["QuickTask"]["properties"]
+    assert schema["verify"]["enum"] == ["tdd", "check"]
+    assert "pattern" not in schema["id"]
+    assert all("description" in prop for prop in schema.values())
 
 
 def test_architect_input_prior_attempt_defaults_to_empty():

@@ -125,6 +125,47 @@ def test_a_refused_check_command_falls_back_to_full_planning(calc_repo):
     assert any("reads outside the repo" in reason for reason in fallback["reasons"])
 
 
+def invalid_quick_goal(**task_fields):
+    """Intake's raw output with a quick task a strict `Task` rejects (spec §4.1, Ruling R9)."""
+    task = {"id": "FIX-001", "description": "Fix the typo in calc", "acceptance_criteria": ["add is spelt right"]}
+    return quick_goal().model_dump(exclude={"task"}) | {"task": task | task_fields}
+
+
+def assert_lenient_fallback(calc_repo, intake_output):
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo, ["fix the typo in calc", "n"], {"route": [route("simple_change")], "intake": [intake_output], **PLANNERS}
+    )
+    assert FALLBACK in text
+    assert "couldn't finish" not in text.lower()  # the goal is not lost
+    assert "Quick change:" not in text
+    assert "Plan CALC v1" in text and APPROVE in prompts
+    assert factory.remaining() == {"route": 0, "intake": 0, "architect": 0, "critic": 0}
+    [fallback] = notes(calc_repo, "quick_fallback")
+    assert fallback["reasons"] == ["the quick task doesn't make a valid plan"]
+    [architect] = payloads(factory, "architect")
+    assert "FIX-001" not in architect and "calc-1" not in architect  # the stray task never reaches the architect
+
+
+def test_a_check_quick_task_without_a_check_command_falls_back_to_full_planning(calc_repo):
+    detectable(calc_repo)
+    assert_lenient_fallback(calc_repo, invalid_quick_goal(verify="check"))
+
+
+def test_a_quick_task_with_a_malformed_id_falls_back_to_full_planning(calc_repo):
+    detectable(calc_repo)
+    assert_lenient_fallback(calc_repo, invalid_quick_goal(id="calc-1"))
+
+
+def test_a_valid_quick_task_from_raw_intake_output_still_takes_the_quick_path(calc_repo):
+    detectable(calc_repo)
+    text, spawned, runs, factory, _ = run_chat(
+        calc_repo, ["fix the typo in calc"], {"route": [route("simple_change")], "intake": [invalid_quick_goal()]}
+    )
+    assert QUICK_LINE in text and FALLBACK not in text
+    [run] = runs
+    assert run_depth(calc_repo, run.run_id) == "quick"
+
+
 def test_a_quick_task_without_a_test_command_falls_back(calc_repo):
     # No phil.toml test_cmd, nothing to detect, and a tdd task: the run would have no test command.
     text, spawned, runs, factory, prompts = run_chat(
@@ -256,6 +297,8 @@ def test_a_deferred_route_whose_intake_chooses_full_is_planned(calc_repo):
     )
     assert "Quick change:" not in text and FALLBACK not in text
     assert "Plan CALC v1" in text
+    [architect] = payloads(factory, "architect")
+    assert "FIX-001" not in architect  # a stray intake task never reaches the architect on a full route
 
 
 def test_forced_quick_takes_the_quick_path(calc_repo):

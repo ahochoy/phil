@@ -1,3 +1,5 @@
+import pytest
+
 from phil.agents.fake import ScriptedAgentFactory
 from phil.chat.planning import Planner, intake, quick_plan
 from phil.contracts import AttemptWorklog, Task
@@ -40,17 +42,28 @@ def test_quick_plan_returns_none_without_a_task():
     assert quick_plan(goal(), "uv run pytest -q") is None
 
 
-def test_quick_plan_returns_none_for_an_invalid_task_id():
-    bad_task = Task.model_construct(
-        id="toolongkeyword-001",
-        description="Add subtract",
-        acceptance_criteria=["subtract works"],
-        files_hint=[],
-        status="TODO",
-        verify="tdd",
-        check_cmd=None,
-    )
-    assert quick_plan(goal(task=bad_task), None) is None
+QUICK_TASK = {"id": "CALC-001", "description": "Add subtract", "acceptance_criteria": ["subtract works"]}
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"id": "toolongkeyword-001"},
+        {"id": "calc-1"},
+        {"verify": "check"},  # a check task with no check_cmd
+        {"check_cmd": "make lint"},  # a tdd task with a check_cmd
+        {"acceptance_criteria": []},
+    ],
+    ids=["long-keyword", "malformed-id", "check-without-cmd", "tdd-with-cmd", "no-criteria"],
+)
+def test_quick_plan_returns_none_for_a_task_a_plan_rejects(fields):
+    assert quick_plan(goal(task=QUICK_TASK | fields), None) is None
+
+
+def test_quick_plan_turns_the_lenient_quick_task_into_a_todo_task():
+    result = quick_plan(goal(task=QUICK_TASK | {"verify": "check", "check_cmd": "make lint"}), None)
+    assert result is not None
+    assert result.tasks == [Task(**QUICK_TASK, verify="check", check_cmd="make lint", status="TODO")]
 
 
 def test_draft_accepts_an_ok_critique(chat_ctx, tmp_path):

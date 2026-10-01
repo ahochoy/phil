@@ -18,6 +18,7 @@ from phil.contracts import (
     Plan,
     PlanCritique,
     SelfCheck,
+    Task,
 )
 from phil.packets import build_packet
 from phil.repo_detect import detect_test_cmd
@@ -57,16 +58,14 @@ def intake(
 
 
 def quick_plan(goal: Goal, test_cmd: str | None) -> Plan | None:
-    """The one-task plan for a quick goal, or None when the goal has no valid quick task (spec §4.1)."""
-    task = goal.task
-    if task is None:
+    """The one-task plan for a quick goal, or None when the goal has no valid quick task (spec §4.1).
+    Intake's task is lenient (`QuickTask`); here it must pass as a strict `Task` (Ruling R9)."""
+    if goal.task is None:
         return None
-    keyword = task.id.split("-", 1)[0]
     try:
-        return Plan(
-            keyword=keyword, description=goal.objective, tasks=[task.model_copy(update={"status": "TODO"})],
-            test_cmd=test_cmd,
-        )
+        task = Task.model_validate(goal.task.model_dump() | {"status": "TODO"})
+        keyword = task.id.split("-", 1)[0]
+        return Plan(keyword=keyword, description=goal.objective, tasks=[task], test_cmd=test_cmd)
     except ValidationError:
         return None
 
