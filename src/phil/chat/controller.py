@@ -738,10 +738,16 @@ class ChatController:
                 question += "\n\nClarification: " + "\n".join(self._clarifications)
             self._answer_job(question)
             return
-        if self._route is not None and (self._route.depth == "quick" or (intake_decides and goal.depth == "quick")):
+        self._build(goal)
+
+    def _build(self, goal: Goal) -> None:
+        """Take the goal to a run: the quick path when the route (or, if it deferred, intake) chose
+        quick, else full planning."""
+        route = self._route
+        if route is not None and (route.depth == "quick" or (route.depth is None and goal.depth == "quick")):
             self._quick(goal)
-            return
-        self._plan(goal)
+        else:
+            self._plan(goal)
 
     def _quick(self, goal: Goal) -> None:
         """Start the goal's one-task run straight away, or fall back to full planning (spec §4.1)."""
@@ -752,7 +758,9 @@ class ChatController:
             self._plan(goal)
             return
         task = plan.tasks[0]
-        self.console.print(f"Quick change: {escape(_clip(f'{task.id} {task.description}'))}")
+        # No approval prompt: the line says what will run, tests included.
+        tests = f" · tests: {plan.test_cmd}" if plan.test_cmd else ""
+        self.console.print(f"Quick change: {escape(_clip(f'{task.id} {task.description}') + tests)}")
         self.session.contract("quick_plan", plan)
         self._launch(plan, "quick", {"task_id": task.id})
 
@@ -767,16 +775,20 @@ class ChatController:
             self.config = load_config(self.info.root, overrides=self._config_overrides)
         except ConfigError as exc:
             return None, [str(exc)]
-        root = self.info.root
+        # As at approval: detect from the base commit's snapshot (what the run sees), and keep check
+        # commands' paths inside it, or inside the repo when nothing needed detecting.
+        root = self._detection_root(draft)
         plan = quick_plan(goal, effective_test_cmd(draft, self.config, root)[0])
-        problems = launch_problems(plan, self.config, root, check_root=root)
+        if plan is None:
+            return None, ["the quick task doesn't make a valid plan"]
+        problems = launch_problems(plan, self.config, root, check_root=root or self.info.root)
         return (None, problems) if problems else (plan, [])
 
     def _answers(self, text: str) -> None:
         if not text:
             return
         if text.lower() == "go":
-            self._plan(self._goal)
+            self._build(self._goal)
             return
         self._clarifications.append(text)
         self._recent.append(f"you: {text[:TURN_CHARS]}")
