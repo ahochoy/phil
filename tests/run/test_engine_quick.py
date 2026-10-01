@@ -3,7 +3,7 @@ import json
 import pytest
 
 from phil.agents.fake import Turn
-from phil.contracts import Issue, TaskResult
+from phil.contracts import Issue, Task, TaskResult
 from phil.run.state import initial_state, load_plan
 from phil.store.db import connect
 from phil.store.paths import ProjectPaths
@@ -37,8 +37,8 @@ def add_docstring(turn: Turn) -> TaskResult:
 
 @pytest.fixture
 def quick_harness(make_harness, calc_repo):
-    def _make(scripts: dict, *, chat_id: str | None = None):
-        plan = calc_plan()
+    def _make(scripts: dict, *, chat_id: str | None = None, plan=None):
+        plan = plan or calc_plan()
         paths = ProjectPaths("calc-test")
         conn = connect(paths.db_path)
         create_run(
@@ -110,6 +110,46 @@ def test_review_findings_are_patched_in_the_same_task(quick_harness):
     assert "nit" in notes
     patched = next(i for i in final["open_issues"] if i["note"].startswith("fixed after review"))
     assert patched["severity"] == "minor"
+
+
+def change_nothing(turn: Turn) -> TaskResult:
+    return task_result("green")  # the check passes as it stands; no fix commit
+
+
+def test_a_fix_that_changes_nothing_is_labelled_not_changed(quick_harness, calc_repo):
+    harness = quick_harness({
+        "quick_implementer": [write_red, write_green, change_nothing],
+        "reviewer": [review("changes", [Issue(severity="major", note=FINDING)])],
+    })
+    final = harness.start()
+    assert final["status"] == "completed"
+    log = run_git(calc_repo, "log", "--format=%s", f"{harness.base_sha}..phil/{RUN_ID}").splitlines()
+    assert log == ["CALC-001: Add subtract"]
+    notes = [issue["note"] for issue in final["open_issues"]]
+    assert f"not changed after review: {FINDING}" in notes
+    assert not any(note.startswith("fixed after review") for note in notes)
+
+
+def test_a_quick_plan_with_more_than_one_task_is_not_patched(quick_harness):
+    # The fix after review reopens "the" task: a quick plan has exactly one (spec §4.1). Should one
+    # ever have more, the review's findings stay open instead.
+    second = Task(
+        id="CALC-002", description="Note subtract", acceptance_criteria=["tests pass"], verify="check",
+        check_cmd=TEST_CMD,
+    )
+    harness = quick_harness(
+        {
+            "quick_implementer": [write_red, write_green, change_nothing],
+            "reviewer": [review("changes", [Issue(severity="major", note=FINDING)])],
+        },
+        plan=calc_plan(second),
+    )
+    final = harness.start()
+    assert final["status"] == "completed"
+    assert [task.verify for task in load_plan(final).tasks] == ["tdd", "check"]
+    assert harness.factory.remaining() == {"quick_implementer": 0, "reviewer": 0}
+    assert not final.get("patching") and final.get("patched_issues") == []
+    assert {"severity": "major", "note": FINDING}.items() <= final["open_issues"][-1].items()
 
 
 def failed_fix_harness(quick_harness, chat_id=CHAT_ID):

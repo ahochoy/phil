@@ -292,10 +292,11 @@ class RunEngine:
         """Reopen a quick run's reviewed task as a check task carrying the review's findings, so
         one fix attempt happens within the task. None when there's no task to reopen or no command
         to check it with; the review then finishes as usual."""
-        done = [index for index, task in enumerate(plan.tasks) if task.status == "DONE"]
-        if not done:
+        # A quick plan has exactly one task (spec §4.1), so the task under review is the whole change.
+        # With more than one, a fix in one task can't answer a review of them all: leave the findings open.
+        if len(plan.tasks) != 1 or plan.tasks[0].status != "DONE":
             return None
-        index = done[-1]
+        index = 0
         task = plan.tasks[index]
         check_cmd = task.check_cmd or state["test_cmd"]
         if not check_cmd:
@@ -317,16 +318,20 @@ class RunEngine:
             "plan": plan.model_copy(update={"tasks": tasks}).model_dump(),
             "patching": True,
             "patched_issues": [issue.model_dump() for issue in blocking],
+            "reviewed_sha": self.worktrees.head(self.deps.worktree),
             "patch_editable_tests": [path for path in changed if is_test_path(path, globs)],
             "open_issues": [*state.get("open_issues", []), *(issue.model_dump() for issue in minor)],
             "next": "pick_task",
         }
 
-    @staticmethod
-    def _patched_as_open(state: RunState) -> list[dict]:
-        """The findings a quick run fixed after review, which no second review checked."""
+    def _patched_as_open(self, state: RunState) -> list[dict]:
+        """The findings a quick run fixed after review, which no second review checked. A fix that
+        changed nothing since the reviewed commit (no fix commit) is labelled as such."""
+        reviewed = state.get("reviewed_sha")
+        unchanged = bool(reviewed) and not self.worktrees.changed_files(self.deps.worktree, since=reviewed)
+        label = "not changed after review" if unchanged else "fixed after review (unverified)"
         return [
-            {**issue, "severity": "minor", "note": f"fixed after review (unverified): {issue['note']}"}
+            {**issue, "severity": "minor", "note": f"{label}: {issue['note']}"}
             for issue in state.get("patched_issues", [])
         ]
 

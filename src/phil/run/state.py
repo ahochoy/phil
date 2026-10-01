@@ -46,6 +46,7 @@ class RunState(TypedDict, total=False):
     depth: str
     patching: bool
     patched_issues: list[dict[str, Any]]
+    reviewed_sha: str  # a quick run's commit under review, before its fix after review
     moved_to_full: bool
     patch_editable_tests: list[str]
 
