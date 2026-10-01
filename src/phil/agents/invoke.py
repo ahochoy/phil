@@ -259,6 +259,27 @@ def _record_error(
     )
 
 
+def _shell_for(
+    spec: AgentSpec,
+    config: PhilConfig,
+    workdir: Path,
+    log: CommandLog,
+    *,
+    artifacts: ArtifactStore | None = None,
+    log_prefix: str = "",
+    extra_allow: tuple[str, ...] = (),
+    approved: tuple[str, ...] = (),
+) -> Callable[[str], str]:
+    """The shell tool for `spec`. A read-only spec gets no project allowlist, plan commands or
+    approvals: only M1's read-only commands run."""
+    shell = config.shell
+    if spec.read_only_shell:
+        shell, extra_allow, approved = shell.model_copy(update={"allow": []}), (), ()
+    return make_shell_tool(
+        workdir, shell, log, artifacts, log_prefix=log_prefix, extra_allow=extra_allow, approved=approved
+    )
+
+
 def invoke_agent(
     spec: AgentSpec,
     packet: Packet,
@@ -287,17 +308,17 @@ def invoke_agent(
         provider = provider_for_model(ctx.config, model, spec.role)
     retry_attempts = MODEL_CALL_ATTEMPTS if transient_retries else 1
     log = ctx.command_log if ctx.command_log is not None else CommandLog()
-    shell = ctx.config.shell
     effective_node = node if call == 1 else f"{node}-c{call}"
     log_prefix = artifact_name(effective_node, task_id, 1)
     tools: list[Callable[..., str]] = []
     if "shell" in spec.tools and ctx.workdir is not None:
         tools.append(
-            make_shell_tool(
+            _shell_for(
+                spec,
+                ctx.config,
                 ctx.workdir,
-                shell,
                 log,
-                ctx.artifacts,
+                artifacts=ctx.artifacts,
                 log_prefix=log_prefix,
                 extra_allow=ctx.extra_allow,
                 approved=ctx.approved,

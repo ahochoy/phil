@@ -3,12 +3,12 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError, field_validator, model_validator
 
 from phil.store.paths import phil_home
 from phil.tomlw import dump_toml
 
-ROLES = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer")
+ROLES = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer", "classifier", "answerer")
 TIERS = ("high", "low", "classifier")
 # Tier each role resolves through when it has no model of its own (and [tiers] doesn't remap it).
 DEFAULT_TIERS: dict[str, str] = {
@@ -18,8 +18,12 @@ DEFAULT_TIERS: dict[str, str] = {
     "orchestrator": "low",
     "implementer": "low",
     "tester": "low",
+    "classifier": "classifier",
+    "answerer": "low",
 }
-# Roles the chat calls; `phil` checks these have models before the conversation starts.
+# Roles the chat calls; `phil` checks these have models before the conversation starts. The
+# classifier isn't one: routing falls back to the low model, then to intake. Nor is the answerer:
+# without a model of its own (a legacy per-role config has no low tier) it uses the orchestrator's.
 CHAT_ROLES = ("orchestrator", "architect", "critic")
 # Roles the run graph calls; `phil run` checks these have models before starting.
 RUN_ROLES = ("implementer", "tester", "reviewer")
@@ -120,6 +124,26 @@ class ProviderConfig(_Section):
         return value
 
 
+class RoutingConfig(_Section):
+    confidence_threshold: float = 0.5  # below it, intake decides the depth (spec §3.5)
+    detail_threshold: float = 0.6  # at or above it, intake asks the user first
+    jev_timeout_s: float = 5.0
+
+    @field_validator("confidence_threshold", "detail_threshold")
+    @classmethod
+    def _validate_probability(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("routing thresholds must be between 0 and 1")
+        return value
+
+    @field_validator("jev_timeout_s")
+    @classmethod
+    def _validate_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("routing.jev_timeout_s must be > 0")
+        return value
+
+
 class PhilConfig(_Section):
     # No default model: each role's model is chosen explicitly in phil.toml, or through a tier.
     models: dict[str, str] = {}
@@ -131,6 +155,7 @@ class PhilConfig(_Section):
     project: ProjectConfig = ProjectConfig()
     git: GitConfig = GitConfig()
     providers: dict[str, ProviderConfig] = {}
+    routing: RoutingConfig = RoutingConfig()
     # Dotted leaf path -> the layer that set it: "default", the global file's path, "phil.toml" or "--set".
     _sources: dict[str, str] = PrivateAttr(default_factory=dict)
 
@@ -271,6 +296,32 @@ class PhilConfig(_Section):
     def budget_for(self, role: str) -> RoleBudget:
         default = RoleBudget(max_input_tokens=DEFAULT_BUDGETS.get(role, 12_000))
         return self.budget.get(role, default)
+
+    def is_systemone(self, role: str) -> bool:
+        """True when `role`'s model is on a typed-judgement (systemone) provider such as typesafe."""
+        from phil.agents.providers import SYSTEMONE, UnknownProvider, resolve_provider, split_model
+
+        try:
+            model = self.model_for(role)
+        except ConfigError:
+            return False
+        try:
+            return resolve_provider(self, split_model(model)[0]).kind == SYSTEMONE
+        except UnknownProvider:
+            return False
+
+    @model_validator(mode="after")
+    def _check_systemone_roles(self) -> "PhilConfig":
+        for role in ROLES:
+            if role == "classifier":
+                continue
+            if self.is_systemone(role):
+                model = self.model_for(role)
+                raise ValueError(
+                    f"models for {role} resolve to {model}: the typesafe provider (kind systemone) only "
+                    "answers routing questions, so it can be set only for the classifier ([models] classifier)."
+                )
+        return self
 
 
 DEFAULT_SOURCE = "default"

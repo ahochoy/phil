@@ -21,6 +21,7 @@ class Goal(Contract):
     non_goals: list[str] = []
     open_questions: list[str] = []
     story_ref: str | None = None
+    depth: Literal["answer", "quick", "full"] | None = Field(default=None, description="how much process the work needs: `answer` (a question or a \"why is X broken\" diagnosis, no change), `quick` (one small, well-specified change), or `full` (anything needing design, several files, or a plan). Leave null while `open_questions` is non-empty.")
 
 
 class Brief(Contract):

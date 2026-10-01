@@ -30,9 +30,22 @@ Each milestone gets its own spec and plan when it starts. The notes below give d
 
 ### M3 — Proportional orchestration
 
-- A classifier chooses a task class (question, small operation, simple change, diagnosis, focused fix, feature, refactor, design, broad project). The class sets the workflow depth and the model tier separately.
-- Small classes get one worker, a focused change, and the relevant check. Large classes get investigation, planning, review, and verification.
-- Lighter agents for small work (no sub-agent or summarization), review findings patched directly instead of becoming new TDD tasks, and tighter retries.
+Split into two plans: M3a routes every message to a path; M3b makes the quick path actually
+quick.
+
+- **M3a — Routing (in progress).** A classifier (TypeSafe's Jev, or the low model as a
+  fallback) sorts each message into a task class (question, diagnosis, a small operation, a
+  simple change, a focused fix, a feature, a refactor, design work, a broad project), which
+  sets an answer/quick/full depth. `/ask`, `/quick` and `/full` force a path. A read-only
+  answerer handles questions and diagnoses with no run. A classifier benchmark (spec §5.1)
+  compares Jev against the low model on class/depth accuracy, latency, and cost, with a
+  written decision rule for recommending Jev. Quick-depth goals still run the full pipeline
+  until M3b lands. [Spec](specs/2026-09-30-phil-m3-proportional-orchestration-design.md) ·
+  [followups](plans/2026-09-30-phil-m3a-followups.md).
+- **M3b — Quick path.** The quick depth gets its own lighter run: one task, no architect or
+  critic round, no sub-agent or summarization, a lean one-pass review that patches findings
+  directly instead of becoming new TDD tasks, and tighter retries, with escalation to a full
+  run when the quick attempt doesn't clear the gate.
 - Designed from M1's benchmark numbers.
 
 ### M4 — Permissions

@@ -1,0 +1,241 @@
+"""Offline tests for run.py's helpers: `decision_rule`, `_latest_per_case`,
+`append_record`/`results_path`, `_error_value`, and the llm backend's model choice (with
+`judge_llm` replaced). No network, no models."""
+
+import json
+from pathlib import Path
+
+import httpx
+import pytest
+
+from phil.config import ConfigError
+from phil.key_store import KeyStoreError
+from phil.routing.jev import JevError
+from tests.live.bench.classify import run
+
+JEV_FIXTURE = json.loads((Path(__file__).parents[3] / "routing" / "fixtures" / "jev_ok.json").read_text())
+
+# A summary with every condition comfortably passing, to flip one at a time below.
+JEV_PASSING = {"depth_accuracy": 0.85, "answer_as_change": 0, "latency_p95_ms": 50, "cost_per_100": 1.0}
+LLM_BASELINE = {"depth_accuracy": 0.85, "answer_as_change": 1, "latency_p95_ms": 300, "cost_per_100": 2.0}
+
+
+def test_decision_rule_clear_yes():
+    result = run.decision_rule(JEV_PASSING, LLM_BASELINE)
+    assert result["conditions"] == {
+        "depth_accuracy_within_2_points": True,
+        "answer_as_change_no_more_than_llm": True,
+        "p95_latency_at_most_a_third_of_llm": True,
+        "cost_per_100_lower_than_llm": True,
+    }
+    assert result["verdict"] == "yes"
+
+
+def test_decision_rule_no_when_depth_accuracy_is_more_than_2_points_lower():
+    jev = {**JEV_PASSING, "depth_accuracy": 0.75}  # llm 0.85 - 0.10: more than 2 points lower
+    result = run.decision_rule(jev, LLM_BASELINE)
+    assert result["conditions"]["depth_accuracy_within_2_points"] is False
+    assert result["conditions"]["answer_as_change_no_more_than_llm"] is True
+    assert result["conditions"]["p95_latency_at_most_a_third_of_llm"] is True
+    assert result["conditions"]["cost_per_100_lower_than_llm"] is True
+    assert result["verdict"] == "no"
+
+
+def test_decision_rule_no_when_jev_makes_more_answer_as_change_errors():
+    jev = {**JEV_PASSING, "answer_as_change": 2}  # llm makes only 1
+    result = run.decision_rule(jev, LLM_BASELINE)
+    assert result["conditions"]["depth_accuracy_within_2_points"] is True
+    assert result["conditions"]["answer_as_change_no_more_than_llm"] is False
+    assert result["conditions"]["p95_latency_at_most_a_third_of_llm"] is True
+    assert result["conditions"]["cost_per_100_lower_than_llm"] is True
+    assert result["verdict"] == "no"
+
+
+def test_decision_rule_no_when_jev_p95_is_not_at_least_3x_faster():
+    jev = {**JEV_PASSING, "latency_p95_ms": 150}  # llm 300 / 3 == 100; 150 > 100
+    result = run.decision_rule(jev, LLM_BASELINE)
+    assert result["conditions"]["depth_accuracy_within_2_points"] is True
+    assert result["conditions"]["answer_as_change_no_more_than_llm"] is True
+    assert result["conditions"]["p95_latency_at_most_a_third_of_llm"] is False
+    assert result["conditions"]["cost_per_100_lower_than_llm"] is True
+    assert result["verdict"] == "no"
+
+
+def test_decision_rule_no_when_jevs_cost_is_not_lower():
+    jev = {**JEV_PASSING, "cost_per_100": 2.0}
+    llm = {**LLM_BASELINE, "cost_per_100": 1.0}  # jev is now the more expensive one
+    result = run.decision_rule(jev, llm)
+    assert result["conditions"]["depth_accuracy_within_2_points"] is True
+    assert result["conditions"]["answer_as_change_no_more_than_llm"] is True
+    assert result["conditions"]["p95_latency_at_most_a_third_of_llm"] is True
+    assert result["conditions"]["cost_per_100_lower_than_llm"] is False
+    assert result["verdict"] == "no"
+
+
+def test_decision_rule_undecided_when_jevs_cost_is_unknown():
+    jev = {**JEV_PASSING, "cost_per_100": None}
+    result = run.decision_rule(jev, LLM_BASELINE)
+    assert result["conditions"]["cost_per_100_lower_than_llm"] == "unknown"
+    assert result["verdict"] == "undecided (cost unknown)"
+
+
+def test_decision_rule_undecided_when_llms_cost_is_unknown():
+    llm = {**LLM_BASELINE, "cost_per_100": None}
+    result = run.decision_rule(JEV_PASSING, llm)
+    assert result["conditions"]["cost_per_100_lower_than_llm"] == "unknown"
+    assert result["verdict"] == "undecided (cost unknown)"
+
+
+def test_decision_rule_no_when_a_known_condition_fails_even_with_cost_unknown():
+    jev = {**JEV_PASSING, "latency_p95_ms": 150, "cost_per_100": None}  # too slow; cost unknown
+    result = run.decision_rule(jev, LLM_BASELINE)
+    assert result["conditions"]["p95_latency_at_most_a_third_of_llm"] is False
+    assert result["conditions"]["cost_per_100_lower_than_llm"] == "unknown"
+    assert result["verdict"] == "no"
+
+
+def test_decision_rule_exactly_2_points_lower_passes():
+    jev = {**JEV_PASSING, "depth_accuracy": 0.83}  # llm 0.85 - 0.02 == 0.83, exactly at the slack
+    result = run.decision_rule(jev, LLM_BASELINE)
+    assert result["conditions"]["depth_accuracy_within_2_points"] is True
+    assert result["verdict"] == "yes"
+
+
+def test_decision_rule_exactly_a_third_of_llm_p95_passes():
+    jev = {**JEV_PASSING, "latency_p95_ms": 100}  # llm 300 / 3 == 100, exactly at the boundary
+    result = run.decision_rule(jev, LLM_BASELINE)
+    assert result["conditions"]["p95_latency_at_most_a_third_of_llm"] is True
+    assert result["verdict"] == "yes"
+
+
+def test_latest_per_case_keeps_the_newest_record_per_case_and_backend():
+    records = [
+        {"case_id": "q-01", "backend": "jev", "x": 1},
+        {"case_id": "q-01", "backend": "llm", "x": 2},
+        {"case_id": "q-01", "backend": "jev", "x": 3},  # a rerun: supersedes the first jev record
+        {"case_id": "s-01", "backend": "llm", "x": 4},
+    ]
+    latest = run._latest_per_case(records)
+    assert {(r["case_id"], r["backend"], r["x"]) for r in latest} == {
+        ("q-01", "jev", 3), ("q-01", "llm", 2), ("s-01", "llm", 4),
+    }
+
+
+def test_append_record_writes_to_the_env_override(tmp_path, monkeypatch):
+    target = tmp_path / "nested" / "classify.jsonl"
+    monkeypatch.setenv("PHIL_BENCH_CLASSIFY_RESULTS", str(target))
+    assert run.results_path() == target
+
+    run.append_record({"case_id": "q-01", "backend": "llm"})
+    run.append_record({"case_id": "d-01", "backend": "jev"})
+
+    lines = target.read_text().splitlines()
+    assert [json.loads(line) for line in lines] == [
+        {"case_id": "q-01", "backend": "llm"},
+        {"case_id": "d-01", "backend": "jev"},
+    ]
+
+
+def _capture_llm_model(monkeypatch) -> list:
+    from phil.routing.types import Judgement
+
+    seen = []
+
+    def fake_judge_llm(ctx, state, *, model=None, call=1):
+        seen.append(model)
+        return Judgement(task_class="question", probabilities={"question": 1.0}, confidence=0.9,
+                         needs_detail=0.1, source="llm", latency_ms=1, usage=None)
+
+    monkeypatch.setattr(run, "judge_llm", fake_judge_llm)
+    monkeypatch.setattr(run, "phil_sha", lambda: "test")
+    return seen
+
+
+CASE = {"id": "q-01", "request": "what is calc?", "repo": {"test_cmd": None, "files": [], "file_count": 0},
+        "expected_class": "question", "expected_depth": "answer", "ambiguous": False}
+
+
+def test_the_llm_backend_uses_a_configured_llm_classifier(monkeypatch):
+    from phil.config import PhilConfig
+
+    seen = _capture_llm_model(monkeypatch)
+    config = PhilConfig(models={"low": "openrouter:l", "classifier": "openrouter:c"})
+    [record] = run.run_backend("llm", [CASE], config)
+    assert seen == ["openrouter:c"] and record["model"] == "openrouter:c"
+
+
+def test_the_llm_backend_uses_the_low_model_when_the_classifier_is_jev(monkeypatch):
+    from phil.config import PhilConfig
+
+    seen = _capture_llm_model(monkeypatch)
+    config = PhilConfig(models={"low": "openrouter:l", "classifier": "typesafe:jev-latest"})
+    [record] = run.run_backend("llm", [CASE], config)
+    assert seen == ["openrouter:l"] and record["model"] == "openrouter:l"
+
+
+def _jev_transport(monkeypatch, body: dict) -> None:
+    """Route every `httpx.Client` `judge_jev` builds through a `MockTransport` that returns
+    `body`, however it's called -- `_run_jev` passes no `transport` of its own."""
+    real_client = httpx.Client
+
+    def fake_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", fake_client)
+
+
+def test_the_jev_backend_records_usage_and_cost_from_the_response(monkeypatch):
+    from phil.config import PhilConfig
+
+    _jev_transport(monkeypatch, JEV_FIXTURE)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-TESTSECRET0123456789abcdefABCDEF")
+    monkeypatch.setattr(run, "phil_sha", lambda: "test")
+    config = PhilConfig(models={"classifier": "typesafe:jev-latest"})
+
+    [record] = run.run_backend("jev", [CASE], config)
+
+    assert record["input_tokens"] == 412
+    assert record["output_tokens"] == 3
+    assert record["cost_usd"] == pytest.approx(412 * 0.042 / 1e6)
+
+
+def test_the_jev_backend_leaves_cost_unknown_when_the_response_carries_no_usage(monkeypatch):
+    from phil.config import PhilConfig
+
+    body = {key: value for key, value in JEV_FIXTURE.items() if key != "usage"}
+    _jev_transport(monkeypatch, body)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts-TESTSECRET0123456789abcdefABCDEF")
+    monkeypatch.setattr(run, "phil_sha", lambda: "test")
+    config = PhilConfig(models={"classifier": "typesafe:jev-latest"})
+
+    [record] = run.run_backend("jev", [CASE], config)
+
+    assert record["input_tokens"] == 0
+    assert record["output_tokens"] == 0
+    assert record["cost_usd"] is None
+
+
+def test_error_value_keeps_a_configerror_message_since_it_never_carries_a_key_value():
+    exc = ConfigError("openrouter needs OPENROUTER_API_KEY (used by classifier).")
+    assert run._error_value(exc) == "ConfigError: openrouter needs OPENROUTER_API_KEY (used by classifier)."
+
+
+def test_error_value_keeps_a_keystoreerror_message_for_the_same_reason():
+    exc = KeyStoreError("No keychain is available here; export OPENROUTER_API_KEY instead.")
+    assert run._error_value(exc) == "KeyStoreError: No keychain is available here; export OPENROUTER_API_KEY instead."
+
+
+def test_error_value_only_keeps_the_first_line_of_a_multiline_configerror():
+    exc = ConfigError("Invalid phil.toml: line one\nline two")
+    assert run._error_value(exc) == "ConfigError: Invalid phil.toml: line one"
+
+
+def test_error_value_keeps_jeverrors_reason():
+    exc = JevError("http 429")
+    assert run._error_value(exc) == "JevError: http 429"
+
+
+def test_error_value_drops_a_generic_exceptions_text_which_could_carry_anything():
+    exc = RuntimeError("secret sk-proj-abcdefg")
+    assert run._error_value(exc) == "RuntimeError"

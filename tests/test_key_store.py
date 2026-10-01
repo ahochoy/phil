@@ -15,6 +15,7 @@ from phil.key_store import (
     key_lookup,
     key_source,
     keychain_available,
+    pending_keys,
     set_key,
 )
 
@@ -130,6 +131,48 @@ def test_key_lookup_is_a_read_only_mapping_over_env_then_store(monkeypatch):
     assert lookup.get("NO_SUCH_VAR_AT_ALL") is None
     with pytest.raises(KeyError):
         lookup["NO_SUCH_VAR_AT_ALL"]
+
+
+def test_pending_keys_is_used_when_the_variable_is_unset_elsewhere(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pending_keys({"OPENAI_API_KEY": "sk-TESTSECRET-pending"}):
+        assert key_source("OPENAI_API_KEY") == "pending"
+        assert get_key("OPENAI_API_KEY") == "sk-TESTSECRET-pending"
+
+
+def test_the_environment_beats_pending_and_pending_beats_the_store(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-TESTSECRET-env")
+    set_key("OPENAI_API_KEY", "sk-TESTSECRET-stored")
+    with pending_keys({"OPENAI_API_KEY": "sk-TESTSECRET-pending"}):
+        assert key_source("OPENAI_API_KEY") == "env"
+        assert get_key("OPENAI_API_KEY") == "sk-TESTSECRET-env"
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pending_keys({"OPENAI_API_KEY": "sk-TESTSECRET-pending"}):
+        assert key_source("OPENAI_API_KEY") == "pending"
+        assert get_key("OPENAI_API_KEY") == "sk-TESTSECRET-pending"
+
+
+def test_pending_keys_is_restored_after_the_block_and_after_an_exception(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pending_keys({"OPENAI_API_KEY": "sk-TESTSECRET-pending"}):
+        assert get_key("OPENAI_API_KEY") == "sk-TESTSECRET-pending"
+    assert get_key("OPENAI_API_KEY") is None
+
+    with pytest.raises(RuntimeError):
+        with pending_keys({"OPENAI_API_KEY": "sk-TESTSECRET-pending"}):
+            raise RuntimeError("boom")
+    assert get_key("OPENAI_API_KEY") is None
+
+
+def test_pending_keys_nesting_merges(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pending_keys({"OPENAI_API_KEY": "sk-TESTSECRET-outer"}):
+        with pending_keys({"ANTHROPIC_API_KEY": "sk-TESTSECRET-inner"}):
+            assert get_key("OPENAI_API_KEY") == "sk-TESTSECRET-outer"
+            assert get_key("ANTHROPIC_API_KEY") == "sk-TESTSECRET-inner"
+        assert get_key("OPENAI_API_KEY") == "sk-TESTSECRET-outer"
+        assert get_key("ANTHROPIC_API_KEY") is None
 
 
 def test_a_spawned_child_gets_a_null_keyring_backend():

@@ -20,9 +20,10 @@ time to change providers or models:
     phil setup
 
 Setup only ever edits `~/.phil/config.toml`, never a repo's `phil.toml`. It keeps your other
-settings and comments, prefilling what it can from the current global file, and cancelling
-(Ctrl-C or Ctrl-D, at any prompt) leaves the file untouched. An empty answer at the key prompt
-doesn't cancel: it skips storing the key, and setup carries on and writes your model choices.
+settings and comments, prefilling what it can from the current global file. Ctrl-C or Ctrl-D
+cancel at any step and save nothing — no config, no key. Keys you enter are saved to the
+keychain only when setup finishes; an empty answer at the key prompt doesn't cancel, it just
+skips entering one, and setup carries on and writes your model choices.
 A key pasted by mistake at any other prompt is refused without being shown or saved.
 
 Suggested `high`/`low` models exist for OpenRouter, OpenAI and Anthropic; Google has none yet
@@ -182,6 +183,13 @@ stored keys: their environment drops secret-looking variables and pins `keyring`
 backend, so code they run can't read a stored key through `keyring`. That can't stop a
 malicious test from reaching the OS keychain directly, so review what agents add.
 
+The opt-in live and bench tests (see Development and Benchmark below) are the one exception:
+they read keys stored with `phil keys set` / `phil setup`, the same as a normal run, so no
+`--env-file` or exported variable is needed just to point them at a key you've already saved.
+An exported variable, or `uv run --env-file …`, still wins, letting you point a single run at a
+different key. Either way, a live test can only read a stored key — it can never change or
+remove one.
+
 ### Checking your models
 
     phil models check
@@ -227,6 +235,74 @@ Reopen a chat later:
     phil                      # lists this repo's open chats; pick a number or press Enter for a new one
     phil --resume <chat-id>   # reopen a specific chat directly
     phil --new                # skip the list and start a new chat
+
+## Routing
+
+Each message is classified into a task class (question, diagnosis, a small operation, a
+simple change, a focused fix, a feature, a refactor, design work, or a broad project), which
+sets one of three paths:
+
+- **answer** — a question or diagnosis: a read-only agent answers, with no run, worktree or
+  commit. It reads a snapshot of the working tree (tracked and untracked, non-ignored files),
+  so uncommitted edits are visible and ignored files such as `.env` are not. Without an
+  `answerer` model of its own (`low`, or `[models] answerer`) it uses the orchestrator's.
+- **quick** — a small, well-specified change: until M3b lands, this still goes through the
+  full planning pipeline (the status line says "planning", not "quick path", so it doesn't
+  claim a shortcut that isn't there yet).
+- **full** — a feature, refactor, design question or broad project: the normal plan, run,
+  review and PR flow.
+
+The status line under your message says which path was taken and why, e.g. `Simple change ·
+planning  (/quick and /full force a path)`, `Forced: full path` or `Forced: quick · planning`
+(a forced quick goal is planned like any other until M3b). Accepting a diagnosis's `Fix it?`
+offer says `Fix · planning`. Force a path yourself by
+starting your message with `/ask`, `/quick` or `/full` — the prefix is stripped and the
+classifier is skipped entirely. When the request is too ambiguous to route (a missing
+target, conflicting goals, or no way to tell what done means), Phil asks first instead of
+guessing.
+
+Routing is decided by a classifier, not by the model doing the work. By default it's your
+`low` model, called the same way the chat's other agents are. For faster, cheaper routing,
+configure TypeSafe's Jev instead:
+
+```toml
+[models]
+classifier = "typesafe:jev-latest"
+```
+
+    phil keys set typesafe   # prompts for TYPESAFE_API_KEY, stored in the keychain
+
+Jev costs $0.042 per million input tokens; output is free (TypeSafe pricing, Oct 2026).
+
+If Jev errors (a timeout, an auth or rate-limit response, or a malformed reply), that one
+message falls back to your `low` model automatically — Phil prints a dim `Router
+unavailable ({reason}); using your low model.` note and carries on; routing never blocks the
+chat. If the low model fails too, or there is none, the note reads `Router unavailable
+({reason}); intake decides.` instead. `phil models check` pings a configured `typesafe` classifier the same way it checks
+every other model.
+
+Two thresholds under `[routing]` (defaults shown) control how readily routing defers to
+intake instead of guessing:
+
+```toml
+[routing]
+confidence_threshold = 0.5   # below it, intake decides the depth instead of the classifier
+detail_threshold = 0.6       # at or above it, intake asks you something first
+jev_timeout_s = 5.0          # Jev's connect/read timeout; no retries inside the adapter
+```
+
+A classifier benchmark (`tests/live/bench/classify/`) compares the Jev and low-model
+backends on about 40 labelled requests — class and depth accuracy, the worst error (a
+question routed to a change), `needs_detail` precision/recall, latency, cost, and a
+threshold sweep. It uses whichever keys you've already stored (or exported) for the models in
+`PHIL_BENCH_CONFIG`'s `[models]` — no `--env-file` is needed:
+
+    PHIL_BENCH_CONFIG=~/Code/phil-bench.toml uv run pytest -m bench tests/live/bench/classify -n 0
+    uv run python -m tests.live.bench.classify.run --report
+
+`--report` replays the stored answers (no new calls) and prints each backend's numbers, the
+threshold sweep, and spec §5.1's decision rule for whether Jev is worth recommending over
+the low model.
 
 ## Pull requests and cleanup
 
@@ -406,10 +482,15 @@ To use `phil` from any repo, install it as an editable tool. Reinstall after dep
 
 The original LangGraph prototype is kept in `prototype/` for reference and is not part of the package.
 
-Live tests call a real model through OpenRouter and are skipped by default:
+Live tests call a real model through OpenRouter and are skipped by default. They read the key
+you've already stored with `phil keys set openrouter` (or `phil setup`), the same way a normal
+run does, so there's nothing to source first:
 
-    set -a; source .env; set +a
     uv run pytest -m live
+
+An exported `OPENROUTER_API_KEY`, or `uv run --env-file … pytest -m live`, still wins over a
+stored key, letting you point a run at a different one. Either way, a live test can only read
+a stored key — it never changes or removes one.
 
 Tests run in parallel with pytest-xdist; use `uv run pytest -n 0` to run serially when debugging.
 

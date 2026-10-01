@@ -1,6 +1,9 @@
 from pathlib import Path
 
+import keyring
 import pytest
+from keyring.backend import KeyringBackend
+from keyring.errors import PasswordDeleteError, PasswordSetError
 
 from tests.helpers import run_git
 
@@ -79,41 +82,78 @@ def no_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+class MemoryKeyring(KeyringBackend):
+    """A fresh, writable, in-memory backend: what every offline test gets."""
+
+    priority = 1
+
+    def __init__(self):
+        super().__init__()
+        self.store: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service, username):
+        return self.store.get((service, username))
+
+    def set_password(self, service, username, password):
+        self.store[(service, username)] = password
+
+    def delete_password(self, service, username):
+        if (service, username) not in self.store:
+            raise PasswordDeleteError(username)
+        del self.store[(service, username)]
+
+
+class ReadOnlyKeyring(KeyringBackend):
+    """A read-only passthrough over `inner`: `get_password` delegates, `set_password` and
+    `delete_password` refuse. Built over the real backend for live/bench tests, so a live test
+    can read the user's stored keys but never change or remove them."""
+
+    priority = 1
+
+    def __init__(self, inner: KeyringBackend):
+        super().__init__()
+        self.inner = inner
+
+    def get_password(self, service, username):
+        return self.inner.get_password(service, username)
+
+    def set_password(self, service, username, password):
+        raise PasswordSetError("live tests may not change stored keys")
+
+    def delete_password(self, service, username):
+        raise PasswordDeleteError("live tests may not change stored keys")
+
+
+def _select_keyring(is_live: bool, real_backend: KeyringBackend) -> KeyringBackend:
+    """Which backend `memory_keyring` installs: a read-only passthrough over `real_backend` for
+    live and bench tests (stored keys can be read but never changed or removed), otherwise a
+    fresh writable in-memory backend. Factored out so the selection can be tested without
+    touching the real keychain."""
+    return ReadOnlyKeyring(real_backend) if is_live else MemoryKeyring()
+
+
 @pytest.fixture(autouse=True)
-def memory_keyring(monkeypatch):
+def memory_keyring(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
     # Children spawned by `spawn_worker` (e.g. in tests/run/test_launch.py and
     # tests/cli/test_stop_command.py) don't inherit the `set_keyring` call below — each is a
-    # fresh process that auto-detects its own backend on first use. Without this, a worker
-    # process would fall through to the real OS keychain. `PYTHON_KEYRING_BACKEND` is `keyring`'s
-    # own env var for pinning the backend; children that build their env from `os.environ` (via
-    # `worker_env`, or by inheriting it outright when `env=None`) pick it up automatically.
-    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.null.Keyring")
-
-    import keyring
-    from keyring.backend import KeyringBackend
-
-    class MemoryKeyring(KeyringBackend):
-        priority = 1
-
-        def __init__(self):
-            super().__init__()
-            self.store: dict[tuple[str, str], str] = {}
-
-        def get_password(self, service, username):
-            return self.store.get((service, username))
-
-        def set_password(self, service, username, password):
-            self.store[(service, username)] = password
-
-        def delete_password(self, service, username):
-            from keyring.errors import PasswordDeleteError
-
-            if (service, username) not in self.store:
-                raise PasswordDeleteError(username)
-            del self.store[(service, username)]
+    # fresh process that auto-detects its own backend on first use. Without this, an offline
+    # worker process would fall through to the real OS keychain. `PYTHON_KEYRING_BACKEND` is
+    # `keyring`'s own env var for pinning the backend; children that build their env from
+    # `os.environ` (via `worker_env`, or by inheriting it outright when `env=None`) pick it up
+    # automatically.
+    #
+    # Live and bench tests are different: since M2b the user's own keys live in the real
+    # keychain, and workers they spawn must find those stored keys too, so the null backend is
+    # not pinned for them. Instead, a read-only passthrough is installed over the real backend
+    # (`keyring.get_keyring()` at fixture start) so a live test can read a stored key but never
+    # change or remove one. Product behaviour is unaffected either way: `child_env` always pins
+    # agent-run commands to the null backend, live tests included.
+    is_live = _is_live(request)
+    if not is_live:
+        monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.null.Keyring")
 
     previous = keyring.get_keyring()
-    backend = MemoryKeyring()
+    backend = _select_keyring(is_live, previous)
     keyring.set_keyring(backend)
     yield backend
     keyring.set_keyring(previous)

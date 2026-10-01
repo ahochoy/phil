@@ -17,11 +17,14 @@ if TYPE_CHECKING:
 # which ignore it; the OpenAI-style SDKs refuse to build without some key.
 NO_KEY = "not-needed"
 
+# A typed-judgement provider (e.g. typesafe/Jev): answers routing questions, never a chat model.
+SYSTEMONE = "systemone"
+
 
 @dataclass(frozen=True)
 class ProviderSpec:
     name: str
-    kind: str  # "openai" (OpenAI-compatible), "anthropic", "google" or "openrouter"
+    kind: str  # "openai" (OpenAI-compatible), "anthropic", "google", "openrouter" or "systemone"
     base_url: str | None
     api_key_env: str | None  # None: no key is sent or checked
     input_per_mtok: float | None  # USD per million tokens
@@ -34,6 +37,10 @@ BUILTIN_PROVIDERS: dict[str, ProviderSpec] = {
     "anthropic": ProviderSpec("anthropic", "anthropic", None, "ANTHROPIC_API_KEY", None, None),
     "google": ProviderSpec("google", "google", None, "GOOGLE_API_KEY", None, None),
     "ollama": ProviderSpec("ollama", "openai", "http://localhost:11434/v1", None, 0.0, 0.0),
+    # TypeSafe's published price for Jev as of 2026-10-01: $0.042 per million input tokens, output free.
+    "typesafe": ProviderSpec(
+        "typesafe", SYSTEMONE, "https://api.typesafe.ai/v1", "TYPESAFE_API_KEY", 0.042, 0.0
+    ),
 }
 # Older names kept working for existing configs.
 ALIASES = {"google_genai": "google"}
@@ -126,6 +133,10 @@ def build_chat_model(
     A provider with an `api_key_env` needs that variable set (non-empty) in `environ` (the
     environment, then the keychain, when `environ` is omitted); `used_by` names the roles in the
     error. A provider without one gets a placeholder key."""
+    if spec.kind == SYSTEMONE:
+        raise ConfigError(
+            f"{spec.name} answers typed routing questions, not chat; use it only for the classifier."
+        )
     resolved_environ = environ if environ is not None else key_lookup()
     if spec.api_key_env is None:
         key = NO_KEY

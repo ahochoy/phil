@@ -31,7 +31,7 @@ def test_goal_plan_approve_on_real_threads(calc_repo):
         submit=thread_submit(threads),
     )
     assert "Phil couldn't finish that" not in text, text
-    assert len(threads) == 2  # intake, then the plan
+    assert len(threads) == 3  # routing, intake, then the plan
     assert "Plan CALC v1" in text
     assert [r.run_id for r in runs] == [spawned[0][0]]
     assert spawned[0][1:] == ("start", None)
@@ -60,4 +60,4 @@ def test_btw_on_a_real_thread(calc_repo):
     )
     assert "/btw failed" not in text, text
     assert "add lives in calc.py" in text
-    assert len(threads) == 3
+    assert len(threads) == 4  # routing, intake, /btw, the plan

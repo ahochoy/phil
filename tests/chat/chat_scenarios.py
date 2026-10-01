@@ -1,12 +1,11 @@
 import os
 
-from phil.agents.fake import ScriptedAgentFactory
-from tests.chat.conftest import critique, goal, plan
+from tests.chat.conftest import ChatFactory, critique, goal, plan
 
 SCENARIOS = {
     "approve": lambda: {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
 }
 
 
-def factory() -> ScriptedAgentFactory:
-    return ScriptedAgentFactory(SCENARIOS[os.environ["PHIL_TEST_SCENARIO"]]())
+def factory() -> ChatFactory:
+    return ChatFactory(SCENARIOS[os.environ["PHIL_TEST_SCENARIO"]]())

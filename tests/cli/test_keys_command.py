@@ -84,6 +84,20 @@ def test_keys_list_shows_each_provider_source_in_order_and_never_a_value(git_rep
     assert "sk-TESTSECRET-123" not in result.output
 
 
+def test_keys_list_prints_a_pending_source_like_any_other(git_repo, monkeypatch):
+    # `keys list` never runs inside a `pending_keys` overlay (only `phil setup` opens one), but
+    # it must still render the "pending" source correctly if it ever saw one.
+    wide(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    from phil.key_store import pending_keys
+
+    with pending_keys({"OPENAI_API_KEY": "sk-TESTSECRET-123"}):
+        result = runner.invoke(cli.app, ["--repo", str(git_repo), "keys", "list"])
+    assert result.exit_code == 0, result.output
+    assert "openai  OPENAI_API_KEY  pending" in result.output.splitlines()
+    assert "sk-TESTSECRET-123" not in result.output
+
+
 def test_keys_remove_prints_both_messages(git_repo, monkeypatch):
     wide(monkeypatch)
     result = runner.invoke(cli.app, ["--repo", str(git_repo), "keys", "remove", "openai"])

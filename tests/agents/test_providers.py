@@ -6,6 +6,7 @@ import pytest
 from phil.agents.providers import (
     ALIASES,
     BUILTIN_PROVIDERS,
+    SYSTEMONE,
     ProviderSpec,
     UnknownProvider,
     build_chat_model,
@@ -50,7 +51,7 @@ def test_builtins_resolve():
     assert resolve_provider(config, "ollama") == ProviderSpec(
         "ollama", "openai", "http://localhost:11434/v1", None, 0.0, 0.0
     )
-    assert set(BUILTIN_PROVIDERS) == {"openrouter", "openai", "anthropic", "google", "ollama"}
+    assert set(BUILTIN_PROVIDERS) == {"openrouter", "openai", "anthropic", "google", "ollama", "typesafe"}
 
 
 def test_google_genai_is_an_alias_of_google():
@@ -244,3 +245,27 @@ def test_a_provider_and_its_alias_cannot_both_be_defined(tmp_path):
     )
     with pytest.raises(ConfigError, match=r"\[providers\.google\] and \[providers\.google_genai\] both configure"):
         load_config(tmp_path)
+
+
+def test_typesafe_is_a_builtin_systemone_provider():
+    spec = BUILTIN_PROVIDERS["typesafe"]
+    assert spec.kind == SYSTEMONE == "systemone"
+    assert spec.base_url == "https://api.typesafe.ai/v1"
+    assert spec.api_key_env == "TYPESAFE_API_KEY"
+    # TypeSafe's published Jev price: $0.042 per million input tokens, output free.
+    assert spec.input_per_mtok == 0.042
+    assert spec.output_per_mtok == 0.0
+
+
+def test_a_users_typesafe_entry_can_override_the_built_in_jev_price(tmp_path):
+    from phil.config import load_config
+
+    (tmp_path / "phil.toml").write_text("[providers.typesafe]\ninput_per_mtok = 0.1\n")
+    spec = resolve_provider(load_config(tmp_path), "typesafe")
+    assert spec.input_per_mtok == 0.1
+    assert spec.output_per_mtok == 0.0  # the built-in field, not overridden
+
+
+def test_systemone_never_builds_a_chat_model():
+    with pytest.raises(ConfigError, match="classifier"):
+        build_chat_model(BUILTIN_PROVIDERS["typesafe"], "jev-latest", 5, {"TYPESAFE_API_KEY": "x"})

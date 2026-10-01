@@ -8,10 +8,13 @@ from phil.contracts import Plan, PlanCritique, Review, TaskResult, TesterReport
 
 def test_registry_covers_chat_and_run_roles():
     # Check registered agent names
-    assert set(SPECS) == {"intake", "architect", "critic", "implementer", "tester", "reviewer", "btw"}
-    # Check that agents reference the correct roles
+    assert set(SPECS) == {
+        "intake", "architect", "critic", "implementer", "tester", "reviewer", "btw", "route", "answer"
+    }
+    # Check that agents reference the correct roles. "classifier" and "answerer" are not checked chat
+    # or run roles, but "route" (the LLM routing backend) and "answer" register them here.
     agent_roles = {spec.role for spec in SPECS.values()}
-    assert agent_roles == set(CHAT_ROLES) | set(RUN_ROLES)
+    assert agent_roles == set(CHAT_ROLES) | set(RUN_ROLES) | {"classifier", "answerer"}
 
 
 @pytest.mark.parametrize(
@@ -31,7 +34,21 @@ def test_output_contracts(name, out_contract):
 def test_only_implementer_and_tester_write_and_run_commands():
     writers = {name for name, spec in SPECS.items() if spec.writes_files}
     shell_users = {name for name, spec in SPECS.items() if "shell" in spec.tools}
-    assert writers == shell_users == {"implementer", "tester"}
+    assert writers == {"implementer", "tester"}
+    # The answerer has a shell too, but a read-only one: no project allowlist or approvals.
+    assert shell_users == writers | {"answer"}
+    assert {name for name, spec in SPECS.items() if spec.read_only_shell} == {"answer"}
+
+
+def test_only_the_answerer_uses_the_light_harness():
+    assert {name for name, spec in SPECS.items() if spec.harness == "light"} == {"answer"}
+    assert all(spec.max_model_calls is None for spec in SPECS.values() if spec.harness != "light")
+
+
+def test_answer_prompt_loads_without_the_shared_block():
+    prompt = load_prompt(get_spec("answer"))
+    assert prompt.startswith("# Role: Answerer")
+    assert "## Self-check (required)" not in prompt
 
 
 @pytest.mark.parametrize("name", ["architect", "critic", "implementer", "tester", "reviewer"])
@@ -55,7 +72,7 @@ def test_unknown_spec_raises():
 
 def test_only_judging_and_intake_roles_use_the_lean_harness():
     lean = {name for name, spec in SPECS.items() if spec.harness == "lean"}
-    assert lean == {"intake", "critic", "reviewer"}
+    assert lean == {"intake", "critic", "reviewer", "route"}
     assert all(not SPECS[name].tools and not SPECS[name].writes_files for name in lean)
 
 

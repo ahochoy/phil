@@ -10,12 +10,13 @@ from pathlib import Path
 from pydantic import Field
 
 from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, invoke_agent
-from phil.agents.providers import missing_key_message, provider_for_model
+from phil.agents.providers import SYSTEMONE, ProviderSpec, missing_key_message, provider_for_model, split_model
 from phil.agents.spec import AgentSpec
 from phil.config import ROLES, TIERS, ConfigError, PhilConfig
 from phil.contracts import Contract
 from phil.key_store import key_lookup
 from phil.packets import build_packet
+from phil.routing.jev import JevError, ping_jev
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
 
@@ -52,14 +53,23 @@ class CheckResult:
 
 def _role_labels(config: PhilConfig) -> dict[str, str]:
     """Label -> model for each model some role resolves to: the tier the role uses, or
-    `role:<name>` when the role's own [models] key overrides its tier. Roles with no model are skipped."""
+    `role:<name>` when the role's own [models] key overrides its tier. Roles with no model are skipped.
+
+    `classifier` is special: it is both a role and a tier key under [models], so a `[models]
+    classifier` entry is the classifier *tier*, not a `role:classifier` override. Its label is
+    always `classifier` (never `role:classifier`); with no classifier set, the role falls back to
+    the low model and shares that label instead."""
     used: dict[str, str] = {}
     for role in ROLES:
         try:
             model = config.model_for(role)
         except ConfigError:
             continue
-        used[f"role:{role}" if role in config.models else config.model_owner(role)] = model
+        if role == "classifier":
+            label = "classifier" if role in config.models else config.model_owner(role)
+        else:
+            label = f"role:{role}" if role in config.models else config.model_owner(role)
+        used[label] = model
     return used
 
 
@@ -103,13 +113,30 @@ def _violation_detail(exc: ContractViolation) -> str:
     return f"returned invalid structured output: {'; '.join(exc.problems)}"
 
 
-def _check_one(ctx: AgentContext, model: str, labels: list[str], call: int) -> tuple[bool, str]:
-    packet = build_packet("model_check", ModelCheckInput(word=CHECK_WORD), budget_tokens=1_000)
+def _jev_detail(provider: ProviderSpec, exc: JevError) -> str:
+    if exc.reason == "missing key":
+        return missing_key_message(provider.name, provider.api_key_env or "", ["classifier"])
+    if exc.reason in ("http 401", "http 403"):
+        return f"TypeSafe refused the request ({exc.reason}): check {provider.api_key_env}."
+    return f"TypeSafe didn't answer ({exc.reason})."
+
+
+def _check_one(
+    ctx: AgentContext, model: str, labels: list[str], call: int, jev_transport: object | None
+) -> tuple[bool, str]:
     try:
         # Checked here so the errors name the tiers and roles using the model, not the check's own role.
         provider = provider_for_model(ctx.config, model, labels[0])
         if provider.api_key_env and not key_lookup().get(provider.api_key_env):
             return False, missing_key_message(provider.name, provider.api_key_env, labels)
+        if provider.kind == SYSTEMONE:
+            try:
+                ping_jev(provider, split_model(model)[1], timeout_s=ctx.config.routing.jev_timeout_s,
+                         transport=jev_transport)
+            except JevError as exc:
+                return False, _jev_detail(provider, exc)
+            return True, ""
+        packet = build_packet("model_check", ModelCheckInput(word=CHECK_WORD), budget_tokens=1_000)
         output = invoke_agent(
             MODEL_CHECK, packet, ctx, node="model_check", call=call,
             model=model, max_attempts=1, transient_retries=False,
@@ -132,10 +159,14 @@ def check_models(
     factory: AgentFactory | None = None,
     repo_root: Path,
     clock: Callable[[], float] = time.monotonic,
+    jev_transport: object | None = None,
 ) -> list[CheckResult]:
     """One call per distinct model a role resolves to (see `check_targets`): a lean agent asked to return
     `ModelCheck(ok=true, echo=<word>)`, with the configured timeout, one try and no retries. Its
-    telemetry and artifacts go to a temporary directory, not the project's."""
+    telemetry and artifacts go to a temporary directory, not the project's.
+
+    A typesafe (systemone) classifier model is pinged with `ping_jev` instead, through the lean
+    agent path; `jev_transport` overrides its HTTP transport (tests only)."""
     targets = check_targets(config)
     if not targets:
         return []
@@ -153,7 +184,7 @@ def check_models(
             )
             for call, (model, labels) in enumerate(targets, 1):
                 started = clock()
-                ok, detail = _check_one(ctx, model, labels, call)
+                ok, detail = _check_one(ctx, model, labels, call, jev_transport)
                 results.append(CheckResult(", ".join(labels), model, ok, clock() - started, detail))
         finally:
             conn.close()
