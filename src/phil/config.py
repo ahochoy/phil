@@ -22,8 +22,9 @@ DEFAULT_TIERS: dict[str, str] = {
     "answerer": "low",
 }
 # Roles the chat calls; `phil` checks these have models before the conversation starts. The
-# classifier isn't one: routing falls back to the low model, then to intake.
-CHAT_ROLES = ("orchestrator", "architect", "critic", "answerer")
+# classifier isn't one: routing falls back to the low model, then to intake. Nor is the answerer:
+# without a model of its own (a legacy per-role config has no low tier) it uses the orchestrator's.
+CHAT_ROLES = ("orchestrator", "architect", "critic")
 # Roles the run graph calls; `phil run` checks these have models before starting.
 RUN_ROLES = ("implementer", "tester", "reviewer")
 DEFAULT_BUDGETS = {"architect": 24_000, "tester": 48_000, "reviewer": 48_000}

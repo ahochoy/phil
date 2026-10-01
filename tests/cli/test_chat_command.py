@@ -102,6 +102,23 @@ def test_the_chat_key_check_passes_with_a_store_only_key(calc_repo, monkeypatch)
     assert "OPENAI_API_KEY" not in result.output
 
 
+def test_a_legacy_six_role_config_starts_the_chat(calc_repo):
+    legacy = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer")
+    (calc_repo / "phil.toml").write_text("[models]\n" + "".join(f'{r} = "ollama:test-model"\n' for r in legacy))
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
+    assert result.exit_code == 0, result.output
+    assert "No model for" not in result.output
+
+
+def test_the_chat_checks_the_key_of_an_answerer_model(calc_repo, monkeypatch):
+    others = "".join(f'{r} = "ollama:test-model"\n' for r in ROLES if r != "answerer")
+    (calc_repo / "phil.toml").write_text("[models]\n" + others + 'answerer = "openrouter:openai/gpt-6-luna"\n')
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
+    assert result.exit_code == 1
+    assert "openrouter needs OPENROUTER_API_KEY (used by answerer)" in " ".join(result.output.split())
+
+
 def test_chat_refuses_an_unknown_provider(calc_repo, monkeypatch):
     (calc_repo / "phil.toml").write_text('[models]\nhigh = "nowhere:x"\nlow = "ollama:test-model"\n')
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")

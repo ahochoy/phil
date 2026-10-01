@@ -11,10 +11,10 @@ def test_registry_covers_chat_and_run_roles():
     assert set(SPECS) == {
         "intake", "architect", "critic", "implementer", "tester", "reviewer", "btw", "route", "answer"
     }
-    # Check that agents reference the correct roles. "classifier" is not a chat or run role, but
-    # "route" (the LLM routing backend) registers it here.
+    # Check that agents reference the correct roles. "classifier" and "answerer" are not checked chat
+    # or run roles, but "route" (the LLM routing backend) and "answer" register them here.
     agent_roles = {spec.role for spec in SPECS.values()}
-    assert agent_roles == set(CHAT_ROLES) | set(RUN_ROLES) | {"classifier"}
+    assert agent_roles == set(CHAT_ROLES) | set(RUN_ROLES) | {"classifier", "answerer"}
 
 
 @pytest.mark.parametrize(

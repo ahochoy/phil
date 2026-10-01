@@ -58,3 +58,33 @@ def test_a_writing_spec_keeps_the_project_allowlist_and_approvals(tmp_path):
     run = _shell_for(get_spec("implementer"), config, tmp_path, CommandLog(), approved=("touch y",))
     assert not run("touch y").startswith("DENIED")
     assert (tmp_path / "y").exists()
+
+
+LEGACY_SIX = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer")
+
+
+def test_a_legacy_six_role_config_passes_the_chat_check():
+    from phil.config import CHAT_ROLES
+
+    config = PhilConfig(models={role: f"openrouter:{role}/model" for role in LEGACY_SIX})
+    assert config.missing_model_messages(CHAT_ROLES) == []
+
+
+def test_without_an_answerer_model_the_answer_uses_the_orchestrators(tmp_path):
+    from phil.agents.fake import FakeAgentFactory
+
+    factory = FakeAgentFactory([Answer(text="ok", files=[])])
+    config = PhilConfig(models={role: f"openrouter:{role}/model" for role in LEGACY_SIX})
+    ctx = AgentContext(config=config, conn=connect(tmp_path / "t.db"), layer="chat", factory=factory)
+    ask_answer(ctx, "what?", root=tmp_path, overview="")
+    assert factory.built == [("answer", "openrouter:orchestrator/model")]
+
+
+def test_an_answerer_model_is_used_when_set(tmp_path):
+    from phil.agents.fake import FakeAgentFactory
+
+    factory = FakeAgentFactory([Answer(text="ok", files=[])])
+    config = PhilConfig(models={"low": "openrouter:l", "orchestrator": "openrouter:o"})
+    ctx = AgentContext(config=config, conn=connect(tmp_path / "t.db"), layer="chat", factory=factory)
+    ask_answer(ctx, "what?", root=tmp_path, overview="")
+    assert factory.built == [("answer", "openrouter:l")]

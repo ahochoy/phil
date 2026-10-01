@@ -395,7 +395,7 @@ def test_classifier_and_answerer_roles_resolve_through_their_tiers():
     assert config.model_for("classifier") == "openrouter:l"  # classifier tier falls back to low
     assert config.model_owner("classifier") == "low"
     assert config.model_for("answerer") == "openrouter:l"
-    assert "answerer" in CHAT_ROLES and "classifier" not in CHAT_ROLES
+    assert "answerer" not in CHAT_ROLES and "classifier" not in CHAT_ROLES
 
 
 def test_routing_defaults_and_bounds():

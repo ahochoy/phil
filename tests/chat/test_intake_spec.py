@@ -21,9 +21,10 @@ def test_intake_input_defaults():
     assert data["repo_overview"] == ""
 
 
-def test_chat_and_run_roles_cover_all_roles_except_the_classifier():
-    # The classifier isn't a chat or run role: routing falls back to the low model, then to intake.
-    assert set(CHAT_ROLES) | set(RUN_ROLES) == set(ROLES) - {"classifier"}
+def test_chat_and_run_roles_cover_all_roles_except_the_classifier_and_answerer():
+    # Neither is a checked chat or run role: routing falls back to the low model, then to intake,
+    # and the answerer falls back to the orchestrator's model.
+    assert set(CHAT_ROLES) | set(RUN_ROLES) == set(ROLES) - {"classifier", "answerer"}
 
 
 def test_goal_depth_is_optional_and_typed():
