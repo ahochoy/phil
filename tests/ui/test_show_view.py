@@ -14,8 +14,9 @@ def finished_run(calc_repo, *, depth: str | None = None):
     info = resolve_repo(calc_repo)
     kwargs = {} if depth is None else {"depth": depth}
     record = prepare_run(info, calc_plan(), info.head_sha, **kwargs)
+    implementer = "quick_implementer" if depth == "quick" else "implementer"  # a quick run's own spec
     factory = ScriptedAgentFactory(
-        {"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]}
+        {implementer: [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]}
     )
     run_worker(calc_repo, record.run_id, "start", factory=factory)
     return info, record, ProjectPaths(info.slug)

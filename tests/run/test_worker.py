@@ -64,8 +64,9 @@ def test_quick_run_state_carries_depth_and_skips_the_tester(calc_repo):
     info = resolve_repo(calc_repo)
     record = prepare_run(info, calc_plan(), info.head_sha, depth="quick")
     # No "tester" entry: a quick run starts with tester_done already set, so pick_task routes
-    # straight to review once every task is done, never calling the tester.
-    factory = ScriptedAgentFactory({"implementer": [write_red, write_green], "reviewer": [review()]})
+    # straight to review once every task is done, never calling the tester. Its implementer is
+    # the light quick_implementer.
+    factory = ScriptedAgentFactory({"quick_implementer": [write_red, write_green], "reviewer": [review()]})
     outcome = run_worker(calc_repo, record.run_id, "start", factory=factory)
     assert outcome.status == "completed"
     assert checkpointed(info, record.run_id)["depth"] == "quick"

@@ -17,7 +17,17 @@ from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, in
 from phil.agents.registry import get_spec
 from phil.agents.tools import CommandLog
 from phil.config import PhilConfig
-from phil.contracts import AttemptWorklog, ImplementInput, Issue, ReviewInput, TaskResult, TesterInput, TestReport
+from phil.contracts import (
+    AttemptWorklog,
+    ImplementInput,
+    Issue,
+    Plan,
+    ReviewInput,
+    Task,
+    TaskResult,
+    TesterInput,
+    TestReport,
+)
 from phil.git import GitError, branch_for, git
 from phil.packets import Packet, PacketTooLarge, build_packet
 from phil.run.gates import (
@@ -29,10 +39,19 @@ from phil.run.gates import (
     verify_green,
     verify_red,
 )
-from phil.run.state import RunState, dedupe_issues, issues_to_tasks, load_plan, next_todo, render_summary, with_task_status
+from phil.run.state import (
+    RunState,
+    dedupe_issues,
+    issues_to_tasks,
+    load_plan,
+    next_todo,
+    render_summary,
+    run_depth,
+    with_task_status,
+)
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.events import EventLog
-from phil.store.runs import update_run
+from phil.store.runs import get_run, update_run
 from phil.store.telemetry import run_usage, usage_by_role
 from phil.workspace.worktree import WorktreeManager, rebaseline_path
 
@@ -127,7 +146,7 @@ class RunEngine:
     def route_after_pick(self, state: RunState) -> str:
         if state["task_index"] >= 0:
             return "implement"
-        return "review" if state.get("tester_done") else "tester"
+        return "review" if state.get("tester_done") or self._is_quick(state) else "tester"
 
     def route_after_verify(self, state: RunState) -> str:
         return {"red_ok": "implement", "green_ok": "commit", "retry": "implement", "escalate": "escalate"}[
@@ -246,6 +265,75 @@ class RunEngine:
     @staticmethod
     def _first_stderr_line(exc: GitError) -> str:
         return next((line.strip() for line in exc.stderr.splitlines() if line.strip()), "") or str(exc)
+
+    # --- quick runs --------------------------------------------------------
+
+    @staticmethod
+    def _is_quick(state: RunState) -> bool:
+        return run_depth(state) == "quick"
+
+    def _attempt_limit(self, state: RunState) -> int:
+        """Attempts per phase before escalating: one for a fix after review, fewer for a quick run."""
+        if state.get("patching"):
+            return 1
+        limits = self.deps.config.run
+        return limits.quick_max_attempts if self._is_quick(state) else limits.max_attempts_per_phase
+
+    def _escalation_options(self, state: RunState) -> list[str]:
+        """The options for a failed gate. A quick run started from a chat may move up to full."""
+        if not self._is_quick(state):
+            return ["retry", "skip", "abort"]
+        run = get_run(self.deps.conn, self.deps.run_id)
+        return ["full", "retry", "abort"] if run is not None and run.chat_id else ["retry", "abort"]
+
+    def _patch_after_review(
+        self, state: RunState, plan: Plan, blocking: list[Issue], minor: list[Issue]
+    ) -> dict | None:
+        """Reopen a quick run's reviewed task as a check task carrying the review's findings, so
+        one fix attempt happens within the task. None when there's no task to reopen or no command
+        to check it with; the review then finishes as usual."""
+        done = [index for index, task in enumerate(plan.tasks) if task.status == "DONE"]
+        if not done:
+            return None
+        index = done[-1]
+        task = plan.tasks[index]
+        check_cmd = task.check_cmd or state["test_cmd"]
+        if not check_cmd:
+            return None
+        reopened = Task.model_validate({
+            **task.model_dump(),
+            "status": "TODO",
+            "verify": "check",
+            "check_cmd": check_cmd,
+            "acceptance_criteria": [*task.acceptance_criteria, *(f"Review: {issue.note}" for issue in blocking)],
+        })
+        tasks = list(plan.tasks)
+        tasks[index] = reopened
+        return {
+            "plan": plan.model_copy(update={"tasks": tasks}).model_dump(),
+            "patching": True,
+            "patched_issues": [issue.model_dump() for issue in blocking],
+            "open_issues": [*state.get("open_issues", []), *(issue.model_dump() for issue in minor)],
+            "next": "pick_task",
+        }
+
+    @staticmethod
+    def _patched_as_open(state: RunState) -> list[dict]:
+        """The findings a quick run fixed after review, which no second review checked."""
+        return [
+            {**issue, "severity": "minor", "note": f"fixed after review (unverified): {issue['note']}"}
+            for issue in state.get("patched_issues", [])
+        ]
+
+    def _write_handoff(self, state: RunState) -> None:
+        """What the quick run tried, for the full run that takes over: worklogs in task order, and
+        the open issues, including any review findings the fix didn't get past the gate."""
+        worklogs = state.get("worklogs", {})
+        payload = {
+            "worklogs": [worklogs[task.id] for task in load_plan(state).tasks if task.id in worklogs],
+            "open_issues": [*state.get("open_issues", []), *state.get("patched_issues", [])],
+        }
+        self.deps.artifacts.write_json("handoff", "prior_attempt", payload)
 
     def _budget_check(self, state: RunState, node: str) -> tuple[dict, dict | None]:
         """The budget guard for a node: (update to merge into its result, escalation or None).
@@ -372,10 +460,9 @@ class RunEngine:
         packet = self._implement_packet(contract, task.files_hint, ledger)
         log = CommandLog()
         self._update_run(current_node="implement")
+        spec = get_spec("quick_implementer" if self._is_quick(state) else "implementer")
         try:
-            output = invoke_agent(
-                get_spec("implementer"), packet, self._context(state, log), node="implement", task_id=task.id, call=seq
-            )
+            output = invoke_agent(spec, packet, self._context(state, log), node="implement", task_id=task.id, call=seq)
             # invoke_agent validated it against the implementer spec's out_contract, TaskResult.
             # What the attempt read comes from the file tools, never from the model.
             note = cast(TaskResult, output).worklog
@@ -509,20 +596,22 @@ class RunEngine:
     def _failed_attempt(self, state: RunState, problems: list[str], report: dict | None) -> dict:
         attempts = state.get("attempts", 0) + 1
         update = {"attempts": attempts, "last_problems": problems, "last_report": report, "verdict": "retry"}
-        if attempts >= self.deps.config.run.max_attempts_per_phase:
+        if attempts >= self._attempt_limit(state):
             task = load_plan(state).tasks[state["task_index"]]
+            if state.get("patching"):
+                summary = f"{task.id}'s fix after review didn't pass the gate"
+            elif task.verify == "check":
+                summary = f"{task.id} failed {attempts} attempts on the check task"
+            else:
+                summary = f"{task.id} failed {attempts} attempts in the {state['phase']} phase"
             update["verdict"] = "escalate"
             update["escalation"] = {
                 "reason": "attempts",
                 "task_id": task.id,
                 "phase": state["phase"],
                 "problems": problems,
-                "options": ["retry", "skip", "abort"],
-                "summary": (
-                    f"{task.id} failed {attempts} attempts on the check task"
-                    if task.verify == "check"
-                    else f"{task.id} failed {attempts} attempts in the {state['phase']} phase"
-                ),
+                "options": self._escalation_options(state),
+                "summary": summary,
                 "log": (report or {}).get("log_path") or None,
             }
         return update
@@ -572,6 +661,10 @@ class RunEngine:
                 "budget_warned": False,
                 "next": escalation["resume_to"],
             }
+        if action == "full":
+            # The quick run ends here; the chat plans the goal properly, starting from this handoff.
+            self._write_handoff(state)
+            return {**cleared, "status": "aborted", "moved_to_full": True, "next": "finish"}
         return {**cleared, "status": "aborted", "next": "finish"}
 
     def route_after_escalate(self, state: RunState) -> str:
@@ -685,6 +778,8 @@ class RunEngine:
     def route_after_commit(self, state: RunState) -> str:
         if state.get("escalation"):
             return "escalate"
+        if self._is_quick(state):
+            return "pick_task"  # a quick run has no tester
         task = load_plan(state).tasks[state["task_index"]]
         audit = self.deps.config.run.tester_mode == "task+run" and task.id in state.get("original_task_ids", [])
         return "tester_task" if audit else "pick_task"
@@ -693,6 +788,9 @@ class RunEngine:
         return self._rebased(state, self._review)
 
     def _review(self, state: RunState) -> dict:
+        if self._is_quick(state) and state.get("review_rounds", 0) >= 1:
+            # A quick run reviews once: the fix after review finishes without a second review.
+            return {"open_issues": [*state.get("open_issues", []), *self._patched_as_open(state)], "next": "finish"}
         budget_warn, escalation = self._budget_check(state, "review")
         if escalation is not None:
             return {**budget_warn, "escalation": escalation}
@@ -723,7 +821,12 @@ class RunEngine:
             return {**budget_warn, "call_seq": seq, "escalation": escalation}
         blocking = [issue for issue in verdict.issues if issue.severity in ("blocker", "major")]
         minor = [issue for issue in verdict.issues if issue.severity == "minor"]
-        if verdict.verdict == "changes" and blocking and rounds < self.deps.config.run.max_review_rounds:
+        if verdict.verdict == "changes" and blocking and self._is_quick(state):
+            patch = self._patch_after_review(state, plan, blocking, minor)
+            if patch is not None:
+                return {**budget_warn, "call_seq": seq, "review_rounds": rounds, **patch}
+        rounds_left = rounds < self.deps.config.run.max_review_rounds and not self._is_quick(state)
+        if verdict.verdict == "changes" and blocking and rounds_left:
             plan = issues_to_tasks(plan, blocking, "review", state["test_cmd"])
             return {
                 **budget_warn, "plan": plan.model_dump(), "call_seq": seq, "review_rounds": rounds,
