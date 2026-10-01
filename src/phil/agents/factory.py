@@ -1,3 +1,4 @@
+import itertools
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -6,10 +7,27 @@ from phil.agents.providers import ProviderSpec, build_chat_model, resolve_provid
 from phil.agents.spec import AgentSpec, load_prompt
 
 
+def _case_variants(name: str) -> list[str]:
+    """Every upper/lower-case spelling of `name` (".git" gives 8)."""
+    return ["".join(chars) for chars in itertools.product(*({c.lower(), c.upper()} for c in name))]
+
+
+def _protected_paths() -> list[str]:
+    """/.git (and everything under it) and /phil.toml, in every case spelling.
+
+    deepagents matches permission globs case-sensitively, but macOS's default filesystem is
+    case-insensitive, so "/PHIL.toml" would otherwise reach phil.toml. The variants are literal
+    paths, not bracket globs like "/[pP]hil.toml": deepagents anchors a recursive delete's check
+    at a pattern's wildcard-free prefix, and a bracket in the first segment anchors it at "/",
+    which would refuse every directory delete."""
+    git = [p for variant in _case_variants(".git") for p in (f"/{variant}", f"/{variant}/**")]
+    return git + [f"/{variant}" for variant in _case_variants("phil.toml")]
+
+
 def filesystem_permissions(spec: AgentSpec) -> list[Any]:
     from deepagents import FilesystemPermission
 
-    rules = [FilesystemPermission(operations=["write"], paths=["/.git", "/.git/**", "/phil.toml"], mode="deny")]
+    rules = [FilesystemPermission(operations=["write"], paths=_protected_paths(), mode="deny")]
     if not spec.writes_files:
         rules.append(
             FilesystemPermission(operations=["write"], paths=["/**", "/**/.*", "/**/.*/**"], mode="deny")
@@ -59,6 +77,7 @@ def build_agent(
 
 
 READ_TOOLS = ("ls", "read_file", "glob", "grep")
+WRITE_TOOLS = ("write_file", "edit_file", "delete")
 ANSWER_NOW = "Your tool budget is used up. Answer now with what you have found, and say what you didn't check."
 
 
@@ -146,9 +165,9 @@ def _build_light_agent(
 
     filesystem = FilesystemMiddleware(
         backend=FilesystemBackend(root_dir=workdir, virtual_mode=True),
-        # A writing spec gets every file tool (FilesystemBackend has no `execute`, so that stays
-        # hidden); the write tools check the permissions below, which deny .git and phil.toml.
-        tools="all" if spec.writes_files else list(READ_TOOLS),
+        # A writing spec also gets the write tools (never `execute`: commands go through Phil's
+        # shell tool); they check the permissions below, which deny .git and phil.toml.
+        tools=[*READ_TOOLS, *WRITE_TOOLS] if spec.writes_files else list(READ_TOOLS),
         # deepagents offloads oversized tool results and user messages to the backend, which here
         # is the repository itself, and those writes skip the permission rules: keep it off.
         tool_token_limit_before_evict=None,

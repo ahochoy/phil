@@ -58,33 +58,47 @@ def _task_result(call_id: str):
     )
 
 
+# Protected files, spelled as the model might: macOS's filesystem is case-insensitive, so every
+# spelling reaches the real file.
+DENIED_PATHS = ["/.git/config", "/phil.toml", "/PHIL.toml", "/Phil.Toml", "/.GIT/config", "/.Git/HEAD"]
+
+
 def test_a_writing_light_agent_gets_write_tools_with_git_and_phil_toml_denied(tmp_path, monkeypatch):
+    originals = {".git/config": "[core]\n", ".git/HEAD": "ref: refs/heads/main\n", "phil.toml": "[run]\n"}
     (tmp_path / ".git").mkdir()
-    (tmp_path / ".git" / "config").write_text("[core]\n")
-    (tmp_path / "phil.toml").write_text("[run]\n")
+    for rel, text in originals.items():
+        (tmp_path / rel).write_text(text)
+    writes = [
+        tool_call("write_file", {"file_path": path, "content": "evil\n"}, f"w{i}")
+        for i, path in enumerate(DENIED_PATHS)
+    ]
+    edits = [
+        tool_call("edit_file", {"file_path": path, "old_string": "[", "new_string": "evil"}, f"e{i}")
+        for i, path in enumerate(DENIED_PATHS)
+    ]
     model = ToolRecordingModel(
         script=[
-            tool_call("write_file", {"file_path": "/notes.txt", "content": "hello\n"}, "w1"),
-            tool_call("write_file", {"file_path": "/.git/config", "content": "evil\n"}, "w2"),
-            tool_call("write_file", {"file_path": "/phil.toml", "content": "evil\n"}, "w3"),
-            tool_call("edit_file", {"file_path": "/phil.toml", "old_string": "[run]", "new_string": "x"}, "w4"),
+            tool_call("write_file", {"file_path": "/notes.txt", "content": "hello\n"}, "ok"),
+            *writes,
+            *edits,
             _task_result("a1"),
         ]
     )
     monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: model)
     agent = build_agent(get_spec("quick_implementer"), "openrouter:x", tmp_path, [])
-    assert {"write_file", "edit_file"} <= _tool_names(agent)
+    tools = _tool_names(agent)
+    assert {"write_file", "edit_file", "delete"} <= tools and "execute" not in tools
     result = agent.invoke({"messages": [{"role": "user", "content": "write notes"}]})
-    assert {"write_file", "edit_file"} <= set(model.bound[0])
+    assert {"write_file", "edit_file", "delete"} <= set(model.bound[0]) and "execute" not in model.bound[0]
 
     assert result["structured_response"].files_changed == ["notes.txt"]
     assert (tmp_path / "notes.txt").read_text() == "hello\n"
-    assert (tmp_path / ".git" / "config").read_text() == "[core]\n"
-    assert (tmp_path / "phil.toml").read_text() == "[run]\n"
+    assert {rel: (tmp_path / rel).read_text() for rel in originals} == originals
     replies = {m.tool_call_id: m.text for m in result["messages"] if m.type == "tool"}
-    assert "permission denied" not in replies["w1"]
-    for call_id, path in (("w2", "/.git/config"), ("w3", "/phil.toml"), ("w4", "/phil.toml")):
-        assert f"permission denied for write on {path}" in replies[call_id]
+    assert "permission denied" not in replies["ok"]
+    for i, path in enumerate(DENIED_PATHS):
+        assert f"permission denied for write on {path}" in replies[f"w{i}"]
+        assert f"permission denied for write on {path}" in replies[f"e{i}"]
 
 
 def test_a_writing_light_agent_still_writes_nothing_on_its_own(tmp_path, monkeypatch):
