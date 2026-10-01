@@ -235,7 +235,7 @@ def test_a_custom_provider_key_is_checked(tmp_path):
 
 
 def test_missing_keys_finds_a_store_only_key(tmp_path, monkeypatch):
-    from phil.credentials import set_key
+    from phil.key_store import set_key
 
     (tmp_path / "phil.toml").write_text('[models]\nimplementer = "openai:gpt-5-mini"\n')
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

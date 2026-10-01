@@ -5,7 +5,7 @@
 **Goal:** A new user runs `phil`, answers a few questions, and gets a working global config. Provider keys are stored in the OS keychain, so no `.env` sourcing is needed. `phil keys` manages the stored keys.
 
 **Architecture:** Three new pieces:
-- `phil.credentials`: env-first, then keychain, via `keyring`, exposed as a read-only `key_lookup()` mapping. It is used everywhere a key is read today.
+- `phil.key_store`: env-first, then keychain, via `keyring`, exposed as a read-only `key_lookup()` mapping. It is used everywhere a key is read today.
 - `phil keys`: CLI commands built on top of it.
 - A `phil.setup` package: a step-by-step flow over a small `SetupIO` interface (terminal and scripted implementations), provider-specific model suggestions and pickers, a `models check` step, and an in-place `tomlkit` edit of `~/.phil/config.toml`.
 
@@ -29,13 +29,13 @@ Bare `phil` starts setup when no role has a model and a terminal is attached.
   - `Run phil setup to choose your models.`
 - **Scope of setup writes:** setup edits only the global file (`phil.config.global_config_path()`), in place with `tomlkit`. It changes only `models.high`, `models.low`, and `providers.<name>.*` for the chosen provider, and keeps every other key and comment. Cancelling (Ctrl-C or EOF) at any step writes nothing.
 - **Classifier:** setup does not ask about `classifier` (deferred to M3).
-- **Import rule:** `phil.cli.main`, `phil.chat.*`, `phil.config`, `phil.credentials` and `phil.setup.*` must not import langchain/langgraph/deepagents at module level. Import `keyring` lazily inside `phil.credentials` functions.
+- **Import rule:** `phil.cli.main`, `phil.chat.*`, `phil.config`, `phil.key_store` and `phil.setup.*` must not import langchain/langgraph/deepagents at module level. Import `keyring` lazily inside `phil.key_store` functions.
 - **Commit trailer:** every commit message ends with a blank line then `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. The user's shell guard blocks any command line containing the word "keychain", so write commit messages to a file and use `git commit -F`.
 
 ## File Structure
 
 - **Create:**
-  - `src/phil/credentials.py`
+  - `src/phil/key_store.py`
   - `src/phil/setup/__init__.py`
   - `src/phil/setup/flow.py` (the steps)
   - `src/phil/setup/io.py` (`SetupIO`, `TerminalSetupIO`, `ScriptedSetupIO`)
@@ -58,17 +58,17 @@ Bare `phil` starts setup when no role has a model and a terminal is attached.
 ### Task 1: Credentials
 
 **Files:**
-- Create: `src/phil/credentials.py`
+- Create: `src/phil/key_store.py`
 - Modify: `src/phil/config.py`, `src/phil/agents/providers.py`, `src/phil/agents/check.py`, `src/phil/cli/main.py` (~109, the key check), `tests/conftest.py`, `pyproject.toml`
-- Test: `tests/test_credentials.py` (create), plus the existing provider, check and CLI tests
+- Test: `tests/test_key_store.py` (create), plus the existing provider, check and CLI tests
 
-**Interfaces (all in `src/phil/credentials.py`):**
+**Interfaces (all in `src/phil/key_store.py`):**
 - `SERVICE = "phil"`
-- `class CredentialsError(Exception)`
+- `class KeyStoreError(Exception)`
 - `keychain_available() -> bool`: False when `keyring.get_keyring()` is a `keyring.backends.fail.Keyring` or `keyring.backends.null.Keyring`, or when importing `keyring` fails.
 - `key_source(var: str) -> Literal["env", "keychain"] | None`: `env` if `os.environ.get(var)` is non-empty. Otherwise `keychain` if `keyring.get_password(SERVICE, var)` is non-empty. Otherwise None. Any keyring exception counts as None and is logged at debug level without the value.
 - `get_key(var) -> str | None`, following the same order.
-- `set_key(var, value) -> None`: raises `CredentialsError("No keychain is available here; export <VAR> instead.")` when unavailable.
+- `set_key(var, value) -> None`: raises `KeyStoreError("No keychain is available here; export <VAR> instead.")` when unavailable.
 - `delete_key(var) -> bool`: True if an entry was deleted.
 - `class KeyLookup(Mapping[str, str])`: `__getitem__` returns `get_key(var)` or raises `KeyError`. `__iter__`/`__len__` cover only `os.environ` (enough for `.get`, which is all callers use).
 - `key_lookup() -> KeyLookup`
@@ -199,7 +199,7 @@ def memory_keyring(monkeypatch):
      - Ollama: call `ollama(...)`. On None, say how to start Ollama (`ollama serve`) and offer retry or back.
      - Custom: ask for a name matching `[a-z][a-z0-9_-]*` (and not a built-in name), a `base_url`, and a key variable (default `<NAME>_API_KEY`, or blank for none).
   2. **Key.** Skip this step when the provider has no key. If `key_source(var)` is set, say `Using <VAR> from <source>.`. If the source is `keychain`, offer to replace it.
-     Otherwise ask with `io.secret` and `set_key`. On `CredentialsError`, say the message and continue.
+     Otherwise ask with `io.secret` and `set_key`. On `KeyStoreError`, say the message and continue.
   3. **Models.** For each of `high` and `low`:
      - Show the suggestion (or the current value on a rerun) as the default.
      - OpenRouter: a typed answer that isn't an exact existing id is treated as a search query, showing up to 10 `id  $in/$out per M` choices, plus "type again".

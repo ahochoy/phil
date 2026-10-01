@@ -243,7 +243,7 @@ class PhilConfig(_Section):
         that use it). `environ` defaults to the environment, then the keychain. Unset models are
         `missing_models`' to report."""
         from phil.agents.providers import UnknownProvider, missing_key_message, provider_for_model
-        from phil.credentials import key_lookup
+        from phil.key_store import key_lookup
 
         resolved_environ = environ if environ is not None else key_lookup()
         # In first-seen order: an unknown-provider message, or (provider, env var) -> roles needing the key.

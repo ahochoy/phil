@@ -206,7 +206,7 @@ def test_a_keyed_provider_without_its_key_refuses_to_build(environ):
 
 def test_a_store_only_key_builds_an_openai_model(monkeypatch):
     pytest.importorskip("langchain_openai")
-    from phil.credentials import set_key
+    from phil.key_store import set_key
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     set_key("OPENAI_API_KEY", "sk-TESTSECRET-stored")
@@ -219,7 +219,7 @@ def test_the_worker_build_path_finds_a_store_only_key(monkeypatch):
     # call (including in a background worker); it calls `build_chat_model` with no `environ`.
     pytest.importorskip("langchain_openai")
     from phil.agents.factory import chat_model
-    from phil.credentials import set_key
+    from phil.key_store import set_key
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     set_key("OPENAI_API_KEY", "sk-TESTSECRET-stored")

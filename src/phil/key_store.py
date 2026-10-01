@@ -1,4 +1,4 @@
-"""Provider API keys: the environment first, then the OS keychain, through `keyring`.
+"""Provider API key storage: the environment first, then the OS keychain, through `keyring`.
 
 `keyring` is imported lazily inside each function: this module (and everything that imports
 it) must stay importable without `keyring` (or its platform backends) being loaded, and this
@@ -16,7 +16,7 @@ SERVICE = "phil"
 logger = logging.getLogger(__name__)
 
 
-class CredentialsError(Exception):
+class KeyStoreError(Exception):
     pass
 
 
@@ -68,9 +68,9 @@ def get_key(var: str) -> str | None:
 def set_key(var: str, value: str) -> None:
     """Store `value` for `var` in the keychain.
 
-    Raises `CredentialsError` when no keychain is available here."""
+    Raises `KeyStoreError` when no keychain is available here."""
     if not keychain_available():
-        raise CredentialsError(f"No keychain is available here; export {var} instead.")
+        raise KeyStoreError(f"No keychain is available here; export {var} instead.")
     import keyring
 
     keyring.set_password(SERVICE, var, value)

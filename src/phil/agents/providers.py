@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from phil.config import ConfigError
-from phil.credentials import key_lookup
+from phil.key_store import key_lookup
 
 if TYPE_CHECKING:
     from phil.config import PhilConfig

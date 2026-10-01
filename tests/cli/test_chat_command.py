@@ -87,7 +87,7 @@ def test_chat_requires_the_provider_api_key(calc_repo, monkeypatch):
 
 
 def test_the_chat_key_check_passes_with_a_store_only_key(calc_repo, monkeypatch):
-    from phil.credentials import set_key
+    from phil.key_store import set_key
 
     (calc_repo / "phil.toml").write_text(
         "[models]\n" + "".join(f'{r} = "openai:gpt-5-mini"\n' for r in ROLES)

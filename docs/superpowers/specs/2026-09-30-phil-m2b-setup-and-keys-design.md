@@ -27,7 +27,7 @@
 
 ## 3. Design
 
-### 3.1 Credentials (`phil.credentials`)
+### 3.1 Credentials (`phil.key_store`)
 
 - **Lookup order:** the environment variable first, then the keychain. Keychain entries are stored with service `phil` and the variable name as the username (e.g. `OPENROUTER_API_KEY`).
 - **`key_lookup()`** returns a read-only `Mapping[str, str]` that checks `os.environ` first and then the keychain, one variable at a time, as needed. Every caller that reads a provider key today uses it instead of `os.environ`:
@@ -39,7 +39,7 @@
   - `set_key(var, value)`;
   - `delete_key(var) -> bool`;
   - `keychain_available() -> bool` (false when `keyring`'s active backend is the fail or null backend).
-- **When the keychain is unavailable:** `set_key` raises `CredentialsError` with the message `No keychain is available here; export <VAR> instead.`, and lookups use the environment only.
+- **When the keychain is unavailable:** `set_key` raises `KeyStoreError` with the message `No keychain is available here; export <VAR> instead.`, and lookups use the environment only.
 - **Values are never printed, logged, written to config or stored as artifacts.** Only a key's source is ever shown.
 - **Dependency:** `keyring`, at its latest version.
 - **Tests:** an autouse fixture installs an in-memory keyring backend for every test (live and bench tests included), so tests never touch the real keychain.

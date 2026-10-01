@@ -14,7 +14,7 @@ from phil.agents.providers import missing_key_message, provider_for_model
 from phil.agents.spec import AgentSpec
 from phil.config import ROLES, TIERS, ConfigError, PhilConfig
 from phil.contracts import Contract
-from phil.credentials import key_lookup
+from phil.key_store import key_lookup
 from phil.packets import build_packet
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect

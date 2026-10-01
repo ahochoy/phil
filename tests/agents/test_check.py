@@ -123,7 +123,7 @@ def test_a_missing_key_names_the_labels_that_use_the_model(tmp_path, monkeypatch
 
 
 def test_the_precheck_passes_with_a_store_only_key(tmp_path, monkeypatch):
-    from phil.credentials import set_key
+    from phil.key_store import set_key
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     set_key("OPENAI_API_KEY", "sk-TESTSECRET-stored")
