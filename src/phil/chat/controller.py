@@ -26,7 +26,7 @@ from phil.chat.approval import (
 from phil.chat.btw import ask_btw
 from phil.chat.events import ChatEvent
 from phil.chat.overview import repo_overview
-from phil.chat.planning import Planner, PlanDraft, intake
+from phil.chat.planning import Planner, PlanDraft, intake, quick_plan
 from phil.chat.session import ChatSession
 from phil.chat.snapshot import export_tree, export_worktree
 from phil.chat.state import ChatState, RunView
@@ -37,6 +37,7 @@ from phil.contracts.routing import Answer
 from phil.publish import publisher as publishing
 from phil.publish.service import PrChange, PublishRefused, change_line, publish_run, sweep_prs
 from phil.repo import RepoInfo, resolve_repo
+from phil.repo_detect import detect_test_cmd
 from phil.routing import Route, decide, parse_override, route_state
 from phil.routing.classify import classify
 from phil.run.launch import is_worker_alive, prepare_run, worker_starting
@@ -70,8 +71,9 @@ PROMPTS = {
     "confirm_replace": "Replace the current goal? [y / n] › ",
     "hint": "Hint for the retry (optional) › ",
     "confirm_pr": "Open a PR? [y / n] › ",
-    "confirm_fix": "Fix it? [Enter = plan the fix / n] › ",
+    "confirm_fix": "Fix it? [Enter = quick fix / full = plan it / n] › ",
 }
+QUICK_FALLBACK = "Couldn't plan this as a quick change; planning it fully."
 # The transcript's `stage` label for a non-command input typed at each chat stage (4a's labels).
 TRANSCRIPT_STAGES = {
     "idle": "goal", "intake": "goal", "planning": "goal", "running": "goal", "questions": "answers",
@@ -633,10 +635,9 @@ class ChatController:
 
     def _status_line(self, route: Route) -> str:
         if route.source == "fix_offer":
-            return "Fix · planning"  # M3b: the quick path
+            return "Fix · quick path" if route.depth == "quick" else "Fix · full plan"
         if route.source == "forced":
-            # Until M3b's quick engine, a forced quick goal is planned like any other.
-            return "Forced: quick · planning" if route.depth == "quick" else f"Forced: {route.depth} path"
+            return f"Forced: {route.depth} path"
         if route.reason == "needs_detail":
             return "Unclear request · asking first"
         if route.depth is None:
@@ -645,7 +646,7 @@ class ChatController:
         if route.depth == "answer":
             return f"{label} · answering (/full to plan a change instead)"
         if route.depth == "quick":
-            return f"{label} · planning  (/quick and /full force a path)"  # M3b: the quick path
+            return f"{label} · quick path  (/full to plan it properly)"
         return f"{label} · full plan"
 
     def _answer_job(self, question: str) -> None:
@@ -678,7 +679,8 @@ class ChatController:
         render_answer(self.console, answer)
         self._recent.append(f"phil: {answer.text[:TURN_CHARS]}")
         self._reset_goal()
-        if task_class == "diagnosis":
+        # A forced /ask has no class: the answerer says whether its answer was a diagnosis.
+        if task_class == "diagnosis" or answer.diagnosis:
             self._fix_offer = (data["question"], answer.text)
             self._set_stage("confirm_fix")
         else:
@@ -693,10 +695,11 @@ class ChatController:
     def _confirm_fix(self, text: str) -> None:
         offer, self._fix_offer = self._fix_offer, None
         choice = text.lower()
-        if choice in ("", "y", "yes") and offer is not None:
+        if choice in ("", "y", "yes", "full") and offer is not None:
             question, diagnosis = offer
-            self._begin_goal(f"{question}\n\nDiagnosis so far:\n{diagnosis}", forced="quick", source="fix_offer")
-        elif choice in ("", "y", "yes", "n", "no"):
+            depth = "full" if choice == "full" else "quick"
+            self._begin_goal(f"{question}\n\nDiagnosis so far:\n{diagnosis}", forced=depth, source="fix_offer")
+        elif choice in ("", "y", "yes", "full", "n", "no"):
             self._set_stage("idle")
         else:
             self._begin_goal(text)  # another message is a new goal
@@ -705,10 +708,13 @@ class ChatController:
         self._intake_calls += 1
         call, generation = self._intake_calls, self._generation
         self._step("intake", generation)
+        route_depth = self._route.depth if self._route else None
+        detected = detect_test_cmd(self.info.root)  # reads only file names (and package.json's scripts)
 
         def fn(ctx: AgentContext) -> dict:
             goal = intake(
-                ctx, message, overview=self.overview, previous=previous, answers=answers or [], call=call
+                ctx, message, overview=self.overview, previous=previous, answers=answers or [], call=call,
+                route_depth=route_depth, detected_test_cmd=detected,
             )
             return {"goal": goal}
 
@@ -732,7 +738,39 @@ class ChatController:
                 question += "\n\nClarification: " + "\n".join(self._clarifications)
             self._answer_job(question)
             return
+        if self._route is not None and (self._route.depth == "quick" or (intake_decides and goal.depth == "quick")):
+            self._quick(goal)
+            return
         self._plan(goal)
+
+    def _quick(self, goal: Goal) -> None:
+        """Start the goal's one-task run straight away, or fall back to full planning (spec §4.1)."""
+        plan, reasons = self._quick_plan(goal)
+        if plan is None:
+            self.console.print(f"[phil.muted]{QUICK_FALLBACK}[/]")
+            self._safe_note("quick_fallback", reasons=reasons)
+            self._plan(goal)
+            return
+        task = plan.tasks[0]
+        self.console.print(f"Quick change: {escape(_clip(f'{task.id} {task.description}'))}")
+        self.session.contract("quick_plan", plan)
+        self._launch(plan, "quick", {"task_id": task.id})
+
+    def _quick_plan(self, goal: Goal) -> tuple[Plan | None, list[str]]:
+        """The quick run's plan, or None and why not. The same checks approval makes before a full run."""
+        if goal.task is None:
+            return None, ["intake wrote no quick task"]
+        draft = quick_plan(goal, None)
+        if draft is None:
+            return None, ["the quick task doesn't make a valid plan"]
+        try:
+            self.config = load_config(self.info.root, overrides=self._config_overrides)
+        except ConfigError as exc:
+            return None, [str(exc)]
+        root = self.info.root
+        plan = quick_plan(goal, effective_test_cmd(draft, self.config, root)[0])
+        problems = launch_problems(plan, self.config, root, check_root=root)
+        return (None, problems) if problems else (plan, [])
 
     def _answers(self, text: str) -> None:
         if not text:
@@ -882,19 +920,24 @@ class ChatController:
     def _start(self, draft: PlanDraft, answer: str, test_cmd: str | None) -> None:
         # The run keeps the command the user approved (the plan's, phil.toml's or the detected one).
         plan = draft.plan.model_copy(update={"test_cmd": test_cmd})
+        self._launch(plan, "full", {"plan_version": draft.version, "answer": answer})
+
+    def _launch(self, plan: Plan, depth: str, note_data: dict) -> None:
+        """Prepare and spawn a run of `plan` at `depth`; the chat then follows it. `note_data` goes into
+        the transcript's start note: "approved" for a full run, "quick_started" for a quick one."""
         try:
             base_sha = self._explicit_base_sha or resolve_repo(self.info.root).head_sha
             record = prepare_run(
-                self.info, plan, base_sha, chat_id=self.session.id, overrides=self._config_overrides
+                self.info, plan, base_sha, chat_id=self.session.id, overrides=self._config_overrides, depth=depth
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
-            self._safe_note("start_failed", plan_version=draft.version, answer=answer, error=error)
+            self._safe_note("start_failed", **note_data, depth=depth, error=error)
             self._reset_goal()
             self._set_stage("idle")
             raise  # reported by the loop's error handler
-        depth = (self._route.depth if self._route else None) or (self._goal.depth if self._goal else None)
-        self._safe_note("approved", plan_version=draft.version, answer=answer, run_id=record.run_id, depth=depth)
+        started = "approved" if depth == "full" else "quick_started"
+        self._safe_note(started, **note_data, run_id=record.run_id, depth=depth)
         self._recent.append(f"phil: planned {plan.keyword}")
         run_id = escape(record.run_id)
         try:

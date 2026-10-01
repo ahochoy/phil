@@ -9,7 +9,8 @@ from tests.chat.conftest import critique, goal, plan
 from tests.chat.test_controller import FULL_SCRIPT, deferred, run_chat, transcript
 from tests.helpers import TEST_MODEL, TEST_MODELS
 
-FIX_PROMPT = "Fix it? [Enter = plan the fix / n] › "
+FIX_PROMPT = "Fix it? [Enter = quick fix / full = plan it / n] › "
+QUICK_FALLBACK = "Couldn't plan this as a quick change; planning it fully."
 
 
 def route(task_class, confidence=0.9, needs_detail=0.1) -> RouteJudgement:
@@ -46,11 +47,12 @@ def test_question_is_answered_without_intake_or_planning(calc_repo):
     assert spawned == [] and runs == []
 
 
-def test_simple_change_goes_to_intake_and_planning_with_status(calc_repo):
+def test_simple_change_takes_the_quick_path_and_falls_back_without_a_task(calc_repo):
     text, spawned, runs, factory, prompts = run_chat(
         calc_repo, ["fix the typo in calc", "n"], {"route": [route("simple_change")], **FULL_SCRIPT}
     )
-    assert "Simple change · planning  (/quick and /full force a path)" in text
+    assert "Simple change · quick path  (/full to plan it properly)" in text
+    assert QUICK_FALLBACK in text  # FULL_SCRIPT's intake goal has no task
     assert "Plan CALC v1" in text and "Approve? [y / edit / n] › " in prompts
     assert factory.remaining() == {"route": 0, "intake": 0, "architect": 0, "critic": 0}
 
@@ -123,9 +125,10 @@ def test_forced_prefix_skips_the_router(calc_repo):
     assert note["task_class"] is None and note["confidence"] is None and note["latency_ms"] is None
 
 
-def test_forced_quick_says_it_is_planning(calc_repo):
+def test_forced_quick_says_it_is_the_quick_path(calc_repo):
     text, *_ = run_chat(calc_repo, ["/quick fix the typo", "n"], FULL_SCRIPT)
-    assert "Forced: quick · planning" in text and "Forced: quick path" not in text
+    assert "Forced: quick path" in text and "Forced: quick · planning" not in text
+    assert QUICK_FALLBACK in text and "Plan CALC v1" in text
     [note] = [e for e in transcript(calc_repo) if e["kind"] == "route"]
     assert (note["depth"], note["source"]) == ("quick", "forced")
 
@@ -159,7 +162,8 @@ def test_diagnosis_offers_a_fix_and_enter_plans_it(calc_repo):
     )
     assert "Diagnosis · answering" in text and "The env var is unset." in text
     assert FIX_PROMPT in prompts
-    assert "Fix · planning" in text and "Forced:" not in text
+    assert "Fix · quick path" in text and "Forced:" not in text
+    assert QUICK_FALLBACK in text  # FULL_SCRIPT's intake goal has no task
     [intake] = payloads(factory, "intake")
     assert "why does calc crash?" in intake
     assert "Diagnosis so far:" in intake and "The env var is unset." in intake
