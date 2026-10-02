@@ -44,6 +44,7 @@ from phil.repo_detect import detect_test_cmd
 from phil.routing import Route, decide, parse_override, route_state
 from phil.routing.classify import classify
 from phil.run.launch import is_worker_alive, prepare_run, worker_starting
+from phil.run.state import blocking_count
 from phil.store.db import connect
 from phil.store.events import run_events, test_cmd_changed_line
 from phil.store.paths import ProjectPaths
@@ -1222,10 +1223,27 @@ class ChatController:
                 self.console.print(f"[phil.warn]Open issues: {escape(attention)}[/]")
             self.console.print(f"[phil.muted]Review it: phil diff {rid}[/]")
             self.console.print(summary)
+        elif state == "incomplete":
+            # Finished with a blocker or major issue open: say so plainly, and offer no PR.
+            # A finished run can't be resumed, so the chat simply takes its next goal.
+            count = self._blocking_count(run_id)
+            issues = f"{count} blocking issue(s)" if count is not None else "blocking issues"
+            self.console.print(f"[phil.warn]Run {rid} finished with {issues} open; nothing to merge yet. See /show.[/]")
+            self.console.print(summary)
         else:
             self.console.print(f"Run {rid} was {escape(state)}.")
             self.console.print(summary)
         self._notice_refs(run_id)
+
+    def _blocking_count(self, run_id: str) -> int | None:
+        """The run's open blocker and major issues, from its open_issues.json; None if unreadable."""
+        path = ProjectPaths(self.info.slug).run_dir(run_id) / "open_issues.json"
+        try:
+            issues = json.loads(path.read_text())
+            return blocking_count([issue for issue in issues if isinstance(issue, dict)])
+        except (OSError, ValueError, TypeError):
+            logger.warning("couldn't read the open issues of %s", run_id, exc_info=True)
+            return None
 
     def _notice_refs(self, run_id: str) -> None:
         """List the run's first few details, numbered for /more."""

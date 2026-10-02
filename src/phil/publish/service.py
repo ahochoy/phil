@@ -42,7 +42,8 @@ def publish_run(
 ) -> RunRecord:
     """Push `record`'s branch and open its pull request, then record the PR on the run.
 
-    Raises `PublishRefused` (nothing done) for any of: the run isn't `completed`; it already
+    Raises `PublishRefused` (nothing done) for any of: the run isn't `completed` (an
+    `incomplete` one, finished with blocking issues open, gets its own message); it already
     has a PR; no base branch is known (pass `base`); or `publisher.available()` names a
     reason. The title and body are rendered before anything is pushed. A `PublishError` from
     `publisher.push`/`create_pr` propagates unchanged and the run row is left untouched
@@ -50,6 +51,8 @@ def publish_run(
     already exists (an earlier attempt opened it but never recorded it) it is looked up with
     `publisher.find_pr` and recorded.
     """
+    if record.state == "incomplete":
+        raise PublishRefused(f"{record.run_id} finished with blocking issues open; there's nothing to open a PR for.")
     if record.state != "completed":
         raise PublishRefused(f"{record.run_id} is {record.state}; only a completed run can be published")
     if record.pr_url is not None:

@@ -101,6 +101,20 @@ def test_finished_runs_are_rejected(calc_repo):
         run_worker(calc_repo, record.run_id, "continue", factory=happy())
 
 
+def test_incomplete_runs_are_finished_too(calc_repo):
+    from phil.contracts import Issue
+    from tests.run.conftest import review, tester_report, write_green, write_red
+
+    info, record = new_run(calc_repo)
+    factory = ScriptedAgentFactory({
+        "implementer": [write_red, write_green], "tester": [tester_report()],
+        "reviewer": [review("approve", [Issue(severity="blocker", note="Diff is empty")])],
+    })
+    assert run_worker(calc_repo, record.run_id, "start", factory=factory).status == "incomplete"
+    with pytest.raises(WorkerError, match="incomplete; the run is finished"):
+        run_worker(calc_repo, record.run_id, "continue", factory=happy())
+
+
 def test_crash_marks_failed_and_continue_recovers(calc_repo):
     info, record = new_run(calc_repo)
     crashing = ScriptedAgentFactory({"implementer": [write_red, RuntimeError("model went away")]})

@@ -41,6 +41,7 @@ from phil.run.gates import (
 )
 from phil.run.state import (
     RunState,
+    blocking_count,
     dedupe_issues,
     issues_to_tasks,
     load_plan,
@@ -913,6 +914,9 @@ class RunEngine:
                 for failure in final.new_failures_vs_baseline
             ]
         open_issues = dedupe_issues(open_issues)
+        if status == "completed" and blocking_count(open_issues):
+            # It finished, but a blocker or major issue is still open: there's nothing to merge yet.
+            status = "incomplete"
         totals = run_usage(self.deps.conn, self.deps.run_id)
         usage = usage_by_role(self.deps.conn, self.deps.run_id)
         summary = render_summary(

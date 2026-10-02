@@ -97,6 +97,21 @@ def test_valid_transitions(conn):
         assert update_run(conn, "r-0001", state=state).state == state
 
 
+def test_a_run_finished_with_blocking_issues_is_incomplete_then_cleaned(conn):
+    create_run(conn, run_id="r-0001", keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=1)
+    for state in ["running", "incomplete", "cleaned"]:
+        assert update_run(conn, "r-0001", state=state).state == state
+
+
+def test_an_incomplete_run_is_finished(conn):
+    create_run(conn, run_id="r-0001", keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=1)
+    update_run(conn, "r-0001", state="running")
+    update_run(conn, "r-0001", state="incomplete")
+    for state in ("running", "completed", "failed", "stopped"):
+        with pytest.raises(InvalidTransition):
+            update_run(conn, "r-0001", state=state)
+
+
 def test_same_state_is_allowed(conn):
     create_run(conn, run_id="r-0001", keyword="MAPS", base_sha="abc", worktree=Path("/wt"), tasks_total=1)
     update_run(conn, "r-0001", state="running")

@@ -151,7 +151,7 @@ def test_a_quick_plan_with_more_than_one_task_is_not_patched(quick_harness):
         plan=calc_plan(second),
     )
     final = harness.start()
-    assert final["status"] == "completed"
+    assert final["status"] == "incomplete"  # the major finding stays open
     assert [task.verify for task in load_plan(final).tasks] == ["tdd", "check"]
     assert harness.factory.remaining() == {"quick_implementer": 0, "reviewer": 0}
     assert not final.get("patching") and final.get("patched_issues") == []

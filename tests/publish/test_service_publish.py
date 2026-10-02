@@ -4,7 +4,7 @@ from phil.publish.publisher import FakePublisher, PublishError
 from phil.publish.service import PublishRefused, publish_run
 from phil.store.db import connect
 from phil.store.runs import get_run, update_run
-from tests.cli.test_diff_clean import failed_run, finished_run
+from tests.cli.test_diff_clean import failed_run, finished_run, incomplete_run
 
 
 def test_publish_run_pushes_and_opens_the_pull_request(calc_repo):
@@ -37,6 +37,19 @@ def test_publish_run_refuses_a_run_that_is_not_completed(calc_repo):
 
     with pytest.raises(PublishRefused, match="failed; only a completed run can be published"):
         publish_run(info, conn, record, fake)
+    assert fake.calls == []
+
+
+def test_publish_run_refuses_an_incomplete_run(calc_repo):
+    info, record, paths = incomplete_run(calc_repo)
+    conn = connect(paths.db_path)
+    record = get_run(conn, record.run_id)
+    assert record.state == "incomplete"
+    fake = FakePublisher()
+
+    with pytest.raises(PublishRefused) as refused:
+        publish_run(info, conn, record, fake)
+    assert str(refused.value) == f"{record.run_id} finished with blocking issues open; there's nothing to open a PR for."
     assert fake.calls == []
 
 

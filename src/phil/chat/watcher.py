@@ -15,7 +15,7 @@ from phil.store.telemetry import run_totals, run_usage
 logger = logging.getLogger(__name__)
 
 # These end the run outright, regardless of any worker.
-ENDED_UNCONDITIONALLY = ("completed", "aborted", "cleaned")
+ENDED_UNCONDITIONALLY = ("completed", "incomplete", "aborted", "cleaned")
 # These only end the watch once no worker is alive or starting a resume for it — a `/resume`
 # just kicked off can still see the row's stale `failed`/`stopped` state for a moment.
 ENDED_IF_IDLE = ("failed", "stopped")
