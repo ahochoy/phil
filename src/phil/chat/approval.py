@@ -6,7 +6,7 @@ from phil.config import RUN_ROLES, PhilConfig
 from phil.contracts import Plan
 from phil.repo_detect import detect_test_cmd
 from phil.repo_detect import effective_setup_cmd as effective_setup_cmd  # the engine shares it
-from phil.workspace.shell import CONTAINMENT_DETAIL, ShellPolicy
+from phil.workspace.shell import CONTAINMENT_DETAIL, ShellPolicy, needs_a_shell
 
 GIT_POLICY_NOTE = "Commit signing or hooks are on; a failing signature or hook will pause the run."
 
@@ -52,12 +52,14 @@ def test_cmd_differs(plan: Plan, config: PhilConfig) -> bool:
 
 
 def setup_cmd_problem(config: PhilConfig, root: Path | None = None) -> str | None:
-    """None unless the effective setup command uses shell operators or a blocked command: setup
-    runs without a shell, so e.g. `npm ci && npm run build` would fail confusingly."""
+    """None unless the effective setup command needs a shell (operators, or unparseable): setup
+    runs without one, so e.g. `npm ci && npm run build` would fail confusingly. The agent's
+    risky-flag rules don't apply: the user approves the setup command at the plan view, and
+    ordinary ones such as `npm ci --prefix web` or `uv pip install -e .` must pass."""
     cmd, _ = effective_setup_cmd(config, root)
     if not cmd:
         return None
-    if ShellPolicy(config.shell.allow).denial_reason(cmd) == "forbidden":
+    if needs_a_shell(cmd):
         return f"setup command `{cmd}` uses shell operators or a blocked command; Phil runs it directly"
     return None
 

@@ -13,6 +13,18 @@ _ACTIVE_GROUPS: set[int] = set()
 
 _FORBIDDEN = set(";&|$`<>\n")
 
+
+def needs_a_shell(command: str) -> bool:
+    """Whether `command` only works through a shell: it has a shell-operator character, or
+    `shlex.split` can't parse it. Phil runs commands directly, so such a command can't run."""
+    if _FORBIDDEN & set(command.strip()):
+        return True
+    try:
+        shlex.split(command)
+    except ValueError:
+        return True
+    return False
+
 _GLOB_CHARS = set("*?[")
 
 

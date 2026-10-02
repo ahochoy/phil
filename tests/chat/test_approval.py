@@ -79,6 +79,24 @@ def test_setup_cmd_problem_accepts_an_ordinary_setup_command():
     assert setup_cmd_problem(configured) is None
 
 
+def test_setup_cmd_problem_accepts_flags_the_agent_shell_policy_calls_risky():
+    # The risky-flag rules guard the agent's own commands; a setup command the user approves at the
+    # plan view only has to run without a shell.
+    for cmd in ("npm ci --prefix web", "uv pip install -e .", "python -m pip install -e ."):
+        assert setup_cmd_problem(config(project={"setup_cmd": cmd})) is None, cmd
+
+
+def test_setup_cmd_problem_rejects_any_shell_operator():
+    for cmd in ("npm ci && npm run build", "npm ci | tee x"):
+        assert setup_cmd_problem(config(project={"setup_cmd": cmd})) == (
+            f"setup command `{cmd}` uses shell operators or a blocked command; Phil runs it directly"
+        )
+
+
+def test_setup_cmd_problem_rejects_a_command_shlex_cant_split():
+    assert setup_cmd_problem(config(project={"setup_cmd": "npm ci 'unterminated"})) is not None
+
+
 def test_launch_problems_rejects_shell_operators_in_the_setup_cmd():
     configured = config(project={"setup_cmd": "npm ci && npm run build"})
     problems = launch_problems(plan(test_cmd="pytest"), configured)
