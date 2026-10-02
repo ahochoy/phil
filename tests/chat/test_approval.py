@@ -90,7 +90,7 @@ def test_setup_cmd_problem_accepts_flags_the_agent_shell_policy_calls_risky():
 def test_setup_cmd_problem_rejects_any_shell_operator():
     for cmd in ("npm ci && npm run build", "npm ci | tee x"):
         assert setup_cmd_problem(config(project={"setup_cmd": cmd})) == (
-            f"setup command `{cmd}` uses shell operators or a blocked command; Phil runs it directly"
+            f"setup command `{cmd}` uses shell operators; Phil runs it directly"
         )
 
 
@@ -102,8 +102,7 @@ def test_launch_problems_rejects_shell_operators_in_the_setup_cmd():
     configured = config(project={"setup_cmd": "npm ci && npm run build"})
     problems = launch_problems(plan(test_cmd="pytest"), configured)
     assert problems == [
-        "setup command `npm ci && npm run build` uses shell operators or a blocked command; "
-        "Phil runs it directly"
+        "setup command `npm ci && npm run build` uses shell operators; Phil runs it directly"
     ]
 
 

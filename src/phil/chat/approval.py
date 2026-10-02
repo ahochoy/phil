@@ -11,7 +11,7 @@ from phil.workspace.shell import CONTAINMENT_DETAIL, ShellPolicy, needs_a_shell
 # The PATH lookup the program preflight uses; offline tests fake this alias, not `shutil.which`.
 _which = shutil.which
 
-GIT_POLICY_NOTE ="Commit signing or hooks are on; a failing signature or hook will pause the run."
+GIT_POLICY_NOTE = "Commit signing or hooks are on; a failing signature or hook will pause the run."
 
 
 def terminated(text: str) -> str:
@@ -63,7 +63,7 @@ def setup_cmd_problem(config: PhilConfig, root: Path | None = None) -> str | Non
     if not cmd:
         return None
     if needs_a_shell(cmd):
-        return f"setup command `{cmd}` uses shell operators or a blocked command; Phil runs it directly"
+        return f"setup command `{cmd}` uses shell operators; Phil runs it directly"
     return None
 
 

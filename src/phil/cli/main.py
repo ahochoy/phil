@@ -37,6 +37,7 @@ from phil.store.events import run_events
 from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
+from phil.tomlw import toml_value
 from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
 
@@ -417,7 +418,10 @@ def run_plan(
                 f"[phil.error]cannot load PHIL_AGENT_FACTORY: {escape(type(exc).__name__)}: {escape(str(exc))}[/]"
             )
             raise typer.Exit(1) from exc
-    record = prepare_run(info, plan, base_sha, overrides=overrides)
+    # Pin the run to the setup command printed above (or to none), as the chat does: the worker
+    # reloads its config with these overrides and would otherwise detect again from the worktree.
+    pin = f"project.setup_cmd={toml_value(setup_cmd or '')}"
+    record = prepare_run(info, plan, base_sha, overrides=[*overrides, pin])
     if foreground:
         from phil.run.worker import WorkerError, run_worker
 

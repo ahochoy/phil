@@ -53,6 +53,19 @@ def test_run_shows_the_detected_setup_command(calc_repo, tmp_path, monkeypatch):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path))])
     assert result.exit_code == 0, result.output
     assert "setup: npm ci (detected)" in result.output
+    [record] = runs_for(calc_repo)
+    # The worker reloads its config with this pin, so it runs exactly the command printed.
+    assert json.loads(record.config_overrides) == ['project.setup_cmd="npm ci"']
+
+
+def test_run_pins_no_setup_after_its_own_overrides(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    result = runner.invoke(
+        cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path)), "--set", "run.max_cost_usd=5"]
+    )
+    assert result.exit_code == 0, result.output
+    [record] = runs_for(calc_repo)
+    assert json.loads(record.config_overrides) == ["run.max_cost_usd=5", 'project.setup_cmd=""']
 
 
 def test_run_shows_a_configured_setup_command(calc_repo, tmp_path, monkeypatch):
@@ -234,7 +247,7 @@ def test_run_stores_its_set_overrides_on_the_run(calc_repo, tmp_path, monkeypatc
     )
     assert result.exit_code == 0, result.output
     [record] = runs_for(calc_repo)
-    assert json.loads(record.config_overrides) == ["run.warn_at=0.5", "run.max_cost_usd=5"]
+    assert json.loads(record.config_overrides) == ["run.warn_at=0.5", "run.max_cost_usd=5", 'project.setup_cmd=""']
 
 
 def test_run_rejects_a_bad_set_override(calc_repo, tmp_path, monkeypatch):
