@@ -83,6 +83,22 @@ Deferred items from implementing plan M3b ("quick path"). Plan:
 - **A test or check command that can't be found (exit 127), e.g. `npm` not on the background
   worker's PATH under nvm, passes quietly because the baseline failed the same way.** Phil
   should stop the run with a clear message, and make sure the worker inherits the user's PATH.
+  **Resolved** by the worktree-dependencies work (2026-10-01-phil-worktree-deps), instead of
+  running quietly:
+  - the baseline and check commands escalate `cmd_not_found` with `couldnt_run_summary`'s
+    message when they exit 127;
+  - a setup command that fails (127 included) escalates `setup_failed`;
+  - a test run after implement that exits 127 isn't caught separately: it counts as an ordinary
+    failing run;
+  - `launch_problems` also flags a missing program on `PATH` before the run even starts.
+  - PATH needed no change: the worker already inherits the chat's environment (`spawn_worker` passes `env=None`).
+  - The live failure's real cause was dependencies missing from the worktree (`sh: vitest: command not found`), not PATH. The new setup command (`npm ci` and similar) installs them.
+- **The rebaseline worktrees have no dependencies.** The temporary worktree a run uses to
+  re-capture its baseline after a test command switch (`rebaseline_path`) never runs the setup
+  command, so a Node test command can exit 127 there.
+- **A check command that exits 127 resumes at implement rather than verify.** A retry after
+  `cmd_not_found` on a check spends an implementer call before the check runs again, though
+  only the environment needed fixing.
 - **The quick implementer used 8 model calls on a one-line docs change and 17 total on
   py-multiply, against a target of under 10**: try a leaner quick-implementer prompt or a
   tighter cap.

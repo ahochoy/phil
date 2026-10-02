@@ -73,6 +73,17 @@ def test_write_log(tmp_path):
     assert path.read_text() == "FAILED test_x\n"
 
 
+def test_log_path_matches_where_write_log_writes(tmp_path):
+    store = ArtifactStore(tmp_path / "r-0001")
+    written = store.write_log("check-MAPS-001-1", "exit 127\n")
+    assert store.log_path("check-MAPS-001-1") == written
+
+
+def test_log_path_resolves_like_other_artifact_paths(tmp_path):
+    store = ArtifactStore(tmp_path / "r-0001")
+    assert store.log_path("check-MAPS-001-1") == (tmp_path / "r-0001").resolve() / "logs" / "check-MAPS-001-1.log"
+
+
 @pytest.mark.parametrize(
     "relative",
     [

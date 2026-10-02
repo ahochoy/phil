@@ -98,6 +98,16 @@ class GitConfig(_Section):
 
 class ProjectConfig(_Section):
     test_cmd: str | None = None
+    setup_cmd: str | None = None  # None means detect from the lockfile; "" means no setup
+    setup_timeout_s: int = 600
+
+    @field_validator("setup_timeout_s")
+    @classmethod
+    def _validate_setup_timeout_s(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("project.setup_timeout_s must be > 0")
+        return value
+
     test_globs: list[str] = [
         "tests/*",
         "test/*",

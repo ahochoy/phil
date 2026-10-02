@@ -92,6 +92,7 @@ class TestReport(Contract):
     new_failures_vs_baseline: list[str] = []
     passed_count: int | None = None
     skipped_count: int | None = None
+    exit_code: int | None = None
 
 
 class TesterReport(Contract):

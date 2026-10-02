@@ -30,7 +30,10 @@ from phil.contracts import (
 )
 from phil.git import GitError, branch_for, git
 from phil.packets import Packet, PacketTooLarge, build_packet
+from phil.repo_detect import effective_setup_cmd
 from phil.run.gates import (
+    COMMAND_NOT_FOUND,
+    couldnt_run_summary,
     is_test_path,
     run_check,
     run_tests,
@@ -53,6 +56,7 @@ from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.events import EventLog
 from phil.store.runs import get_run, update_run
 from phil.store.telemetry import run_usage, usage_by_role
+from phil.workspace.shell import child_env, run_command
 from phil.workspace.worktree import WorktreeManager, rebaseline_path
 
 
@@ -126,7 +130,7 @@ class RunEngine:
         graph.add_node("tester_task", self.tester_task)
         graph.add_node("review", self.review)
         graph.add_edge(START, "setup")
-        graph.add_edge("setup", "pick_task")
+        graph.add_conditional_edges("setup", self.route_after_setup, ["pick_task", "escalate"])
         graph.add_conditional_edges("pick_task", self.route_after_pick, ["implement", "tester", "review"])
         graph.add_conditional_edges("review", self.route_after_review, ["pick_task", "finish", "escalate"])
         graph.add_node("escalate", self.escalate)
@@ -135,7 +139,7 @@ class RunEngine:
         graph.add_conditional_edges(
             "escalate",
             self.route_after_escalate,
-            ["implement", "verify", "pick_task", "finish", "tester", "tester_task", "review", "commit"],
+            ["setup", "implement", "verify", "pick_task", "finish", "tester", "tester_task", "review", "commit"],
         )
         graph.add_conditional_edges("commit", self.route_after_commit, ["tester_task", "pick_task", "escalate"])
         graph.add_conditional_edges("tester", self.route_after_tester, ["pick_task", "escalate"])
@@ -410,12 +414,21 @@ class RunEngine:
     # --- nodes -------------------------------------------------------------
 
     def setup(self, state: RunState) -> dict:
+        """Create the run's worktree (unless it exists: a retry reruns this node), install its
+        dependencies with the setup command, then capture the baseline."""
         plan = load_plan(state)
         if not self.deps.worktree.exists():
             self.worktrees.create(run_id=self.deps.run_id, base_sha=state["base_sha"], path=self.deps.worktree)
         self.deps.artifacts.write_plan(plan)
-        baseline = self._test({**state, "baseline_failures": []}, "baseline")
         self._update_run(state="running", current_node="setup", tasks_total=len(plan.tasks))
+        escalation = self._run_setup_cmd()
+        if escalation is not None:
+            return {"status": "running", "escalation": escalation}
+        baseline = self._test({**state, "baseline_failures": []}, "baseline")
+        if baseline.exit_code == COMMAND_NOT_FOUND:
+            output = Path(baseline.log_path).read_text() if baseline.log_path else ""
+            escalation = self._cmd_not_found(baseline.command, output, baseline.log_path, resume_to="setup")
+            return {"status": "running", "escalation": escalation}
         return {
             "baseline_failures": baseline.failures,
             "initial_baseline": baseline.failures,
@@ -423,6 +436,57 @@ class RunEngine:
             "base_skipped": baseline.skipped_count,
             "status": "running",
         }
+
+    def _run_setup_cmd(self) -> dict | None:
+        """Run the effective setup command in the worktree, without keys in its environment.
+        None when there's none or it succeeded; otherwise the `setup_failed` escalation."""
+        config = self.deps.config
+        cmd, _ = effective_setup_cmd(config, self.deps.worktree)
+        if not cmd:
+            return None
+        timeout_s = config.project.setup_timeout_s
+        result = run_command(cmd, self.deps.worktree, timeout_s, env=child_env(os.environ, config.shell.pass_env))
+        log = self.deps.artifacts.write_log("setup", result.stdout + (f"\n{result.stderr}" if result.stderr else ""))
+        if result.ok:
+            # Installed dependencies git doesn't ignore would look like the task's changes (and a
+            # reset's `git clean -fd` would wipe them), so they must be ignored first. The worktree
+            # is the base commit, so a .gitignore edit only helps a new run; .git/info/exclude is
+            # shared by every worktree, so excluding them there makes a retry work.
+            left = self.worktrees.untracked_unignored(self.deps.worktree)
+            if not left:
+                return None
+            named = ", ".join(left[:2]) + ("…" if len(left) > 2 else "")
+            summary = (
+                f"Setup command `{cmd}` left files git doesn't ignore ({named}); add them to .git/info/exclude "
+                "and retry, or commit them to .gitignore and start again."
+            )
+        elif result.timed_out:
+            summary = f"Setup command `{cmd}` timed out after {timeout_s}s."
+        else:
+            summary = f"Setup command `{cmd}` failed (exit {result.exit_code}); see the setup log."
+        return {
+            "reason": "setup_failed",
+            "options": ["retry", "abort"],
+            "resume_to": "setup",
+            "summary": summary,
+            "log": str(log),
+        }
+
+    @staticmethod
+    def _cmd_not_found(cmd: str, output: str, log: str | None, resume_to: str, task_id: str | None = None) -> dict:
+        """The escalation for a test or check command that couldn't run (exit 127). It costs no
+        attempt: no attempt can pass until the human fixes the worktree's dependencies or PATH."""
+        escalation = {
+            "reason": "cmd_not_found",
+            "options": ["retry", "abort"],
+            "resume_to": resume_to,
+            "summary": couldnt_run_summary(cmd, output),
+            "log": log or None,
+        }
+        return {**escalation, "task_id": task_id} if task_id else escalation
+
+    def route_after_setup(self, state: RunState) -> str:
+        return "escalate" if state.get("escalation") else "pick_task"
 
     def pick_task(self, state: RunState) -> dict:
         plan = load_plan(state)
@@ -601,13 +665,15 @@ class RunEngine:
                     "verdict": "red_ok",
                 }
         elif task.verify == "check":
+            check_name = artifact_name("check", task.id, state["call_seq"])
             check = run_check(
-                task.check_cmd,
-                worktree,
-                shell=self.deps.config.shell,
-                artifacts=self.deps.artifacts,
-                name=artifact_name("check", task.id, state["call_seq"]),
+                task.check_cmd, worktree, shell=self.deps.config.shell, artifacts=self.deps.artifacts, name=check_name
             )
+            if check.exit_code == COMMAND_NOT_FOUND:
+                output = check.stdout + (f"\n{check.stderr}" if check.stderr else "")
+                log = str(self.deps.artifacts.log_path(check_name))
+                escalation = self._cmd_not_found(check.command, output, log, resume_to="implement", task_id=task.id)
+                return {"last_report": report.model_dump(), "verdict": "escalate", "escalation": escalation}
             problems = verify_check(
                 report,
                 check,

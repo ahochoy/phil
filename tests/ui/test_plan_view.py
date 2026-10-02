@@ -104,6 +104,31 @@ def test_render_plan_without_a_test_command_points_at_your_config():
     assert "Tests: none — set test_cmd in the plan or your config" in text
 
 
+def test_render_plan_shows_the_setup_command_above_the_test_line():
+    draft = PlanDraft(plan(test_cmd="pytest"), critique("ok"), 1)
+    text = text_of(
+        render_plan, draft, test_cmd="pytest", test_cmd_note=None, git_note=None,
+        setup_cmd="npm ci", setup_cmd_source="detected",
+    )
+    assert "setup: npm ci (detected)" in text
+    assert text.index("setup: npm ci (detected)") < text.index("Tests: pytest")
+
+
+def test_render_plan_shows_a_configured_setup_command_with_no_suffix():
+    draft = PlanDraft(plan(test_cmd="pytest"), critique("ok"), 1)
+    text = text_of(
+        render_plan, draft, test_cmd="pytest", test_cmd_note=None, git_note=None,
+        setup_cmd="npm ci", setup_cmd_source="config",
+    )
+    assert "setup: npm ci\n" in text  # no "(detected)" when it came from config
+
+
+def test_render_plan_without_a_setup_command_shows_no_setup_line():
+    draft = PlanDraft(plan(test_cmd="pytest"), critique("ok"), 1)
+    text = text_of(render_plan, draft, test_cmd="pytest", test_cmd_note=None, git_note=None)
+    assert "setup:" not in text
+
+
 def test_render_plan_without_a_test_command_for_an_all_check_plan():
     task = Task(id="CALC-001", description="Edit copy", acceptance_criteria=["c"], verify="check", check_cmd="grep -q x a")
     draft = PlanDraft(plan(test_cmd=None).model_copy(update={"tasks": [task]}), critique("ok"), 1)

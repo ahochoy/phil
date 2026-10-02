@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from phil.repo_detect import detect_test_cmd
+from phil.repo_detect import detect_setup_cmd, detect_test_cmd
 
 
 def write(root, name, text=""):
@@ -89,3 +89,41 @@ def test_go_wins_over_cargo(tmp_path):
 def test_a_real_test_script_that_mentions_the_placeholder_words_still_counts(tmp_path):
     write(tmp_path, "package.json", json.dumps({"scripts": {"test": "node check.js --why 'no test specified yet'"}}))
     assert detect_test_cmd(tmp_path) == "npm test"
+
+
+@pytest.mark.parametrize(
+    "lockfile,cmd",
+    [
+        ("pnpm-lock.yaml", "pnpm install --frozen-lockfile"),
+        ("yarn.lock", "yarn install --frozen-lockfile"),
+        ("bun.lockb", "bun install --frozen-lockfile"),
+        ("bun.lock", "bun install --frozen-lockfile"),
+        ("package-lock.json", "npm ci"),
+    ],
+)
+def test_detect_setup_cmd_for_each_lockfile(tmp_path, lockfile, cmd):
+    write(tmp_path, "package.json", json.dumps({}))
+    write(tmp_path, lockfile)
+    assert detect_setup_cmd(tmp_path) == cmd
+
+
+def test_detect_setup_cmd_with_no_lockfile_gives_none(tmp_path):
+    write(tmp_path, "package.json", json.dumps({}))
+    assert detect_setup_cmd(tmp_path) is None
+
+
+def test_detect_setup_cmd_with_no_package_json_gives_none(tmp_path):
+    write(tmp_path, "package-lock.json", json.dumps({}))
+    assert detect_setup_cmd(tmp_path) is None
+
+
+def test_detect_setup_cmd_prefers_pnpm_over_other_lockfiles(tmp_path):
+    write(tmp_path, "package.json", json.dumps({}))
+    write(tmp_path, "pnpm-lock.yaml")
+    write(tmp_path, "package-lock.json")
+    assert detect_setup_cmd(tmp_path) == "pnpm install --frozen-lockfile"
+
+
+def test_detect_setup_cmd_in_a_python_repo_gives_none(tmp_path):
+    write(tmp_path, "pyproject.toml")
+    assert detect_setup_cmd(tmp_path) is None

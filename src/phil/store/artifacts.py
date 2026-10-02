@@ -73,8 +73,12 @@ class ArtifactStore:
             return []
         return [json.loads(line) for line in path.read_text().splitlines() if line]
 
+    def log_path(self, name: str) -> Path:
+        """Where `write_log(name, ...)` writes (or will write): resolved, inside the run dir."""
+        return self._file(f"logs/{name}.log")
+
     def write_log(self, name: str, text: str) -> Path:
-        path = self._file(f"logs/{name}.log")
+        path = self.log_path(name)
         path.write_text(text)
         return path
 
