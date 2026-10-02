@@ -64,6 +64,11 @@ quick.
 - Bordered question and approval callouts with keyboard choices and explicit scope.
 - Failure categories: provider, auth or quota, network, tool, command, permission, config, orchestration, internal. Each shows what changed, whether Phil will retry, and whether the user must act.
 - Full-screen app versus a richer inline UI is decided at M5, from mockups.
+- **Visual proposals for UI work** (user request, 2026-10-02):
+  - For changes with a visual element (a new page section, a CTA, a layout), Phil shows what it intends before building it: a quick mockup, a sketch, or references.
+  - The user confirms or redirects at that point.
+  - This isn't a full design agent. It's a way to say "this is what we're thinking".
+  - Prompted by a live run that added a CTA section with no shared picture of placement, content or visuals.
 
 ### M6 — Extensibility and learning
 
