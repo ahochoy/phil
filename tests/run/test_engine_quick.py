@@ -116,23 +116,24 @@ def change_nothing(turn: Turn) -> TaskResult:
     return task_result("green")  # the check passes as it stands; no fix commit
 
 
-def test_a_fix_that_changes_nothing_is_labelled_not_changed(quick_harness, calc_repo):
-    harness = quick_harness({
-        "quick_implementer": [write_red, write_green, change_nothing],
-        "reviewer": [review("changes", [Issue(severity="major", note=FINDING)])],
-    })
-    final = harness.start()
-    assert final["status"] == "completed"
+def test_a_fix_that_changes_nothing_escalates_instead_of_finishing(quick_harness, calc_repo):
+    harness = quick_harness(
+        {
+            "quick_implementer": [write_red, write_green, change_nothing],
+            "reviewer": [review("changes", [Issue(severity="major", note=FINDING)])],
+        },
+        chat_id=CHAT_ID,
+    )
+    result = harness.start()
+    escalation = result["__interrupt__"][0].value
+    assert escalation["reason"] == "attempts"
+    assert escalation["summary"] == "CALC-001's fix after review didn't pass the gate"
+    assert escalation["problems"] == ["no changes were made for CALC-001"]
+    assert escalation["options"] == ["full", "retry", "abort"]
+    assert result.get("status") != "completed"
+    assert harness.run_record().state != "completed"
     log = run_git(calc_repo, "log", "--format=%s", f"{harness.base_sha}..phil/{RUN_ID}").splitlines()
     assert log == ["CALC-001: Add subtract"]
-    note = f"not changed after review: {FINDING}"
-    notes = [issue["note"] for issue in final["open_issues"]]
-    assert note in notes
-    assert not any(n.startswith("fixed after review") for n in notes)
-    unchanged = next(i for i in final["open_issues"] if i["note"] == note)
-    assert unchanged["severity"] == "major"  # the original finding's severity, not downgraded
-    summary = (harness.deps.artifacts.run_dir / "summary.md").read_text()
-    assert f"- (major) {note}" in summary
 
 
 def test_a_quick_plan_with_more_than_one_task_is_not_patched(quick_harness):
@@ -144,7 +145,7 @@ def test_a_quick_plan_with_more_than_one_task_is_not_patched(quick_harness):
     )
     harness = quick_harness(
         {
-            "quick_implementer": [write_red, write_green, change_nothing],
+            "quick_implementer": [write_red, write_green, add_docstring],
             "reviewer": [review("changes", [Issue(severity="major", note=FINDING)])],
         },
         plan=calc_plan(second),

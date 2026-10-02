@@ -97,6 +97,42 @@ def test_a_check_task_that_keeps_failing_escalates_without_green_phase_wording(m
     assert not any("green" in problem for problem in escalation["problems"])
 
 
+def write_nothing(turn: Turn) -> TaskResult:
+    return task_result("green")  # writes nothing at all
+
+
+def test_a_check_task_that_changes_nothing_fails_then_escalates(make_harness):
+    harness = make_harness({"implementer": [write_nothing] * 3}, plan=check_plan())
+    escalation = harness.start()["__interrupt__"][0].value
+
+    assert escalation["reason"] == "attempts"
+    assert escalation["summary"] == "CALC-001 failed 3 attempts on the check task"
+    assert escalation["problems"] == ["no changes were made for CALC-001"]
+    assert len(implementer_packets(harness)) == 3
+    assert "no changes were made for CALC-001" in implementer_packets(harness)[1]
+
+
+def test_a_check_that_passes_untouched_still_needs_a_change(make_harness):
+    # The live failure: "check still passes" held without any change, so the gate passed.
+    plan = check_plan()
+    plan = plan.model_copy(update={"tasks": [plan.tasks[0].model_copy(update={"check_cmd": "true"})]})
+    harness = make_harness({"implementer": [write_nothing] * 3}, plan=plan)
+    escalation = harness.start()["__interrupt__"][0].value
+
+    assert escalation["problems"] == ["no changes were made for CALC-001"]
+
+
+def test_a_check_task_that_writes_after_changing_nothing_passes(make_harness):
+    harness = make_harness(
+        {"implementer": [write_nothing, write_page], "tester": [tester_report()], "reviewer": [review()]},
+        plan=check_plan(),
+    )
+    final = harness.start()
+
+    assert final["status"] == "completed"
+    assert harness.factory.remaining() == {"implementer": 0, "tester": 0, "reviewer": 0}
+
+
 def write_titled_page(turn: Turn) -> TaskResult:
     (turn.workdir / "index.html").write_text("<title>easter</title>\n<meta name='easter-egg' content='hello world'>\n")
     return task_result("green", ["index.html"])
