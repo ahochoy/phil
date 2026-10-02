@@ -9,6 +9,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from phil.git import GitError, commits_ahead
 from phil.publish.learnings import append_learnings, learnings_entry
 from phil.publish.pr_body import find_pr_template, pr_title, render_pr_body
 from phil.publish.publisher import Publisher, PublishError
@@ -44,7 +45,7 @@ def publish_run(
 
     Raises `PublishRefused` (nothing done) for any of: the run isn't `completed` (an
     `incomplete` one, finished with blocking issues open, gets its own message); it already
-    has a PR; no base branch is known (pass `base`); or `publisher.available()` names a
+    has a PR; its branch has no commits beyond its base; no base branch is known (pass `base`); or `publisher.available()` names a
     reason. The title and body are rendered before anything is pushed. A `PublishError` from
     `publisher.push`/`create_pr` propagates unchanged and the run row is left untouched
     (re-running is safe: `git push` of the same ref is idempotent), except that if the PR
@@ -57,6 +58,13 @@ def publish_run(
         raise PublishRefused(f"{record.run_id} is {record.state}; only a completed run can be published")
     if record.pr_url is not None:
         raise PublishRefused(f"{record.run_id} already has PR #{record.pr_number}: {record.pr_url}")
+    # GitHub refuses a PR for a branch with no commits beyond its base; say so before pushing.
+    try:
+        ahead = commits_ahead(info.root, record.base_sha, record.branch)
+    except GitError as exc:
+        raise PublishRefused(f"couldn't count {record.run_id}'s commits: {exc}") from exc
+    if ahead == 0:
+        raise PublishRefused(f"{record.run_id} has no commits to open a PR for.")
     base_branch = base or record.base_branch
     if base_branch is None:
         raise PublishRefused(f"{record.run_id} started on a detached HEAD; pass --base <branch>")

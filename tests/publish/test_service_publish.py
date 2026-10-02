@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from phil.publish.publisher import FakePublisher, PublishError
@@ -50,6 +52,26 @@ def test_publish_run_refuses_an_incomplete_run(calc_repo):
     with pytest.raises(PublishRefused) as refused:
         publish_run(info, conn, record, fake)
     assert str(refused.value) == f"{record.run_id} finished with blocking issues open; there's nothing to open a PR for."
+    assert fake.calls == []
+
+
+def without_commits(record):
+    """Drop the run's commits: its branch then points at its base, as a run that changed nothing."""
+    from tests.helpers import run_git
+
+    run_git(Path(record.worktree), "reset", "--hard", record.base_sha)
+
+
+def test_publish_run_refuses_a_run_with_no_commits(calc_repo):
+    info, record, paths = finished_run(calc_repo)
+    without_commits(record)
+    conn = connect(paths.db_path)
+    record = get_run(conn, record.run_id)
+    fake = FakePublisher()
+
+    with pytest.raises(PublishRefused) as refused:
+        publish_run(info, conn, record, fake)
+    assert str(refused.value) == f"{record.run_id} has no commits to open a PR for."
     assert fake.calls == []
 
 

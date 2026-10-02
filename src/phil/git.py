@@ -32,6 +32,16 @@ def git(cwd: Path, *args: str) -> str:
     return proc.stdout
 
 
+def commits_ahead(repo: Path, base: str, branch: str) -> int:
+    """How many commits `branch` has beyond `base` in `repo`; 0 when the branch doesn't exist.
+    Raises `GitError` for any other git failure."""
+    try:
+        git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    except GitError:
+        return 0
+    return int(git(repo, "rev-list", "--count", f"{base}..refs/heads/{branch}").strip())
+
+
 def branch_for(run_id: str) -> str:
     if not re.fullmatch(RUN_ID_PATTERN, run_id):
         raise ValueError(f"invalid run id: {run_id!r}")

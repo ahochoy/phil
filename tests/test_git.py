@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-from phil.git import GitError, branch_for, git
+from phil.git import GitError, branch_for, commits_ahead, git
 
 
 def test_git_returns_stdout(git_repo):
@@ -18,6 +18,20 @@ def test_git_error_includes_command_and_stderr(git_repo):
     assert "not-a-real-subcommand" in message
     assert excinfo.value.stderr in message
     assert excinfo.value.stderr
+
+
+def test_commits_ahead_counts_a_branch_beyond_its_base(git_repo):
+    base = git(git_repo, "rev-parse", "HEAD").strip()
+    git(git_repo, "branch", "phil/r-0001", base)
+    assert commits_ahead(git_repo, base, "phil/r-0001") == 0
+    work = git(git_repo, "commit-tree", f"{base}^{{tree}}", "-p", base, "-m", "work").strip()
+    git(git_repo, "branch", "-f", "phil/r-0001", work)
+    assert commits_ahead(git_repo, base, "phil/r-0001") == 1
+
+
+def test_commits_ahead_is_zero_for_a_missing_branch(git_repo):
+    base = git(git_repo, "rev-parse", "HEAD").strip()
+    assert commits_ahead(git_repo, base, "phil/r-0002") == 0
 
 
 def test_branch_for_valid_run_id():

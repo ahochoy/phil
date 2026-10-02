@@ -11,8 +11,8 @@ from phil.store.db import connect
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
 from tests.chat.test_controller import FULL_SCRIPT, run_chat
+from tests.chat.test_controller_run import completed_with_a_commit, peek, post, to_state
 from tests.helpers import run_git
-from tests.chat.test_controller_run import peek, post, to_state
 
 PR_PROMPT = "Open a PR? [y / n] › "
 
@@ -34,25 +34,6 @@ def stored(repo, run_id):
         conn.close()
 
 
-def commit_on_branch(controller):
-    """Give the chat's run branch one commit beyond its base, as a run that changed something has."""
-    conn = connect(ProjectPaths(controller.info.slug).db_path)
-    record = get_run(conn, controller._run_id)
-    conn.close()
-    root = controller.info.root
-    sha = run_git(root, "commit-tree", f"{record.base_sha}^{{tree}}", "-p", record.base_sha, "-m", "work").strip()
-    run_git(root, "branch", record.branch, sha)
-
-
-def completed(**fields):
-    """Finish the chat's run as completed, with a commit on its branch."""
-    def step(controller):
-        commit_on_branch(controller)
-        return to_state("completed", **({"tasks_done": 1} | fields))(controller)
-
-    return step
-
-
 def test_the_pr_prompt():
     assert PROMPTS["confirm_pr"] == PR_PROMPT
 
@@ -61,7 +42,7 @@ def test_a_completed_run_offers_a_pr(calc_repo, fake):
     seen = {}
     text, spawned, runs, factory, prompts = run_chat(
         calc_repo,
-        ["add subtract", "y", completed(), peek(seen, "stage", lambda c: c.stage)],
+        ["add subtract", "y", completed_with_a_commit, peek(seen, "stage", lambda c: c.stage)],
         FULL_SCRIPT,
     )
     run_id = runs[0].run_id
@@ -71,12 +52,29 @@ def test_a_completed_run_offers_a_pr(calc_repo, fake):
     assert fake.calls == []
 
 
+def test_a_completed_run_without_commits_does_not_ask(calc_repo, fake):
+    def branch_without_commits(controller):
+        conn = connect(ProjectPaths(controller.info.slug).db_path)
+        record = get_run(conn, controller._run_id)
+        conn.close()
+        run_git(controller.info.root, "branch", record.branch, record.base_sha)
+        return to_state("completed", tasks_done=1)(controller)
+
+    seen = {}
+    text, *_ = run_chat(
+        calc_repo, ["add subtract", "y", branch_without_commits, peek(seen, "stage", lambda c: c.stage)], FULL_SCRIPT
+    )
+    assert "Open a PR" not in text
+    assert seen["stage"] == "idle"
+    assert fake.calls == []
+
+
 def test_yes_opens_the_pr(calc_repo, fake):
     seen = {}
     text, spawned, runs, factory, prompts = run_chat(
         calc_repo,
         [
-            "add subtract", "y", completed(),
+            "add subtract", "y", completed_with_a_commit,
             "y",
             peek(seen, "stage", lambda c: (c.stage, c.state.view().step)),
         ],
@@ -101,7 +99,7 @@ def test_the_pr_opens_in_the_background(calc_repo, fake):
     text, *_ = run_chat(
         calc_repo,
         [
-            "add subtract", "y", completed(),
+            "add subtract", "y", completed_with_a_commit,
             lambda c: setattr(c.io, "submit", pending.append) or WAKE,
             "y",
             peek(seen, "opening", lambda c: (c.stage, c.state.view().step)),
@@ -119,7 +117,7 @@ def test_no_declines(calc_repo, fake):
     seen = {}
     text, spawned, runs, factory, prompts = run_chat(
         calc_repo,
-        ["add subtract", "y", completed(), "n", peek(seen, "stage", lambda c: c.stage)],
+        ["add subtract", "y", completed_with_a_commit, "n", peek(seen, "stage", lambda c: c.stage)],
         FULL_SCRIPT,
     )
     run_id = runs[0].run_id
@@ -139,7 +137,7 @@ def test_a_goal_typed_at_the_question_is_kept(calc_repo, fake):
     text, spawned, runs, factory, prompts = run_chat(
         calc_repo,
         [
-            "add subtract", "y", completed(),
+            "add subtract", "y", completed_with_a_commit,
             lambda c: setattr(c.io, "submit", hold) or WAKE,
             "add multiply",
             peek(seen, "stage", lambda c: (c.stage, c._goal_text)),
@@ -154,7 +152,7 @@ def test_a_goal_typed_at_the_question_is_kept(calc_repo, fake):
 def test_an_unavailable_publisher_is_reported(calc_repo, monkeypatch):
     # The autouse guard's publisher: unavailable with "gh is disabled in tests".
     text, spawned, runs, *_ = run_chat(
-        calc_repo, ["add subtract", "y", completed(), "y"], FULL_SCRIPT
+        calc_repo, ["add subtract", "y", completed_with_a_commit, "y"], FULL_SCRIPT
     )
     run_id = runs[0].run_id
     assert "Couldn't open the PR: gh is disabled in tests" in text
@@ -166,7 +164,7 @@ def test_an_unavailable_publisher_is_reported(calc_repo, monkeypatch):
 def test_a_push_failure_is_reported(calc_repo, fake):
     fake.fail["push"] = "git push failed: [rejected] denied"
     text, spawned, runs, *_ = run_chat(
-        calc_repo, ["add subtract", "y", completed(), "y"], FULL_SCRIPT
+        calc_repo, ["add subtract", "y", completed_with_a_commit, "y"], FULL_SCRIPT
     )
     assert "Couldn't open the PR: git push failed: [rejected] denied" in text
     assert f"Fix that, then `phil pr {runs[0].run_id}`." in text
@@ -221,7 +219,7 @@ def test_a_run_with_a_pr_does_not_ask(calc_repo, fake):
 
         update_run(conn, controller._run_id, pr_url="https://x/pull/3", pr_number=3, pr_state="open")
         conn.close()
-        return completed()(controller)
+        return completed_with_a_commit(controller)
 
     text, *_ = run_chat(calc_repo, ["add subtract", "y", complete_with_pr], FULL_SCRIPT)
     assert "Open a PR" not in text
@@ -314,7 +312,7 @@ def test_confirm_pr_is_saved_as_idle(calc_repo, fake):
 
     run_chat(
         calc_repo,
-        ["add subtract", "y", completed(), peek(seen, "saved", saved)],
+        ["add subtract", "y", completed_with_a_commit, peek(seen, "saved", saved)],
         FULL_SCRIPT,
     )
     assert seen["saved"] == "idle"

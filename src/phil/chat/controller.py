@@ -43,6 +43,7 @@ from phil.repo import RepoInfo, resolve_repo
 from phil.repo_detect import detect_test_cmd
 from phil.routing import Route, decide, parse_override, route_state
 from phil.routing.classify import classify
+from phil.git import GitError, commits_ahead
 from phil.run.launch import is_worker_alive, prepare_run, worker_starting
 from phil.run.state import blocking_count
 from phil.store.db import connect
@@ -1419,9 +1420,17 @@ class ChatController:
     # --- pull requests ---------------------------------------------------------------------------
 
     def _offer_pr(self, run_id: str) -> None:
-        """After a completed run's notice: ask to open its PR, if it has a base branch and no PR yet."""
+        """After a completed run's notice: ask to open its PR, if it has a base branch, no PR yet
+        and commits beyond its base (GitHub refuses a PR for a branch with none)."""
         record = get_run(self.conn, run_id)
         if record is None or record.base_branch is None or record.pr_url is not None:
+            return
+        try:
+            ahead = commits_ahead(self.info.root, record.base_sha, record.branch)
+        except GitError:
+            logger.warning("couldn't count the commits of %s; no PR offer", run_id, exc_info=True)
+            return
+        if ahead == 0:
             return
         self.console.print(f"Open a PR for [phil.id]{escape(run_id)}[/] → {escape(record.base_branch)}?")
         self._pr_offer = run_id

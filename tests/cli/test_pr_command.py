@@ -30,6 +30,21 @@ def test_pr_command_refuses_an_incomplete_run(calc_repo, monkeypatch):
     assert fake.calls == []
 
 
+def test_pr_command_refuses_a_run_with_no_commits(calc_repo, monkeypatch):
+    from tests.publish.test_service_publish import without_commits
+
+    info, record, paths = finished_run(calc_repo)
+    without_commits(record)
+    fake = FakePublisher()
+    monkeypatch.setattr("phil.publish.publisher.make_publisher", lambda root: fake)
+
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "pr", record.run_id])
+
+    assert result.exit_code == 1
+    assert f"{record.run_id} has no commits to open a PR for." in result.output
+    assert fake.calls == []
+
+
 def test_pr_command_refuses_when_gh_is_disabled_in_tests(calc_repo):
     info, record, paths = finished_run(calc_repo)
 
