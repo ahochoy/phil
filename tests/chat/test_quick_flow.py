@@ -108,6 +108,23 @@ def test_quick_line_omits_setup_for_a_python_repo(calc_repo):
     assert "· setup:" not in text
 
 
+def test_a_quick_run_is_pinned_to_the_setup_command_its_line_showed(calc_repo):
+    node_detectable(calc_repo)
+    _, _, [record], _, _ = run_chat(
+        calc_repo, ["fix the typo in calc"], {"route": [route("simple_change")], "intake": [quick_goal()]},
+        config_overrides=["run.max_cost_usd=5"],
+    )
+    assert json.loads(record.config_overrides) == ["run.max_cost_usd=5", 'project.setup_cmd="npm ci"']
+
+
+def test_a_quick_run_with_no_setup_shown_is_pinned_to_none(calc_repo):
+    detectable(calc_repo)
+    _, _, [record], _, _ = run_chat(
+        calc_repo, ["fix the typo in calc"], {"route": [route("simple_change")], "intake": [quick_goal()]}
+    )
+    assert json.loads(record.config_overrides) == ['project.setup_cmd=""']
+
+
 def test_intake_is_told_the_route_depth_and_the_detected_test_command(calc_repo):
     detectable(calc_repo)
     _, _, _, factory, _ = run_chat(

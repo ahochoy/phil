@@ -3,9 +3,10 @@ import sys
 from pathlib import Path
 
 import phil.run.engine as engine_module
-from phil.config import PhilConfig
+from phil.config import PhilConfig, load_config
 from phil.contracts import Plan, Task
 from phil.run.state import initial_state
+from tests.helpers import run_git
 from tests.run.conftest import TEST_CMD, review, tester_report, write_green, write_red
 from tests.run.test_engine_check import write_page
 
@@ -56,6 +57,22 @@ def test_setup_runs_in_the_worktree_before_the_baseline(make_harness, monkeypatc
 def test_no_setup_command_writes_no_setup_log(make_harness):
     harness = make_harness(HAPPY)
     assert harness.start()["status"] == "completed"
+    assert not (logs_dir(harness) / "setup.log").exists()
+
+
+def test_a_run_pinned_to_no_setup_ignores_a_lockfile_in_its_worktree(make_harness, calc_repo):
+    # The chat pins `project.setup_cmd=""` when it showed no setup command; the worker's config,
+    # reloaded with that override, must not detect `npm ci` from the worktree's lockfile.
+    (calc_repo / "package.json").write_text("{}")
+    (calc_repo / "package-lock.json").write_text("{}")
+    run_git(calc_repo, "add", "package.json", "package-lock.json")
+    run_git(calc_repo, "commit", "-m", "node lockfile")
+    config = load_config(calc_repo, overrides=['project.setup_cmd=""'])
+    assert config.project.setup_cmd == ""
+    harness = make_harness(HAPPY, config=config)
+
+    assert harness.start()["status"] == "completed"
+    assert (harness.deps.worktree / "package-lock.json").exists()
     assert not (logs_dir(harness) / "setup.log").exists()
 
 

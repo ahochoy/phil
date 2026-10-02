@@ -51,6 +51,7 @@ from phil.store.paths import ProjectPaths
 from phil.store.parked import open_count, park
 from phil.store.runs import get_run, list_runs
 from phil.store.telemetry import budget_warning_line, chat_usage, run_totals
+from phil.tomlw import toml_value
 from phil.ui.answer_view import render_answer
 from phil.ui.brief_view import render_brief
 from phil.ui.plan_view import _clip, render_goal, render_plan
@@ -180,6 +181,7 @@ class ChatController:
         self._rounds = 0
         self._draft: PlanDraft | None = None
         self._shown_test_cmd: str | None = None  # the effective test command in the last plan render
+        self._shown_setup_cmd: str | None = None  # the setup command in the last plan render, pinned into its run
         self._revising = False
         self._run_id: str | None = None
         self._base_sha: str | None = None
@@ -772,7 +774,7 @@ class ChatController:
         tests = f" · tests: {plan.test_cmd}" if plan.test_cmd else ""
         self.console.print(f"Quick change: {escape(_clip(f'{task.id} {task.description}') + setup + tests)}")
         self.session.contract("quick_plan", plan)
-        self._launch(plan, "quick", {"task_id": task.id})
+        self._launch(plan, "quick", {"task_id": task.id}, setup_cmd)
 
     def _quick_plan(self, goal: Goal) -> tuple[Plan | None, str | None, list[str]]:
         """The quick run's plan, the effective setup command (for the quick line), or None and why
@@ -866,6 +868,11 @@ class ChatController:
         )
         self._shown_test_cmd, source = effective_test_cmd(draft.plan, self.config, root)
         setup_cmd, setup_cmd_source = effective_setup_cmd(self.config, root)
+        if root is None and self.config.project.setup_cmd is None:
+            # The snapshot export failed, so nothing could be detected: say so. The run is pinned
+            # to no setup rather than detecting one on its own that the user never saw.
+            setup_cmd_source = "unchecked"
+        self._shown_setup_cmd = setup_cmd
         render_plan(
             self.console,
             draft,
@@ -916,7 +923,12 @@ class ChatController:
                 self.console.print("[phil.warn]The test command changed in your config. Review it and answer again.[/]")
                 self._show_plan(draft)
                 return
-            self._start(draft, answer, self._shown_test_cmd)
+            if effective_setup_cmd(self.config, root)[0] != self._shown_setup_cmd:
+                # Likewise for the setup command: it runs in the worktree, so it must be the one shown.
+                self.console.print("[phil.warn]The setup command changed in your config. Review it and answer again.[/]")
+                self._show_plan(draft)
+                return
+            self._start(draft, answer, self._shown_test_cmd, self._shown_setup_cmd)
         elif choice == "edit":
             self._parent_stage = "approval"
             self._set_stage("edit")
@@ -949,18 +961,24 @@ class ChatController:
 
         self._job("plan_ready", fn)
 
-    def _start(self, draft: PlanDraft, answer: str, test_cmd: str | None) -> None:
-        # The run keeps the command the user approved (the plan's, phil.toml's or the detected one).
+    def _start(self, draft: PlanDraft, answer: str, test_cmd: str | None, setup_cmd: str | None) -> None:
+        # The run keeps the commands the user approved (the plan's, phil.toml's or the detected ones).
         plan = draft.plan.model_copy(update={"test_cmd": test_cmd})
-        self._launch(plan, "full", {"plan_version": draft.version, "answer": answer})
+        self._launch(plan, "full", {"plan_version": draft.version, "answer": answer}, setup_cmd)
 
-    def _launch(self, plan: Plan, depth: str, note_data: dict) -> None:
+    def _launch(self, plan: Plan, depth: str, note_data: dict, setup_cmd: str | None) -> None:
         """Prepare and spawn a run of `plan` at `depth`; the chat then follows it. `note_data` goes into
-        the transcript's start note: "approved" for a full run, "quick_started" for a quick one."""
+        the transcript's start note: "approved" for a full run, "quick_started" for a quick one.
+
+        `setup_cmd` is the setup command the user was shown (None: none shown). The run is pinned to
+        it with a `project.setup_cmd` override after the chat's own, so the worker, reloading its
+        config, never runs a setup command the user didn't see."""
+        pin = f"project.setup_cmd={toml_value(setup_cmd or '')}"
         try:
             base_sha = self._explicit_base_sha or resolve_repo(self.info.root).head_sha
             record = prepare_run(
-                self.info, plan, base_sha, chat_id=self.session.id, overrides=self._config_overrides, depth=depth
+                self.info, plan, base_sha, chat_id=self.session.id, overrides=(*self._config_overrides, pin),
+                depth=depth,
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"

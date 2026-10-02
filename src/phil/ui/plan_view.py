@@ -46,7 +46,8 @@ def render_plan(
     setup_cmd_source: str | None = None,
 ) -> None:
     """`test_cmd_origin` names the file a "config" test command came from (`config.sources`):
-    "phil.toml", the global config's path, or "--set"."""
+    "phil.toml", the global config's path, or "--set". A `setup_cmd_source` of "unchecked" (nothing
+    could be detected) prints `setup: none`."""
     plan = draft.plan
     count = len(plan.tasks)
     console.print(
@@ -71,6 +72,9 @@ def render_plan(
     if setup_cmd:
         suffix = " (detected)" if setup_cmd_source == "detected" else ""
         console.print(f"setup: {escape(setup_cmd)}{suffix}")
+    elif setup_cmd_source == "unchecked":
+        # Detection couldn't look at the base commit; the run is pinned to no setup.
+        console.print("setup: none")
     if test_cmd:
         label = SOURCE_LABELS.get(test_cmd_source or "", "")
         if test_cmd_source == "config" and test_cmd_origin:
