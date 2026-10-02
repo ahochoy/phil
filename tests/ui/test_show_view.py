@@ -189,7 +189,29 @@ def test_render_show_for_a_run_without_a_chat_shows_only_the_run(calc_repo):
     render_show(console, conn, paths, record.run_id)
     text = console.export_text()
     assert not any(row[0] == "chat" for row in _usage_rows(text))
-    assert "Total: " in text
+    assert "Total: " not in text  # `phil run` output is unchanged
+
+
+def test_render_show_leaves_out_side_questions_asked_before_the_goal(calc_repo):
+    info = resolve_repo(calc_repo)
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    # A question answered in the chat, and a /btw, before the goal was typed.
+    _telemetry(conn, layer="chat", role="answerer", node="answer", at="2026-10-01T09:00:00+00:00", cost=9.0)
+    _telemetry(conn, layer="chat", role="orchestrator", node="btw", at="2026-10-01T09:01:00+00:00", cost=9.0)
+    _telemetry(conn, layer="chat", role="orchestrator", node="intake", at="2026-10-01T09:02:00+00:00")
+    _telemetry(conn, layer="chat", role="architect", node="architect", at="2026-10-01T09:03:00+00:00")
+    _chat_run(conn, paths, "r-0001", "2026-10-01T09:04:00+00:00")
+
+    console = make_console(record=True, width=160)
+    render_show(console, conn, paths, "r-0001")
+    text = console.export_text()
+
+    assert sorted(_usage_rows(text)) == [["chat", "architect"], ["chat", "orchestrator"]]
+    orchestrator = next(line for line in text.splitlines() if line.startswith("chat ") and "orchestrator" in line)
+    assert orchestrator.split()[2] == "1"  # intake only, not the /btw
+    assert "answerer" not in text
+    assert "Total: 2,200 tokens · $1.00" in text
 
 
 def test_show_refs_skips_a_file_deleted_between_listing_and_stat(calc_repo, monkeypatch):

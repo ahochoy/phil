@@ -130,6 +130,10 @@ def usage_by_role(conn: sqlite3.Connection, run_id: str) -> list[UsageLine]:
     return _group_usage(rows)
 
 
+# The chat nodes that turn a goal into a run; side questions (`answer`, `btw`) aren't among them.
+GOAL_NODES = ("route", "intake", "architect", "critic")
+
+
 def _goal_window(conn: sqlite3.Connection, run_id: str) -> tuple[str, str, str | None] | None:
     """(chat id, run created_at, previous run's created_at or None) for a run started from a chat."""
     run = conn.execute("SELECT chat_id, created_at FROM runs WHERE run_id = ?", (run_id,)).fetchone()
@@ -145,19 +149,21 @@ def _goal_window(conn: sqlite3.Connection, run_id: str) -> tuple[str, str, str |
 def goal_chat_usage(conn: sqlite3.Connection, run_id: str) -> list[UsageLine]:
     """The chat layer's usage for the goal that produced `run_id`; [] for a run without a chat.
 
-    The goal's own start isn't stored, so the rule is: the chat's `layer = 'chat'` rows recorded
-    after the chat's previous run was created (or from the chat's start, for its first run) and up
-    to this run's `created_at`. That covers the goal's routing, intake, planning and critique, and
-    leaves out every earlier goal that ran and anything the chat does once this run has started.
-    A goal dropped before running, or a side question, in that gap is counted with this goal."""
+    The goal's own start isn't stored, so the rule is: the chat's goal-pipeline rows (nodes
+    route, intake, architect, critic) recorded after the chat's previous run was created (or from
+    the chat's start, for its first run) and up to this run's `created_at`. That leaves out every
+    earlier goal that ran, anything the chat does once this run has started, and side questions
+    (`answer`, `/btw`). A goal dropped before running in that gap, and the routing of a question,
+    are still counted with this goal."""
     window = _goal_window(conn, run_id)
     if window is None:
         return []
     chat_id, until, since = window
+    nodes = ", ".join("?" for _ in GOAL_NODES)
     rows = conn.execute(
-        f"SELECT {_USAGE_COLUMNS} FROM telemetry WHERE layer = 'chat' AND chat_id = ?"
+        f"SELECT {_USAGE_COLUMNS} FROM telemetry WHERE layer = 'chat' AND chat_id = ? AND node IN ({nodes})"
         " AND created_at <= ? AND (? IS NULL OR created_at > ?) ORDER BY role",
-        (chat_id, until, since, since),
+        (chat_id, *GOAL_NODES, until, since, since),
     ).fetchall()
     return _group_usage(rows)
 

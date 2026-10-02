@@ -161,14 +161,16 @@ def render_show(console: Console, conn: sqlite3.Connection, paths: ProjectPaths,
     console.print("")
     console.print("[bold]Usage[/]")
     # The chat's own calls for the goal (routing, intake, planning) come first, then the run's.
-    usage = [*goal_chat_usage(conn, run_id), *usage_by_role(conn, run_id)]
-    if usage:
+    chat = goal_chat_usage(conn, run_id)
+    usage = [*chat, *usage_by_role(conn, run_id)]
+    if not usage:
+        console.print("[phil.muted]No usage recorded.[/]")
+    else:
         console.print(_usage_table(usage))
+    if chat:  # the Total line only joins the chat's and the run's costs; `phil run` output is unchanged
         tokens = sum(line.input_tokens + line.output_tokens for line in usage)
         cost = format_cost(sum(line.cost_usd for line in usage), weakest([line.cost_source for line in usage]))
         console.print(f"Total: {tokens:,} tokens · {escape(cost)}")
-    else:
-        console.print("[phil.muted]No usage recorded.[/]")
 
     console.print("")
     console.print("[bold]Open issues[/]")
