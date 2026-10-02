@@ -34,11 +34,13 @@ def git(cwd: Path, *args: str) -> str:
 
 def commits_ahead(repo: Path, base: str, branch: str) -> int:
     """How many commits `branch` has beyond `base` in `repo`; 0 when the branch doesn't exist.
-    Raises `GitError` for any other git failure."""
+    Raises `GitError` for any other git failure, so the real error surfaces."""
     try:
-        git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
-    except GitError:
-        return 0
+        git(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
+    except GitError as exc:
+        if exc.returncode == 1:  # show-ref's "no such ref"; anything else is a real failure
+            return 0
+        raise
     return int(git(repo, "rev-list", "--count", f"{base}..refs/heads/{branch}").strip())
 
 

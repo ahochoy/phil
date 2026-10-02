@@ -34,6 +34,17 @@ def test_commits_ahead_is_zero_for_a_missing_branch(git_repo):
     assert commits_ahead(git_repo, base, "phil/r-0002") == 0
 
 
+def test_commits_ahead_raises_any_other_git_failure(git_repo, tmp_path):
+    base = git(git_repo, "rev-parse", "HEAD").strip()
+    outside = tmp_path / "not-a-repo"
+    outside.mkdir()
+    with pytest.raises(GitError):
+        commits_ahead(outside, base, "phil/r-0001")
+    git(git_repo, "branch", "phil/r-0003", base)
+    with pytest.raises(GitError):
+        commits_ahead(git_repo, "0" * 40, "phil/r-0003")  # an unknown base
+
+
 def test_branch_for_valid_run_id():
     assert branch_for("r-7f3a") == "phil/r-7f3a"
 
