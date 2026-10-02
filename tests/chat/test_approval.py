@@ -80,11 +80,9 @@ def test_a_tdd_task_still_needs_a_test_command():
     assert any("no test command" in problem for problem in launch_problems(mixed, config()))
 
 
-def test_a_detected_test_command_passes_approval(tmp_path, monkeypatch):
+def test_a_detected_test_command_passes_approval(tmp_path):
     (tmp_path / "Cargo.toml").write_text("[package]\n")
     assert test_cmd_problem(plan(test_cmd=None), config(), tmp_path) is None
-    # `cargo` need not actually be installed for this test; the program check is covered separately.
-    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: f"/usr/bin/{prog}")
     assert launch_problems(plan(test_cmd=None), config(), tmp_path) == []
 
 
@@ -168,12 +166,22 @@ def test_launch_problems_checks_containment_against_check_root_when_root_is_abse
     assert len(problems) == 1 and "reads outside the repo" in problems[0]
 
 
-def test_program_problems_reports_a_missing_bare_program():
+def test_program_problems_reports_a_missing_bare_program(monkeypatch):
+    # The `program_on_path` autouse fixture fakes every program as present; override it here to
+    # exercise the missing-program path, same as the other tests below.
+    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None)
     problems = program_problems(plan(test_cmd="definitely-not-a-real-program --flag"), config())
     assert problems == [
         "`definitely-not-a-real-program` (from the test command "
         "`definitely-not-a-real-program --flag`) isn't on PATH for Phil's runs"
     ]
+
+
+def test_the_program_on_path_fixture_fakes_every_program_present():
+    # Proves tests/conftest.py's `program_on_path` autouse fixture is active: an offline test
+    # sees no problem for a program that plainly isn't installed anywhere.
+    problems = program_problems(plan(test_cmd="definitely-not-installed-xyz test"), config())
+    assert problems == []
 
 
 def test_program_problems_accepts_an_existing_program():

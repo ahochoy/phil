@@ -82,6 +82,23 @@ def no_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def program_on_path(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Offline tests must not depend on which programs happen to be installed on the machine
+    running them. `phil.chat.approval.program_problems` preflights the setup, test and check
+    commands with `shutil.which`; make every program name resolve, so no offline test's result
+    depends on whether e.g. `npm` or `go` is actually on this machine's PATH.
+
+    Live and bench tests are unaffected: they run real commands and need the real PATH.
+
+    A test that checks the missing-program behaviour overrides this with its own
+    `monkeypatch.setattr("phil.chat.approval.shutil.which", ...)`, which wins over this fixture
+    (it's applied to the same `monkeypatch` after this fixture has already run)."""
+    if _is_live(request):
+        return
+    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: f"/usr/bin/{prog}")
+
+
 class MemoryKeyring(KeyringBackend):
     """A fresh, writable, in-memory backend: what every offline test gets."""
 

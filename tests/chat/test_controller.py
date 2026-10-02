@@ -309,13 +309,11 @@ def test_run_plan_json_uses_effective_test_cmd(calc_repo):
     assert stored.test_cmd == "uv run pytest -q"
 
 
-def test_a_detected_test_command_is_shown_and_frozen_into_the_run(calc_repo, monkeypatch):
+def test_a_detected_test_command_is_shown_and_frozen_into_the_run(calc_repo):
     (calc_repo / "go.mod").write_text("module calc\n")
     (calc_repo / "Cargo.toml").write_text("[package]\n")  # untracked: the snapshot never sees it
     run_git(calc_repo, "add", "go.mod")
     run_git(calc_repo, "commit", "-m", "go")
-    # `go` need not actually be installed for this test; the program-on-PATH check is covered separately.
-    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: f"/usr/bin/{prog}")
     info = resolve_repo(calc_repo)
     text, spawned, runs, *_ = run_chat(
         calc_repo,
