@@ -12,7 +12,7 @@ from phil.run.state import issue_line, task_lines
 from phil.store.artifacts import ArtifactStore
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
-from phil.store.telemetry import UsageLine, format_cost, usage_by_role
+from phil.store.telemetry import UsageLine, format_cost, goal_chat_usage, usage_by_role, weakest
 
 _MAX_PER_CATEGORY = 5
 _MAX_DETAIL_LINES = 2000
@@ -160,11 +160,17 @@ def render_show(console: Console, conn: sqlite3.Connection, paths: ProjectPaths,
 
     console.print("")
     console.print("[bold]Usage[/]")
-    usage = usage_by_role(conn, run_id)
-    if usage:
-        console.print(_usage_table(usage))
-    else:
+    # The chat's own calls for the goal (routing, intake, planning) come first, then the run's.
+    chat = goal_chat_usage(conn, run_id)
+    usage = [*chat, *usage_by_role(conn, run_id)]
+    if not usage:
         console.print("[phil.muted]No usage recorded.[/]")
+    else:
+        console.print(_usage_table(usage))
+    if chat:  # the Total line only joins the chat's and the run's costs; `phil run` output is unchanged
+        tokens = sum(line.input_tokens + line.output_tokens for line in usage)
+        cost = format_cost(sum(line.cost_usd for line in usage), weakest([line.cost_source for line in usage]))
+        console.print(f"Total: {tokens:,} tokens · {escape(cost)}")
 
     console.print("")
     console.print("[bold]Open issues[/]")

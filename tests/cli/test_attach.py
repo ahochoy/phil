@@ -145,6 +145,18 @@ def test_attach_does_not_spawn_when_the_run_moved_on_while_prompting(calc_repo):
     assert "the run moved on; not resuming" in console.export_text()
 
 
+def test_attach_stops_at_an_incomplete_run(calc_repo):
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha)
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    update_run(conn, record.run_id, state="running")
+    update_run(conn, record.run_id, state="incomplete")
+    io = AttachIO(choose=lambda p, o: "abort", ask_hint=lambda: None, spawn=lambda m, d: None, sleep=lambda _: None)
+    console = make_console(record=True, width=120)
+    assert attach(conn, record.run_id, run_events(paths, record.run_id), console, io, poll_s=0) == "incomplete"
+
+
 def test_attach_waits_instead_of_prompting_while_a_spawned_worker_is_starting(calc_repo):
     info, record = escalated_run(calc_repo)
     paths = ProjectPaths(info.slug)

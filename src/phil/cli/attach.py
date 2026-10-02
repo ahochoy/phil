@@ -11,7 +11,7 @@ from phil.store.events import EventLog, test_cmd_changed_line
 from phil.store.runs import RunRecord, get_run
 from phil.store.telemetry import budget_warning_line
 
-TERMINAL = ("completed", "aborted", "cleaned")
+TERMINAL = ("completed", "incomplete", "aborted", "cleaned")
 
 
 @dataclass

@@ -27,7 +27,7 @@ _logger = logging.getLogger(__name__)
 
 HEARTBEAT_S = 5.0
 MODES = ("start", "resume", "continue")
-FINISHED = ("completed", "aborted", "cleaned")
+FINISHED = ("completed", "incomplete", "aborted", "cleaned")
 
 
 class StopRequested(BaseException):

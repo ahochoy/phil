@@ -7,15 +7,19 @@ from typing import Literal
 from phil.git import branch_for
 from phil.store.db import utcnow
 
-RunState = Literal["pending", "running", "escalated", "completed", "failed", "aborted", "stopped", "cleaned"]
+# `incomplete`: the run finished, but with a blocker or major issue still open (nothing to merge).
+RunState = Literal[
+    "pending", "running", "escalated", "completed", "incomplete", "failed", "aborted", "stopped", "cleaned"
+]
 
 TRANSITIONS: dict[str, set[str]] = {
     "pending": {"running", "failed", "aborted", "stopped"},
-    "running": {"escalated", "completed", "failed", "aborted", "stopped"},
+    "running": {"escalated", "completed", "incomplete", "failed", "aborted", "stopped"},
     "escalated": {"running", "failed", "aborted", "stopped"},
     "stopped": {"running", "aborted", "cleaned"},
     "failed": {"running", "aborted", "cleaned"},
     "completed": {"cleaned"},
+    "incomplete": {"cleaned"},
     "aborted": {"cleaned"},
     "cleaned": set(),
 }

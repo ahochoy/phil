@@ -42,7 +42,7 @@ quick.
   written decision rule for recommending Jev. Quick-depth goals still run the full pipeline
   until M3b lands. [Spec](specs/2026-09-30-phil-m3-proportional-orchestration-design.md) ·
   [followups](plans/2026-09-30-phil-m3a-followups.md).
-- **M3b — Quick path (in progress).** The quick depth gets its own lighter run: one task, no architect or
+- **M3b — Quick path (done, PR #12).** The quick depth gets its own lighter run: one task, no architect or
   critic round, no sub-agent or summarization, a lean one-pass review that patches findings
   directly instead of becoming new TDD tasks, and tighter retries, with escalation to a full
   run when the quick attempt doesn't clear the gate. [Plan](plans/2026-10-01-phil-m3b-quick-path.md) ·
@@ -64,6 +64,11 @@ quick.
 - Bordered question and approval callouts with keyboard choices and explicit scope.
 - Failure categories: provider, auth or quota, network, tool, command, permission, config, orchestration, internal. Each shows what changed, whether Phil will retry, and whether the user must act.
 - Full-screen app versus a richer inline UI is decided at M5, from mockups.
+- **Visual proposals for UI work** (user request, 2026-10-02):
+  - For changes with a visual element (a new page section, a CTA, a layout), Phil shows what it intends before building it: a quick mockup, a sketch, or references.
+  - The user confirms or redirects at that point.
+  - This isn't a full design agent. It's a way to say "this is what we're thinking".
+  - Prompted by a live run that added a CTA section with no shared picture of placement, content or visuals.
 
 ### M6 — Extensibility and learning
 

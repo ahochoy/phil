@@ -39,6 +39,15 @@ def test_progress_then_done(calc_repo):
     assert watcher.done
 
 
+def test_an_incomplete_run_ends_the_watch_even_with_a_worker_alive(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo, alive=lambda r: True)
+    update_run(conn, run_id, state="running")
+    update_run(conn, run_id, state="incomplete", tasks_done=1)
+    watcher.poll_once()
+    assert kinds(posted)[-1] == "run_done" and posted[-1].data["state"] == "incomplete"
+    assert watcher.done
+
+
 def test_pause_is_posted_once_and_resume_detected(calc_repo):
     paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
     update_run(conn, run_id, state="running")

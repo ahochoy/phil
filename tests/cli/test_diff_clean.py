@@ -28,6 +28,20 @@ def finished_run(calc_repo):
     return info, record, ProjectPaths(info.slug)
 
 
+def incomplete_run(calc_repo):
+    """A run that finishes with a major review finding open, so it ends `incomplete`."""
+    from phil.contracts import Issue
+
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha)
+    finding = Issue(severity="major", note="subtract is untested for negatives")
+    factory = ScriptedAgentFactory({
+        "implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review("approve", [finding])],
+    })
+    run_worker(calc_repo, record.run_id, "start", factory=factory)
+    return info, record, ProjectPaths(info.slug)
+
+
 def failed_run(calc_repo):
     info = resolve_repo(calc_repo)
     record = prepare_run(info, calc_plan(), info.head_sha)
