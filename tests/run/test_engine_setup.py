@@ -188,6 +188,43 @@ def test_baseline_command_that_cannot_run_escalates_cmd_not_found(make_harness):
     assert harness.factory.calls == []
 
 
+def test_retry_after_a_baseline_that_cannot_run_reruns_setup_then_the_baseline(make_harness, tmp_path):
+    # The first setup installs nothing, so the baseline's program is missing (exit 127); the second
+    # installs it, as `npm ci` would install vitest. The retry must rerun setup before the baseline.
+    counter = tmp_path / "setup-count"
+    runner = "__pycache__/run-tests"  # ignored by the calc repo, as node_modules/ would be
+    cmd = py(
+        f"import os, pathlib; p = pathlib.Path({str(counter)!r}); "
+        "n = int(p.read_text()) + 1 if p.exists() else 1; p.write_text(str(n)); "
+        "os.makedirs('__pycache__', exist_ok=True); "
+        f"n > 1 and pathlib.Path({runner!r}).write_text('#!/bin/sh\\nexec {TEST_CMD} \"$@\"\\n'); "
+        f"n > 1 and os.chmod({runner!r}, 0o755)"
+    )
+    harness = make_harness(HAPPY, config=setup_config(cmd))
+    state = initial_state(harness.deps.run_id, harness.plan, harness.base_sha, f"./{runner}")
+    escalation = harness.graph.invoke(state, harness.thread)["__interrupt__"][0].value
+    assert escalation["reason"] == "cmd_not_found"
+    assert escalation["resume_to"] == "setup"
+
+    final = harness.resume({"action": "retry"})
+
+    assert final["status"] == "completed"
+    assert counter.read_text() == "2"
+    assert harness.run_record().needs_attention is None
+
+
+def test_a_checkpoint_from_before_setup_resumes(make_harness):
+    # The setup work added no state keys, and `route_after_setup` reads `escalation` with .get: a
+    # state written before it (here, without `escalation` at all) must still go through the graph.
+    harness = make_harness(HAPPY)
+    state = dict(initial_state(harness.deps.run_id, harness.plan, harness.base_sha, TEST_CMD))
+    del state["escalation"]
+    final = harness.graph.invoke(state, harness.thread)
+
+    assert final["status"] == "completed"
+    assert not (logs_dir(harness) / "setup.log").exists()
+
+
 def check_plan(check_cmd: str) -> Plan:
     task = Task(
         id="CALC-001",
