@@ -1,7 +1,9 @@
-"""Propose a repo's test command from its files when neither the plan nor phil.toml sets one."""
+"""Propose a repo's test and setup commands from its files when neither the plan nor phil.toml sets them."""
 
 import json
 from pathlib import Path
+
+from phil.config import PhilConfig
 
 PYTHON_MARKERS = ("pyproject.toml", "pytest.ini", "conftest.py")
 # `npm init` writes this script: it fails on purpose and runs no tests.
@@ -55,3 +57,17 @@ def detect_setup_cmd(root: Path) -> str | None:
         if (root / lockfile).is_file():
             return cmd
     return None
+
+
+def effective_setup_cmd(config: PhilConfig, root: Path | None = None) -> tuple[str | None, str]:
+    """The setup command a run uses and where it came from: "config", "detected" or "none".
+
+    `config.project.setup_cmd` of `None` means detect from `root`'s lockfile (when `root` is
+    given); `""` means no setup, explicitly. It lives here, not in the chat, because the run
+    engine uses it too (on the run's worktree)."""
+    if config.project.setup_cmd is not None:
+        return (config.project.setup_cmd, "config") if config.project.setup_cmd else (None, "none")
+    detected = detect_setup_cmd(root) if root is not None else None
+    if detected:
+        return detected, "detected"
+    return None, "none"

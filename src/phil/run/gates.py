@@ -67,6 +67,27 @@ def run_tests(
         new_failures_vs_baseline=[failure for failure in all_failures if failure not in known],
         passed_count=passed_count,
         skipped_count=skipped_count,
+        exit_code=result.exit_code,
+    )
+
+
+COMMAND_NOT_FOUND = 127  # the shell's (and run_command's) exit code for a program it can't find
+
+
+def first_output_line(output: str) -> str:
+    """The first non-empty line of a command's output, stripped, skipping npm's `> script` banner
+    lines; "command not found" when none qualifies."""
+    for line in output.splitlines():
+        line = line.strip()
+        if line and not line.startswith(">"):
+            return line
+    return "command not found"
+
+
+def couldnt_run_summary(cmd: str, output: str) -> str:
+    return (
+        f"`{cmd}` couldn't run: {first_output_line(output)}. Dependencies may be missing in the run's "
+        "worktree — set [project] setup_cmd (e.g. npm ci) — or the program isn't on PATH."
     )
 
 
