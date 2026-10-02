@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from phil.contracts.base import Contract, Part
 from phil.contracts.common import Issue, SelfCheck
@@ -38,6 +38,25 @@ class Task(Part):
         if self.verify == "tdd" and self.check_cmd is not None:
             raise ValueError(f"task {self.id}: check_cmd is only for check tasks")
         return self
+
+
+_TASK_FIELDS = Task.model_fields
+
+
+class QuickTask(Part):
+    """Intake's one task for a quick goal. Lenient on purpose: a bad task must not fail the whole goal.
+    `quick_plan` checks it as a `Task` and falls back to full planning when it isn't one (Ruling R9)."""
+
+    # A `Task` instance validates here too (by its fields), so callers can pass either.
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    # The same fields and descriptions as Task, without its id pattern, criteria minimum or validators.
+    id: str = Field(description=_TASK_FIELDS["id"].description)
+    description: str = Field(description=_TASK_FIELDS["description"].description)
+    acceptance_criteria: list[str] = Field(description=_TASK_FIELDS["acceptance_criteria"].description)
+    files_hint: list[str] = Field(default=[], description=_TASK_FIELDS["files_hint"].description)
+    verify: Literal["tdd", "check"] = Field(default="tdd", description=_TASK_FIELDS["verify"].description)
+    check_cmd: str | None = Field(default=None, description=_TASK_FIELDS["check_cmd"].description)
 
 
 class Plan(Contract):

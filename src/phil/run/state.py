@@ -43,13 +43,20 @@ class RunState(TypedDict, total=False):
     keep_worktree: bool
     rebaseline: bool
     config_test_cmd: str | None
+    depth: str
+    patching: bool
+    patched_issues: list[dict[str, Any]]
+    reviewed_sha: str  # a quick run's commit under review, before its fix after review
+    moved_to_full: bool
+    patch_editable_tests: list[str]
 
 
 def initial_state(
-    run_id: str, plan: Plan, base_sha: str, test_cmd: str, config_test_cmd: str | None = None
+    run_id: str, plan: Plan, base_sha: str, test_cmd: str, config_test_cmd: str | None = None, depth: str = "full"
 ) -> RunState:
     """`config_test_cmd` is phil.toml's [project] test_cmd at launch: a resume switches the run's
-    command only when phil.toml has changed since."""
+    command only when phil.toml has changed since. A `depth="quick"` run starts with its tester
+    step already done, skipping it."""
     return RunState(
         run_id=run_id,
         plan=plan.model_dump(),
@@ -76,7 +83,7 @@ def initial_state(
         escalation=None,
         verdict="",
         next="",
-        tester_done=False,
+        tester_done=(depth == "quick"),
         review_rounds=0,
         budget_limit_tokens=None,
         budget_limit_cost=None,
@@ -88,7 +95,15 @@ def initial_state(
         keep_worktree=False,
         rebaseline=False,
         config_test_cmd=config_test_cmd,
+        depth=depth,
+        patching=False,
+        patched_issues=[],
     )
+
+
+def run_depth(state: RunState) -> str:
+    """The run's depth: `state["depth"]` if set, else "full" (a checkpoint from before M3b)."""
+    return state.get("depth") or "full"
 
 
 def load_plan(state: RunState) -> Plan:

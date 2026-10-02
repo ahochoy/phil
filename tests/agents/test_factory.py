@@ -22,7 +22,7 @@ def test_importing_invoke_does_not_load_llm_stack():
 
 
 READ_ONLY_ROLES = ["reviewer", "architect", "critic"]
-WRITER_ROLES = ["implementer", "tester"]
+WRITER_ROLES = ["implementer", "tester", "quick_implementer"]
 
 DOTFILE_AND_PROJECT_PATHS = [
     "/src/app.py",
@@ -36,8 +36,13 @@ DOTFILE_AND_PROJECT_PATHS = [
     "/phil.toml",
 ]
 
-ALWAYS_DENIED_PATHS = ["/.git", "/.git/config", "/phil.toml"]
-WRITER_ALLOWED_PATHS = ["/src/app.py", "/tests/test_app.py", "/.gitignore", "/src/.hidden"]
+# Mixed case too: macOS's filesystem is case-insensitive, so "/PHIL.toml" is phil.toml.
+ALWAYS_DENIED_PATHS = [
+    "/.git", "/.git/config", "/phil.toml", "/PHIL.toml", "/Phil.Toml", "/.GIT", "/.GIT/config", "/.Git/HEAD",
+]
+WRITER_ALLOWED_PATHS = [
+    "/src/app.py", "/tests/test_app.py", "/.gitignore", "/src/.hidden", "/src/phil.toml", "/.github/ci.yml",
+]
 
 
 @pytest.mark.parametrize("name", READ_ONLY_ROLES)
@@ -59,6 +64,31 @@ def test_writer_roles_still_deny_git_and_config(name, path):
 def test_writer_roles_allow_project_and_dotfile_writes(name, path):
     rules = filesystem_permissions(get_spec(name))
     assert _check_fs_permission(rules, "write", path) == "allow"
+
+
+@pytest.mark.parametrize("name", WRITER_ROLES)
+def test_writer_roles_can_still_delete_directories_away_from_git(name):
+    # Literal case variants keep each deny rule anchored at /.git or /phil.toml; a glob such as
+    # "/[pP]hil.toml" would anchor at "/" and refuse every recursive delete.
+    from deepagents.middleware.filesystem import _find_delete_deny_patterns
+
+    rules = filesystem_permissions(get_spec(name))
+    assert _find_delete_deny_patterns(rules, "/src/old") == []
+    assert _find_delete_deny_patterns(rules, "/.GIT/hooks")
+    assert _find_delete_deny_patterns(rules, "/")
+
+
+def test_the_deep_harness_gets_the_case_insensitive_rules(tmp_path, monkeypatch):
+    import deepagents
+
+    captured = {}
+    monkeypatch.setattr(deepagents, "create_deep_agent", lambda **kw: captured.update(kw) or "deep-agent")
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda model, timeout_s, **_: object())
+    build_agent(get_spec("implementer"), "m", tmp_path, [])
+    rules = captured["permissions"]
+    for path in ("/PHIL.toml", "/.Git/config"):
+        assert _check_fs_permission(rules, "write", path) == "deny"
+    assert _check_fs_permission(rules, "write", "/src/app.py") == "allow"
 
 
 @pytest.mark.parametrize("name", ["critic", "architect"])

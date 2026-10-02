@@ -7,6 +7,8 @@ from langchain_core.messages import AIMessage, SystemMessage
 from phil.agents.factory import ANSWER_NOW, BUDGET_GRACE_CALLS, READ_TOOLS, _call_budget_middleware, build_agent
 from phil.agents.invoke import AgentContext, ContractViolation, invoke_agent
 from phil.agents.registry import ANSWER_MAX_MODEL_CALLS, get_spec
+from phil.agents.spec import FINISH_NOW, load_prompt
+from phil.contracts import ImplementInput, TaskResult
 from phil.contracts.routing import Answer, AnswerInput
 from phil.packets import build_packet
 from tests.agents.test_model_retry import ScriptedChatModel, tool_call
@@ -34,10 +36,84 @@ def _tool_names(agent) -> set[str]:
     return set(bound)
 
 
-def test_light_harness_refuses_a_spec_that_writes_files(tmp_path):
-    spec = dataclasses.replace(get_spec("answer"), writes_files=True)
-    with pytest.raises(ValueError, match="writes_files"):
-        build_agent(spec, "openrouter:x", tmp_path, [])
+def test_quick_implementer_spec():
+    spec = get_spec("quick_implementer")
+    assert (spec.harness, spec.role, spec.writes_files, spec.max_model_calls) == ("light", "implementer", True, 15)
+    assert spec.tools == ("shell",) and spec.read_only_shell is False
+    assert (spec.in_contract, spec.out_contract) == (ImplementInput, TaskResult)
+    assert load_prompt(spec) == load_prompt(get_spec("implementer"))  # same prompt text
+
+
+def _task_result(call_id: str):
+    return tool_call(
+        "TaskResult",
+        {
+            "phase": "green",
+            "summary": "Wrote notes.",
+            "files_changed": ["notes.txt"],
+            "tests_added": [],
+            "self_check": {"assumptions": [], "evidence": [], "risks": [], "unverified": [], "out_of_scope": []},
+        },
+        call_id,
+    )
+
+
+# Protected files, spelled as the model might: macOS's filesystem is case-insensitive, so every
+# spelling reaches the real file.
+DENIED_PATHS = ["/.git/config", "/phil.toml", "/PHIL.toml", "/Phil.Toml", "/.GIT/config", "/.Git/HEAD"]
+
+
+def test_a_writing_light_agent_gets_write_tools_with_git_and_phil_toml_denied(tmp_path, monkeypatch):
+    originals = {".git/config": "[core]\n", ".git/HEAD": "ref: refs/heads/main\n", "phil.toml": "[run]\n"}
+    (tmp_path / ".git").mkdir()
+    for rel, text in originals.items():
+        (tmp_path / rel).write_text(text)
+    writes = [
+        tool_call("write_file", {"file_path": path, "content": "evil\n"}, f"w{i}")
+        for i, path in enumerate(DENIED_PATHS)
+    ]
+    edits = [
+        tool_call("edit_file", {"file_path": path, "old_string": "[", "new_string": "evil"}, f"e{i}")
+        for i, path in enumerate(DENIED_PATHS)
+    ]
+    model = ToolRecordingModel(
+        script=[
+            tool_call("write_file", {"file_path": "/notes.txt", "content": "hello\n"}, "ok"),
+            *writes,
+            *edits,
+            _task_result("a1"),
+        ]
+    )
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: model)
+    agent = build_agent(get_spec("quick_implementer"), "openrouter:x", tmp_path, [])
+    tools = _tool_names(agent)
+    assert {"write_file", "edit_file", "delete"} <= tools and "execute" not in tools
+    result = agent.invoke({"messages": [{"role": "user", "content": "write notes"}]})
+    assert {"write_file", "edit_file", "delete"} <= set(model.bound[0]) and "execute" not in model.bound[0]
+
+    assert result["structured_response"].files_changed == ["notes.txt"]
+    assert (tmp_path / "notes.txt").read_text() == "hello\n"
+    assert {rel: (tmp_path / rel).read_text() for rel in originals} == originals
+    replies = {m.tool_call_id: m.text for m in result["messages"] if m.type == "tool"}
+    assert "permission denied" not in replies["ok"]
+    for i, path in enumerate(DENIED_PATHS):
+        assert f"permission denied for write on {path}" in replies[f"w{i}"]
+        assert f"permission denied for write on {path}" in replies[f"e{i}"]
+
+
+def test_a_writing_light_agent_still_writes_nothing_on_its_own(tmp_path, monkeypatch):
+    # Eviction stays off for a writing agent too: deepagents would write large tool results and
+    # user messages into the backend root (the repo), bypassing the permission rules.
+    (tmp_path / "big.txt").write_text(("line " + "y" * 200 + "\n") * 2000)  # grep output well over the limit
+    model = ToolRecordingModel(
+        script=[tool_call("grep", {"pattern": "line", "path": "/"}, "c1"), _task_result("c2")]
+    )
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: model)
+    agent = build_agent(get_spec("quick_implementer"), "openrouter:x", tmp_path, [])
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    agent.invoke({"messages": [{"role": "user", "content": "x" * 300_000}]})
+    assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
+    assert not (tmp_path / "large_tool_results").exists()
 
 
 def test_light_harness_needs_a_workdir():
@@ -184,6 +260,31 @@ def test_the_capped_last_call_keeps_only_the_answer_tool_and_still_answers(tmp_p
     assert set(READ_TOOLS) | {"Answer"} <= set(model.bound[0]) and model.bound[0] == model.bound[1]
     assert model.bound[2] == ["Answer"]
     assert "Answer now" in model.systems[2] and "Answer now" not in model.systems[1]
+
+
+def test_each_capped_spec_has_its_own_cap_message():
+    assert get_spec("answer").cap_message == ANSWER_NOW
+    assert get_spec("quick_implementer").cap_message == FINISH_NOW
+    assert FINISH_NOW == (
+        "Your tool budget is nearly used up. Finish the change now and return your result; "
+        "say what you didn't get to."
+    )
+
+
+def test_call_budget_uses_the_message_it_is_given():
+    seen = []
+    _call_budget_middleware(1, FINISH_NOW).wrap_model_call(Req(0), lambda r: seen.append(r.system_message.content))
+    assert seen == [f"base\n\n{FINISH_NOW}"]
+
+
+def test_the_capped_quick_implementer_is_told_to_finish_the_change(tmp_path, monkeypatch):
+    spec = dataclasses.replace(get_spec("quick_implementer"), max_model_calls=2)
+    model = ToolRecordingModel(script=[tool_call("ls", {"path": "/"}, "c1"), _task_result("c2")])
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: model)
+    agent = build_agent(spec, "openrouter:x", tmp_path, [])
+    agent.invoke({"messages": [{"role": "user", "content": "add notes"}]})
+    assert FINISH_NOW in model.systems[1] and FINISH_NOW not in model.systems[0]
+    assert ANSWER_NOW not in model.systems[1]
 
 
 def test_an_uncapped_light_agent_keeps_its_tools(tmp_path, monkeypatch):

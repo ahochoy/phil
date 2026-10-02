@@ -16,7 +16,13 @@ from phil.store.runs import RunRecord, create_run, new_run_id
 
 
 def prepare_run(
-    info: RepoInfo, plan: Plan, base_sha: str, *, chat_id: str | None = None, overrides: Sequence[str] = ()
+    info: RepoInfo,
+    plan: Plan,
+    base_sha: str,
+    *,
+    chat_id: str | None = None,
+    overrides: Sequence[str] = (),
+    depth: str = "full",
 ) -> RunRecord:
     """Record a pending run; its worker reloads the config with the same `--set` `overrides`."""
     paths = ProjectPaths(info.slug)
@@ -35,6 +41,7 @@ def prepare_run(
             chat_id=chat_id,
             base_branch=info.branch,
             config_overrides=json.dumps(list(overrides)) if overrides else None,
+            depth=depth,
         )
     finally:
         conn.close()

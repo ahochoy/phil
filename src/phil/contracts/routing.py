@@ -34,3 +34,6 @@ class AnswerInput(Contract):
 class Answer(Contract):
     text: str = Field(description="The answer, in plain prose; short unless the question needs more.")
     files: list[str] = Field(default=[], description="Repo-relative files the answer relies on.")
+    diagnosis: bool = Field(
+        default=False, description="True when the question asked why something is broken and the answer gives a cause."
+    )

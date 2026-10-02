@@ -10,7 +10,7 @@ from phil.contracts.inputs import (
     TesterInput,
 )
 from phil.contracts.interface import Brief, Decision, Goal, ParkedItem, Ref, RunStatus
-from phil.contracts.planning import Plan, PlanCritique, Task
+from phil.contracts.planning import Plan, PlanCritique, QuickTask, Task
 from phil.contracts.results import AttemptWorklog, Review, TaskResult, TesterReport, TestReport, Worklog
 from phil.contracts.routing import Answer, AnswerInput, RouteInput, RouteJudgement
 
@@ -58,6 +58,7 @@ __all__ = [
     "Part",
     "Plan",
     "PlanCritique",
+    "QuickTask",
     "Ref",
     "Review",
     "ReviewInput",

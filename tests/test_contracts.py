@@ -5,8 +5,11 @@ from pydantic import ValidationError
 
 from phil.contracts import (
     ALL_CONTRACTS,
+    Answer,
+    ArchitectInput,
     AttemptWorklog,
     Brief,
+    Goal,
     Plan,
     SelfCheck,
     Task,
@@ -176,3 +179,57 @@ def test_implement_input_carries_an_optional_worklog_and_diff():
 
     implement = ImplementInput(task=make_task(), phase="green", test_cmd="pytest")
     assert (implement.worklog, implement.diff) == (None, "")
+
+
+def test_goal_task_is_optional_and_accepts_a_task():
+    assert Goal(objective="Add lat/lng to Listing").task is None
+    task = make_task()
+    assert Goal(objective="Add lat/lng to Listing", task=task).task.model_dump() == task.model_dump(
+        exclude={"status"}
+    )
+
+
+@pytest.mark.parametrize("stub", ["x", "placeholder", "  TBD "], ids=["one-word", "filler", "filler-padded"])
+def test_goal_rejects_a_stub_objective(stub):
+    # A flaky intake call returned exactly these live: a one-word objective, or a filler value,
+    # with every other field empty. Phil must never plan from one (contract retry catches it).
+    with pytest.raises(ValidationError, match="not a placeholder"):
+        Goal(objective=stub)
+
+
+def test_goal_accepts_a_real_objective():
+    assert Goal(objective="Fix the typo").objective == "Fix the typo"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{"id": "calc-1"}, {"verify": "check"}, {"acceptance_criteria": []}],
+    ids=["malformed-id", "check-without-cmd", "no-criteria"],
+)
+def test_goal_keeps_a_quick_task_a_plan_would_reject(fields):
+    # Intake's whole goal must survive a bad quick task; quick_plan rejects it later (Ruling R9).
+    task = {"id": "CALC-001", "description": "d", "acceptance_criteria": ["c"]} | fields
+    goal = Goal.model_validate({"objective": "Add lat/lng to Listing", "task": task})
+    assert goal.task.model_dump(include=set(fields)) == fields
+
+
+def test_goal_quick_task_still_lists_the_verify_modes():
+    schema = Goal.model_json_schema()["$defs"]["QuickTask"]["properties"]
+    assert schema["verify"]["enum"] == ["tdd", "check"]
+    assert "pattern" not in schema["id"]
+    assert all("description" in prop for prop in schema.values())
+
+
+def test_architect_input_prior_attempt_defaults_to_empty():
+    assert ArchitectInput(goal=Goal(objective="Add lat/lng to Listing")).prior_attempt == []
+
+
+def test_architect_input_carries_prior_attempt_worklogs():
+    worklog = AttemptWorklog(files_changed=["a.py"], notes=["tried X"])
+    architect_input = ArchitectInput(goal=Goal(objective="Add lat/lng to Listing"), prior_attempt=[worklog])
+    assert architect_input.prior_attempt == [worklog]
+
+
+def test_answer_diagnosis_defaults_to_false():
+    assert Answer(text="because of the bug in x.py").diagnosis is False
+    assert Answer(text="because of the bug in x.py", diagnosis=True).diagnosis is True

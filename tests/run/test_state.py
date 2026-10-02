@@ -7,6 +7,7 @@ from phil.run.state import (
     load_plan,
     next_todo,
     render_summary,
+    run_depth,
     with_task_status,
 )
 from phil.store.telemetry import Totals, UsageLine
@@ -26,6 +27,19 @@ def test_initial_state_round_trips_the_plan():
     assert state["original_task_ids"] == ["CALC-001", "CALC-002"]
     assert (state["call_seq"], state["approved"], state["open_issues"], state["status"]) == (0, [], [], "pending")
     assert state["initial_baseline"] == []
+
+
+def test_initial_state_carries_depth_and_quick_skips_the_tester():
+    quick = initial_state("r-1", plan(), "a" * 40, "pytest", depth="quick")
+    assert quick["depth"] == "quick" and quick["tester_done"] is True
+    full = initial_state("r-1", plan(), "a" * 40, "pytest")
+    assert full["depth"] == "full" and full["tester_done"] is False
+
+
+def test_run_depth_treats_missing_as_full():
+    assert run_depth({}) == "full"
+    assert run_depth({"depth": None}) == "full"
+    assert run_depth({"depth": "quick"}) == "quick"
 
 
 def test_next_todo_and_status_updates():

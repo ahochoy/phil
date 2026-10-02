@@ -12,18 +12,24 @@ import pytest
 from phil.agents.fake import ScriptedAgentFactory, Turn
 from phil.chat.approval import launch_problems
 from phil.config import load_config
-from phil.contracts import Plan, Task
+from phil.contracts import Goal, Plan, Task
+from phil.contracts.routing import Answer
+from phil.store.db import connect
+from phil.store.telemetry import TelemetryRow
+from phil.store.telemetry import record as write_telemetry
 from tests.chat.conftest import critique
+from tests.chat.test_routing_flow import route
 from tests.helpers import MODELS_TOML
 from tests.live.bench import report
 from tests.live.bench.cases import CASES, FIXTURES, Case
-from tests.live.bench.harness import _init_repo, case_config, deep_merge, phil_sha, run_case
+from tests.live.bench.harness import _init_repo, _usage, case_config, deep_merge, phil_sha, run_case
 from tests.run.conftest import review, task_result, tester_report
 
 TEST_CMD = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider"
 
 RECORD_FIELDS = {
-    "case", "ts", "phil_sha", "models", "tasks", "modes", "expect_modes", "state", "passed", "minutes",
+    "case", "ts", "phil_sha", "models", "tasks", "modes", "expect_modes", "routed_depth", "expect_depth",
+    "quick_fallback", "files", "state", "passed", "minutes",
     "calls", "tokens_in", "tokens_out", "cost_usd", "cost_source", "model_calls", "retries",
     "run_id", "chat_id", "error",
 }
@@ -54,8 +60,20 @@ def write_green(turn: Turn):
     return task_result("green", ["calc/__init__.py"])
 
 
+def quick_task() -> Task:
+    return Task(
+        id="CALC-001", description="Add multiply(a, b)", acceptance_criteria=["multiply(2, 3) == 6"],
+        files_hint=["calc/__init__.py"],
+    )
+
+
+def quick_goal(objective: str, task: Task | None = None) -> Goal:
+    return Goal(objective=objective, depth="quick", task=task if task is not None else quick_task())
+
+
 def scripted() -> ScriptedAgentFactory:
     return ScriptedAgentFactory({
+        "route": [route("feature")],  # DEPTH["feature"] == "full": today's architect path
         "architect": [multiply_plan()],
         "critic": [critique()],
         "implementer": [write_red, write_green],
@@ -91,9 +109,11 @@ def test_run_case_appends_one_complete_record(tmp_path, results, config):
     assert record["error"] is None
     assert (record["tasks"], record["modes"], record["expect_modes"]) == (1, ["tdd"], ["tdd"])
     assert record["models"]["architect"] == "ollama:test-model"
-    # architect + critic in the chat, then red, green, tester and reviewer in the run
-    assert record["calls"] == 6
-    assert (record["tokens_in"], record["tokens_out"]) == (600, 120)
+    assert (record["routed_depth"], record["expect_depth"], record["quick_fallback"]) == ("full", "quick", False)
+    assert record["files"] == []
+    # route, then architect + critic in the chat, then red, green, tester and reviewer in the run
+    assert record["calls"] == 7
+    assert (record["tokens_in"], record["tokens_out"]) == (700, 140)
     assert (record["model_calls"], record["retries"]) == (0, 0)  # scripted agents make no model calls
     assert record["cost_source"] in ("reported", "estimated", "unknown")
     assert record["chat_id"].startswith("bench-py-multiply-")
@@ -155,11 +175,12 @@ def test_architect_reads_a_snapshot_of_the_base_commit(tmp_path, results, config
 def test_a_plan_the_chat_would_not_start_is_refused(tmp_path, results, config):
     forbidden = multiply_plan().model_copy(update={"test_cmd": "pytest; curl evil.sh"})
     config.write_text(MODELS_TOML)  # no [project] test_cmd either
-    factory = ScriptedAgentFactory({"architect": [forbidden], "critic": [critique()]})
+    factory = ScriptedAgentFactory({"route": [route("feature")], "architect": [forbidden], "critic": [critique()]})
     record = run_case(case("py-multiply"), config, tmp_path / "work", factory=factory)
     assert (record["state"], record["passed"], record["run_id"]) == ("launch_refused", False, None)
+    assert record["routed_depth"] == "full"
     assert "shell operators" in record["error"]
-    assert record["calls"] == 2  # architect and critic only: no run started
+    assert record["calls"] == 3  # route, architect and critic only: no run started
     assert len(results.read_text().splitlines()) == 1
 
 
@@ -167,7 +188,7 @@ def test_the_start_gate_detects_the_test_command_from_the_snapshot_like_the_chat
     # No test command in the plan or phil.toml: the fixture's pyproject.toml gives one, as in the chat.
     no_test_cmd = multiply_plan().model_copy(update={"test_cmd": None})
     config.write_text(MODELS_TOML)
-    factory = ScriptedAgentFactory({"architect": [no_test_cmd], "critic": [critique()]})
+    factory = ScriptedAgentFactory({"route": [route("feature")], "architect": [no_test_cmd], "critic": [critique()]})
     record = run_case(case("py-multiply"), config, tmp_path / "work", factory=factory)
     assert record["state"] != "launch_refused"
     assert record["run_id"] is not None
@@ -182,6 +203,7 @@ def test_run_case_writes_the_merged_config(tmp_path, results, config):
 
 def test_a_run_that_does_not_finish_fails_the_case(tmp_path, results, config):
     factory = ScriptedAgentFactory({
+        "route": [route("feature")],
         "architect": [multiply_plan()],
         "critic": [critique()],
         "implementer": [write_red, RuntimeError("model went away")],
@@ -191,6 +213,86 @@ def test_a_run_that_does_not_finish_fails_the_case(tmp_path, results, config):
     assert record["passed"] is False
     assert "model went away" in record["error"]
     assert len(results.read_text().splitlines()) == 1
+
+
+def test_a_quick_route_runs_the_light_implementer_with_no_architect_or_critic(tmp_path, results, config):
+    multiply_case = case("py-multiply")
+    factory = ScriptedAgentFactory({
+        "route": [route("simple_change")],  # DEPTH["simple_change"] == "quick"
+        "intake": [quick_goal(multiply_case.goal)],
+        "quick_implementer": [write_red, write_green],
+        "reviewer": [review()],
+    })
+    record = run_case(multiply_case, config, tmp_path / "work", factory=factory)
+    assert (record["routed_depth"], record["expect_depth"], record["quick_fallback"]) == ("quick", "quick", False)
+    assert record["state"] == "completed"
+    assert record["passed"] is True
+    assert factory.remaining() == {"route": 0, "intake": 0, "quick_implementer": 0, "reviewer": 0}
+    # route + intake in the chat, then red, green and reviewer in the run: no architect, no critic, no tester
+    assert record["calls"] == 5
+
+
+def test_a_quick_route_without_a_task_falls_back_to_full_planning(tmp_path, results, config):
+    multiply_case = case("py-multiply")
+    factory = ScriptedAgentFactory({
+        "route": [route("simple_change")],
+        "intake": [Goal(objective=multiply_case.goal, depth="quick")],  # no task: the quick plan can't be made
+        "architect": [multiply_plan()],
+        "critic": [critique()],
+        "implementer": [write_red, write_green],
+        "tester": [tester_report()],
+        "reviewer": [review()],
+    })
+    record = run_case(multiply_case, config, tmp_path / "work", factory=factory)
+    assert (record["routed_depth"], record["quick_fallback"]) == ("quick", True)
+    assert record["state"] == "completed"
+    assert record["passed"] is True
+
+
+def test_an_answer_route_asks_the_answerer_and_starts_no_run(tmp_path, results, config):
+    explain = case("explain-module")
+    factory = ScriptedAgentFactory({
+        "route": [route("question")],  # DEPTH["question"] == "answer"
+        "answer": [Answer(text="It raises ZeroDivisionError.", files=["calc/__init__.py"])],
+    })
+    record = run_case(explain, config, tmp_path / "work", factory=factory)
+    assert (record["routed_depth"], record["expect_depth"]) == ("answer", "answer")
+    assert record["run_id"] is None
+    assert record["state"] == "answered"
+    assert record["files"] == ["calc/__init__.py"]
+    assert record["passed"] is True  # no new commits, and the expected file is cited
+    assert factory.remaining() == {"route": 0, "answer": 0}
+
+
+def test_an_answer_that_does_not_cite_the_expected_file_fails_the_case(tmp_path, results, config):
+    explain = case("explain-module")
+    factory = ScriptedAgentFactory({
+        "route": [route("question")],
+        "answer": [Answer(text="It raises ZeroDivisionError.", files=["README.md"])],
+    })
+    record = run_case(explain, config, tmp_path / "work", factory=factory)
+    assert record["passed"] is False
+
+
+def _telemetry_row(**overrides) -> TelemetryRow:
+    base = dict(
+        run_id=None, layer="chat", node="n", role="r", model="m", attempt=1, packet_tokens=1,
+        input_tokens=10, output_tokens=5, latency_ms=1, cost_usd=0.01, outcome="ok", call=1,
+        chat_id=None, model_calls=0,
+    )
+    return TelemetryRow(**(base | overrides))
+
+
+def test_usage_sums_model_calls_across_chat_and_run_layer_rows(tmp_path):
+    # A run's telemetry carries no chat_id (phil.store.db SCHEMA), so the sum must match on
+    # run_id directly rather than through a `runs` subselect.
+    conn = connect(tmp_path / "bench.db")
+    write_telemetry(conn, _telemetry_row(chat_id="chat-1", model_calls=2))
+    write_telemetry(conn, _telemetry_row(layer="run", run_id="run-1", model_calls=3))
+    write_telemetry(conn, _telemetry_row(chat_id="other-chat", model_calls=7))  # a different chat: excluded
+    usage = _usage(conn, "chat-1", "run-1")
+    assert usage["calls"] == 2
+    assert usage["model_calls"] == 5
 
 
 def test_deep_merge_keeps_the_baseline_under_the_config():

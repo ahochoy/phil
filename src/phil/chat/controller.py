@@ -1,3 +1,4 @@
+import json
 import logging
 import queue
 import shutil
@@ -9,6 +10,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
@@ -26,17 +28,19 @@ from phil.chat.approval import (
 from phil.chat.btw import ask_btw
 from phil.chat.events import ChatEvent
 from phil.chat.overview import repo_overview
-from phil.chat.planning import Planner, PlanDraft, intake
+from phil.chat.planning import Planner, PlanDraft, intake, quick_plan
 from phil.chat.session import ChatSession
 from phil.chat.snapshot import export_tree, export_worktree
 from phil.chat.state import ChatState, RunView
 from phil.chat.watcher import RunWatcher
 from phil.config import ConfigError, PhilConfig, load_config
 from phil.contracts import Goal, Plan, PlanCritique, Ref, RunStatus
+from phil.contracts.results import AttemptWorklog
 from phil.contracts.routing import Answer
 from phil.publish import publisher as publishing
 from phil.publish.service import PrChange, PublishRefused, change_line, publish_run, sweep_prs
 from phil.repo import RepoInfo, resolve_repo
+from phil.repo_detect import detect_test_cmd
 from phil.routing import Route, decide, parse_override, route_state
 from phil.routing.classify import classify
 from phil.run.launch import is_worker_alive, prepare_run, worker_starting
@@ -70,8 +74,10 @@ PROMPTS = {
     "confirm_replace": "Replace the current goal? [y / n] › ",
     "hint": "Hint for the retry (optional) › ",
     "confirm_pr": "Open a PR? [y / n] › ",
-    "confirm_fix": "Fix it? [Enter = plan the fix / n] › ",
+    "confirm_fix": "Fix it? [Enter = quick fix / full = plan it / n] › ",
 }
+QUICK_FALLBACK = "Couldn't plan this as a quick change; planning it fully."
+MOVING_TO_FULL = "Moving this to a full plan, with what the quick attempt learned."
 # The transcript's `stage` label for a non-command input typed at each chat stage (4a's labels).
 TRANSCRIPT_STAGES = {
     "idle": "goal", "intake": "goal", "planning": "goal", "running": "goal", "questions": "answers",
@@ -169,6 +175,7 @@ class ChatController:
         self._step_lock = threading.Lock()
         self._goal: Goal | None = None
         self._goal_text = ""
+        self._prior_attempt: list[AttemptWorklog] = []  # a failed quick attempt's worklogs, once moved to full
         self._rounds = 0
         self._draft: PlanDraft | None = None
         self._shown_test_cmd: str | None = None  # the effective test command in the last plan render
@@ -187,6 +194,8 @@ class ChatController:
         # The pause was answered and a resume worker spawned; the question comes back if the worker
         # exits without taking the run (the watcher re-posts the same escalation).
         self._answer_sent = False
+        # (goal text, goal) of a quick run answered with `full`: its aborted run_done plans the goal fully.
+        self._full_handoff: tuple[str, Goal | None] | None = None
         self._worker_alive, self._worker_starting = worker_alive, worker_starting
         self._lost = False  # the watcher saw the worker stop responding
         self._btw_calls = 0
@@ -533,6 +542,7 @@ class ChatController:
     def _reset_goal(self) -> None:
         self._goal, self._goal_text, self._rounds, self._draft, self._revising = None, "", 0, None, False
         self._route, self._clarifications, self._prior_turns = None, [], []
+        self._prior_attempt = []
 
     def _forced_input(self, raw: str, forced: str, rest: str) -> None:
         """A message prefixed with /ask, /quick or /full: a goal whose depth skips the router."""
@@ -633,10 +643,9 @@ class ChatController:
 
     def _status_line(self, route: Route) -> str:
         if route.source == "fix_offer":
-            return "Fix · planning"  # M3b: the quick path
+            return "Fix · quick path" if route.depth == "quick" else "Fix · full plan"
         if route.source == "forced":
-            # Until M3b's quick engine, a forced quick goal is planned like any other.
-            return "Forced: quick · planning" if route.depth == "quick" else f"Forced: {route.depth} path"
+            return f"Forced: {route.depth} path"
         if route.reason == "needs_detail":
             return "Unclear request · asking first"
         if route.depth is None:
@@ -645,7 +654,7 @@ class ChatController:
         if route.depth == "answer":
             return f"{label} · answering (/full to plan a change instead)"
         if route.depth == "quick":
-            return f"{label} · planning  (/quick and /full force a path)"  # M3b: the quick path
+            return f"{label} · quick path  (/full to plan it properly)"
         return f"{label} · full plan"
 
     def _answer_job(self, question: str) -> None:
@@ -678,7 +687,8 @@ class ChatController:
         render_answer(self.console, answer)
         self._recent.append(f"phil: {answer.text[:TURN_CHARS]}")
         self._reset_goal()
-        if task_class == "diagnosis":
+        # A forced /ask has no class: the answerer says whether its answer was a diagnosis.
+        if task_class == "diagnosis" or answer.diagnosis:
             self._fix_offer = (data["question"], answer.text)
             self._set_stage("confirm_fix")
         else:
@@ -693,10 +703,11 @@ class ChatController:
     def _confirm_fix(self, text: str) -> None:
         offer, self._fix_offer = self._fix_offer, None
         choice = text.lower()
-        if choice in ("", "y", "yes") and offer is not None:
+        if choice in ("", "y", "yes", "full") and offer is not None:
             question, diagnosis = offer
-            self._begin_goal(f"{question}\n\nDiagnosis so far:\n{diagnosis}", forced="quick", source="fix_offer")
-        elif choice in ("", "y", "yes", "n", "no"):
+            depth = "full" if choice == "full" else "quick"
+            self._begin_goal(f"{question}\n\nDiagnosis so far:\n{diagnosis}", forced=depth, source="fix_offer")
+        elif choice in ("", "y", "yes", "full", "n", "no"):
             self._set_stage("idle")
         else:
             self._begin_goal(text)  # another message is a new goal
@@ -705,10 +716,13 @@ class ChatController:
         self._intake_calls += 1
         call, generation = self._intake_calls, self._generation
         self._step("intake", generation)
+        route_depth = self._route.depth if self._route else None
+        detected = detect_test_cmd(self.info.root)  # reads only file names (and package.json's scripts)
 
         def fn(ctx: AgentContext) -> dict:
             goal = intake(
-                ctx, message, overview=self.overview, previous=previous, answers=answers or [], call=call
+                ctx, message, overview=self.overview, previous=previous, answers=answers or [], call=call,
+                route_depth=route_depth, detected_test_cmd=detected,
             )
             return {"goal": goal}
 
@@ -732,20 +746,67 @@ class ChatController:
                 question += "\n\nClarification: " + "\n".join(self._clarifications)
             self._answer_job(question)
             return
-        self._plan(goal)
+        self._build(goal)
+
+    def _build(self, goal: Goal) -> None:
+        """Take the goal to a run: the quick path when the route (or, if it deferred, intake) chose
+        quick, else full planning."""
+        route = self._route
+        if route is not None and (route.depth == "quick" or (route.depth is None and goal.depth == "quick")):
+            self._quick(goal)
+        else:
+            self._plan(goal)
+
+    def _quick(self, goal: Goal) -> None:
+        """Start the goal's one-task run straight away, or fall back to full planning (spec §4.1)."""
+        plan, reasons = self._quick_plan(goal)
+        if plan is None:
+            self.console.print(f"[phil.muted]{QUICK_FALLBACK}[/]")
+            self._safe_note("quick_fallback", reasons=reasons)
+            self._plan(goal)
+            return
+        task = plan.tasks[0]
+        # No approval prompt: the line says what will run, tests included.
+        tests = f" · tests: {plan.test_cmd}" if plan.test_cmd else ""
+        self.console.print(f"Quick change: {escape(_clip(f'{task.id} {task.description}') + tests)}")
+        self.session.contract("quick_plan", plan)
+        self._launch(plan, "quick", {"task_id": task.id})
+
+    def _quick_plan(self, goal: Goal) -> tuple[Plan | None, list[str]]:
+        """The quick run's plan, or None and why not. The same checks approval makes before a full run."""
+        if goal.task is None:
+            return None, ["intake wrote no quick task"]
+        draft = quick_plan(goal, None)
+        if draft is None:
+            return None, ["the quick task doesn't make a valid plan"]
+        try:
+            self.config = load_config(self.info.root, overrides=self._config_overrides)
+        except ConfigError as exc:
+            return None, [str(exc)]
+        # As at approval: detect from the base commit's snapshot (what the run sees), and keep check
+        # commands' paths inside it, or inside the repo when nothing needed detecting.
+        root = self._detection_root(draft)
+        plan = quick_plan(goal, effective_test_cmd(draft, self.config, root)[0])
+        if plan is None:
+            return None, ["the quick task doesn't make a valid plan"]
+        problems = launch_problems(plan, self.config, root, check_root=root or self.info.root)
+        return (None, problems) if problems else (plan, [])
 
     def _answers(self, text: str) -> None:
         if not text:
             return
         if text.lower() == "go":
-            self._plan(self._goal)
+            self._build(self._goal)
             return
         self._clarifications.append(text)
         self._recent.append(f"you: {text[:TURN_CHARS]}")
         self._set_stage("intake")
         self._intake_job(self._goal_text, previous=self._goal, answers=[text])
 
-    def _plan(self, goal: Goal) -> None:
+    def _plan(self, goal: Goal, prior_attempt: Sequence[AttemptWorklog] = ()) -> None:
+        # The architect plans from scratch: a stray intake task (a fallen-back quick task, or one written
+        # on a full route) never reaches it.
+        goal = goal.model_copy(update={"task": None})
         if goal.open_questions:
             self.console.print(f"[phil.muted]Planning with open questions: {len(goal.open_questions)}[/]")
         render_goal(self.console, goal)
@@ -758,7 +819,7 @@ class ChatController:
             self._step("snapshot", generation)
             tree = self._snapshot(generation)
             on_step = lambda step: self._step(step, generation)  # noqa: E731
-            return {"draft": self.planner.draft(goal, tree, on_step=on_step, ctx=ctx)}
+            return {"draft": self.planner.draft(goal, tree, on_step=on_step, ctx=ctx, prior_attempt=prior_attempt)}
 
         self._job("plan_ready", fn)
 
@@ -863,7 +924,7 @@ class ChatController:
         if not feedback:
             self._set_stage("approval")
             return
-        goal, draft = self._goal, self._draft
+        goal, draft, prior_attempt = self._goal, self._draft, self._prior_attempt
         self.console.print("[phil.muted]Revising…[/]")
         self._revising = True
         self._set_stage("planning")
@@ -873,7 +934,8 @@ class ChatController:
             self._step("snapshot", generation)
             tree = self._snapshot(generation)
             revised = self.planner.revise(
-                goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation), ctx=ctx
+                goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation), ctx=ctx,
+                prior_attempt=prior_attempt,
             )
             return {"draft": revised}
 
@@ -882,19 +944,24 @@ class ChatController:
     def _start(self, draft: PlanDraft, answer: str, test_cmd: str | None) -> None:
         # The run keeps the command the user approved (the plan's, phil.toml's or the detected one).
         plan = draft.plan.model_copy(update={"test_cmd": test_cmd})
+        self._launch(plan, "full", {"plan_version": draft.version, "answer": answer})
+
+    def _launch(self, plan: Plan, depth: str, note_data: dict) -> None:
+        """Prepare and spawn a run of `plan` at `depth`; the chat then follows it. `note_data` goes into
+        the transcript's start note: "approved" for a full run, "quick_started" for a quick one."""
         try:
             base_sha = self._explicit_base_sha or resolve_repo(self.info.root).head_sha
             record = prepare_run(
-                self.info, plan, base_sha, chat_id=self.session.id, overrides=self._config_overrides
+                self.info, plan, base_sha, chat_id=self.session.id, overrides=self._config_overrides, depth=depth
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
-            self._safe_note("start_failed", plan_version=draft.version, answer=answer, error=error)
+            self._safe_note("start_failed", **note_data, depth=depth, error=error)
             self._reset_goal()
             self._set_stage("idle")
             raise  # reported by the loop's error handler
-        depth = (self._route.depth if self._route else None) or (self._goal.depth if self._goal else None)
-        self._safe_note("approved", plan_version=draft.version, answer=answer, run_id=record.run_id, depth=depth)
+        started = "approved" if depth == "full" else "quick_started"
+        self._safe_note(started, **note_data, run_id=record.run_id, depth=depth)
         self._recent.append(f"phil: planned {plan.keyword}")
         run_id = escape(record.run_id)
         try:
@@ -1014,7 +1081,7 @@ class ChatController:
             self.console.print(
                 f"[phil.warn]The worker exited without resuming the run; see {escape(str(log))}[/]"
             )
-        self._pause, self._answer_sent = escalation, False
+        self._pause, self._answer_sent, self._full_handoff = escalation, False, None
         self.state.set_paused(True)
         self._safe_note("run_paused", run_id=self._run_id, escalation=escalation)
         self.console.print(
@@ -1040,7 +1107,13 @@ class ChatController:
         if choice == "retry":
             self._set_stage("hint")
             return
+        if choice == "full":
+            # The quick run ends as aborted; its run_done starts full planning of the same goal.
+            self._full_handoff = (self._goal_text, self._goal)
+            self.console.print(MOVING_TO_FULL)
         self._resume_run({"action": choice})
+        if not self._answer_sent:
+            self._full_handoff = None  # the run moved on or the worker didn't start: nothing to hand off
 
     def _hint(self, text: str) -> None:
         self._resume_run({"action": "retry"} | ({"hint": text} if text else {}))
@@ -1092,10 +1165,42 @@ class ChatController:
             self._done_seen = True
             self._run_id = None
             self._reset_goal()  # the chat takes its next goal
+        handoff, self._full_handoff = self._full_handoff, None
+        if handoff is not None and handoff[1] is not None and state == "aborted":
+            self._move_to_full(run_id, handoff)  # no notice or PR offer for the quick run
+            return
         self._set_stage("idle")
         self._run_notice(run_id, state, data)
         if state == "completed":
             self._offer_pr(run_id)
+
+    def _move_to_full(self, run_id: str, handoff: tuple[str, Goal | None]) -> None:
+        """A quick run answered with `full` ended: plan its goal fully, with what the attempt learned."""
+        worklogs = self._read_prior_attempt(run_id)
+        self._forget_run()
+        goal_text, goal = handoff
+        # Planned as a full goal: the quick task would bias the architect; the worklogs say what was tried.
+        self._goal_text, self._goal = goal_text, goal.model_copy(update={"depth": "full", "task": None})
+        self._prior_attempt = worklogs  # kept for the goal's lifetime, so an edit at approval sees them too
+        self._plan(self._goal, prior_attempt=worklogs)
+
+    def _read_prior_attempt(self, run_id: str) -> list[AttemptWorklog]:
+        """The quick run's worklogs from its handoff; [] (with a note) when it's missing or unreadable."""
+        path = ProjectPaths(self.info.slug).run_dir(run_id) / "handoff" / "prior_attempt.json"
+        try:
+            items = json.loads(path.read_text())["worklogs"]
+            if not isinstance(items, list):
+                raise TypeError(f"worklogs is a {type(items).__name__}, not a list")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self._safe_note("prior_attempt_unreadable", run_id=run_id, error=f"{type(exc).__name__}: {exc}")
+            return []
+        worklogs = []
+        for item in items:
+            try:
+                worklogs.append(AttemptWorklog.model_validate(item))
+            except ValidationError:
+                logger.warning("skipped an invalid worklog in %s", path, exc_info=True)
+        return worklogs
 
     def _run_notice(self, run_id: str, state: str, data: dict) -> None:
         rid = escape(run_id)

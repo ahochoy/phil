@@ -1,15 +1,33 @@
+import itertools
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from phil.agents.providers import ProviderSpec, build_chat_model, resolve_provider, split_model
-from phil.agents.spec import AgentSpec, load_prompt
+from phil.agents.spec import ANSWER_NOW, AgentSpec, load_prompt
+
+
+def _case_variants(name: str) -> list[str]:
+    """Every upper/lower-case spelling of `name` (".git" gives 8)."""
+    return ["".join(chars) for chars in itertools.product(*({c.lower(), c.upper()} for c in name))]
+
+
+def _protected_paths() -> list[str]:
+    """/.git (and everything under it) and /phil.toml, in every case spelling.
+
+    deepagents matches permission globs case-sensitively, but macOS's default filesystem is
+    case-insensitive, so "/PHIL.toml" would otherwise reach phil.toml. The variants are literal
+    paths, not bracket globs like "/[pP]hil.toml": deepagents anchors a recursive delete's check
+    at a pattern's wildcard-free prefix, and a bracket in the first segment anchors it at "/",
+    which would refuse every directory delete."""
+    git = [p for variant in _case_variants(".git") for p in (f"/{variant}", f"/{variant}/**")]
+    return git + [f"/{variant}" for variant in _case_variants("phil.toml")]
 
 
 def filesystem_permissions(spec: AgentSpec) -> list[Any]:
     from deepagents import FilesystemPermission
 
-    rules = [FilesystemPermission(operations=["write"], paths=["/.git", "/.git/**", "/phil.toml"], mode="deny")]
+    rules = [FilesystemPermission(operations=["write"], paths=_protected_paths(), mode="deny")]
     if not spec.writes_files:
         rules.append(
             FilesystemPermission(operations=["write"], paths=["/**", "/**/.*", "/**/.*/**"], mode="deny")
@@ -59,7 +77,7 @@ def build_agent(
 
 
 READ_TOOLS = ("ls", "read_file", "glob", "grep")
-ANSWER_NOW = "Your tool budget is used up. Answer now with what you have found, and say what you didn't check."
+WRITE_TOOLS = ("write_file", "edit_file", "delete")
 
 
 BUDGET_GRACE_CALLS = 2  # capped calls allowed to fix an invalid answer before the hard stop
@@ -69,24 +87,24 @@ def _ai_calls(messages: list[Any]) -> int:
     return sum(1 for m in messages if getattr(m, "type", None) == "ai")
 
 
-def _with_answer_now(system_message: Any) -> Any:
-    """`system_message` (or none) with ANSWER_NOW appended. Plain-string content stays a plain
+def _with_cap_message(system_message: Any, message: str) -> Any:
+    """`system_message` (or none) with `message` appended. Plain-string content stays a plain
     string (OpenAI-compatible servers can reject list content); block content keeps its blocks."""
     from langchain_core.messages import SystemMessage
 
     content = system_message.content if system_message is not None else ""
     if isinstance(content, str):
-        return SystemMessage(f"{content}\n\n{ANSWER_NOW}" if content else ANSWER_NOW)
+        return SystemMessage(f"{content}\n\n{message}" if content else message)
     blocks = list(system_message.content_blocks)
-    blocks.append({"type": "text", "text": f"\n\n{ANSWER_NOW}" if blocks else ANSWER_NOW})
+    blocks.append({"type": "text", "text": f"\n\n{message}" if blocks else message})
     return SystemMessage(content_blocks=blocks)
 
 
-def _call_budget_middleware(max_calls: int) -> Any:
+def _call_budget_middleware(max_calls: int, message: str = ANSWER_NOW) -> Any:
     """Cap an agent's model calls at `max_calls`, softly and then hard.
 
-    Soft: from call `max_calls` on, remove the tools and tell the model to answer, so a capped
-    agent still returns its structured output. (ToolStrategy adds its structured-output tool after
+    Soft: from call `max_calls` on, remove the tools and add `message` (the spec's cap_message)
+    telling the model to answer, so a capped agent still returns its structured output. (ToolStrategy adds its structured-output tool after
     this middleware runs, so `tools=[]` leaves the model exactly one tool: the answer.)
 
     Hard: an invalid answer is sent back to the model (ToolStrategy's handle_errors), and so is a
@@ -102,7 +120,7 @@ def _call_budget_middleware(max_calls: int) -> Any:
 
     def capped(request: Any) -> Any:
         if _ai_calls(request.state["messages"]) >= max_calls - 1:
-            return request.override(tools=[], system_message=_with_answer_now(request.system_message))
+            return request.override(tools=[], system_message=_with_cap_message(request.system_message, message))
         return request
 
     def stop(state: Any) -> dict[str, Any] | None:
@@ -138,10 +156,6 @@ def _build_light_agent(
 ) -> Any:
     if workdir is None:
         raise ValueError(f"{spec.name} uses the light harness, which needs a workdir")
-    if spec.writes_files:
-        # The write tools would need filesystem_permissions (.git and phil.toml denied); M3b adds
-        # them through FilesystemMiddleware(_permissions=...).
-        raise ValueError("light harness with writes_files is not supported yet")
     from deepagents.backends.filesystem import FilesystemBackend
     from deepagents.middleware.filesystem import FilesystemMiddleware
     from langchain.agents import create_agent
@@ -150,15 +164,18 @@ def _build_light_agent(
 
     filesystem = FilesystemMiddleware(
         backend=FilesystemBackend(root_dir=workdir, virtual_mode=True),
-        tools=list(READ_TOOLS),
+        # A writing spec also gets the write tools (never `execute`: commands go through Phil's
+        # shell tool); they check the permissions below, which deny .git and phil.toml.
+        tools=[*READ_TOOLS, *WRITE_TOOLS] if spec.writes_files else list(READ_TOOLS),
         # deepagents offloads oversized tool results and user messages to the backend, which here
-        # is the repository itself: a read-only agent must not write there.
+        # is the repository itself, and those writes skip the permission rules: keep it off.
         tool_token_limit_before_evict=None,
         human_message_token_limit_before_evict=None,
+        _permissions=filesystem_permissions(spec),
     )
     middleware: list[Any] = [filesystem, PhilModelRetryMiddleware()]
     if spec.max_model_calls is not None:
-        middleware.append(_call_budget_middleware(spec.max_model_calls))
+        middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
     return create_agent(
         chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=tools,

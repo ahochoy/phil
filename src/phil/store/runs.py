@@ -66,6 +66,7 @@ class RunRecord:
     pr_state: str | None = None
     pr_checked_at: str | None = None
     config_overrides: str | None = None  # JSON list of the `--set` overrides the run was started with
+    depth: str | None = None  # "quick" or "full"; NULL for runs before M3b
 
 
 def new_run_id(conn: sqlite3.Connection) -> str:
@@ -87,16 +88,17 @@ def create_run(
     chat_id: str | None = None,
     base_branch: str | None = None,
     config_overrides: str | None = None,
+    depth: str | None = None,
 ) -> RunRecord:
     branch = branch_for(run_id)
     now = utcnow()
     conn.execute(
         "INSERT INTO runs (run_id, keyword, base_sha, branch, worktree, state, tasks_total,"
-        " story_ref, created_at, updated_at, chat_id, base_branch, config_overrides)"
-        " VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)",
+        " story_ref, created_at, updated_at, chat_id, base_branch, config_overrides, depth)"
+        " VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             run_id, keyword, base_sha, branch, str(worktree), tasks_total, story_ref, now, now, chat_id, base_branch,
-            config_overrides,
+            config_overrides, depth,
         ),
     )
     run = get_run(conn, run_id)

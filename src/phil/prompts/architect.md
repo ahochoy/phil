@@ -26,5 +26,8 @@ You turn a goal into an execution plan for a test-driven developer. You can read
 - `detected_test_cmd` in your input is the command Phil found from the repo's files. Use it unless the repo shows a better one.
 - If the repo has no tests and every task is `check`, leave `test_cmd` unset.
 
+## Prior attempt
+- `prior_attempt`: when set, a quick attempt at this goal failed; its worklogs say what was tried and why it failed. Plan around those failures; don't repeat them.
+
 ## Revisions
 - If your input includes `previous_plan` and `critique`, revise the previous plan to resolve every critique issue you agree with, and keep what was right.

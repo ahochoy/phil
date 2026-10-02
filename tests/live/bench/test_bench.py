@@ -28,4 +28,7 @@ def test_bench(case: Case, tmp_path: Path) -> None:
         pytest.skip("node is not installed; the static-site cases build with `node build.mjs`")
     record = run_case(case, Path(config).expanduser(), tmp_path / "work")
     print(json.dumps(record, indent=2))
+    assert record["routed_depth"] == case.expect_depth, (
+        f"{case.name}: routed {record['routed_depth']!r}, expected {case.expect_depth!r}"
+    )
     assert record["passed"], f"{case.name}: {record['state']}: {record['error']}"

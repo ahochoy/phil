@@ -60,6 +60,18 @@ def test_start_runs_to_completion_and_cleans_up(calc_repo):
     assert run_git(calc_repo, "log", "--format=%s", record.branch).splitlines()[0] == "CALC-001: Add subtract"
 
 
+def test_quick_run_state_carries_depth_and_skips_the_tester(calc_repo):
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha, depth="quick")
+    # No "tester" entry: a quick run starts with tester_done already set, so pick_task routes
+    # straight to review once every task is done, never calling the tester. Its implementer is
+    # the light quick_implementer.
+    factory = ScriptedAgentFactory({"quick_implementer": [write_red, write_green], "reviewer": [review()]})
+    outcome = run_worker(calc_repo, record.run_id, "start", factory=factory)
+    assert outcome.status == "completed"
+    assert checkpointed(info, record.run_id)["depth"] == "quick"
+
+
 def test_escalate_then_resume(calc_repo):
     info, record = new_run(calc_repo)
     escalating = ScriptedAgentFactory({"implementer": [write_red, bad_green, bad_green, bad_green]})

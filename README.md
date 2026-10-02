@@ -246,20 +246,29 @@ sets one of three paths:
   commit. It reads a snapshot of the working tree (tracked and untracked, non-ignored files),
   so uncommitted edits are visible and ignored files such as `.env` are not. Without an
   `answerer` model of its own (`low`, or `[models] answerer`) it uses the orchestrator's.
-- **quick** — a small, well-specified change: until M3b lands, this still goes through the
-  full planning pipeline (the status line says "planning", not "quick path", so it doesn't
-  claim a shortcut that isn't there yet).
+- **quick** — a small, well-specified change: intake writes the one task itself (no architect,
+  no critic), and the one-task plan is shown as a single line with the run starting straight
+  away — no approval prompt. The run uses a light implementer (writes allowed, no sub-agent,
+  no summarization, capped at 15 model calls per attempt) and skips the tester, at up to 2
+  attempts. One lean review follows; blocker and major findings reopen the task as a check task
+  for a single fix attempt, committed as `<id>: fix after review`, then the run ends either way
+  (minor findings, and any left unfixed, stay listed as open issues in the summary). If the gate
+  still fails after 2 attempts, or the fix attempt doesn't clear it, you're offered `full` (plan
+  the same goal properly, from the base branch, with the quick attempt's worklogs carried over),
+  `retry` or `abort` — a quick run with no chat offers only `retry`/`abort`.
 - **full** — a feature, refactor, design question or broad project: the normal plan, run,
   review and PR flow.
 
 The status line under your message says which path was taken and why, e.g. `Simple change ·
-planning  (/quick and /full force a path)`, `Forced: full path` or `Forced: quick · planning`
-(a forced quick goal is planned like any other until M3b). Accepting a diagnosis's `Fix it?`
-offer says `Fix · planning`. Force a path yourself by
-starting your message with `/ask`, `/quick` or `/full` — the prefix is stripped and the
-classifier is skipped entirely. When the request is too ambiguous to route (a missing
-target, conflicting goals, or no way to tell what done means), Phil asks first instead of
-guessing.
+quick path  (/full to plan it properly)`, `Forced: full path` or `Forced: quick path`.
+Accepting a diagnosis's `Fix it? [Enter = quick fix / full = plan it / n]` offer says `Fix ·
+quick path` (or `Fix · full plan` for `full`). Force a path yourself by starting your message
+with `/ask`, `/quick` or `/full` — the prefix is stripped and the classifier is skipped
+entirely. When the request is too ambiguous to route (a missing target, conflicting goals, or
+no way to tell what done means), Phil asks first instead of guessing.
+
+Every run's `phil show <run-id>` header names its depth (`quick` or `full`; blank for a run
+from before M3b), right after the keyword: `Run <id> · CALC · quick · completed · ...`.
 
 Routing is decided by a classifier, not by the model doing the work. By default it's your
 `low` model, called the same way the chat's other agents are. For faster, cheaper routing,

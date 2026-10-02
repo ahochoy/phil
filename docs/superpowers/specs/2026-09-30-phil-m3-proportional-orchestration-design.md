@@ -158,32 +158,63 @@ M3a routes and records the `quick` depth, but quick goals still go through the f
 
 ## 4. Quick path (M3b)
 
+Revised 2026-10-01 against the code M3a shipped. The user approved these points before the M3b plan.
+
 ### 4.1 Planning
 
-- **Intake** (generative, on the `low`/`orchestrator` model) writes the goal and **exactly one task**:
-  - the description and acceptance criteria;
-  - the `verify` mode and, for `check`, the `check_cmd`, chosen by M1's rules from the detected `test_cmd` and check commands.
-- The **architect and critic are skipped.** The one-task plan is shown as a single line, and the run starts straight away.
+- **Intake writes the one task.** `Goal` gains an optional `task: Task`. Intake fills it when the route is `quick` (from the router, a forced `/quick`, or the "Fix it?" offer), or when intake itself chooses `depth="quick"`. `IntakeInput` gains `route_depth` and `detected_test_cmd`, so intake can follow M1's rules:
+  - the `verify` mode;
+  - a `check_cmd` for `check` tasks, ideally one the repo already defines.
+- **Phil builds the plan in code:** `Plan(keyword=<the task id's prefix>, description=goal.objective, tasks=[task], test_cmd=<detected>)`, using the existing `Task` and `Plan` validation.
+- **If the task is missing or fails validation**, Phil falls back to the full path (architect and critic) and says so in one dim line. A bad draft never reaches a run.
+- The **architect and critic are skipped.** The one-task plan is shown as a single line, and the run starts straight away with no approval prompt.
 
 ### 4.2 Run (`depth="quick"`)
 
-The same `RunEngine` graph, with these differences:
-- **Lighter implementer:** the deep agent without the general-purpose sub-agent and summarization middleware. It is built by `agents/factory.py` from a `quick` flag on the spec.
-- `max_attempts_per_phase = 2`.
-- **No tester pass:** `route_after_commit` and `route_after_pick` skip `tester`/`tester_task`.
-- **Lean review, once.** Blocking or major findings are not turned into tasks (`issues_to_tasks` is not used). The run reopens the same task with the findings as `last_problems`, makes **one** patch attempt, and reruns the gate. Minor findings appear only in the summary.
+- **Depth on the run:**
+  - a migration adds `runs.depth TEXT`;
+  - `prepare_run` records it, `RunState` carries it, and `phil show` displays it.
+
+  This closes M3a's follow-up. Full runs record `full`.
+- **The same `RunEngine` graph, with these quick-run differences:**
+  - **No tester:** the run starts with `tester_done` already set, so `route_after_pick` goes straight to review, and `route_after_commit` never goes to `tester_task`.
+  - **Attempts:** `max_attempts_per_phase` is `2` for quick runs (`run.quick_max_attempts`, default 2).
+  - **Lighter implementer:** the `quick_implementer` spec, on the light harness with writes allowed.
+    - Writes go through `FilesystemMiddleware` with `filesystem_permissions(spec)`, so `.git/**` and `phil.toml` are still denied.
+    - Eviction of large tool results stays off.
+    - There's no sub-agent and no summarization.
+    - A hard stop applies: the call budget's soft step is at `max_model_calls`, and the hard stop 2 calls later, with **`max_model_calls = 15` per attempt**.
+  - **Lean review, once.**
+    - Blocking or major findings aren't turned into tasks (`issues_to_tasks` isn't used). The run reopens the same task as a check task, with each finding added to its acceptance criteria as `Review: <note>`. It makes **one** fix attempt, reruns the gate, and commits the fix as `<id>: fix after review`. The fix may edit test files that the original task created or changed; every other test file stays frozen.
+    - If the run is aborted or moved to full while fixing, the findings stay listed in the run's open issues as `not fixed after review`.
+    - There is no second review after the fix.
+    - Minor findings appear only in the summary.
 
 ### 4.3 Moving up to full
 
-- **Trigger:** the gate still fails after 2 attempts, or the patch attempt doesn't clear a blocking finding.
-- **Escalation:** the options are `["full", "retry", "abort"]`. Choosing `full`:
-  1. ends the quick run;
-  2. sends the original goal and the quick run's worklog (M1) to the architect;
-  3. starts a full run from the base branch, not from the quick run's commits.
+- **Trigger:** the gate still fails after 2 attempts, or the fix attempt doesn't clear the gate.
+- **Escalation options:** `["full", "retry", "abort"]` for runs started from a chat; `["retry", "abort"]` for a quick run with no chat. `phil run` itself always starts full runs. Choosing `full` in the chat:
+  1. ends the quick run as aborted (through the normal resume path);
+  2. sends the original goal and the quick run's worklogs to the architect (`ArchitectInput` gains an optional `prior_attempt: list[AttemptWorklog]`);
+  3. runs the normal architect, critic and approval flow;
+  4. starts a full run from the base branch, not from the quick run's commits.
 
 ### 4.4 Full path
 
 Unchanged, apart from the classifier call at the front and the recorded depth.
+
+### 4.5 Chat
+
+- **Status lines:**
+  - quick: `{label} · quick path  (/full to plan it properly)`;
+  - forced quick: `Forced: quick path`;
+  - the fix offer: `Fix · quick path`.
+
+  This replaces the M3a "planning" wording from §3.8.
+- **The "Fix it?" prompt** becomes `Fix it? [Enter = quick fix / full = plan it / n]`.
+  - Enter or `y` starts a quick goal with the diagnosis as context.
+  - `full` starts a full goal.
+  - Any answer the answerer marks as a diagnosis (`Answer.diagnosis`) also gets the offer, including a forced `/ask`, which has no classifier class.
 
 ## 5. Benchmarks
 
@@ -215,9 +246,13 @@ If Jev wins, setup recommends it. If it doesn't, it stays optional. Either way, 
 
 ### 5.2 End-to-end benchmark (M3b)
 
-- Each existing case **asserts** its expected depth, replacing the record-only `expect_modes`: `py-multiply`, `site-meta-tag` and `site-typo` should take the quick path.
+- **Each case goes through the real router.** The harness calls `classify` and `decide` on the goal and **asserts the expected depth**. This replaces the record-only `expect_modes`, which stays as a record. `py-multiply`, `site-meta-tag` and `site-typo` should take the quick path.
+- **The harness then runs the path the router chose:**
+  - quick: intake with `route_depth="quick"`, then the one-task plan and a quick run;
+  - full: the architect and critic, as today;
+  - answer: the answerer on the working-tree snapshot.
 - **New case `explain-module`:** a question about the fixture repo. It must take the answer path, create no run and no commits, and the reply must cite the right file.
-- **Targets against M1's numbers:** a quick case finishes in **under 10 model calls and under 1 minute**.
+- **Targets against M1's numbers:** a quick case finishes in **under 10 model calls and under 1 minute**. These are recorded per case (calls are summed from telemetry's `model_calls` for the chat and the run) and shown in the report against the target. They aren't asserted, because live models vary.
 
 ## 6. Testing (offline, no network, no real keychain)
 

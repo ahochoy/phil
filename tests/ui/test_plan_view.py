@@ -52,7 +52,7 @@ def test_render_plan_shows_the_full_test_cmd_and_clips_its_note():
 
 
 def test_render_goal_is_bounded():
-    long = "z" * 300
+    long = "z" * 150 + " " + "z" * 149
     g = Goal(
         objective=long,
         constraints=[long],
