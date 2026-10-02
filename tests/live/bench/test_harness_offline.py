@@ -237,7 +237,7 @@ def test_quick_plan_for_detects_setup_even_when_the_test_cmd_is_already_set(tmp_
     # test command already is: mirrored here so the harness flags the same start-gate problems the
     # chat would (brief R3, Task 3). Only `npm` is missing, so a problem here can only come from the
     # detected setup command, not from the already-configured `make test`.
-    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None if prog == "npm" else f"/usr/bin/{prog}")
+    monkeypatch.setattr("phil.chat.approval._which", lambda prog: None if prog == "npm" else f"/usr/bin/{prog}")
     tree = tmp_path / "tree"
     tree.mkdir()
     (tree / "package.json").write_text("{}")
@@ -253,7 +253,7 @@ def test_quick_plan_for_detects_setup_even_when_the_test_cmd_is_already_set(tmp_
 
 
 def test_quick_plan_for_skips_detection_once_both_commands_are_configured(tmp_path, monkeypatch):
-    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None if prog == "npm" else f"/usr/bin/{prog}")
+    monkeypatch.setattr("phil.chat.approval._which", lambda prog: None if prog == "npm" else f"/usr/bin/{prog}")
     tree = tmp_path / "tree"
     tree.mkdir()
     (tree / "package.json").write_text("{}")

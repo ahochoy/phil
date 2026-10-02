@@ -8,7 +8,10 @@ from phil.repo_detect import detect_test_cmd
 from phil.repo_detect import effective_setup_cmd as effective_setup_cmd  # the engine shares it
 from phil.workspace.shell import CONTAINMENT_DETAIL, ShellPolicy, needs_a_shell
 
-GIT_POLICY_NOTE = "Commit signing or hooks are on; a failing signature or hook will pause the run."
+# The PATH lookup the program preflight uses; offline tests fake this alias, not `shutil.which`.
+_which = shutil.which
+
+GIT_POLICY_NOTE ="Commit signing or hooks are on; a failing signature or hook will pause the run."
 
 
 def terminated(text: str) -> str:
@@ -100,7 +103,7 @@ def _program_problem(cmd: str, kind: str) -> str | None:
     if not parts:
         return None
     prog = parts[0]
-    if "/" in prog or shutil.which(prog):
+    if "/" in prog or _which(prog):
         return None
     return f"`{prog}` (from the {kind} command `{cmd}`) isn't on PATH for Phil's runs"
 

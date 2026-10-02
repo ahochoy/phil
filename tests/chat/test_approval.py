@@ -1,3 +1,4 @@
+import shutil
 import sys
 from pathlib import Path
 
@@ -211,7 +212,7 @@ def test_launch_problems_checks_containment_against_check_root_when_root_is_abse
 def test_program_problems_reports_a_missing_bare_program(monkeypatch):
     # The `program_on_path` autouse fixture fakes every program as present; override it here to
     # exercise the missing-program path, same as the other tests below.
-    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None)
+    monkeypatch.setattr("phil.chat.approval._which", lambda prog: None)
     problems = program_problems(plan(test_cmd="definitely-not-a-real-program --flag"), config())
     assert problems == [
         "`definitely-not-a-real-program` (from the test command "
@@ -224,6 +225,8 @@ def test_the_program_on_path_fixture_fakes_every_program_present():
     # sees no problem for a program that plainly isn't installed anywhere.
     problems = program_problems(plan(test_cmd="definitely-not-installed-xyz test"), config())
     assert problems == []
+    # Only approval's own alias is faked: `shutil.which` stays real for everything else.
+    assert shutil.which("definitely-not-installed-xyz") is None
 
 
 def test_program_problems_accepts_an_existing_program():
@@ -240,20 +243,20 @@ def test_program_problems_skips_a_command_shlex_cant_split():
 
 
 def test_program_problems_checks_the_setup_command(monkeypatch):
-    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None)
+    monkeypatch.setattr("phil.chat.approval._which", lambda prog: None)
     configured = config(project={"setup_cmd": "npm ci"})
     problems = program_problems(plan(test_cmd=None), configured)
     assert "`npm` (from the setup command `npm ci`) isn't on PATH for Phil's runs" in problems
 
 
 def test_program_problems_checks_each_check_cmd(monkeypatch):
-    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None)
+    monkeypatch.setattr("phil.chat.approval._which", lambda prog: None)
     problems = program_problems(check_plan("ghostprog check"), config())
     assert "`ghostprog` (from the check command `ghostprog check`) isn't on PATH for Phil's runs" in problems
 
 
 def test_program_problems_dedupes_identical_check_commands(monkeypatch):
-    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None)
+    monkeypatch.setattr("phil.chat.approval._which", lambda prog: None)
     base = plan(test_cmd=None)
     tasks = [
         Task(id="CALC-010", description="a", acceptance_criteria=["c"], verify="check", check_cmd="ghostprog x"),
@@ -264,6 +267,6 @@ def test_program_problems_dedupes_identical_check_commands(monkeypatch):
 
 
 def test_launch_problems_includes_program_problems(monkeypatch):
-    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None)
+    monkeypatch.setattr("phil.chat.approval._which", lambda prog: None)
     problems = launch_problems(plan(test_cmd="ghostprog test"), config())
     assert "`ghostprog` (from the test command `ghostprog test`) isn't on PATH for Phil's runs" in problems
