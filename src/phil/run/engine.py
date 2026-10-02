@@ -449,12 +449,17 @@ class RunEngine:
         log = self.deps.artifacts.write_log("setup", result.stdout + (f"\n{result.stderr}" if result.stderr else ""))
         if result.ok:
             # Installed dependencies git doesn't ignore would look like the task's changes (and a
-            # reset's `git clean -fd` would wipe them), so the repo must ignore them first.
+            # reset's `git clean -fd` would wipe them), so they must be ignored first. The worktree
+            # is the base commit, so a .gitignore edit only helps a new run; .git/info/exclude is
+            # shared by every worktree, so excluding them there makes a retry work.
             left = self.worktrees.untracked_unignored(self.deps.worktree)
             if not left:
                 return None
             named = ", ".join(left[:2]) + ("…" if len(left) > 2 else "")
-            summary = f"Setup command `{cmd}` left files git doesn't ignore ({named}); add them to .gitignore."
+            summary = (
+                f"Setup command `{cmd}` left files git doesn't ignore ({named}); add them to .git/info/exclude "
+                "and retry, or commit them to .gitignore and start again."
+            )
         elif result.timed_out:
             summary = f"Setup command `{cmd}` timed out after {timeout_s}s."
         else:

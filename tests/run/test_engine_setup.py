@@ -127,10 +127,33 @@ def test_setup_that_leaves_files_git_does_not_ignore_escalates(make_harness):
     assert escalation["options"] == ["retry", "abort"]
     assert escalation["resume_to"] == "setup"
     assert escalation["summary"] == (
-        f"Setup command `{cmd}` left files git doesn't ignore (vendor/); add them to .gitignore."
+        f"Setup command `{cmd}` left files git doesn't ignore (vendor/); add them to .git/info/exclude "
+        "and retry, or commit them to .gitignore and start again."
     )
     assert not (logs_dir(harness) / "baseline.log").exists()
     assert harness.factory.calls == []
+
+
+def test_retry_after_excluding_setup_output_proceeds_past_setup(make_harness):
+    # The worktree is the base commit, so a .gitignore edit can't reach it; the common git dir's
+    # info/exclude is shared by every worktree, so excluding the path there and retrying works.
+    cmd = py("import os; os.makedirs('vendor', exist_ok=True); open('vendor/dep.js', 'w').write('x')")
+    harness = make_harness(HAPPY, config=setup_config(cmd))
+    assert harness.start()["__interrupt__"][0].value["reason"] == "setup_failed"
+
+    common = Path(run_git(harness.deps.worktree, "rev-parse", "--git-common-dir").strip())
+    if not common.is_absolute():
+        common = harness.deps.worktree / common
+    exclude = common / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    with exclude.open("a") as f:
+        f.write("\nvendor/\n")
+
+    final = harness.resume({"action": "retry"})
+
+    assert final["status"] == "completed"
+    assert (logs_dir(harness) / "baseline.log").exists()
+    assert harness.run_record().needs_attention is None
 
 
 def test_setup_names_at_most_two_unignored_paths(make_harness):
@@ -139,7 +162,8 @@ def test_setup_names_at_most_two_unignored_paths(make_harness):
     escalation = harness.start()["__interrupt__"][0].value
 
     assert escalation["summary"] == (
-        f"Setup command `{cmd}` left files git doesn't ignore (a.txt, b.txt…); add them to .gitignore."
+        f"Setup command `{cmd}` left files git doesn't ignore (a.txt, b.txt…); add them to .git/info/exclude "
+        "and retry, or commit them to .gitignore and start again."
     )
 
 
