@@ -152,6 +152,32 @@ def test_sections_are_loaded(tmp_path):
     assert config.shell.allow == ["pytest*"]
 
 
+def test_setup_cmd_defaults_to_none_and_setup_timeout_s_to_600(tmp_path):
+    config = load_config(tmp_path)
+    assert config.project.setup_cmd is None
+    assert config.project.setup_timeout_s == 600
+
+
+def test_setup_cmd_and_timeout_are_loaded(tmp_path):
+    (tmp_path / "phil.toml").write_text('[project]\nsetup_cmd = "npm ci"\nsetup_timeout_s = 120\n')
+    config = load_config(tmp_path)
+    assert config.project.setup_cmd == "npm ci"
+    assert config.project.setup_timeout_s == 120
+
+
+def test_setup_cmd_can_be_set_to_empty_string_for_no_setup(tmp_path):
+    (tmp_path / "phil.toml").write_text('[project]\nsetup_cmd = ""\n')
+    config = load_config(tmp_path)
+    assert config.project.setup_cmd == ""
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_non_positive_setup_timeout_s_is_rejected(tmp_path, value):
+    (tmp_path / "phil.toml").write_text(f"[project]\nsetup_timeout_s = {value}\n")
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
+
+
 def test_invalid_tester_mode_is_rejected(tmp_path):
     (tmp_path / "phil.toml").write_text('[run]\ntester_mode = "sometimes"\n')
     with pytest.raises(ConfigError):

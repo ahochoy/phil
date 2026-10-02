@@ -177,12 +177,14 @@ def test_a_quick_task_without_a_test_command_falls_back(calc_repo):
     assert any("no test command" in reason for reason in fallback["reasons"])
 
 
-def test_an_untracked_marker_is_not_the_quick_runs_test_command(calc_repo):
+def test_an_untracked_marker_is_not_the_quick_runs_test_command(calc_repo, monkeypatch):
     # As at approval: the test command is detected from the base commit's snapshot, not the live tree.
     (calc_repo / "go.mod").write_text("module calc\n")
     run_git(calc_repo, "add", "go.mod")
     run_git(calc_repo, "commit", "-m", "go")
     (calc_repo / "pytest.ini").write_text("[pytest]\n")  # untracked: the snapshot never sees it
+    # `go` need not actually be installed for this test; the program-on-PATH check is covered separately.
+    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: f"/usr/bin/{prog}")
     text, spawned, runs, *_ = run_chat(
         calc_repo, ["fix the typo in calc"], {"route": [route("simple_change")], "intake": [quick_goal()]}
     )

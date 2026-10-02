@@ -1,7 +1,12 @@
+import sys
+from pathlib import Path
+
 from phil.chat.approval import (
+    effective_setup_cmd,
     effective_test_cmd,
     git_policy_note,
     launch_problems,
+    program_problems,
     test_cmd_differs,
     test_cmd_problem,
 )
@@ -34,6 +39,31 @@ def test_effective_test_cmd_falls_back_to_detection(tmp_path):
     assert effective_test_cmd(plan(test_cmd=None), config(), tmp_path / "empty") == (None, "none")
 
 
+def test_effective_setup_cmd_prefers_config():
+    assert effective_setup_cmd(config(project={"setup_cmd": "npm ci"})) == ("npm ci", "config")
+
+
+def test_effective_setup_cmd_empty_string_disables_setup_even_with_a_lockfile(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+    assert effective_setup_cmd(config(project={"setup_cmd": ""}), tmp_path) == (None, "none")
+
+
+def test_effective_setup_cmd_falls_back_to_detection(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+    assert effective_setup_cmd(config(), tmp_path) == ("npm ci", "detected")
+
+
+def test_effective_setup_cmd_with_no_lockfile_gives_none(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    assert effective_setup_cmd(config(), tmp_path) == (None, "none")
+
+
+def test_effective_setup_cmd_with_no_root_gives_none():
+    assert effective_setup_cmd(config()) == (None, "none")
+
+
 def all_check_plan():
     task = Task(id="CALC-001", description="Edit copy", acceptance_criteria=["c"], verify="check", check_cmd="grep -q x a")
     return plan(test_cmd=None).model_copy(update={"tasks": [task]})
@@ -50,9 +80,11 @@ def test_a_tdd_task_still_needs_a_test_command():
     assert any("no test command" in problem for problem in launch_problems(mixed, config()))
 
 
-def test_a_detected_test_command_passes_approval(tmp_path):
+def test_a_detected_test_command_passes_approval(tmp_path, monkeypatch):
     (tmp_path / "Cargo.toml").write_text("[package]\n")
     assert test_cmd_problem(plan(test_cmd=None), config(), tmp_path) is None
+    # `cargo` need not actually be installed for this test; the program check is covered separately.
+    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: f"/usr/bin/{prog}")
     assert launch_problems(plan(test_cmd=None), config(), tmp_path) == []
 
 
@@ -134,3 +166,54 @@ def test_launch_problems_accepts_a_contained_read_only_check_cmd(tmp_path):
 def test_launch_problems_checks_containment_against_check_root_when_root_is_absent(tmp_path):
     problems = launch_problems(check_plan("cat /etc/hosts"), config(), None, check_root=tmp_path)
     assert len(problems) == 1 and "reads outside the repo" in problems[0]
+
+
+def test_program_problems_reports_a_missing_bare_program():
+    problems = program_problems(plan(test_cmd="definitely-not-a-real-program --flag"), config())
+    assert problems == [
+        "`definitely-not-a-real-program` (from the test command "
+        "`definitely-not-a-real-program --flag`) isn't on PATH for Phil's runs"
+    ]
+
+
+def test_program_problems_accepts_an_existing_program():
+    prog = Path(sys.executable).name
+    assert program_problems(plan(test_cmd=f"{prog} -m pytest"), config()) == []
+
+
+def test_program_problems_skips_a_relative_path_program():
+    assert program_problems(plan(test_cmd="./scripts/run-tests"), config()) == []
+
+
+def test_program_problems_skips_a_command_shlex_cant_split():
+    assert program_problems(plan(test_cmd="pytest 'unterminated"), config()) == []
+
+
+def test_program_problems_checks_the_setup_command(monkeypatch):
+    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None)
+    configured = config(project={"setup_cmd": "npm ci"})
+    problems = program_problems(plan(test_cmd=None), configured)
+    assert "`npm` (from the setup command `npm ci`) isn't on PATH for Phil's runs" in problems
+
+
+def test_program_problems_checks_each_check_cmd(monkeypatch):
+    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None)
+    problems = program_problems(check_plan("ghostprog check"), config())
+    assert "`ghostprog` (from the check command `ghostprog check`) isn't on PATH for Phil's runs" in problems
+
+
+def test_program_problems_dedupes_identical_check_commands(monkeypatch):
+    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None)
+    base = plan(test_cmd=None)
+    tasks = [
+        Task(id="CALC-010", description="a", acceptance_criteria=["c"], verify="check", check_cmd="ghostprog x"),
+        Task(id="CALC-011", description="b", acceptance_criteria=["c"], verify="check", check_cmd="ghostprog x"),
+    ]
+    problems = program_problems(base.model_copy(update={"tasks": tasks}), config())
+    assert problems == ["`ghostprog` (from the check command `ghostprog x`) isn't on PATH for Phil's runs"]
+
+
+def test_launch_problems_includes_program_problems(monkeypatch):
+    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None)
+    problems = launch_problems(plan(test_cmd="ghostprog test"), config())
+    assert "`ghostprog` (from the test command `ghostprog test`) isn't on PATH for Phil's runs" in problems

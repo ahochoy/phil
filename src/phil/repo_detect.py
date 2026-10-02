@@ -6,6 +6,15 @@ from pathlib import Path
 PYTHON_MARKERS = ("pyproject.toml", "pytest.ini", "conftest.py")
 # `npm init` writes this script: it fails on purpose and runs no tests.
 NPM_PLACEHOLDER = 'echo "Error: no test specified" && exit 1'
+# Lockfile -> install command, checked in this order. No lockfile means no setup command: Phil
+# never runs a plain `npm install` on its own.
+LOCKFILE_SETUP_CMDS = (
+    ("pnpm-lock.yaml", "pnpm install --frozen-lockfile"),
+    ("yarn.lock", "yarn install --frozen-lockfile"),
+    ("bun.lockb", "bun install --frozen-lockfile"),
+    ("bun.lock", "bun install --frozen-lockfile"),
+    ("package-lock.json", "npm ci"),
+)
 
 
 def _npm_test_script(root: Path) -> bool:
@@ -32,4 +41,17 @@ def detect_test_cmd(root: Path) -> str | None:
         return "go test ./..."
     if (root / "Cargo.toml").is_file():
         return "cargo test"
+    return None
+
+
+def detect_setup_cmd(root: Path) -> str | None:
+    """The dependency-install command `root`'s lockfile suggests, or None.
+
+    Only applies when `root/package.json` exists. In order: `pnpm-lock.yaml`, `yarn.lock`,
+    `bun.lockb` or `bun.lock`, then `package-lock.json`. No lockfile gives None."""
+    if not (root / "package.json").is_file():
+        return None
+    for lockfile, cmd in LOCKFILE_SETUP_CMDS:
+        if (root / lockfile).is_file():
+            return cmd
     return None

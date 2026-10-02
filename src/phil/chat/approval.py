@@ -1,8 +1,10 @@
+import shlex
+import shutil
 from pathlib import Path
 
 from phil.config import RUN_ROLES, PhilConfig
 from phil.contracts import Plan
-from phil.repo_detect import detect_test_cmd
+from phil.repo_detect import detect_setup_cmd, detect_test_cmd
 from phil.workspace.shell import CONTAINMENT_DETAIL, ShellPolicy
 
 GIT_POLICY_NOTE = "Commit signing or hooks are on; a failing signature or hook will pause the run."
@@ -23,6 +25,19 @@ def effective_test_cmd(plan: Plan, config: PhilConfig, root: Path | None = None)
     if config.project.test_cmd:
         return config.project.test_cmd, "config"
     detected = detect_test_cmd(root) if root is not None else None
+    if detected:
+        return detected, "detected"
+    return None, "none"
+
+
+def effective_setup_cmd(config: PhilConfig, root: Path | None = None) -> tuple[str | None, str]:
+    """The setup command a run uses and where it came from: "config", "detected" or "none".
+
+    `config.project.setup_cmd` of `None` means detect from `root`'s lockfile (when `root` is
+    given); `""` means no setup, explicitly."""
+    if config.project.setup_cmd is not None:
+        return (config.project.setup_cmd, "config") if config.project.setup_cmd else (None, "none")
+    detected = detect_setup_cmd(root) if root is not None else None
     if detected:
         return detected, "detected"
     return None, "none"
@@ -71,6 +86,47 @@ def check_cmd_problems(plan: Plan, config: PhilConfig, root: Path | None = None)
     return problems
 
 
+def _program_problem(cmd: str, kind: str) -> str | None:
+    """None if `cmd`'s program is runnable, else the exact "isn't on PATH" message.
+
+    A path containing "/" is skipped (the containment checks cover it); a command `shlex.split`
+    can't parse is skipped (the shell-policy checks cover it)."""
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        return None
+    if not parts:
+        return None
+    prog = parts[0]
+    if "/" in prog or shutil.which(prog):
+        return None
+    return f"`{prog}` (from the {kind} command `{cmd}`) isn't on PATH for Phil's runs"
+
+
+def program_problems(plan: Plan, config: PhilConfig, root: Path | None = None) -> list[str]:
+    """Programs of the effective setup, test and check commands that aren't on PATH.
+
+    `root`, when given, is where a missing setup or test command is detected from (the same tree
+    for both)."""
+    problems = []
+    setup_cmd, _ = effective_setup_cmd(config, root)
+    if setup_cmd:
+        problem = _program_problem(setup_cmd, "setup")
+        if problem:
+            problems.append(problem)
+    test_cmd, _ = effective_test_cmd(plan, config, root)
+    if test_cmd:
+        problem = _program_problem(test_cmd, "test")
+        if problem:
+            problems.append(problem)
+    check_cmds = dict.fromkeys(task.check_cmd for task in plan.tasks if task.check_cmd)
+    for cmd in check_cmds:
+        problem = _program_problem(cmd, "check")
+        if problem:
+            problems.append(problem)
+    return list(dict.fromkeys(problems))
+
+
 def git_policy_note(config: PhilConfig) -> str | None:
     if config.git.sign_commits is not False or config.git.run_hooks:
         return GIT_POLICY_NOTE
@@ -83,11 +139,12 @@ def launch_problems(
     """Why a run of `plan` can't start under `config` (empty when it can). Callers escape before printing,
     and should use `terminated()` rather than assuming a problem needs a trailing period added.
 
-    `root`, when given, is where a missing test command is detected from. `check_root` (default:
-    `root`) is the tree check commands' paths must stay inside."""
+    `root`, when given, is where a missing setup or test command is detected from. `check_root`
+    (default: `root`) is the tree check commands' paths must stay inside."""
     problems = list(config.missing_model_messages(RUN_ROLES))
     problem = test_cmd_problem(plan, config, root)
     if problem:
         problems.append(problem)
     problems += check_cmd_problems(plan, config, check_root if check_root is not None else root)
+    problems += program_problems(plan, config, root)
     return problems
