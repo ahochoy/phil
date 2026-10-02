@@ -99,6 +99,39 @@ def test_setup_sees_no_secret_env_vars(make_harness, monkeypatch):
     assert "ANTHROPIC_API_KEY" not in seen
 
 
+def test_setup_that_leaves_files_git_does_not_ignore_escalates(make_harness):
+    # Without the escalation the task gates would see these as the task's changes, and a reset's
+    # `git clean -fd` would wipe them (tests then exit 127 after a passing baseline).
+    cmd = py("import os; os.makedirs('vendor', exist_ok=True); open('vendor/dep.js', 'w').write('x')")
+    harness = make_harness(HAPPY, config=setup_config(cmd))
+    escalation = harness.start()["__interrupt__"][0].value
+
+    assert escalation["reason"] == "setup_failed"
+    assert escalation["options"] == ["retry", "abort"]
+    assert escalation["resume_to"] == "setup"
+    assert escalation["summary"] == (
+        f"Setup command `{cmd}` left files git doesn't ignore (vendor/); add them to .gitignore."
+    )
+    assert not (logs_dir(harness) / "baseline.log").exists()
+    assert harness.factory.calls == []
+
+
+def test_setup_names_at_most_two_unignored_paths(make_harness):
+    cmd = py("[open(name, 'w').write('x') for name in ('a.txt', 'b.txt', 'c.txt')]")
+    harness = make_harness(HAPPY, config=setup_config(cmd))
+    escalation = harness.start()["__interrupt__"][0].value
+
+    assert escalation["summary"] == (
+        f"Setup command `{cmd}` left files git doesn't ignore (a.txt, b.txt…); add them to .gitignore."
+    )
+
+
+def test_setup_whose_output_git_ignores_proceeds(make_harness):
+    # WRITE_MARKER writes under __pycache__/, which the calc repo's .gitignore covers.
+    harness = make_harness(HAPPY, config=setup_config(WRITE_MARKER))
+    assert harness.start()["status"] == "completed"
+
+
 def test_retry_after_a_failed_setup_reruns_setup_then_the_baseline(make_harness, tmp_path):
     counter = tmp_path / "setup-count"
     cmd = py(

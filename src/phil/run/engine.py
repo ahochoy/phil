@@ -448,8 +448,14 @@ class RunEngine:
         result = run_command(cmd, self.deps.worktree, timeout_s, env=child_env(os.environ, config.shell.pass_env))
         log = self.deps.artifacts.write_log("setup", result.stdout + (f"\n{result.stderr}" if result.stderr else ""))
         if result.ok:
-            return None
-        if result.timed_out:
+            # Installed dependencies git doesn't ignore would look like the task's changes (and a
+            # reset's `git clean -fd` would wipe them), so the repo must ignore them first.
+            left = self.worktrees.untracked_unignored(self.deps.worktree)
+            if not left:
+                return None
+            named = ", ".join(left[:2]) + ("…" if len(left) > 2 else "")
+            summary = f"Setup command `{cmd}` left files git doesn't ignore ({named}); add them to .gitignore."
+        elif result.timed_out:
             summary = f"Setup command `{cmd}` timed out after {timeout_s}s."
         else:
             summary = f"Setup command `{cmd}` failed (exit {result.exit_code}); see the setup log."
