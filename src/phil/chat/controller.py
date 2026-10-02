@@ -78,7 +78,8 @@ PROMPTS = {
     "confirm_pr": "Open a PR? [y / n] › ",
     "confirm_fix": "Fix it? [Enter = quick fix / full = plan it / n] › ",
 }
-QUICK_FALLBACK = "Couldn't plan this as a quick change; planning it fully."
+PR_ANYWAY_PROMPT = "Open a PR anyway? [y / n] › "  # confirm_pr, for a run finished with blocking issues
+QUICK_FALLBACK ="Couldn't plan this as a quick change; planning it fully."
 MOVING_TO_FULL = "Moving this to a full plan, with what the quick attempt learned."
 # The transcript's `stage` label for a non-command input typed at each chat stage (4a's labels).
 TRANSCRIPT_STAGES = {
@@ -208,7 +209,8 @@ class ChatController:
         # (`_refs_tree`, None if it had none), never from the live tree or anywhere else on disk.
         self._refs_from_btw = False
         self._refs_tree: Path | None = None
-        self._pr_offer: str | None = None  # the completed run the confirm_pr question is about
+        self._pr_offer: str | None = None  # the finished run the confirm_pr question is about
+        self._pr_force = False  # the offered run is `incomplete`: the PR would be opened anyway
         self._pr_step_generation: int | None = None  # the generation whose toolbar shows "Opening PR"
         # The PR monitor: a daemon timer thread that only submits `pr_changes` jobs (never prints and
         # never touches `self.conn`); `_pr_stop` ends it and `_pr_busy` skips a tick while a job runs.
@@ -349,6 +351,8 @@ class ChatController:
     def _prompt(self) -> str:
         if self.stage == "paused" and self._pause is not None:
             return f"{self._pause.get('summary', '')} — {' / '.join(self._options())} › "
+        if self.stage == "confirm_pr" and self._pr_force:
+            return PR_ANYWAY_PROMPT
         return PROMPTS.get(self.stage, "you › ")
 
     def _save(self) -> None:
@@ -1173,8 +1177,8 @@ class ChatController:
             return
         self._set_stage("idle")
         self._run_notice(run_id, state, data)
-        if state == "completed":
-            self._offer_pr(run_id)
+        if state in ("completed", "incomplete"):
+            self._offer_pr(run_id, force=state == "incomplete")
 
     def _move_to_full(self, run_id: str, handoff: tuple[str, Goal | None]) -> None:
         """A quick run answered with `full` ended: plan its goal fully, with what the attempt learned."""
@@ -1225,11 +1229,12 @@ class ChatController:
             self.console.print(f"[phil.muted]Review it: phil diff {rid}[/]")
             self.console.print(summary)
         elif state == "incomplete":
-            # Finished with a blocker or major issue open: say so plainly, and offer no PR.
-            # A finished run can't be resumed, so the chat simply takes its next goal.
+            # Finished with a blocker or major issue open: say so plainly; a PR is only offered
+            # "anyway". A finished run can't be resumed, so the chat then takes its next goal.
             count = self._blocking_count(run_id)
             issues = f"{count} blocking issue(s)" if count is not None else "blocking issues"
             self.console.print(f"[phil.warn]Run {rid} finished with {issues} open; nothing to merge yet. See /show.[/]")
+            self.console.print(f"[phil.muted]Review it: phil diff {rid}[/]")
             self.console.print(summary)
         else:
             self.console.print(f"Run {rid} was {escape(state)}.")
@@ -1419,40 +1424,47 @@ class ChatController:
 
     # --- pull requests ---------------------------------------------------------------------------
 
-    def _offer_pr(self, run_id: str) -> None:
-        """After a completed run's notice: ask to open its PR, if it has a base branch, no PR yet
-        and commits beyond its base (GitHub refuses a PR for a branch with none)."""
+    def _offer_pr(self, run_id: str, *, force: bool = False) -> None:
+        """After a finished run's notice: ask to open its PR, if it has a base branch, no PR yet
+        and commits beyond its base (GitHub refuses a PR for a branch with none; the chat says
+        so). `force`: the run is `incomplete`, so the question is whether to open it anyway."""
         record = get_run(self.conn, run_id)
         if record is None or record.base_branch is None or record.pr_url is not None:
             return
         try:
             ahead = commits_ahead(self.info.root, record.base_sha, record.branch)
-        except GitError:
+        except GitError as exc:
             logger.warning("couldn't count the commits of %s; no PR offer", run_id, exc_info=True)
+            self.console.print(f"[phil.warn]Couldn't count the commits on {escape(record.branch)}: {escape(str(exc))}[/]")
             return
         if ahead == 0:
+            self.console.print(f"No commits on {escape(record.branch)}; nothing to open a PR for.")
             return
-        self.console.print(f"Open a PR for [phil.id]{escape(run_id)}[/] → {escape(record.base_branch)}?")
-        self._pr_offer = run_id
+        anyway = " anyway" if force else ""
+        self.console.print(f"Open a PR for [phil.id]{escape(run_id)}[/] → {escape(record.base_branch)}{anyway}?")
+        self._pr_offer, self._pr_force = run_id, force
         self._set_stage("confirm_pr")
 
     def _confirm_pr(self, text: str) -> None:
         choice = text.lower()
         if choice in ("y", "yes"):
-            run_id, self._pr_offer = self._pr_offer, None
+            run_id, force = self._pr_offer, self._pr_force
+            self._pr_offer, self._pr_force = None, False
             self._set_stage("idle")  # the chat stays usable while the PR opens
-            self._open_pr(run_id)
+            self._open_pr(run_id, force=force)
             return
         self._decline_pr()
         if choice not in ("", "n", "no"):
             self._begin_goal(text)  # a goal typed at the question isn't lost
 
     def _decline_pr(self) -> None:
-        run_id, self._pr_offer = self._pr_offer, None
-        self.console.print(f"No PR. `phil pr {escape(run_id or '')}` opens one later.")
+        run_id, force = self._pr_offer, self._pr_force
+        self._pr_offer, self._pr_force = None, False
+        later = f"phil pr {escape(run_id or '')}" + (" --force" if force else "")
+        self.console.print(f"No PR. `{later}` opens one later.")
         self._set_stage("idle")
 
-    def _open_pr(self, run_id: str) -> None:
+    def _open_pr(self, run_id: str, *, force: bool = False) -> None:
         self.console.print(f"Opening a PR for [phil.id]{escape(run_id)}[/]…")
         generation = self._generation
         self._pr_step_generation = generation
@@ -1463,7 +1475,7 @@ class ChatController:
             record = get_run(ctx.conn, run_id)
             if record is None:
                 raise PublishRefused(f"{run_id} no longer exists")
-            record = publish_run(info, ctx.conn, record, publishing.make_publisher(info.root))
+            record = publish_run(info, ctx.conn, record, publishing.make_publisher(info.root), force=force)
             return {"run_id": run_id, "number": record.pr_number, "url": record.pr_url}
 
         self._job("pr_opened", fn, generation=-1, failed="pr_open_failed", failed_data={"run_id": run_id})

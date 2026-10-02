@@ -40,21 +40,27 @@ def publish_run(
     publisher: Publisher,
     *,
     base: str | None = None,
+    force: bool = False,
 ) -> RunRecord:
     """Push `record`'s branch and open its pull request, then record the PR on the run.
 
-    Raises `PublishRefused` (nothing done) for any of: the run isn't `completed` (an
-    `incomplete` one, finished with blocking issues open, gets its own message); it already
-    has a PR; its branch has no commits beyond its base; no base branch is known (pass `base`); or `publisher.available()` names a
-    reason. The title and body are rendered before anything is pushed. A `PublishError` from
+    Raises `PublishRefused` (nothing done) for any of: the run isn't `completed`, or
+    `incomplete` with `force` (an incomplete run finished with blocking issues open; its PR body
+    then lists them); it already has a PR; its branch has no commits beyond its base (`force`
+    doesn't change that: there's nothing to open); no base branch is known (pass `base`); or
+    `publisher.available()` names a reason. The title and body are rendered before anything is pushed. A `PublishError` from
     `publisher.push`/`create_pr` propagates unchanged and the run row is left untouched
     (re-running is safe: `git push` of the same ref is idempotent), except that if the PR
     already exists (an earlier attempt opened it but never recorded it) it is looked up with
     `publisher.find_pr` and recorded.
     """
-    if record.state == "incomplete":
-        raise PublishRefused(f"{record.run_id} finished with blocking issues open; there's nothing to open a PR for.")
-    if record.state != "completed":
+    forced = record.state == "incomplete"
+    if forced and not force:
+        raise PublishRefused(
+            f"{record.run_id} finished with blocking issues open; there's nothing to open a PR for. "
+            f"Use phil pr {record.run_id} --force to open it anyway."
+        )
+    if record.state not in ("completed", "incomplete"):
         raise PublishRefused(f"{record.run_id} is {record.state}; only a completed run can be published")
     if record.pr_url is not None:
         raise PublishRefused(f"{record.run_id} already has PR #{record.pr_number}: {record.pr_url}")
@@ -77,7 +83,7 @@ def publish_run(
     totals = run_usage(conn, record.run_id)
     template = find_pr_template(info.root)
     title = pr_title(plan)
-    body = render_pr_body(run_id=record.run_id, run_dir=run_dir, totals=totals, template=template)
+    body = render_pr_body(run_id=record.run_id, run_dir=run_dir, totals=totals, template=template, forced=forced)
 
     publisher.push(record.branch)
     try:

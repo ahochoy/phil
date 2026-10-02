@@ -51,8 +51,46 @@ def test_publish_run_refuses_an_incomplete_run(calc_repo):
 
     with pytest.raises(PublishRefused) as refused:
         publish_run(info, conn, record, fake)
-    assert str(refused.value) == f"{record.run_id} finished with blocking issues open; there's nothing to open a PR for."
+    assert str(refused.value) == (
+        f"{record.run_id} finished with blocking issues open; there's nothing to open a PR for. "
+        f"Use phil pr {record.run_id} --force to open it anyway."
+    )
     assert fake.calls == []
+
+
+def test_publish_run_force_publishes_an_incomplete_run_listing_its_open_issues(calc_repo):
+    info, record, paths = incomplete_run(calc_repo)
+    conn = connect(paths.db_path)
+    record = get_run(conn, record.run_id)
+    fake = FakePublisher()
+
+    updated = publish_run(info, conn, record, fake, force=True)
+
+    assert updated.pr_number == 12
+    body = next(call for call in fake.calls if call[0] == "create_pr")[4]
+    forced = body.split("## Open issues (published with --force)\n", 1)[1].split("\n## ", 1)[0]
+    assert "- (major) subtract is untested for negatives" in forced
+
+
+def test_force_does_not_publish_a_run_with_no_commits(calc_repo):
+    info, record, paths = incomplete_run(calc_repo)
+    without_commits(record)
+    conn = connect(paths.db_path)
+    record = get_run(conn, record.run_id)
+    fake = FakePublisher()
+
+    with pytest.raises(PublishRefused, match="has no commits to open a PR for"):
+        publish_run(info, conn, record, fake, force=True)
+    assert fake.calls == []
+
+
+def test_a_completed_runs_body_has_no_forced_section(calc_repo):
+    info, record, paths = finished_run(calc_repo)
+    conn = connect(paths.db_path)
+    fake = FakePublisher()
+    publish_run(info, conn, get_run(conn, record.run_id), fake, force=True)
+    body = next(call for call in fake.calls if call[0] == "create_pr")[4]
+    assert "published with --force" not in body
 
 
 def without_commits(record):

@@ -210,8 +210,8 @@ def test_progress_goes_to_the_toolbar(calc_repo):
     assert seen["printed"] == before["printed"]  # progress never prints
 
 
-def completed_with_a_commit(controller):
-    """Finish the chat's run as completed with one commit on its branch, so a PR is offered."""
+def commit_on_branch(controller):
+    """Give the chat's run branch one commit beyond its base, as a run that changed something has."""
     from tests.helpers import run_git
 
     paths, run_id, conn = _run(controller)
@@ -220,6 +220,11 @@ def completed_with_a_commit(controller):
     root = controller.info.root
     sha = run_git(root, "commit-tree", f"{record.base_sha}^{{tree}}", "-p", record.base_sha, "-m", "work").strip()
     run_git(root, "branch", record.branch, sha)
+
+
+def completed_with_a_commit(controller):
+    """Finish the chat's run as completed with one commit on its branch, so a PR is offered."""
+    commit_on_branch(controller)
     return to_state("completed", tasks_done=1)(controller)
 
 

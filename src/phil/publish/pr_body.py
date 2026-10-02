@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 from phil.contracts import Plan
-from phil.run.state import clean_note, dedupe_issues, issue_line, task_lines
+from phil.run.state import blocking_count, clean_note, dedupe_issues, issue_line, task_lines
 from phil.store.artifacts import ArtifactStore
 from phil.store.telemetry import Totals, format_cost
 
@@ -86,7 +86,8 @@ def find_pr_template(repo_root: Path) -> str | None:
     return None
 
 
-def _read_open_issues(run_dir: Path) -> list[dict]:
+def read_open_issues(run_dir: Path) -> list[dict]:
+    """The run's open issues from open_issues.json; [] when it's missing or unreadable."""
     path = run_dir / "open_issues.json"
     if not path.exists():
         return []
@@ -96,7 +97,12 @@ def _read_open_issues(run_dir: Path) -> list[dict]:
         return []
     if not isinstance(data, list):
         return []
-    return data
+    return [issue for issue in data if isinstance(issue, dict)]
+
+
+def blocking_issues(run_dir: Path) -> list[dict]:
+    """The run's open blocker and major issues (deduped), the ones that make it `incomplete`."""
+    return [issue for issue in dedupe_issues(read_open_issues(run_dir)) if blocking_count([issue])]
 
 
 def _unconfirmed_assumptions(run_dir: Path, newest_review: dict | None) -> list[str]:
@@ -124,14 +130,21 @@ def _tests_line(issues: list[dict]) -> str:
     return "- Tests: no new failures against the base"
 
 
-def render_pr_body(*, run_id: str, run_dir: Path, totals: Totals | None, template: str | None) -> str:
+def render_pr_body(
+    *, run_id: str, run_dir: Path, totals: Totals | None, template: str | None, forced: bool = False
+) -> str:
+    """`forced`: an `incomplete` run published anyway; its open blocker and major issues head the body."""
     plan = ArtifactStore(run_dir).read_plan()
     newest_review = newest_output(run_dir, "review")
-    issues = dedupe_issues(_read_open_issues(run_dir))
+    issues = dedupe_issues(read_open_issues(run_dir))
 
     action_lines = _action_lines(issues, run_dir, newest_review)
 
-    sections = [
+    sections: list[str] = []
+    if forced:
+        blocking = [issue_line(issue) for issue in blocking_issues(run_dir)]
+        sections += ["## Open issues (published with --force)", "\n".join(blocking) or "None recorded.", ""]
+    sections += [
         "## Action needed",
         "\n".join(action_lines) if action_lines else "None.",
         "",

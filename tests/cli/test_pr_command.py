@@ -26,8 +26,25 @@ def test_pr_command_refuses_an_incomplete_run(calc_repo, monkeypatch):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "pr", record.run_id])
 
     assert result.exit_code == 1
-    assert f"{record.run_id} finished with blocking issues open; there's nothing to open a PR for." in result.output
+    output = " ".join(result.output.split())  # the console may wrap the long line
+    assert f"{record.run_id} finished with blocking issues open; there's nothing to open a PR for." in output
+    assert f"Use phil pr {record.run_id} --force to open it anyway." in output
     assert fake.calls == []
+
+
+def test_pr_force_publishes_an_incomplete_run_after_listing_its_open_issues(calc_repo, monkeypatch):
+    info, record, paths = incomplete_run(calc_repo)
+    fake = FakePublisher()
+    monkeypatch.setattr("phil.publish.publisher.make_publisher", lambda root: fake)
+
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "pr", record.run_id, "--force"])
+
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    start = lines.index("Publishing an incomplete run; open issues:")
+    assert lines[start + 1] == "- (major) subtract is untested for negatives"
+    assert "Opened PR #12" in result.output
+    assert ("push", record.branch) in fake.calls
 
 
 def test_pr_command_refuses_a_run_with_no_commits(calc_repo, monkeypatch):
