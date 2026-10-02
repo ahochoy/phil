@@ -921,20 +921,21 @@ def pr_command(
 ) -> None:
     """Push a completed run's branch and open its pull request."""
     from phil.publish import publisher as publishing
-    from phil.publish.pr_body import blocking_issues
     from phil.publish.publisher import PublishError
     from phil.publish.service import PublishRefused, publish_run
     from phil.run.state import issue_line
 
+    def list_open_issues(issues: list[dict]) -> None:
+        # Called by the service only once a forced publish of an incomplete run will go ahead.
+        console.print("[phil.warn]Publishing an incomplete run; open issues:[/]")
+        for issue in issues:
+            console.print(escape(issue_line(issue)), soft_wrap=True)
+
     info, conn = _open_project(ctx)
     record = _require_run(conn, run_id)
     publisher = publishing.make_publisher(info.root)
-    if force and record.state == "incomplete":
-        console.print("[phil.warn]Publishing an incomplete run; open issues:[/]")
-        for issue in blocking_issues(ProjectPaths(info.slug).run_dir(run_id)):
-            console.print(escape(issue_line(issue)), soft_wrap=True)
     try:
-        record = publish_run(info, conn, record, publisher, base=base, force=force)
+        record = publish_run(info, conn, record, publisher, base=base, force=force, on_forced=list_open_issues)
     except (PublishRefused, PublishError) as exc:
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1) from exc

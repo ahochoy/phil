@@ -6,12 +6,13 @@ Kept free of langgraph/langchain/deepagents at module import time (see
 
 import logging
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from phil.git import GitError, commits_ahead
 from phil.publish.learnings import append_learnings, learnings_entry
-from phil.publish.pr_body import find_pr_template, pr_title, render_pr_body
+from phil.publish.pr_body import blocking_issues, find_pr_template, pr_title, render_pr_body
 from phil.publish.publisher import Publisher, PublishError
 from phil.repo import RepoInfo
 from phil.run.cleanup import CleanError, clean_run
@@ -41,6 +42,7 @@ def publish_run(
     *,
     base: str | None = None,
     force: bool = False,
+    on_forced: Callable[[list[dict]], None] | None = None,
 ) -> RunRecord:
     """Push `record`'s branch and open its pull request, then record the PR on the run.
 
@@ -48,7 +50,8 @@ def publish_run(
     `incomplete` with `force` (an incomplete run finished with blocking issues open; its PR body
     then lists them); it already has a PR; its branch has no commits beyond its base (`force`
     doesn't change that: there's nothing to open); no base branch is known (pass `base`); or
-    `publisher.available()` names a reason. The title and body are rendered before anything is pushed. A `PublishError` from
+    `publisher.available()` names a reason. Once none of those refuse a forced publish,
+    `on_forced` (if given) gets the open blocker and major issues, before anything is pushed. The title and body are rendered before anything is pushed. A `PublishError` from
     `publisher.push`/`create_pr` propagates unchanged and the run row is left untouched
     (re-running is safe: `git push` of the same ref is idempotent), except that if the PR
     already exists (an earlier attempt opened it but never recorded it) it is looked up with
@@ -79,6 +82,8 @@ def publish_run(
         raise PublishRefused(reason)
 
     run_dir = ProjectPaths(info.slug).run_dir(record.run_id)
+    if forced and on_forced is not None:
+        on_forced(blocking_issues(run_dir))
     plan = ArtifactStore(run_dir).read_plan()
     totals = run_usage(conn, record.run_id)
     template = find_pr_template(info.root)

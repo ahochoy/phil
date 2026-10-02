@@ -79,7 +79,7 @@ PROMPTS = {
     "confirm_fix": "Fix it? [Enter = quick fix / full = plan it / n] › ",
 }
 PR_ANYWAY_PROMPT = "Open a PR anyway? [y / n] › "  # confirm_pr, for a run finished with blocking issues
-QUICK_FALLBACK ="Couldn't plan this as a quick change; planning it fully."
+QUICK_FALLBACK = "Couldn't plan this as a quick change; planning it fully."
 MOVING_TO_FULL = "Moving this to a full plan, with what the quick attempt learned."
 # The transcript's `stage` label for a non-command input typed at each chat stage (4a's labels).
 TRANSCRIPT_STAGES = {
