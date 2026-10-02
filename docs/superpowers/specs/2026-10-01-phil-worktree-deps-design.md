@@ -38,7 +38,7 @@ Python projects are unaffected, because `uv run` builds its own environment.
   | `package-lock.json` | `npm ci` |
 
   With no lockfile it returns `None`, because Phil never runs a plain `npm install` on its own. Python repos have no default.
-- **Effective command:** `phil.chat.approval.effective_setup_cmd(config, root) -> (cmd | None, source)`. The source is `"config"`, `"detected"` or `"none"`. The engine and the chat both use it: the engine detects in the run's worktree, and the chat detects in the base-commit snapshot, which is the same tree.
+- **Effective command:** `phil.repo_detect.effective_setup_cmd(config, root) -> (cmd | None, source)`, re-exported by `phil.chat.approval`. It lives in `repo_detect` so the run layer never imports chat code. The source is `"config"`, `"detected"` or `"none"`. The engine and the chat both use it: the engine detects in the run's worktree, and the chat detects in the base-commit snapshot, which is the same tree.
 
 ### 3.2 Engine
 
