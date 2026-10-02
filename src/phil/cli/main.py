@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from rich.markup import escape
 
 from phil import __version__
-from phil.chat.approval import git_policy_note, launch_problems, terminated
+from phil.chat.approval import effective_setup_cmd, git_policy_note, launch_problems, terminated
 from phil.config import (
     CHAT_ROLES,
     ROLES,
@@ -404,6 +404,10 @@ def run_plan(
     note = git_policy_note(config)
     if note:
         console.print(f"[phil.muted]{escape(note)}[/]")
+    # There's no approval step here, so say what the worktree will run before the tests.
+    setup_cmd, setup_source = effective_setup_cmd(config, info.root)
+    if setup_cmd:
+        console.print(f"setup: {escape(setup_cmd)}{' (detected)' if setup_source == 'detected' else ''}")
     factory = None
     if foreground:
         try:

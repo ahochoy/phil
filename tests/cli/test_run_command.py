@@ -44,6 +44,34 @@ def test_run_spawns_a_worker(calc_repo, tmp_path, monkeypatch):
     assert record.base_sha == run_git(calc_repo, "rev-parse", "HEAD").strip()
 
 
+def test_run_shows_the_detected_setup_command(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    (calc_repo / "package.json").write_text("{}")
+    (calc_repo / "package-lock.json").write_text("{}")
+    run_git(calc_repo, "add", "package.json", "package-lock.json")
+    run_git(calc_repo, "commit", "-m", "node lockfile")
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path))])
+    assert result.exit_code == 0, result.output
+    assert "setup: npm ci (detected)" in result.output
+
+
+def test_run_shows_a_configured_setup_command(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    result = runner.invoke(
+        cli.app,
+        ["--repo", str(calc_repo), "run", str(plan_file(tmp_path)), "--set", 'project.setup_cmd="uv sync"'],
+    )
+    assert result.exit_code == 0, result.output
+    assert "setup: uv sync\n" in result.output
+
+
+def test_run_shows_no_setup_line_without_a_setup_command(calc_repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "run", str(plan_file(tmp_path))])
+    assert result.exit_code == 0, result.output
+    assert "setup:" not in result.output
+
+
 def test_run_requires_a_test_command(calc_repo, tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
     (calc_repo / "phil.toml").write_text(MODELS_TOML)
