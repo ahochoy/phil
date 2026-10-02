@@ -173,9 +173,14 @@ def _quick_plan_for(goal: Goal, config: PhilConfig, tree: Path, root: Path) -> t
     draft = quick_plan(goal, None)
     if draft is None:
         return None, ["the quick task doesn't make a valid plan"]
-    # Detect from the base commit's snapshot, as the chat does, only when neither the task nor
-    # phil.toml already names a test command.
-    detection_root = tree if not draft.test_cmd and not config.project.test_cmd else None
+    # Detect from the base commit's snapshot, as the chat does (`_detection_root`): skip it only when
+    # the task or phil.toml already names a test command, and phil.toml also sets setup_cmd, so
+    # nothing needs detecting.
+    detection_root = (
+        None
+        if (draft.test_cmd or config.project.test_cmd) and config.project.setup_cmd is not None
+        else tree
+    )
     plan = quick_plan(goal, effective_test_cmd(draft, config, detection_root)[0])
     if plan is None:
         return None, ["the quick task doesn't make a valid plan"]

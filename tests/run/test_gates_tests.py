@@ -2,7 +2,15 @@ import shlex
 import sys
 
 from phil.config import ShellConfig
-from phil.run.gates import MAX_FAILURES, first_output_line, is_test_path, parse_counts, parse_failures, run_tests
+from phil.run.gates import (
+    MAX_FAILURES,
+    couldnt_run_summary,
+    first_output_line,
+    is_test_path,
+    parse_counts,
+    parse_failures,
+    run_tests,
+)
 from phil.store.artifacts import ArtifactStore
 
 TEST_CMD = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider"
@@ -81,6 +89,23 @@ def test_first_output_line_skips_blank_and_npm_banner_lines():
     assert first_output_line(output) == "sh: jest: command not found"
     assert first_output_line("> only a banner\n\n") == "command not found"
     assert first_output_line("") == "command not found"
+
+
+def test_couldnt_run_summary_does_not_double_a_trailing_period():
+    summary = couldnt_run_summary("npm test", "sh: npm: command not found.\n")
+    assert ".." not in summary
+    assert summary == (
+        "`npm test` couldn't run: sh: npm: command not found. Dependencies may be missing in the "
+        "run's worktree — set [project] setup_cmd (e.g. npm ci) — or the program isn't on PATH."
+    )
+
+
+def test_couldnt_run_summary_still_adds_a_period_with_none_to_strip():
+    summary = couldnt_run_summary("npm test", "sh: npm: command not found\n")
+    assert summary == (
+        "`npm test` couldn't run: sh: npm: command not found. Dependencies may be missing in the "
+        "run's worktree — set [project] setup_cmd (e.g. npm ci) — or the program isn't on PATH."
+    )
 
 
 def test_run_tests_failing_with_baseline(tmp_path):

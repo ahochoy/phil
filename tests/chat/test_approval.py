@@ -7,6 +7,7 @@ from phil.chat.approval import (
     git_policy_note,
     launch_problems,
     program_problems,
+    setup_cmd_problem,
     test_cmd_differs,
     test_cmd_problem,
 )
@@ -62,6 +63,29 @@ def test_effective_setup_cmd_with_no_lockfile_gives_none(tmp_path):
 
 def test_effective_setup_cmd_with_no_root_gives_none():
     assert effective_setup_cmd(config()) == (None, "none")
+
+
+def test_setup_cmd_problem_is_none_with_no_setup_command():
+    assert setup_cmd_problem(config()) is None
+
+
+def test_setup_cmd_problem_rejects_shell_operators():
+    configured = config(project={"setup_cmd": "npm ci && npm run build"})
+    assert "shell operators" in setup_cmd_problem(configured)
+
+
+def test_setup_cmd_problem_accepts_an_ordinary_setup_command():
+    configured = config(project={"setup_cmd": "npm ci"})
+    assert setup_cmd_problem(configured) is None
+
+
+def test_launch_problems_rejects_shell_operators_in_the_setup_cmd():
+    configured = config(project={"setup_cmd": "npm ci && npm run build"})
+    problems = launch_problems(plan(test_cmd="pytest"), configured)
+    assert problems == [
+        "setup command `npm ci && npm run build` uses shell operators or a blocked command; "
+        "Phil runs it directly"
+    ]
 
 
 def all_check_plan():

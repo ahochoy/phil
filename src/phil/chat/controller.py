@@ -18,6 +18,7 @@ from rich.text import Text
 from phil.agents.invoke import AgentContext
 from phil.chat.answer import ask_answer
 from phil.chat.approval import (
+    effective_setup_cmd,
     effective_test_cmd,
     git_policy_note,
     launch_problems,
@@ -759,38 +760,41 @@ class ChatController:
 
     def _quick(self, goal: Goal) -> None:
         """Start the goal's one-task run straight away, or fall back to full planning (spec §4.1)."""
-        plan, reasons = self._quick_plan(goal)
+        plan, setup_cmd, reasons = self._quick_plan(goal)
         if plan is None:
             self.console.print(f"[phil.muted]{QUICK_FALLBACK}[/]")
             self._safe_note("quick_fallback", reasons=reasons)
             self._plan(goal)
             return
         task = plan.tasks[0]
-        # No approval prompt: the line says what will run, tests included.
+        # No approval prompt: the line says what will run, setup and tests included.
+        setup = f" · setup: {setup_cmd}" if setup_cmd else ""
         tests = f" · tests: {plan.test_cmd}" if plan.test_cmd else ""
-        self.console.print(f"Quick change: {escape(_clip(f'{task.id} {task.description}') + tests)}")
+        self.console.print(f"Quick change: {escape(_clip(f'{task.id} {task.description}') + setup + tests)}")
         self.session.contract("quick_plan", plan)
         self._launch(plan, "quick", {"task_id": task.id})
 
-    def _quick_plan(self, goal: Goal) -> tuple[Plan | None, list[str]]:
-        """The quick run's plan, or None and why not. The same checks approval makes before a full run."""
+    def _quick_plan(self, goal: Goal) -> tuple[Plan | None, str | None, list[str]]:
+        """The quick run's plan, the effective setup command (for the quick line), or None and why
+        not. The same checks approval makes before a full run."""
         if goal.task is None:
-            return None, ["intake wrote no quick task"]
+            return None, None, ["intake wrote no quick task"]
         draft = quick_plan(goal, None)
         if draft is None:
-            return None, ["the quick task doesn't make a valid plan"]
+            return None, None, ["the quick task doesn't make a valid plan"]
         try:
             self.config = load_config(self.info.root, overrides=self._config_overrides)
         except ConfigError as exc:
-            return None, [str(exc)]
+            return None, None, [str(exc)]
         # As at approval: detect from the base commit's snapshot (what the run sees), and keep check
         # commands' paths inside it, or inside the repo when nothing needed detecting.
         root = self._detection_root(draft)
         plan = quick_plan(goal, effective_test_cmd(draft, self.config, root)[0])
         if plan is None:
-            return None, ["the quick task doesn't make a valid plan"]
+            return None, None, ["the quick task doesn't make a valid plan"]
+        setup_cmd, _ = effective_setup_cmd(self.config, root)
         problems = launch_problems(plan, self.config, root, check_root=root or self.info.root)
-        return (None, problems) if problems else (plan, [])
+        return (None, None, problems) if problems else (plan, setup_cmd, [])
 
     def _answers(self, text: str) -> None:
         if not text:
@@ -861,6 +865,7 @@ class ChatController:
             else None
         )
         self._shown_test_cmd, source = effective_test_cmd(draft.plan, self.config, root)
+        setup_cmd, setup_cmd_source = effective_setup_cmd(self.config, root)
         render_plan(
             self.console,
             draft,
@@ -869,17 +874,20 @@ class ChatController:
             test_cmd_origin=origin,
             test_cmd_note=note,
             git_note=git_policy_note(self.config),
+            setup_cmd=setup_cmd,
+            setup_cmd_source=setup_cmd_source,
         )
 
     def _detection_root(self, plan: Plan) -> Path | None:
-        """Where a missing test command is detected from: the base commit's snapshot, which is what
-        the run will see. None when the plan or phil.toml already sets one, or the export fails."""
-        if plan.test_cmd or self.config.project.test_cmd:
+        """Where a missing test or setup command is detected from: the base commit's snapshot,
+        which is what the run will see. None when the plan or config already set a test command
+        and the config also sets setup_cmd (so nothing needs detecting), or the export fails."""
+        if (plan.test_cmd or self.config.project.test_cmd) and self.config.project.setup_cmd is not None:
             return None
         try:
             return self._snapshot(self._generation)
         except Exception:
-            logger.warning("couldn't export the snapshot to detect a test command", exc_info=True)
+            logger.warning("couldn't export the snapshot to detect a test or setup command", exc_info=True)
             return None
 
     def _approval(self, answer: str) -> None:

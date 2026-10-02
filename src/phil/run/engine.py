@@ -660,7 +660,7 @@ class RunEngine:
             )
             if check.exit_code == COMMAND_NOT_FOUND:
                 output = check.stdout + (f"\n{check.stderr}" if check.stderr else "")
-                log = str(self.deps.artifacts.run_dir / "logs" / f"{check_name}.log")
+                log = str(self.deps.artifacts.log_path(check_name))
                 escalation = self._cmd_not_found(check.command, output, log, resume_to="implement", task_id=task.id)
                 return {"last_report": report.model_dump(), "verdict": "escalate", "escalation": escalation}
             problems = verify_check(

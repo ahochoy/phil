@@ -161,6 +161,8 @@ def test_check_command_that_cannot_run_escalates_without_using_an_attempt(make_h
     assert escalation["summary"].startswith(f"`{MISSING}` couldn't run: ")
     assert escalation["summary"].endswith(COULDNT_RUN_TAIL)
     assert harness.graph.get_state(harness.thread).values["attempts"] == 0
+    # The log path is the artifact store's own (resolved), not a hand-built duplicate of its layout.
+    assert escalation["log"] == str(harness.deps.artifacts.log_path("check-CALC-001-1"))
 
 
 def test_retry_after_a_check_that_cannot_run_goes_back_to_implement(make_harness):

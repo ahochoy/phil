@@ -85,8 +85,10 @@ def first_output_line(output: str) -> str:
 
 
 def couldnt_run_summary(cmd: str, output: str) -> str:
+    line = first_output_line(output)
+    line = line[:-1] if line.endswith(".") else line
     return (
-        f"`{cmd}` couldn't run: {first_output_line(output)}. Dependencies may be missing in the run's "
+        f"`{cmd}` couldn't run: {line}. Dependencies may be missing in the run's "
         "worktree — set [project] setup_cmd (e.g. npm ci) — or the program isn't on PATH."
     )
 

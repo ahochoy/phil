@@ -11,7 +11,7 @@ import pytest
 
 from phil.agents.fake import ScriptedAgentFactory, Turn
 from phil.chat.approval import launch_problems
-from phil.config import load_config
+from phil.config import PhilConfig, load_config
 from phil.contracts import Goal, Plan, Task
 from phil.contracts.routing import Answer
 from phil.store.db import connect
@@ -19,10 +19,10 @@ from phil.store.telemetry import TelemetryRow
 from phil.store.telemetry import record as write_telemetry
 from tests.chat.conftest import critique
 from tests.chat.test_routing_flow import route
-from tests.helpers import MODELS_TOML
+from tests.helpers import MODELS_TOML, TEST_MODELS
 from tests.live.bench import report
 from tests.live.bench.cases import CASES, FIXTURES, Case
-from tests.live.bench.harness import _init_repo, _usage, case_config, deep_merge, phil_sha, run_case
+from tests.live.bench.harness import _init_repo, _quick_plan_for, _usage, case_config, deep_merge, phil_sha, run_case
 from tests.run.conftest import review, task_result, tester_report
 
 TEST_CMD = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider"
@@ -230,6 +230,44 @@ def test_a_quick_route_runs_the_light_implementer_with_no_architect_or_critic(tm
     assert factory.remaining() == {"route": 0, "intake": 0, "quick_implementer": 0, "reviewer": 0}
     # route + intake in the chat, then red, green and reviewer in the run: no architect, no critic, no tester
     assert record["calls"] == 5
+
+
+def test_quick_plan_for_detects_setup_even_when_the_test_cmd_is_already_set(tmp_path, monkeypatch):
+    # `_detection_root` exports the snapshot whenever setup_cmd isn't set in phil.toml, even if the
+    # test command already is: mirrored here so the harness flags the same start-gate problems the
+    # chat would (brief R3, Task 3). Only `npm` is missing, so a problem here can only come from the
+    # detected setup command, not from the already-configured `make test`.
+    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None if prog == "npm" else f"/usr/bin/{prog}")
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "package.json").write_text("{}")
+    (tree / "package-lock.json").write_text("{}")
+    config = PhilConfig.model_validate({"models": TEST_MODELS, "project": {"test_cmd": "make test"}})
+    goal = Goal(
+        objective="Add a build script to the site.", depth="quick",
+        task=Task(id="SITE-001", description="d", acceptance_criteria=["c"]),
+    )
+    plan, problems = _quick_plan_for(goal, config, tree, tmp_path)
+    assert plan is None
+    assert any("npm ci" in problem and "isn't on PATH" in problem for problem in problems)
+
+
+def test_quick_plan_for_skips_detection_once_both_commands_are_configured(tmp_path, monkeypatch):
+    monkeypatch.setattr("phil.chat.approval.shutil.which", lambda prog: None if prog == "npm" else f"/usr/bin/{prog}")
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "package.json").write_text("{}")
+    (tree / "package-lock.json").write_text("{}")
+    config = PhilConfig.model_validate(
+        {"models": TEST_MODELS, "project": {"test_cmd": "make test", "setup_cmd": ""}}
+    )
+    goal = Goal(
+        objective="Add a build script to the site.", depth="quick",
+        task=Task(id="SITE-001", description="d", acceptance_criteria=["c"]),
+    )
+    plan, problems = _quick_plan_for(goal, config, tree, tmp_path)
+    assert problems == []
+    assert plan is not None and plan.test_cmd == "make test"
 
 
 def test_a_quick_route_without_a_task_falls_back_to_full_planning(tmp_path, results, config):

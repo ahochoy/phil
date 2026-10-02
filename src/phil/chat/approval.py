@@ -51,8 +51,20 @@ def test_cmd_differs(plan: Plan, config: PhilConfig) -> bool:
     return bool(plan.test_cmd and config.project.test_cmd and plan.test_cmd != config.project.test_cmd)
 
 
+def setup_cmd_problem(config: PhilConfig, root: Path | None = None) -> str | None:
+    """None unless the effective setup command uses shell operators or a blocked command: setup
+    runs without a shell, so e.g. `npm ci && npm run build` would fail confusingly."""
+    cmd, _ = effective_setup_cmd(config, root)
+    if not cmd:
+        return None
+    if ShellPolicy(config.shell.allow).denial_reason(cmd) == "forbidden":
+        return f"setup command `{cmd}` uses shell operators or a blocked command; Phil runs it directly"
+    return None
+
+
 test_cmd_problem.__test__ = False  # not a pytest test
 test_cmd_differs.__test__ = False
+setup_cmd_problem.__test__ = False
 
 
 def check_cmd_problems(plan: Plan, config: PhilConfig, root: Path | None = None) -> list[str]:
@@ -133,6 +145,9 @@ def launch_problems(
     problem = test_cmd_problem(plan, config, root)
     if problem:
         problems.append(problem)
+    setup_problem = setup_cmd_problem(config, root)
+    if setup_problem:
+        problems.append(setup_problem)
     problems += check_cmd_problems(plan, config, check_root if check_root is not None else root)
     problems += program_problems(plan, config, root)
     return problems

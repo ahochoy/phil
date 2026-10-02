@@ -452,6 +452,30 @@ differs from an unchanged `phil.toml` is left alone. Picking up the change re-ba
 test results against the worktree's current `HEAD`, and the chat (and `phil attach`) print
 `Using the updated test command: ...`.
 
+## Dependencies
+
+Before a run's first task, Phil installs the project's dependencies in its worktree with a setup
+command, found the same way as the test command: `phil.toml`'s `[project] setup_cmd` wins; failing
+that, it's detected from the repo's lockfile (only when `package.json` exists):
+
+| Lockfile              | Setup command                       |
+|------------------------|--------------------------------------|
+| `pnpm-lock.yaml`       | `pnpm install --frozen-lockfile`     |
+| `yarn.lock`            | `yarn install --frozen-lockfile`     |
+| `bun.lockb`/`bun.lock` | `bun install --frozen-lockfile`      |
+| `package-lock.json`    | `npm ci`                             |
+
+No lockfile means no setup command — Phil never runs a plain `npm install` on its own. Set
+`setup_cmd = ""` in `[project]` to turn setup off explicitly, even when a lockfile is present. The
+setup command is shown at approval (`setup: ...`, with `(detected)` when it wasn't configured) and
+on a quick change's start line, and it runs with the same environment as the test command — no
+API keys. `[project] setup_timeout_s` (default 600) bounds how long it may run.
+
+A setup command that fails or times out pauses the run for you to retry or abort. A command that
+can't run at all — the test, setup or a check command — stops the run the same way: Phil escalates
+rather than burning attempts against a worktree that's missing dependencies or a program that
+isn't on `PATH`.
+
 ## Benchmark
 
 An opt-in live benchmark (`tests/live/bench`) plans and runs a few small goals — add a Python
