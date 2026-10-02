@@ -78,6 +78,17 @@ Deferred items from implementing plan M3b ("quick path"). Plan:
   dev dependencies, or documenting that lint runs from a separate environment, so it isn't
   silently skipped task after task.
 
+## From a live benchmark run
+
+- **A test or check command that can't be found (exit 127), e.g. `npm` not on the background
+  worker's PATH under nvm, passes quietly because the baseline failed the same way.** Phil
+  should stop the run with a clear message, and make sure the worker inherits the user's PATH.
+- **The quick implementer used 8 model calls on a one-line docs change and 17 total on
+  py-multiply, against a target of under 10**: try a leaner quick-implementer prompt or a
+  tighter cap.
+- **Provider flakiness: OpenRouter's DeepSeek returned stub goals for a while**; the objective
+  guard now rejects them with a retry.
+
 ## From this task (7)
 
 - **The benchmark's "full, or intake deciding" branch skips intake entirely**, even when the
