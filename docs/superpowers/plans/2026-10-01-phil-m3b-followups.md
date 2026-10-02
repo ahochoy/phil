@@ -87,6 +87,8 @@ Deferred items from implementing plan M3b ("quick path"). Plan:
   test, setup or check command that exits 127 now escalates `cmd_not_found` with
   `couldnt_run_summary`'s message, instead of running quietly; `launch_problems` also flags a
   missing program on `PATH` before the run even starts.
+  - PATH needed no change: the worker already inherits the chat's environment (`spawn_worker` passes `env=None`).
+  - The live failure's real cause was dependencies missing from the worktree (`sh: vitest: command not found`), not PATH. The new setup command (`npm ci` and similar) installs them.
 - **The quick implementer used 8 model calls on a one-line docs change and 17 total on
   py-multiply, against a target of under 10**: try a leaner quick-implementer prompt or a
   tighter cap.
