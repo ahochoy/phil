@@ -57,6 +57,18 @@ def test_intake_prompt_documents_task():
     assert "`task`" in prompt
 
 
+def test_intake_prompt_settles_approach_open_from_answers():
+    spec = get_spec("intake")
+    prompt = load_prompt(spec)
+    assert "set `approach_open` to false once the answers settle how to build it" in prompt
+
+
+def test_design_prompt_does_not_reopen_choices_the_user_already_made():
+    spec = get_spec("design")
+    prompt = load_prompt(spec)
+    assert "don't re-propose alternatives to them" in prompt
+
+
 def test_architect_prompt_documents_prior_attempt():
     spec = get_spec("architect")
     prompt = load_prompt(spec)

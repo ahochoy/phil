@@ -2,7 +2,7 @@
 
 from phil.contracts import Approach, Approaches
 from tests.chat.conftest import critique, goal, plan
-from tests.chat.test_controller import run_chat
+from tests.chat.test_controller import deferred, run_chat
 from tests.chat.test_quick_flow import detectable, notes, quick_goal
 from tests.chat.test_routing_flow import payloads, peek, route
 
@@ -65,6 +65,21 @@ def test_an_out_of_range_number_asks_again(calc_repo):
     assert "Pick 1–3, or describe your own approach." in text
 
 
+def test_y_ok_and_go_pick_the_recommended_approach(calc_repo):
+    for word in ("y", "YES", "ok", "Go"):
+        text, spawned, runs, factory, prompts = run_chat(
+            calc_repo, ["add a CTA section", word, "n"], {"intake": [OPEN], "design": [APPROACHES], **PLANNING}
+        )
+        assert "A card after the hero." in payloads(factory, "architect")[0]
+
+
+def test_a_negative_number_asks_again_rather_than_becoming_a_note(calc_repo):
+    text, *_ = run_chat(
+        calc_repo, ["add a CTA section", "-1", "1", "n"], {"intake": [OPEN], "design": [APPROACHES], **PLANNING}
+    )
+    assert "Pick 1–3, or describe your own approach." in text
+
+
 def test_an_edit_keeps_the_chosen_approach(calc_repo):
     text, spawned, runs, factory, prompts = run_chat(
         calc_repo,
@@ -73,6 +88,24 @@ def test_an_edit_keeps_the_chosen_approach(calc_repo):
     )
     first, second = payloads(factory, "architect")
     assert "A full-width band above the footer." in first and "A full-width band above the footer." in second
+
+
+def test_the_approach_summary_is_not_clipped(calc_repo):
+    long_summary = (
+        "A full-width band placed directly above the footer that spans the entire page width, "
+        "carries a heading, a short line of supporting copy, and a single prominent call-to-action button."
+    )
+    assert len(long_summary) > 160
+    approaches = Approaches(
+        options=[
+            Approach(name="Footer band", summary=long_summary, tradeoffs=["Visible on every page"]),
+            Approach(name="Inline card", summary="A card after the hero.", tradeoffs=["Only on the home page"]),
+        ],
+        recommended=0,
+        reason="",
+    )
+    text, *_ = run_chat(calc_repo, ["add a CTA section", "n"], {"intake": [OPEN], "design": [approaches], **PLANNING})
+    assert long_summary in " ".join(text.split())
 
 
 def test_a_designer_failure_plans_directly(calc_repo):
@@ -133,3 +166,53 @@ def test_ctrl_c_at_the_choice_cancels_the_goal(calc_repo):
     )
     assert "Cancelled the current goal." in text and seen["stage"] == "idle"
     assert payloads(factory, "architect") == []
+
+
+def test_ctrl_c_while_the_designer_job_is_running_cancels_the_goal(calc_repo):
+    submit, run_next, pending = deferred()
+    seen = {}
+
+    def ctrl_c(controller):
+        raise KeyboardInterrupt()
+
+    def check_cancelling(controller):
+        seen["cancelling_before"] = controller.state.view().cancelling
+        return run_next(controller)
+
+    def check_after(controller):
+        seen["cancelling_after"] = controller.state.view().cancelling
+        seen["stage"] = controller.stage
+        return None
+
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        ["add a CTA section", run_next, run_next, ctrl_c, check_cancelling, check_after],
+        {"intake": [OPEN], "design": [APPROACHES], **PLANNING},
+        submit=submit,
+    )
+    assert "Cancelled the current goal." in text
+    assert "Approaches" not in text
+    assert seen == {"cancelling_before": True, "cancelling_after": False, "stage": "idle"}
+    # The stale design result never reached the architect: it's dropped on arrival.
+    assert factory.remaining() == {"intake": 0, "design": 0, "architect": 1, "critic": 1}
+
+
+def test_full_bang_as_a_replacement_skips_the_designer(calc_repo):
+    submit, run_next, pending = deferred()
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo,
+        [
+            "add a CTA section",  # goal 1: its routing job is held
+            "/full! add auth",  # a forced full! replacement while goal 1 is routing
+            "y",  # confirm the replace
+            run_next,  # goal 1's routing runs now; its result is stale
+            run_next,  # goal 2's intake
+            run_next,  # goal 2's plan
+            "n",
+        ],
+        {"intake": [goal("Add auth", approach_open=True)], **PLANNING},
+        submit=submit,
+    )
+    assert "Forced: full path, no design proposals" in text
+    assert "Approaches" not in text
+    assert factory.remaining() == {"intake": 0, "architect": 0, "critic": 0}

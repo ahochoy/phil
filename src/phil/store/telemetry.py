@@ -150,7 +150,7 @@ def goal_chat_usage(conn: sqlite3.Connection, run_id: str) -> list[UsageLine]:
     """The chat layer's usage for the goal that produced `run_id`; [] for a run without a chat.
 
     The goal's own start isn't stored, so the rule is: the chat's goal-pipeline rows (nodes
-    route, intake, architect, critic) recorded after the chat's previous run was created (or from
+    route, intake, design, architect, critic) recorded after the chat's previous run was created (or from
     the chat's start, for its first run) and up to this run's `created_at`. That leaves out every
     earlier goal that ran, anything the chat does once this run has started, and side questions
     (`answer`, `/btw`). A goal dropped before running in that gap, and the routing of a question,

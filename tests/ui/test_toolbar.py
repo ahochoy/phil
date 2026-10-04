@@ -12,6 +12,11 @@ def test_step_spinner_and_elapsed():
     assert render_toolbar(view, now=100.0).startswith(SPINNER[0])
 
 
+def test_designing_step_label():
+    view = ToolbarView(stage="designing", step="designing", step_started=0.0)
+    assert "Proposing approaches" in render_toolbar(view, now=1.0)
+
+
 def test_run_pause_btw_and_cancelling():
     run = RunView("r-7f3a", "CALC", "implement", 1, 2, started=0.0)
     view = ToolbarView(stage="paused", run=run, paused=True, btw_pending=2)

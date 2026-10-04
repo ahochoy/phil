@@ -7,6 +7,8 @@ from phil.repo import resolve_repo
 from phil.store.paths import ProjectPaths
 from tests.chat.conftest import critique, goal, plan
 from tests.chat.test_controller import FULL_SCRIPT, run_chat, session_dir
+from tests.chat.test_design_flow import APPROACHES, OPEN, PLANNING
+from tests.chat.test_routing_flow import payloads
 from tests.helpers import run_git
 
 RESTORE_WARNING = "This chat's saved state couldn't be fully restored; starting fresh."
@@ -103,6 +105,46 @@ def test_ctrl_c_at_the_questions_stage_cancels_the_goal(calc_repo):
     assert prompts == ["you › ", "answers (or 'go' to plan anyway) › ", "you › "]
     state = json.loads((session_dir(calc_repo) / "state.json").read_text())
     assert state["stage"] == "idle" and state["goal"] is None
+
+
+def test_the_chosen_approach_survives_a_reopened_chat(calc_repo):
+    run_chat(
+        calc_repo, ["add a CTA section", "2"], {"intake": [OPEN], "design": [APPROACHES], **PLANNING}
+    )  # EOF at approval
+    text, spawned, runs, factory, prompts = reopen(
+        calc_repo, ["edit", "make it two tasks", "n"], {"architect": [plan(n=2)], "critic": [critique()]}
+    )
+    [architect] = payloads(factory, "architect")
+    assert "A full-width band above the footer." in architect
+
+
+def test_a_bad_approach_falls_back_without_spoiling_the_rest_of_the_state(calc_repo):
+    run_chat(calc_repo, ["add a CTA section", "2"], {"intake": [OPEN], "design": [APPROACHES], **PLANNING})
+    path = session_dir(calc_repo) / "state.json"
+    state = json.loads(path.read_text())
+    state["approach"] = {"name": 7}  # schema-invalid
+    path.write_text(json.dumps(state))
+    text, spawned, runs, factory, prompts = reopen(
+        calc_repo, ["edit", "make it two tasks", "n"], {"architect": [plan(n=2)], "critic": [critique()]}
+    )
+    assert RESTORE_WARNING not in " ".join(text.split())  # a bad approach alone doesn't start fresh
+    [architect] = payloads(factory, "architect")
+    assert "A full-width band above the footer." not in architect  # fell back to no chosen approach
+
+
+def test_an_older_states_missing_approach_restores_as_none(calc_repo):
+    run_chat(calc_repo, ["add a CTA section", "2"], {"intake": [OPEN], "design": [APPROACHES], **PLANNING})
+    path = session_dir(calc_repo) / "state.json"
+    state = json.loads(path.read_text())
+    del state["approach"]
+    del state["approach_note"]
+    path.write_text(json.dumps(state))
+    text, spawned, runs, factory, prompts = reopen(
+        calc_repo, ["edit", "make it two tasks", "n"], {"architect": [plan(n=2)], "critic": [critique()]}
+    )
+    assert RESTORE_WARNING not in " ".join(text.split())
+    [architect] = payloads(factory, "architect")
+    assert "A full-width band above the footer." not in architect
 
 
 def test_state_and_transcript_write_failures_warn_once(calc_repo, monkeypatch):

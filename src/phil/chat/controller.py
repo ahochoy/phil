@@ -396,6 +396,8 @@ class ChatController:
                 {
                     "stage": stage,
                     "goal": self._goal.model_dump(mode="json") if self._goal else None,
+                    "approach": self._approach.model_dump(mode="json") if self._approach else None,
+                    "approach_note": self._approach_note,
                     "plan": draft.plan.model_dump(mode="json") if draft else None,
                     "critique": draft.critique.model_dump(mode="json") if draft else None,
                     "version": draft.version if draft else None,
@@ -869,7 +871,7 @@ class ChatController:
         for n, approach in enumerate(self._approach_order, 1):
             mark = " (recommended)" if n == 1 else ""
             self.console.print(f"[phil.agent]{n}. {escape(_clip(approach.name))}{mark}[/]")
-            self.console.print(f"   {escape(_clip(approach.summary))}")
+            self.console.print(f"   {escape(approach.summary)}")
             for tradeoff in approach.tradeoffs:
                 self.console.print(f"   [phil.muted]– {escape(_clip(tradeoff))}[/]")
         if approaches.reason:
@@ -883,18 +885,19 @@ class ChatController:
         self._plan(self._goal, show_goal=False)
 
     def _choose_approach(self, text: str) -> None:
-        """Enter or a number picks a proposed approach; the last number asks for a description; any
-        other text is the user's own approach. Then the architect plans it."""
+        """Enter, y/yes/ok/go, or a number picks a proposed approach; the last number asks for a
+        description; any other text is the user's own approach. Then the architect plans it."""
         order = self._approach_order
         if self._describing:
             if text:
                 self._describing = False
                 self._chose(None, text)
             return
-        if not text:
+        token = text.rstrip(".)")
+        if not text or text.lower() in ("y", "yes", "ok", "go"):
             self._chose(order[0], "")
-        elif text.rstrip(".)").isdigit():
-            choice = int(text.rstrip(".)"))
+        elif token.lstrip("-").isdigit():
+            choice = int(token)
             if 1 <= choice <= len(order):
                 self._chose(order[choice - 1], "")
             elif choice == len(order) + 1:
@@ -1751,6 +1754,12 @@ class ChatController:
         except Exception:
             bad = True
         try:
+            approach = Approach.model_validate(saved["approach"]) if saved.get("approach") else None
+        except Exception:
+            approach = None  # a bad approach falls back alone; it doesn't mark the whole state bad
+        approach_note = saved.get("approach_note")
+        approach_note = approach_note if isinstance(approach_note, str) else ""
+        try:
             if saved.get("plan") and saved.get("critique"):
                 draft = PlanDraft(
                     plan=Plan.model_validate(saved["plan"]),
@@ -1789,6 +1798,7 @@ class ChatController:
             self._set_stage("idle")
             return
         self._goal, self._draft = goal, draft
+        self._approach, self._approach_note = approach, approach_note
         self._goal_text = goal.objective if goal else ""
         self._run_id, self._base_sha = run_id, base_sha
         self._done_seen = bool(saved.get("done_seen", False))

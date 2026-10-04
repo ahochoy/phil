@@ -214,6 +214,24 @@ def test_render_show_leaves_out_side_questions_asked_before_the_goal(calc_repo):
     assert "Total: 2,200 tokens · $1.00" in text
 
 
+def test_render_show_includes_a_design_row_for_the_goal(calc_repo):
+    info = resolve_repo(calc_repo)
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    # This goal: routed, taken in, a design proposed, then planned.
+    _telemetry(conn, layer="chat", role="orchestrator", node="intake", at="2026-10-01T09:00:00+00:00")
+    _telemetry(conn, layer="chat", role="designer", node="design", at="2026-10-01T09:01:00+00:00")
+    _telemetry(conn, layer="chat", role="architect", node="architect", at="2026-10-01T09:02:00+00:00")
+    _chat_run(conn, paths, "r-0001", "2026-10-01T09:03:00+00:00")
+
+    console = make_console(record=True, width=160)
+    render_show(console, conn, paths, "r-0001")
+    text = console.export_text()
+
+    assert sorted(_usage_rows(text)) == [["chat", "architect"], ["chat", "designer"], ["chat", "orchestrator"]]
+    assert "Total: 3,300 tokens · $1.50" in text
+
+
 def test_show_refs_skips_a_file_deleted_between_listing_and_stat(calc_repo, monkeypatch):
     from pathlib import Path
 

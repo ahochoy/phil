@@ -29,4 +29,5 @@ You turn a user's message into a precise `Goal` for a planning architect. You do
 
 ## Follow-ups
 - If `previous_goal` is set, the user is answering its questions or refining it: update that goal with the new `message` and `answers`, and drop questions they answered.
+- Fold each answer into the goal (usually `constraints`), and set `approach_open` to false once the answers settle how to build it.
 - Use `repo_overview` only to phrase the goal in the repo's own terms; do not guess at implementation.
