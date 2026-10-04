@@ -151,7 +151,7 @@ def test_run_case_ignores_the_global_config_and_records_resolved_models(tmp_path
     assert record["models"] == {
         "orchestrator": "ollama:lo", "architect": "ollama:hi", "critic": "ollama:hi",
         "implementer": "ollama:lo", "tester": "ollama:lo", "reviewer": "ollama:hi",
-        "classifier": "ollama:lo", "answerer": "ollama:lo",
+        "classifier": "ollama:lo", "answerer": "ollama:lo", "designer": "ollama:hi",
     }
 
 

@@ -1,9 +1,11 @@
-from phil.agents.spec import ANSWER_NOW, FINISH_NOW, AgentSpec
+from phil.agents.spec import ANSWER_NOW, FINISH_NOW, PROPOSE_NOW, AgentSpec
 from phil.contracts import (
+    Approaches,
     ArchitectInput,
     Brief,
     BtwInput,
     CriticInput,
+    DesignInput,
     Goal,
     ImplementInput,
     IntakeInput,
@@ -21,6 +23,8 @@ from phil.contracts.routing import Answer, AnswerInput, RouteInput, RouteJudgeme
 ANSWER_MAX_MODEL_CALLS = 12
 # The quick implementer's model-call budget, enforced the same way.
 QUICK_IMPLEMENTER_MAX_MODEL_CALLS = 15
+# The designer's model-call budget, enforced like the answerer's.
+DESIGN_MAX_MODEL_CALLS = 8
 
 SPECS: dict[str, AgentSpec] = {
     "intake": AgentSpec("intake", "orchestrator", IntakeInput, Goal, harness="lean", end_on_text=True),
@@ -43,6 +47,10 @@ SPECS: dict[str, AgentSpec] = {
         "quick_implementer", "implementer", ImplementInput, TaskResult, tools=("shell",), writes_files=True,
         harness="light", max_model_calls=QUICK_IMPLEMENTER_MAX_MODEL_CALLS, prompt_name="implementer",
         cap_message=FINISH_NOW,
+    ),
+    "design": AgentSpec(
+        "design", "designer", DesignInput, Approaches, tools=("shell",), harness="light", shared_prompt=False,
+        read_only_shell=True, max_model_calls=DESIGN_MAX_MODEL_CALLS, cap_message=PROPOSE_NOW,
     ),
 }
 

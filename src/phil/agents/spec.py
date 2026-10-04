@@ -10,6 +10,7 @@ ANSWER_NOW = "Your tool budget is used up. Answer now with what you have found, 
 FINISH_NOW = (
     "Your tool budget is nearly used up. Finish the change now and return your result; say what you didn't get to."
 )
+PROPOSE_NOW = "Your tool budget is used up. Propose your approaches now from what you have read."
 
 
 @dataclass(frozen=True)

@@ -258,7 +258,9 @@ def test_a_tier_no_role_maps_to_is_shown_as_unused(tmp_path, git_repo):
     # Every high-tier role remapped to "low", so no role maps through "high" and it's reported as
     # unused. ("low" can't be used for this: the classifier role falls back to it whenever it has
     # no model of its own, so "low" is always in use once it's set.)
-    (git_repo / "phil.toml").write_text('[tiers]\narchitect = "low"\ncritic = "low"\nreviewer = "low"\n')
+    (git_repo / "phil.toml").write_text(
+        '[tiers]\narchitect = "low"\ncritic = "low"\nreviewer = "low"\ndesigner = "low"\n'
+    )
     wrote, io, _ = setup(["", SECRET, "", "", ""], tmp_path, config=load_config(git_repo))
     assert wrote is True
     assert f"– high  {SUGGESTED_HIGH}  unused (no role maps to it)" in io.lines

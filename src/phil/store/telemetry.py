@@ -131,7 +131,7 @@ def usage_by_role(conn: sqlite3.Connection, run_id: str) -> list[UsageLine]:
 
 
 # The chat nodes that turn a goal into a run; side questions (`answer`, `btw`) aren't among them.
-GOAL_NODES = ("route", "intake", "architect", "critic")
+GOAL_NODES = ("route", "intake", "design", "architect", "critic")
 
 
 def _goal_window(conn: sqlite3.Connection, run_id: str) -> tuple[str, str, str | None] | None:

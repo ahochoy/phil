@@ -212,9 +212,9 @@ def _chat(ctx: typer.Context) -> None:
             console.print(f"[phil.error]{escape(message)}[/]")
         console.print("Run phil setup to choose your models.")
         raise typer.Exit(1)
-    # The chat starts runs too, and their worker inherits this environment. The answerer's key is
-    # checked when it has a model of its own (otherwise it uses the orchestrator's).
-    _require_api_keys(config, CHAT_ROLES + ("answerer",) + RUN_ROLES)
+    # The chat starts runs too, and their worker inherits this environment. The answerer's and
+    # designer's keys are checked when they have models of their own.
+    _require_api_keys(config, CHAT_ROLES + ("answerer", "designer") + RUN_ROLES)
     paths = ProjectPaths(info.slug)
     session = _reopen_chat(ChatSession, paths, resume_id) if resume_id is not None else None
     base = ctx.obj.get("base")

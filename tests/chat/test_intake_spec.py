@@ -30,10 +30,11 @@ def test_goal_task_defaults_to_none():
     assert Goal(objective="Add a map").task is None
 
 
-def test_chat_and_run_roles_cover_all_roles_except_the_classifier_and_answerer():
-    # Neither is a checked chat or run role: routing falls back to the low model, then to intake,
-    # and the answerer falls back to the orchestrator's model.
-    assert set(CHAT_ROLES) | set(RUN_ROLES) == set(ROLES) - {"classifier", "answerer"}
+def test_chat_and_run_roles_cover_all_roles_except_the_classifier_answerer_and_designer():
+    # None of the three is a checked chat or run role: routing falls back to the low model, then to
+    # intake, the answerer falls back to the orchestrator's model, and the designer falls back to
+    # the architect's model.
+    assert set(CHAT_ROLES) | set(RUN_ROLES) == set(ROLES) - {"classifier", "answerer", "designer"}
 
 
 def test_goal_depth_is_optional_and_typed():
