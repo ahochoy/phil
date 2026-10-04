@@ -437,7 +437,83 @@ def test_the_chats_runs_keep_its_set_overrides(calc_repo):
         calc_repo, ["add subtract", "y"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
         config_overrides=["run.max_cost_usd=5"],
     )
-    assert json.loads(runs[0].config_overrides) == ["run.max_cost_usd=5"]
+    # The run also gets the setup command the plan view showed (none here), pinned after the chat's own.
+    assert json.loads(runs[0].config_overrides) == ["run.max_cost_usd=5", 'project.setup_cmd=""']
+
+
+def commit_node_lockfile(repo):
+    (repo / "package.json").write_text("{}")
+    (repo / "package-lock.json").write_text("{}")
+    run_git(repo, "add", "package.json", "package-lock.json")
+    run_git(repo, "commit", "-m", "node lockfile")
+
+
+def test_the_shown_setup_command_is_pinned_into_the_run(calc_repo):
+    commit_node_lockfile(calc_repo)
+    text, spawned, runs, *_ = run_chat(
+        calc_repo, ["add subtract", "y"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
+        config_overrides=["run.max_cost_usd=5"],
+    )
+    assert "setup: npm ci (detected)" in text
+    overrides = json.loads(runs[0].config_overrides)
+    assert overrides == ["run.max_cost_usd=5", 'project.setup_cmd="npm ci"']
+    # The worker reloads its config with these: the pin survives `parse_override`, spaces and all.
+    assert load_config(calc_repo, overrides=overrides).project.setup_cmd == "npm ci"
+
+
+def test_the_chats_own_overrides_are_not_changed_by_a_pin(calc_repo):
+    commit_node_lockfile(calc_repo)
+    seen = []
+
+    def after(controller):
+        seen.append(controller._config_overrides)
+        return None
+
+    run_chat(
+        calc_repo, ["add subtract", "y", after], {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
+        config_overrides=["run.max_cost_usd=5"],
+    )
+    assert seen == [("run.max_cost_usd=5",)]
+
+
+def test_a_setup_command_changed_after_the_plan_was_shown_blocks_the_start(calc_repo):
+    def change_then_approve(controller):
+        (calc_repo / "phil.toml").write_text(MODELS_TOML + '[project]\nsetup_cmd = "pnpm install"\n')
+        return "y"
+
+    text, spawned, runs, *_ = run_chat(
+        calc_repo, ["add subtract", change_then_approve, "n"],
+        {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
+    )
+    assert "The setup command changed in your config. Review it and answer again." in text
+    assert text.count("Plan CALC v1") == 2  # shown again, now with the new setup line
+    assert "setup: pnpm install" in text
+    assert spawned == [] and runs == []
+
+
+def test_a_failed_snapshot_export_pins_no_setup(calc_repo, monkeypatch):
+    # Detection can't look at the base commit, so nothing is shown and nothing runs: the worker
+    # must not detect `npm ci` from the worktree on its own.
+    import phil.chat.controller as controller_mod
+
+    commit_node_lockfile(calc_repo)
+
+    real_snapshot = controller_mod.ChatController._snapshot
+    calls = []
+
+    def broken(self, generation):
+        calls.append(generation)
+        if len(calls) == 1:
+            return real_snapshot(self, generation)  # the architect's tree
+        raise RuntimeError("export failed")  # every export for detection
+
+    monkeypatch.setattr(controller_mod.ChatController, "_snapshot", broken)
+    text, spawned, runs, *_ = run_chat(
+        calc_repo, ["add subtract", "y"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
+    )
+    assert "setup: none" in text
+    assert "npm ci" not in text
+    assert json.loads(runs[0].config_overrides) == ['project.setup_cmd=""']
 
 
 def test_the_chat_reload_applies_its_set_overrides(calc_repo):

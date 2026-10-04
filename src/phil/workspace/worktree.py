@@ -36,6 +36,10 @@ class WorktreeManager:
         untracked = git(path, "ls-files", "--others", "--exclude-standard").splitlines()
         return sorted(set(tracked) | set(untracked))
 
+    def untracked_unignored(self, path: Path) -> list[str]:
+        """Untracked files git doesn't ignore, a wholly untracked directory listed once as `dir/`."""
+        return git(path, "ls-files", "--others", "--exclude-standard", "--directory").splitlines()
+
     def commit_all(self, path: Path, message: str, *, sign: bool | None = None, run_hooks: bool = False) -> str:
         git(path, "add", "-A")
         # Signing and hooks follow [git] in phil.toml (spec §7); callers pass bypass values after a failure.

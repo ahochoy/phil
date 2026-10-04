@@ -1,9 +1,15 @@
+import shlex
+import shutil
 from pathlib import Path
 
 from phil.config import RUN_ROLES, PhilConfig
 from phil.contracts import Plan
 from phil.repo_detect import detect_test_cmd
-from phil.workspace.shell import CONTAINMENT_DETAIL, ShellPolicy
+from phil.repo_detect import effective_setup_cmd as effective_setup_cmd  # the engine shares it
+from phil.workspace.shell import CONTAINMENT_DETAIL, ShellPolicy, needs_a_shell
+
+# The PATH lookup the program preflight uses; offline tests fake this alias, not `shutil.which`.
+_which = shutil.which
 
 GIT_POLICY_NOTE = "Commit signing or hooks are on; a failing signature or hook will pause the run."
 
@@ -48,8 +54,22 @@ def test_cmd_differs(plan: Plan, config: PhilConfig) -> bool:
     return bool(plan.test_cmd and config.project.test_cmd and plan.test_cmd != config.project.test_cmd)
 
 
+def setup_cmd_problem(config: PhilConfig, root: Path | None = None) -> str | None:
+    """None unless the effective setup command needs a shell (operators, or unparseable): setup
+    runs without one, so e.g. `npm ci && npm run build` would fail confusingly. The agent's
+    risky-flag rules don't apply: the user approves the setup command at the plan view, and
+    ordinary ones such as `npm ci --prefix web` or `uv pip install -e .` must pass."""
+    cmd, _ = effective_setup_cmd(config, root)
+    if not cmd:
+        return None
+    if needs_a_shell(cmd):
+        return f"setup command `{cmd}` uses shell operators; Phil runs it directly"
+    return None
+
+
 test_cmd_problem.__test__ = False  # not a pytest test
 test_cmd_differs.__test__ = False
+setup_cmd_problem.__test__ = False
 
 
 def check_cmd_problems(plan: Plan, config: PhilConfig, root: Path | None = None) -> list[str]:
@@ -71,6 +91,47 @@ def check_cmd_problems(plan: Plan, config: PhilConfig, root: Path | None = None)
     return problems
 
 
+def _program_problem(cmd: str, kind: str) -> str | None:
+    """None if `cmd`'s program is runnable, else the exact "isn't on PATH" message.
+
+    A path containing "/" is skipped (the containment checks cover it); a command `shlex.split`
+    can't parse is skipped (the shell-policy checks cover it)."""
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        return None
+    if not parts:
+        return None
+    prog = parts[0]
+    if "/" in prog or _which(prog):
+        return None
+    return f"`{prog}` (from the {kind} command `{cmd}`) isn't on PATH for Phil's runs"
+
+
+def program_problems(plan: Plan, config: PhilConfig, root: Path | None = None) -> list[str]:
+    """Programs of the effective setup, test and check commands that aren't on PATH.
+
+    `root`, when given, is where a missing setup or test command is detected from (the same tree
+    for both)."""
+    problems = []
+    setup_cmd, _ = effective_setup_cmd(config, root)
+    if setup_cmd:
+        problem = _program_problem(setup_cmd, "setup")
+        if problem:
+            problems.append(problem)
+    test_cmd, _ = effective_test_cmd(plan, config, root)
+    if test_cmd:
+        problem = _program_problem(test_cmd, "test")
+        if problem:
+            problems.append(problem)
+    check_cmds = dict.fromkeys(task.check_cmd for task in plan.tasks if task.check_cmd)
+    for cmd in check_cmds:
+        problem = _program_problem(cmd, "check")
+        if problem:
+            problems.append(problem)
+    return list(dict.fromkeys(problems))
+
+
 def git_policy_note(config: PhilConfig) -> str | None:
     if config.git.sign_commits is not False or config.git.run_hooks:
         return GIT_POLICY_NOTE
@@ -83,11 +144,15 @@ def launch_problems(
     """Why a run of `plan` can't start under `config` (empty when it can). Callers escape before printing,
     and should use `terminated()` rather than assuming a problem needs a trailing period added.
 
-    `root`, when given, is where a missing test command is detected from. `check_root` (default:
-    `root`) is the tree check commands' paths must stay inside."""
+    `root`, when given, is where a missing setup or test command is detected from. `check_root`
+    (default: `root`) is the tree check commands' paths must stay inside."""
     problems = list(config.missing_model_messages(RUN_ROLES))
     problem = test_cmd_problem(plan, config, root)
     if problem:
         problems.append(problem)
+    setup_problem = setup_cmd_problem(config, root)
+    if setup_problem:
+        problems.append(setup_problem)
     problems += check_cmd_problems(plan, config, check_root if check_root is not None else root)
+    problems += program_problems(plan, config, root)
     return problems

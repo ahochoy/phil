@@ -1,3 +1,4 @@
+import json
 import re
 
 from typer.testing import CliRunner
@@ -33,7 +34,8 @@ def test_phil_set_overrides_reach_the_chats_runs(calc_repo, monkeypatch):
     )
     assert result.exit_code == 0, result.output
     [record] = list_runs(connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path))
-    assert record.config_overrides == '["run.max_cost_usd=5"]'
+    # The chat's own override first, then the pin of the setup command it showed (none here).
+    assert json.loads(record.config_overrides) == ["run.max_cost_usd=5", 'project.setup_cmd=""']
 
 
 def test_phil_rejects_a_bad_set_override(calc_repo):

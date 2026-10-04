@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from rich.markup import escape
 
 from phil import __version__
-from phil.chat.approval import git_policy_note, launch_problems, terminated
+from phil.chat.approval import effective_setup_cmd, git_policy_note, launch_problems, terminated
 from phil.config import (
     CHAT_ROLES,
     ROLES,
@@ -37,6 +37,7 @@ from phil.store.events import run_events
 from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
+from phil.tomlw import toml_value
 from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
 
@@ -404,6 +405,10 @@ def run_plan(
     note = git_policy_note(config)
     if note:
         console.print(f"[phil.muted]{escape(note)}[/]")
+    # There's no approval step here, so say what the worktree will run before the tests.
+    setup_cmd, setup_source = effective_setup_cmd(config, info.root)
+    if setup_cmd:
+        console.print(f"setup: {escape(setup_cmd)}{' (detected)' if setup_source == 'detected' else ''}")
     factory = None
     if foreground:
         try:
@@ -413,7 +418,10 @@ def run_plan(
                 f"[phil.error]cannot load PHIL_AGENT_FACTORY: {escape(type(exc).__name__)}: {escape(str(exc))}[/]"
             )
             raise typer.Exit(1) from exc
-    record = prepare_run(info, plan, base_sha, overrides=overrides)
+    # Pin the run to the setup command printed above (or to none), as the chat does: the worker
+    # reloads its config with these overrides and would otherwise detect again from the worktree.
+    pin = f"project.setup_cmd={toml_value(setup_cmd or '')}"
+    record = prepare_run(info, plan, base_sha, overrides=[*overrides, pin])
     if foreground:
         from phil.run.worker import WorkerError, run_worker
 

@@ -42,6 +42,16 @@ def detectable(repo):
     return repo
 
 
+def node_detectable(repo):
+    """Commit a package.json with a test script and a lockfile, so the quick plan detects both the
+    setup and test commands from the base commit."""
+    (repo / "package.json").write_text(json.dumps({"scripts": {"test": "node test.js"}}))
+    (repo / "package-lock.json").write_text("{}")
+    run_git(repo, "add", "package.json", "package-lock.json")
+    run_git(repo, "commit", "-m", "node markers")
+    return repo
+
+
 def run_depth(repo, run_id):
     conn = connect(ProjectPaths(resolve_repo(repo).slug).db_path)
     try:
@@ -79,6 +89,40 @@ def test_a_quick_route_with_a_task_starts_a_quick_run_without_approval(calc_repo
     [contract] = notes(calc_repo, "quick_plan")
     assert contract["contract"]["keyword"] == "FIX" and contract["contract"]["test_cmd"] == "pytest"
     assert [t["id"] for t in contract["contract"]["tasks"]] == ["FIX-001"]
+
+
+def test_quick_line_shows_the_detected_setup_command_before_tests(calc_repo):
+    node_detectable(calc_repo)
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo, ["fix the typo in calc"], {"route": [route("simple_change")], "intake": [quick_goal()]}
+    )
+    assert "Quick change: FIX-001 Fix the typo in calc · setup: npm ci · tests: npm test" in text
+
+
+def test_quick_line_omits_setup_for_a_python_repo(calc_repo):
+    detectable(calc_repo)
+    text, spawned, runs, factory, prompts = run_chat(
+        calc_repo, ["fix the typo in calc"], {"route": [route("simple_change")], "intake": [quick_goal()]}
+    )
+    assert QUICK_LINE in text
+    assert "· setup:" not in text
+
+
+def test_a_quick_run_is_pinned_to_the_setup_command_its_line_showed(calc_repo):
+    node_detectable(calc_repo)
+    _, _, [record], _, _ = run_chat(
+        calc_repo, ["fix the typo in calc"], {"route": [route("simple_change")], "intake": [quick_goal()]},
+        config_overrides=["run.max_cost_usd=5"],
+    )
+    assert json.loads(record.config_overrides) == ["run.max_cost_usd=5", 'project.setup_cmd="npm ci"']
+
+
+def test_a_quick_run_with_no_setup_shown_is_pinned_to_none(calc_repo):
+    detectable(calc_repo)
+    _, _, [record], _, _ = run_chat(
+        calc_repo, ["fix the typo in calc"], {"route": [route("simple_change")], "intake": [quick_goal()]}
+    )
+    assert json.loads(record.config_overrides) == ['project.setup_cmd=""']
 
 
 def test_intake_is_told_the_route_depth_and_the_detected_test_command(calc_repo):
