@@ -48,6 +48,14 @@ quick.
   run when the quick attempt doesn't clear the gate. [Plan](plans/2026-10-01-phil-m3b-quick-path.md) ·
   [followups](plans/2026-10-01-phil-m3b-followups.md).
 - Designed from M1's benchmark numbers.
+- **M3c — Ask before acting (planned).** Prompted by a live CTA run that asked nothing and built
+  nothing (user request, 2026-10-03):
+  - Intake's clarifying questions become multiple choice, asked one at a time.
+  - Intake must ask about content only the user can supply (links, copy, placement, style), on every path.
+  - On the full path, when the approach is open and no design exists, a designer proposes 2–3
+    approaches for the user to pick from before the architect plans.
+  - Then the Jev benchmark is revisited under a revised decision rule.
+  [Spec](specs/2026-10-03-phil-ask-before-acting-design.md).
 
 ### M4 — Permissions
 
