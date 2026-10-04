@@ -81,3 +81,11 @@ def test_intake_retries_once_on_a_stub_goal_and_returns_the_real_one(chat_ctx):
     result = intake(ctx, "add subtract", overview="")
     assert result == real
     assert factory.remaining() == {"intake": 0}
+
+
+def test_intake_prompt_asks_for_missing_content_with_options():
+    prompt = load_prompt(get_spec("intake"))
+    assert "## When to ask" in prompt
+    for word in ("link", "copy", "placement", "visual style", "quick"):
+        assert word in prompt
+    assert "`options`" in prompt and "`approach_open`" in prompt

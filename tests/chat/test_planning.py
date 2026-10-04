@@ -2,7 +2,7 @@ import pytest
 
 from phil.agents.fake import ScriptedAgentFactory
 from phil.chat.planning import Planner, intake, quick_plan
-from phil.contracts import AttemptWorklog, Task
+from phil.contracts import AttemptWorklog, Question, Task
 from tests.chat.conftest import critique, goal, issue, plan
 
 
@@ -10,7 +10,7 @@ def test_intake_passes_message_answers_and_previous_goal(chat_ctx, tmp_path):
     factory = ScriptedAgentFactory({"intake": [goal(open_questions=["Which file?"]), goal()]})
     ctx = chat_ctx(factory)
     first = intake(ctx, "add subtract", overview="Tracked files:\ncalc.py")
-    assert first.open_questions == ["Which file?"]
+    assert first.open_questions == [Question(text="Which file?")]
     second = intake(ctx, "add subtract", overview="", previous=first, answers=["calc.py"], call=2)
     assert second.open_questions == []
     payload = str(factory.calls[1][1])

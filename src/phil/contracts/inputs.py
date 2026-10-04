@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import Field
 
 from phil.contracts.base import Contract
+from phil.contracts.design import Approach
 from phil.contracts.interface import Goal, RunStatus
 from phil.contracts.planning import Plan, PlanCritique, Task
 from phil.contracts.results import AttemptWorklog, TestReport
@@ -16,6 +17,12 @@ class ArchitectInput(Contract):
     detected_test_cmd: str | None = None
     prior_attempt: list[AttemptWorklog] = Field(
         default=[], description="When set, a quick attempt at this goal failed; its worklogs say what was tried and why it failed."
+    )
+    chosen_approach: Approach | None = Field(
+        default=None, description="When set, the user chose this approach from the designer's proposals: plan it."
+    )
+    approach_note: str = Field(
+        default="", description="When set, the user's own description of how to build it: plan that."
     )
 
 

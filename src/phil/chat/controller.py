@@ -744,7 +744,7 @@ class ChatController:
         if goal.open_questions and self._rounds < MAX_QUESTION_ROUNDS:
             self._rounds += 1
             for n, question in enumerate(goal.open_questions, 1):
-                self.console.print(f"[phil.agent]{n}. {escape(_clip(question))}[/]")
+                self.console.print(f"[phil.agent]{n}. {escape(_clip(question.text))}[/]")
             self._set_stage("questions")
             return
         intake_decides = self._route is not None and self._route.depth is None

@@ -24,7 +24,7 @@ def render_goal(console: Console, goal: Goal) -> None:
     if goal.open_questions:
         console.print("[phil.muted]Open questions:[/]")
         for question in goal.open_questions[:MAX_QUESTIONS]:
-            console.print(f"  ? {escape(_clip(question))}")
+            console.print(f"  ? {escape(_clip(question.text))}")
         extra = len(goal.open_questions) - MAX_QUESTIONS
         if extra > 0:
             console.print(f"  [phil.muted](+{extra} more)[/]")
