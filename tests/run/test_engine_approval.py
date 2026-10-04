@@ -105,3 +105,45 @@ def test_refused_command_reaches_the_next_attempt_as_feedback(make_harness):
     assert final["status"] == "completed"
     second = [p for role, p in harness.factory.calls if role == "implementer"][1]["messages"][0]["content"]
     assert "refused command: python -c 'print(1)'" in second
+
+
+def build_only(turn):
+    turn.tools["run_shell"](BUILD)
+    return task_result("red")  # writes nothing
+
+
+def build_only_after_approval(turn):
+    turn.tools["run_shell"](BUILD)  # approved now; still writes nothing
+    return task_result("red")
+
+
+def red_unchanged(turn):
+    return task_result("red", ["tests/test_sub.py"], ["tests/test_sub.py"])  # continues; writes nothing more
+
+
+def test_an_approval_resume_that_changed_nothing_since_the_task_began_fails(make_harness, calc_repo):
+    from phil.config import PhilConfig
+
+    add_build_script(calc_repo)
+    config = PhilConfig.model_validate({"run": {"max_attempts_per_phase": 1}})
+    harness = make_harness({"implementer": [build_only, build_only_after_approval]}, config=config)
+    assert harness.start()["__interrupt__"][0].value["reason"] == "approval"
+
+    escalation = harness.resume({"action": "approve"})["__interrupt__"][0].value
+    assert escalation["reason"] == "attempts"
+    assert escalation["problems"] == ["no changes were made for CALC-001"]
+
+
+def test_an_approval_resume_keeps_what_the_paused_call_wrote(make_harness, calc_repo):
+    add_build_script(calc_repo)
+    outputs: list[str] = []
+    harness = make_harness({
+        "implementer": [red_with_build(outputs), red_unchanged, write_green],
+        "tester": [tester_report()],
+        "reviewer": [review()],
+    })
+    assert harness.start()["__interrupt__"][0].value["reason"] == "approval"
+
+    final = harness.resume({"action": "approve"})
+    assert final["status"] == "completed"
+    assert harness.factory.remaining() == {"implementer": 0, "tester": 0, "reviewer": 0}

@@ -77,6 +77,40 @@ def test_failed_review_finish_leaves_a_major_issue(make_harness):
     harness = failed_review_harness(make_harness, [{}, {}])
     harness.start()
     final = harness.resume({"action": "finish"})
-    assert final["status"] == "completed"
+    assert final["status"] == "incomplete"  # an unfinished review is a major issue left open
     assert {"severity": "major", "note": "review not completed"}.items() <= final["open_issues"][-1].items()
     assert "- (major) review not completed" in (harness.deps.artifacts.run_dir / "summary.md").read_text()
+
+
+def finish_with(make_harness, issues):
+    harness = make_harness({
+        "implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review("approve", issues)],
+    })
+    return harness, harness.start()
+
+
+def summary_header(harness) -> str:
+    lines = (harness.deps.artifacts.run_dir / "summary.md").read_text().splitlines()
+    return next(line for line in lines if line.startswith("Status: "))
+
+
+def test_a_run_that_finishes_with_a_major_issue_open_is_incomplete(make_harness):
+    harness, final = finish_with(make_harness, [Issue(severity="major", note="no docstring")])
+    assert final["status"] == "incomplete"
+    assert harness.run_record().state == "incomplete"
+    assert summary_header(harness).startswith("Status: incomplete · 1 blocking issue(s) open · branch ")
+
+
+def test_a_run_that_finishes_with_a_blocker_open_is_incomplete(make_harness):
+    issues = [Issue(severity="blocker", note="Diff is empty"), Issue(severity="major", note="no tests"),
+              Issue(severity="minor", note="nit")]
+    harness, final = finish_with(make_harness, issues)
+    assert final["status"] == "incomplete"
+    assert summary_header(harness).startswith("Status: incomplete · 2 blocking issue(s) open · ")
+
+
+def test_a_run_with_only_minor_issues_open_is_completed(make_harness):
+    harness, final = finish_with(make_harness, [Issue(severity="minor", note="nit")])
+    assert final["status"] == "completed"
+    assert harness.run_record().state == "completed"
+    assert summary_header(harness).startswith("Status: completed · branch ")

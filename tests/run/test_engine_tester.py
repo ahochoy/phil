@@ -146,7 +146,7 @@ def test_tester_resumes_cleanly_after_a_crash(make_harness):
 def test_rejected_tester_output_is_a_major_open_issue(make_harness):
     harness = make_harness({"implementer": [write_red, write_green], "tester": [{}, {}], "reviewer": [review()]})
     final = harness.start()
-    assert final["status"] == "completed"
+    assert final["status"] == "incomplete"  # the major issue stays open
     rejected = [issue for issue in final["open_issues"] if issue["note"].startswith("tester output rejected")]
     assert [issue["severity"] for issue in rejected] == ["major"]
 
@@ -172,7 +172,7 @@ def test_new_failures_at_finish_become_major_open_issues(make_harness):
         {"implementer": [write_red, write_green], "tester": [failing_edge_test_minor], "reviewer": [review()]}
     )
     final = harness.start()
-    assert final["status"] == "completed"
+    assert final["status"] == "incomplete"  # a test still failing at finish is a major issue
     summary = (harness.deps.artifacts.run_dir / "summary.md").read_text()
     assert "- (major) still failing: tests/test_edge.py::test_add_strings" in summary
     assert "- (minor) add() rejects mixed types" in summary

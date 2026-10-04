@@ -6,11 +6,13 @@ Kept free of langgraph/langchain/deepagents at module import time (see
 
 import logging
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from phil.git import GitError, commits_ahead
 from phil.publish.learnings import append_learnings, learnings_entry
-from phil.publish.pr_body import find_pr_template, pr_title, render_pr_body
+from phil.publish.pr_body import blocking_issues, find_pr_template, pr_title, render_pr_body
 from phil.publish.publisher import Publisher, PublishError
 from phil.repo import RepoInfo
 from phil.run.cleanup import CleanError, clean_run
@@ -39,21 +41,39 @@ def publish_run(
     publisher: Publisher,
     *,
     base: str | None = None,
+    force: bool = False,
+    on_forced: Callable[[list[dict]], None] | None = None,
 ) -> RunRecord:
     """Push `record`'s branch and open its pull request, then record the PR on the run.
 
-    Raises `PublishRefused` (nothing done) for any of: the run isn't `completed`; it already
-    has a PR; no base branch is known (pass `base`); or `publisher.available()` names a
-    reason. The title and body are rendered before anything is pushed. A `PublishError` from
+    Raises `PublishRefused` (nothing done) for any of: the run isn't `completed`, or
+    `incomplete` with `force` (an incomplete run finished with blocking issues open; its PR body
+    then lists them); it already has a PR; its branch has no commits beyond its base (`force`
+    doesn't change that: there's nothing to open); no base branch is known (pass `base`); or
+    `publisher.available()` names a reason. Once none of those refuse a forced publish,
+    `on_forced` (if given) gets the open blocker and major issues, before anything is pushed. The title and body are rendered before anything is pushed. A `PublishError` from
     `publisher.push`/`create_pr` propagates unchanged and the run row is left untouched
     (re-running is safe: `git push` of the same ref is idempotent), except that if the PR
     already exists (an earlier attempt opened it but never recorded it) it is looked up with
     `publisher.find_pr` and recorded.
     """
-    if record.state != "completed":
+    forced = record.state == "incomplete"
+    if forced and not force:
+        raise PublishRefused(
+            f"{record.run_id} finished with blocking issues open; there's nothing to open a PR for. "
+            f"Use phil pr {record.run_id} --force to open it anyway."
+        )
+    if record.state not in ("completed", "incomplete"):
         raise PublishRefused(f"{record.run_id} is {record.state}; only a completed run can be published")
     if record.pr_url is not None:
         raise PublishRefused(f"{record.run_id} already has PR #{record.pr_number}: {record.pr_url}")
+    # GitHub refuses a PR for a branch with no commits beyond its base; say so before pushing.
+    try:
+        ahead = commits_ahead(info.root, record.base_sha, record.branch)
+    except GitError as exc:
+        raise PublishRefused(f"couldn't count {record.run_id}'s commits: {exc}") from exc
+    if ahead == 0:
+        raise PublishRefused(f"{record.run_id} has no commits to open a PR for.")
     base_branch = base or record.base_branch
     if base_branch is None:
         raise PublishRefused(f"{record.run_id} started on a detached HEAD; pass --base <branch>")
@@ -62,11 +82,13 @@ def publish_run(
         raise PublishRefused(reason)
 
     run_dir = ProjectPaths(info.slug).run_dir(record.run_id)
+    if forced and on_forced is not None:
+        on_forced(blocking_issues(run_dir))
     plan = ArtifactStore(run_dir).read_plan()
     totals = run_usage(conn, record.run_id)
     template = find_pr_template(info.root)
     title = pr_title(plan)
-    body = render_pr_body(run_id=record.run_id, run_dir=run_dir, totals=totals, template=template)
+    body = render_pr_body(run_id=record.run_id, run_dir=run_dir, totals=totals, template=template, forced=forced)
 
     publisher.push(record.branch)
     try:

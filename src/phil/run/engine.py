@@ -44,6 +44,7 @@ from phil.run.gates import (
 )
 from phil.run.state import (
     RunState,
+    blocking_count,
     dedupe_issues,
     issues_to_tasks,
     load_plan,
@@ -329,16 +330,8 @@ class RunEngine:
         }
 
     def _patched_as_open(self, state: RunState) -> list[dict]:
-        """The findings a quick run fixed after review, which no second review checked. A fix that
-        changed nothing since the reviewed commit (no fix commit) is labelled as such and keeps its
-        original severity, since a known blocker or major finding was never actually addressed."""
-        reviewed = state.get("reviewed_sha")
-        unchanged = bool(reviewed) and not self.worktrees.changed_files(self.deps.worktree, since=reviewed)
-        if unchanged:
-            return [
-                {**issue, "note": f"not changed after review: {issue['note']}"}
-                for issue in state.get("patched_issues", [])
-            ]
+        """The findings a quick run fixed after review, which no second review checked. The fix
+        passed its gate, so it changed something (a fix that changes nothing fails the gate)."""
         return [
             {**issue, "severity": "minor", "note": f"fixed after review (unverified): {issue['note']}"}
             for issue in state.get("patched_issues", [])
@@ -648,6 +641,9 @@ class RunEngine:
         if state.get("implement_failed"):
             return self._failed_attempt(state, state.get("last_problems", []), state.get("last_report"))
         changed = self.worktrees.changed_files(worktree, since=state["task_base_sha"])
+        refused = [p for p in state.get("last_problems", []) if p.startswith("refused command: ")]
+        if not self._attempt_changed(state, changed):
+            return self._failed_attempt(state, [f"no changes were made for {task.id}", *refused], None)
         report = self._test(state, artifact_name("verify", task.id, state["call_seq"]))
         if state["phase"] == "red":
             problems = verify_red(changed, report, globs, state.get("base_passed"), state.get("base_skipped"))
@@ -694,8 +690,19 @@ class RunEngine:
             )
             if not problems:
                 return {"last_report": report.model_dump(), "last_problems": [], "verdict": "green_ok"}
-        refused = [p for p in state.get("last_problems", []) if p.startswith("refused command: ")]
         return self._failed_attempt(state, [*problems, *refused], report.model_dump())
+
+    def _attempt_changed(self, state: RunState, changed: list[str]) -> bool:
+        """Whether the attempt under judgement left any change: a gate that passes on an untouched
+        worktree (a check that already held, say) proves nothing was done. Red, a check task and a
+        fix after review start from the task's base commit, so any change since it counts, tests
+        included. Green starts from the red phase's tree, which already holds red's tests, so only
+        a change on top of that tree counts. An approval resume is judged the same way."""
+        if not changed:
+            return False
+        if state["phase"] == "green" and state.get("red_tree"):
+            return self.worktrees.snapshot(self.deps.worktree) != state["red_tree"]
+        return True
 
     def _failed_attempt(self, state: RunState, problems: list[str], report: dict | None) -> dict:
         attempts = state.get("attempts", 0) + 1
@@ -965,6 +972,9 @@ class RunEngine:
                 for failure in final.new_failures_vs_baseline
             ]
         open_issues = dedupe_issues(open_issues)
+        if status == "completed" and blocking_count(open_issues):
+            # It finished, but a blocker or major issue is still open: there's nothing to merge yet.
+            status = "incomplete"
         totals = run_usage(self.deps.conn, self.deps.run_id)
         usage = usage_by_role(self.deps.conn, self.deps.run_id)
         summary = render_summary(

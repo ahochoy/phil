@@ -209,6 +209,11 @@ def dedupe_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [best[key] for key in order]
 
 
+def blocking_count(issues: list[dict[str, Any]]) -> int:
+    """How many of `issues` block a merge: a blocker or major issue left open."""
+    return sum(1 for issue in issues if issue.get("severity") in ("blocker", "major"))
+
+
 def issue_line(issue: dict[str, Any]) -> str:
     location = ""
     if issue.get("file"):
@@ -260,10 +265,11 @@ def render_summary(
     usage: list[UsageLine] | None = None,
     totals: Totals | None = None,
 ) -> str:
+    blocking = f" · {blocking_count(open_issues)} blocking issue(s) open" if status == "incomplete" else ""
     lines = [
         f"# Run {run_id} · {plan.keyword}",
         "",
-        f"Status: {status} · branch {branch} · {base_sha[:8]}..{head_sha[:8]}",
+        f"Status: {status}{blocking} · branch {branch} · {base_sha[:8]}..{head_sha[:8]}",
         "",
         "## Tasks",
         *task_lines(plan),

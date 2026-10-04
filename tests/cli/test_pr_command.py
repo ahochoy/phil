@@ -2,7 +2,7 @@ from typer.testing import CliRunner
 
 from phil.cli import main as cli
 from phil.publish.publisher import FakePublisher
-from tests.cli.test_diff_clean import finished_run
+from tests.cli.test_diff_clean import finished_run, incomplete_run
 
 runner = CliRunner()
 
@@ -16,6 +16,66 @@ def test_pr_command_opens_a_pull_request(calc_repo, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "Opened PR #12" in result.output
+
+
+def test_pr_command_refuses_an_incomplete_run(calc_repo, monkeypatch):
+    info, record, paths = incomplete_run(calc_repo)
+    fake = FakePublisher()
+    monkeypatch.setattr("phil.publish.publisher.make_publisher", lambda root: fake)
+
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "pr", record.run_id])
+
+    assert result.exit_code == 1
+    output = " ".join(result.output.split())  # the console may wrap the long line
+    assert f"{record.run_id} finished with blocking issues open; there's nothing to open a PR for." in output
+    assert f"Use phil pr {record.run_id} --force to open it anyway." in output
+    assert fake.calls == []
+
+
+def test_pr_force_on_an_incomplete_run_without_commits_lists_nothing(calc_repo, monkeypatch):
+    from tests.publish.test_service_publish import without_commits
+
+    info, record, paths = incomplete_run(calc_repo)
+    without_commits(record)
+    fake = FakePublisher()
+    monkeypatch.setattr("phil.publish.publisher.make_publisher", lambda root: fake)
+
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "pr", record.run_id, "--force"])
+
+    assert result.exit_code == 1
+    assert f"{record.run_id} has no commits to open a PR for." in result.output
+    assert "Publishing an incomplete run" not in result.output
+    assert fake.calls == []
+
+
+def test_pr_force_publishes_an_incomplete_run_after_listing_its_open_issues(calc_repo, monkeypatch):
+    info, record, paths = incomplete_run(calc_repo)
+    fake = FakePublisher()
+    monkeypatch.setattr("phil.publish.publisher.make_publisher", lambda root: fake)
+
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "pr", record.run_id, "--force"])
+
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    start = lines.index("Publishing an incomplete run; open issues:")
+    assert lines[start + 1] == "- (major) subtract is untested for negatives"
+    assert "Opened PR #12" in result.output
+    assert ("push", record.branch) in fake.calls
+
+
+def test_pr_command_refuses_a_run_with_no_commits(calc_repo, monkeypatch):
+    from tests.publish.test_service_publish import without_commits
+
+    info, record, paths = finished_run(calc_repo)
+    without_commits(record)
+    fake = FakePublisher()
+    monkeypatch.setattr("phil.publish.publisher.make_publisher", lambda root: fake)
+
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "pr", record.run_id])
+
+    assert result.exit_code == 1
+    assert f"{record.run_id} has no commits to open a PR for." in result.output
+    assert fake.calls == []
 
 
 def test_pr_command_refuses_when_gh_is_disabled_in_tests(calc_repo):

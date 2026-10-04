@@ -172,7 +172,8 @@ def test_after_a_switch_the_green_gate_is_not_blamed_for_the_testers_committed_f
     harness.graph.update_state(harness.thread, {"test_cmd": NEW_CMD, "rebaseline": True})
     final = harness.resume({"action": "retry"})
 
-    assert final["status"] == "completed"
+    # Every task is done, but the tester's failing test is still open as a major issue at finish.
+    assert final["status"] == "incomplete"
     assert [task.status for task in load_plan(final).tasks] == ["DONE", "DONE"]
     assert "tests/test_known_bug.py::test_known_bug" in final["baseline_failures"]
     assert "tests/test_known_bug.py::test_known_bug" not in final["initial_baseline"]

@@ -120,12 +120,55 @@ def record_calls(conn: sqlite3.Connection, telemetry_id: int, calls: Sequence[Ca
 _COST_SOURCE_RANK_SQL = "CASE cost_source WHEN 'unknown' THEN 2 WHEN 'estimated' THEN 1 ELSE 0 END"
 
 
+_USAGE_COLUMNS = "layer, role, input_tokens, output_tokens, cost_usd, model_calls, retries, tool_calls, cost_source"
+
+
 def usage_by_role(conn: sqlite3.Connection, run_id: str) -> list[UsageLine]:
     rows = conn.execute(
-        "SELECT layer, role, input_tokens, output_tokens, cost_usd, model_calls, retries, tool_calls, cost_source"
-        " FROM telemetry WHERE run_id = ? ORDER BY layer, role",
-        (run_id,),
+        f"SELECT {_USAGE_COLUMNS} FROM telemetry WHERE run_id = ? ORDER BY layer, role", (run_id,)
     ).fetchall()
+    return _group_usage(rows)
+
+
+# The chat nodes that turn a goal into a run; side questions (`answer`, `btw`) aren't among them.
+GOAL_NODES = ("route", "intake", "architect", "critic")
+
+
+def _goal_window(conn: sqlite3.Connection, run_id: str) -> tuple[str, str, str | None] | None:
+    """(chat id, run created_at, previous run's created_at or None) for a run started from a chat."""
+    run = conn.execute("SELECT chat_id, created_at FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    if run is None or not run["chat_id"]:
+        return None
+    previous = conn.execute(
+        "SELECT MAX(created_at) AS at FROM runs WHERE chat_id = ? AND created_at < ?",
+        (run["chat_id"], run["created_at"]),
+    ).fetchone()
+    return run["chat_id"], run["created_at"], previous["at"]
+
+
+def goal_chat_usage(conn: sqlite3.Connection, run_id: str) -> list[UsageLine]:
+    """The chat layer's usage for the goal that produced `run_id`; [] for a run without a chat.
+
+    The goal's own start isn't stored, so the rule is: the chat's goal-pipeline rows (nodes
+    route, intake, architect, critic) recorded after the chat's previous run was created (or from
+    the chat's start, for its first run) and up to this run's `created_at`. That leaves out every
+    earlier goal that ran, anything the chat does once this run has started, and side questions
+    (`answer`, `/btw`). A goal dropped before running in that gap, and the routing of a question,
+    are still counted with this goal."""
+    window = _goal_window(conn, run_id)
+    if window is None:
+        return []
+    chat_id, until, since = window
+    nodes = ", ".join("?" for _ in GOAL_NODES)
+    rows = conn.execute(
+        f"SELECT {_USAGE_COLUMNS} FROM telemetry WHERE layer = 'chat' AND chat_id = ? AND node IN ({nodes})"
+        " AND created_at <= ? AND (? IS NULL OR created_at > ?) ORDER BY role",
+        (chat_id, *GOAL_NODES, until, since, since),
+    ).fetchall()
+    return _group_usage(rows)
+
+
+def _group_usage(rows: Sequence[sqlite3.Row]) -> list[UsageLine]:
     grouped: dict[tuple[str, str], dict] = {}
     for row in rows:
         key = (row["layer"], row["role"])

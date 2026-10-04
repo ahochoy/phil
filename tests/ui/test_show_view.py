@@ -121,6 +121,99 @@ def test_render_show_header_omits_depth_for_a_null_depth_run(calc_repo):
     assert "· full ·" not in text
 
 
+CHAT = "c-20261001-120000"
+
+
+def _telemetry(conn, *, layer, role, node, at, run_id=None, chat_id=CHAT, tokens=(1000, 100), cost=0.5):
+    conn.execute(
+        "INSERT INTO telemetry (run_id, layer, node, role, model, attempt, packet_tokens, input_tokens,"
+        " output_tokens, latency_ms, cost_usd, outcome, created_at, chat_id)"
+        " VALUES (?, ?, ?, ?, 'm', 1, 0, ?, ?, 0, ?, 'ok', ?, ?)",
+        (run_id, layer, node, role, tokens[0], tokens[1], cost, at, chat_id),
+    )
+
+
+def _chat_run(conn, paths, run_id, at, chat_id=CHAT):
+    create_run(
+        conn, run_id=run_id, keyword="CALC", base_sha="abc", worktree=paths.worktree_dir(run_id), tasks_total=1,
+        chat_id=chat_id,
+    )
+    conn.execute("UPDATE runs SET created_at = ? WHERE run_id = ?", (at, run_id))
+
+
+def _usage_rows(text: str) -> list[str]:
+    return [line.split()[:2] for line in text.splitlines() if line.startswith(("chat ", "run "))]
+
+
+def test_render_show_includes_the_chat_costs_of_the_goal_that_made_the_run(calc_repo):
+    info = resolve_repo(calc_repo)
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    # An earlier goal in the same chat, with its own run.
+    _telemetry(conn, layer="chat", role="classifier", node="route", at="2026-10-01T10:00:00+00:00", cost=9.0)
+    _telemetry(conn, layer="chat", role="architect", node="architect", at="2026-10-01T10:01:00+00:00", cost=9.0)
+    _chat_run(conn, paths, "r-0001", "2026-10-01T10:02:00+00:00")
+    # This goal: routed, taken in, planned and critiqued, then run.
+    _telemetry(conn, layer="chat", role="classifier", node="route", at="2026-10-01T11:00:00+00:00")
+    _telemetry(conn, layer="chat", role="orchestrator", node="intake", at="2026-10-01T11:01:00+00:00")
+    _telemetry(conn, layer="chat", role="architect", node="architect", at="2026-10-01T11:02:00+00:00")
+    _telemetry(conn, layer="chat", role="critic", node="critic", at="2026-10-01T11:03:00+00:00")
+    _chat_run(conn, paths, "r-0002", "2026-10-01T11:04:00+00:00")
+    _telemetry(conn, layer="run", role="implementer", node="implement", at="2026-10-01T11:05:00+00:00",
+               run_id="r-0002", chat_id=None, tokens=(2000, 200), cost=1.0)
+    # Chat rows after the run started belong to whatever the chat does next.
+    _telemetry(conn, layer="chat", role="classifier", node="route", at="2026-10-01T11:06:00+00:00", cost=9.0)
+    _telemetry(conn, layer="chat", role="architect", node="architect", at="2026-10-01T11:07:00+00:00",
+               chat_id="c-other", cost=9.0)
+
+    console = make_console(record=True, width=160)
+    render_show(console, conn, paths, "r-0002")
+    text = console.export_text()
+
+    rows = _usage_rows(text)
+    assert sorted(rows) == sorted([
+        ["chat", "architect"], ["chat", "classifier"], ["chat", "critic"], ["chat", "orchestrator"],
+        ["run", "implementer"],
+    ])
+    classifier = next(line for line in text.splitlines() if line.startswith("chat ") and "classifier" in line)
+    assert classifier.split()[2] == "1"  # one call: the earlier goal's and the later route are left out
+    # 4 chat rows of 1,100 tokens and $0.50, and the run's 2,200 tokens and $1.00.
+    assert "Total: 6,600 tokens · $3.00" in text
+
+
+def test_render_show_for_a_run_without_a_chat_shows_only_the_run(calc_repo):
+    info, record, paths = finished_run(calc_repo)
+    conn = connect(paths.db_path)
+    _telemetry(conn, layer="chat", role="classifier", node="route", at="2000-01-01T00:00:00+00:00", chat_id=None)
+    console = make_console(record=True, width=160)
+    render_show(console, conn, paths, record.run_id)
+    text = console.export_text()
+    assert not any(row[0] == "chat" for row in _usage_rows(text))
+    assert "Total: " not in text  # `phil run` output is unchanged
+
+
+def test_render_show_leaves_out_side_questions_asked_before_the_goal(calc_repo):
+    info = resolve_repo(calc_repo)
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    # A question answered in the chat, and a /btw, before the goal was typed.
+    _telemetry(conn, layer="chat", role="answerer", node="answer", at="2026-10-01T09:00:00+00:00", cost=9.0)
+    _telemetry(conn, layer="chat", role="orchestrator", node="btw", at="2026-10-01T09:01:00+00:00", cost=9.0)
+    _telemetry(conn, layer="chat", role="orchestrator", node="intake", at="2026-10-01T09:02:00+00:00")
+    _telemetry(conn, layer="chat", role="architect", node="architect", at="2026-10-01T09:03:00+00:00")
+    _chat_run(conn, paths, "r-0001", "2026-10-01T09:04:00+00:00")
+
+    console = make_console(record=True, width=160)
+    render_show(console, conn, paths, "r-0001")
+    text = console.export_text()
+
+    assert sorted(_usage_rows(text)) == [["chat", "architect"], ["chat", "orchestrator"]]
+    orchestrator = next(line for line in text.splitlines() if line.startswith("chat ") and "orchestrator" in line)
+    assert orchestrator.split()[2] == "1"  # intake only, not the /btw
+    assert "answerer" not in text
+    assert "Total: 2,200 tokens · $1.00" in text
+
+
 def test_show_refs_skips_a_file_deleted_between_listing_and_stat(calc_repo, monkeypatch):
     from pathlib import Path
 
