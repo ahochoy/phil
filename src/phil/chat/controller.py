@@ -35,7 +35,7 @@ from phil.chat.snapshot import export_tree, export_worktree
 from phil.chat.state import ChatState, RunView
 from phil.chat.watcher import RunWatcher
 from phil.config import ConfigError, PhilConfig, load_config
-from phil.contracts import Goal, Plan, PlanCritique, Ref, RunStatus
+from phil.contracts import Goal, Plan, PlanCritique, Question, Ref, RunStatus
 from phil.contracts.results import AttemptWorklog
 from phil.contracts.routing import Answer
 from phil.publish import publisher as publishing
@@ -64,6 +64,8 @@ logger = logging.getLogger(__name__)  # the chat sends `phil` loggers to its phi
 
 WAKE = object()  # ChatIO.ask returns this when a background event interrupted the prompt
 MAX_QUESTION_ROUNDS = 2
+SOMETHING_ELSE = "Something else (type it)"
+OTHER_PROMPT = "Your answer › "  # after picking "Something else"
 HELP = (
     "Type a goal or a question. Prefix with /ask, /quick or /full to choose the path. "
     "Commands: /runs, /btw <question> (ask while work continues), "
@@ -182,6 +184,9 @@ class ChatController:
         self._goal_text = ""
         self._prior_attempt: list[AttemptWorklog] = []  # a failed quick attempt's worklogs, once moved to full
         self._rounds = 0
+        self._pending: list[Question] = []  # this round's questions, asked one at a time
+        self._replies: list[str] = []  # "question: answer" for the questions answered so far
+        self._typing_other = False  # "Something else" was picked: the next input is the answer
         self._draft: PlanDraft | None = None
         self._shown_test_cmd: str | None = None  # the effective test command in the last plan render
         self._shown_setup_cmd: str | None = None  # the setup command in the last plan render, pinned into its run
@@ -356,6 +361,8 @@ class ChatController:
             return f"{self._pause.get('summary', '')} — {' / '.join(self._options())} › "
         if self.stage == "confirm_pr" and self._pr_force:
             return PR_ANYWAY_PROMPT
+        if self.stage == "questions" and self._typing_other:
+            return OTHER_PROMPT
         return PROMPTS.get(self.stage, "you › ")
 
     def _save(self) -> None:
@@ -552,6 +559,7 @@ class ChatController:
         self._goal, self._goal_text, self._rounds, self._draft, self._revising = None, "", 0, None, False
         self._route, self._clarifications, self._prior_turns = None, [], []
         self._prior_attempt = []
+        self._pending, self._replies, self._typing_other = [], [], False
 
     def _forced_input(self, raw: str, forced: str, rest: str) -> None:
         """A message prefixed with /ask, /quick or /full: a goal whose depth skips the router."""
@@ -743,9 +751,9 @@ class ChatController:
         self._goal = goal
         if goal.open_questions and self._rounds < MAX_QUESTION_ROUNDS:
             self._rounds += 1
-            for n, question in enumerate(goal.open_questions, 1):
-                self.console.print(f"[phil.agent]{n}. {escape(_clip(question.text))}[/]")
+            self._pending, self._replies, self._typing_other = list(goal.open_questions), [], False
             self._set_stage("questions")
+            self._ask_next()
             return
         intake_decides = self._route is not None and self._route.depth is None
         if intake_decides and goal.depth == "answer" and not goal.open_questions:
@@ -804,16 +812,61 @@ class ChatController:
         problems = launch_problems(plan, self.config, root, check_root=root or self.info.root)
         return (None, None, problems) if problems else (plan, setup_cmd, [])
 
+    def _ask_next(self) -> None:
+        """Print the next question: its number, text, why, and numbered options plus "Something else"."""
+        question = self._pending[len(self._replies)]
+        self.console.print(f"[phil.agent]{len(self._replies) + 1}. {escape(_clip(question.text))}[/]")
+        if question.why:
+            self.console.print(f"   [phil.muted]{escape(_clip(question.why))}[/]")
+        for n, option in enumerate(question.options, 1):
+            self.console.print(f"     {n}. {escape(_clip(option))}")
+        if question.options:
+            self.console.print(f"     {len(question.options) + 1}. {SOMETHING_ELSE}")
+
     def _answers(self, text: str) -> None:
+        """One reply to the current question. No model call until the last one is answered; then one
+        intake call gets every answer. `go` plans with what's known (Ruling R2)."""
         if not text:
             return
-        if text.lower() == "go":
-            self._build(self._goal)
+        if text.lower() == "go" and not self._typing_other:
+            if self._replies:
+                self._rounds = MAX_QUESTION_ROUNDS  # send what was answered; ask nothing more
+                self._finish_questions()
+            else:
+                self._build(self._goal)
             return
-        self._clarifications.append(text)
-        self._recent.append(f"you: {text[:TURN_CHARS]}")
+        question = self._pending[len(self._replies)]
+        answer = self._pick(question, text)
+        if answer is None:
+            return
+        self._typing_other = False
+        self._replies.append(f"{question.text}: {answer}")
+        self._recent.append(f"you: {answer[:TURN_CHARS]}")
+        if len(self._replies) < len(self._pending):
+            self._ask_next()
+        else:
+            self._finish_questions()
+
+    def _pick(self, question: Question, text: str) -> str | None:
+        """The answer `text` gives `question`, or None while it still needs one (the "Something else"
+        number was picked, or a number with no option). Free-text questions take any reply."""
+        token = text.rstrip(".)")
+        if self._typing_other or not question.options or not token.isdigit():
+            return text
+        choice = int(token)
+        if 1 <= choice <= len(question.options):
+            return question.options[choice - 1]
+        if choice == len(question.options) + 1:
+            self._typing_other = True
+            return None
+        self.console.print(f"Pick 1–{len(question.options) + 1}, or type your answer.")
+        return None
+
+    def _finish_questions(self) -> None:
+        replies, self._pending, self._replies = self._replies, [], []
+        self._clarifications.extend(replies)
         self._set_stage("intake")
-        self._intake_job(self._goal_text, previous=self._goal, answers=[text])
+        self._intake_job(self._goal_text, previous=self._goal, answers=replies)
 
     def _plan(self, goal: Goal, prior_attempt: Sequence[AttemptWorklog] = ()) -> None:
         # The architect plans from scratch: a stray intake task (a fallen-back quick task, or one written

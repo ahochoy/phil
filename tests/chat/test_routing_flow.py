@@ -373,7 +373,7 @@ def test_clarifications_reach_the_answer_when_intake_chooses_one(calc_repo):
     )
     assert "Unclear request · asking first" in text and "The session cookie expires." in text
     [answer] = payloads(factory, "answer")
-    assert "why does the page fail?" in answer and "Clarification: the login page" in answer
+    assert "why does the page fail?" in answer and "Clarification: Which page?: the login page" in answer
     assert seen["recent"] == [
         "you: why does the page fail?", "you: the login page", "phil: The session cookie expires.",
     ]
