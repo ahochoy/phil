@@ -2,7 +2,7 @@ import pytest
 
 from phil.agents.fake import ScriptedAgentFactory
 from phil.chat.planning import Planner, intake, quick_plan
-from phil.contracts import AttemptWorklog, Question, Task
+from phil.contracts import Approach, AttemptWorklog, Question, Task
 from tests.chat.conftest import critique, goal, issue, plan
 
 
@@ -182,3 +182,12 @@ def test_draft_sends_prior_attempt_to_both_the_first_plan_and_a_revision(chat_ct
     Planner(chat_ctx(factory), "overview").draft(goal(), tmp_path, prior_attempt=[worklog])
     architect_payloads = [p for role, p in factory.calls if role == "architect"]
     assert all("tried X, failed because Y" in str(p) for p in architect_payloads)
+
+
+def test_the_chosen_approach_and_note_reach_the_architect(chat_ctx, tmp_path):
+    chosen = Approach(name="Footer band", summary="A band above the footer.")
+    factory = ScriptedAgentFactory({"architect": [plan()], "critic": [critique()]})
+    planner = Planner(chat_ctx(factory), "overview")
+    planner.draft(goal(), tmp_path, approach=chosen, approach_note="keep it small")
+    [payload] = [p for role, p in factory.calls if role == "architect"]
+    assert "A band above the footer." in str(payload) and "keep it small" in str(payload)

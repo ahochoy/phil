@@ -6,7 +6,14 @@ from dataclasses import dataclass
 from phil.routing.classes import DEPTH
 from phil.routing.types import Judgement
 
-OVERRIDES = {"/ask": "answer", "/quick": "quick", "/full": "full"}
+OVERRIDES = {"/ask": "answer", "/quick": "quick", "/full": "full", "/full!": "full"}
+NO_DESIGN = "/full!"  # the full path without the designer's proposals
+
+
+def skips_design(text: str) -> bool:
+    """True when the message starts with `/full!` (any case): plan fully, without design proposals."""
+    parts = text.strip().split(maxsplit=1)
+    return bool(parts) and parts[0].lower() == NO_DESIGN
 
 
 @dataclass(frozen=True)

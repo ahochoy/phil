@@ -626,7 +626,7 @@ def test_reopen_restores_the_agent_call_counters(calc_repo):
     before = artifact_files(directory)
     state = json.loads((directory / "state.json").read_text())
     assert state["counters"] == {
-        "intake": 1, "planner_calls": 1, "planner_version": 1, "btw": 0, "route": 1, "answer": 0,
+        "intake": 1, "planner_calls": 1, "planner_version": 1, "btw": 0, "route": 1, "answer": 0, "design": 0,
     }
     text, *_ = reopen(
         calc_repo, ["/btw hi", "edit", "two tasks", "n"],

@@ -145,7 +145,7 @@ def test_forced_ask_answers_directly(calc_repo):
 def test_bare_override_prints_usage(calc_repo):
     seen = {}
     text, spawned, runs, factory, _ = run_chat(calc_repo, ["/ask", peek(seen)], FULL_SCRIPT)
-    assert "Usage: /ask|/quick|/full <message>" in text
+    assert "Usage: /ask|/quick|/full|/full! <message>" in text
     assert seen["stage"] == "idle"
     assert factory.calls == []
 

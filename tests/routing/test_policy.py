@@ -57,3 +57,11 @@ T = {"confidence_threshold": 0.5, "detail_threshold": 0.6}
 )
 def test_decide(j, expected):
     assert decide(j, **T) == expected
+
+
+def test_full_bang_forces_full_and_skips_design():
+    from phil.routing.policy import parse_override, skips_design
+
+    assert parse_override("/full! add a CTA") == ("full", "add a CTA")
+    assert parse_override("/FULL! add a CTA") == ("full", "add a CTA")
+    assert skips_design("/Full! add a CTA") and not skips_design("/full add a CTA") and not skips_design("add a CTA")

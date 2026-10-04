@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from phil.agents.invoke import AgentContext, invoke_agent
 from phil.agents.registry import get_spec
 from phil.contracts import (
+    Approach,
     ArchitectInput,
     AttemptWorklog,
     CriticInput,
@@ -122,6 +123,8 @@ class Planner:
         tree: Path,
         call: int,
         prior_attempt: Sequence[AttemptWorklog] = (),
+        approach: Approach | None = None,
+        approach_note: str = "",
     ) -> Plan:
         contract = ArchitectInput(
             goal=goal,
@@ -130,6 +133,8 @@ class Planner:
             critique=critique,
             detected_test_cmd=detect_test_cmd(tree),  # the snapshot is the tracked files the run will see
             prior_attempt=list(prior_attempt),
+            chosen_approach=approach,
+            approach_note=approach_note,
         )
         packet = build_packet("architect", contract, budget_tokens=_budget(ctx, "architect"))
         return invoke_agent(get_spec("architect"), packet, replace(ctx, workdir=tree), node="architect", call=call)
@@ -147,12 +152,14 @@ class Planner:
         on_step: Callable[[str], None] | None = None,
         ctx: AgentContext | None = None,
         prior_attempt: Sequence[AttemptWorklog] = (),
+        approach: Approach | None = None,
+        approach_note: str = "",
     ) -> PlanDraft:
         ctx = self.ctx if ctx is None else ctx
         if on_step:
             on_step("architect")
         call = self._next_call()
-        plan = self._architect(ctx, goal, previous, critique, tree, call, prior_attempt)
+        plan = self._architect(ctx, goal, previous, critique, tree, call, prior_attempt, approach, approach_note)
         if on_step:
             on_step("critic")
         review = self._critic(ctx, goal, plan, call)
@@ -162,7 +169,7 @@ class Planner:
             if on_step:
                 on_step("revise")
             call = self._next_call()
-            plan = self._architect(ctx, goal, plan, review, tree, call, prior_attempt)
+            plan = self._architect(ctx, goal, plan, review, tree, call, prior_attempt, approach, approach_note)
             if on_step:
                 on_step("critic")
             review = self._critic(ctx, goal, plan, call)
@@ -176,9 +183,11 @@ class Planner:
         *,
         ctx: AgentContext | None = None,
         prior_attempt: Sequence[AttemptWorklog] = (),
+        approach: Approach | None = None,
+        approach_note: str = "",
     ) -> PlanDraft:
         """`ctx` overrides the planner's context for this cycle (a chat job passes one with its own connection)."""
-        return self._cycle(goal, None, None, tree, on_step, ctx, prior_attempt)
+        return self._cycle(goal, None, None, tree, on_step, ctx, prior_attempt, approach, approach_note)
 
     def revise(
         self,
@@ -190,6 +199,8 @@ class Planner:
         *,
         ctx: AgentContext | None = None,
         prior_attempt: Sequence[AttemptWorklog] = (),
+        approach: Approach | None = None,
+        approach_note: str = "",
     ) -> PlanDraft:
         request = PlanCritique(
             verdict="revise",
@@ -197,4 +208,4 @@ class Planner:
             notes=[],
             self_check=_empty_check(),
         )
-        return self._cycle(goal, draft.plan, request, tree, on_step, ctx, prior_attempt)
+        return self._cycle(goal, draft.plan, request, tree, on_step, ctx, prior_attempt, approach, approach_note)
