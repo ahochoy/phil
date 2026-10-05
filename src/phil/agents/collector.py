@@ -14,6 +14,12 @@ class ModelCall:
     input_tokens: int
     output_tokens: int
     reported_cost: float | None
+    cache_read_tokens: int = 0  # of input_tokens, how many were read from the provider's prompt cache
+
+
+def _cache_reads(message: object) -> int:
+    details = (getattr(message, "usage_metadata", None) or {}).get("input_token_details") or {}
+    return int(details.get("cache_read", 0) or 0)
 
 
 def _usage_from_message(message: object) -> tuple[int, int] | None:
@@ -113,6 +119,7 @@ class UsageCollector(BaseCallbackHandler):
                         input_tokens=usage[0],
                         output_tokens=usage[1],
                         reported_cost=float(cost) if cost is not None else None,
+                        cache_read_tokens=_cache_reads(message),
                     )
                 )
         if new_calls:

@@ -64,6 +64,7 @@ class TelemetryRow(BaseModel):
     tool_calls: dict[str, int] = {}
     retries: int = 0
     cost_source: CostSource = "reported"
+    cache_read_tokens: int = 0  # of input_tokens, how many were read from the provider's prompt cache
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,7 @@ class UsageLine:
     tool_calls: dict[str, int]
     retries: int
     cost_source: CostSource
+    cache_read_tokens: int = 0
 
 
 def record(conn: sqlite3.Connection, row: TelemetryRow) -> int:
@@ -120,7 +122,10 @@ def record_calls(conn: sqlite3.Connection, telemetry_id: int, calls: Sequence[Ca
 _COST_SOURCE_RANK_SQL = "CASE cost_source WHEN 'unknown' THEN 2 WHEN 'estimated' THEN 1 ELSE 0 END"
 
 
-_USAGE_COLUMNS = "layer, role, input_tokens, output_tokens, cost_usd, model_calls, retries, tool_calls, cost_source"
+_USAGE_COLUMNS = (
+    "layer, role, input_tokens, output_tokens, cost_usd, model_calls, retries, tool_calls, cost_source,"
+    " cache_read_tokens"
+)
 
 
 def usage_by_role(conn: sqlite3.Connection, run_id: str) -> list[UsageLine]:
@@ -175,10 +180,11 @@ def _group_usage(rows: Sequence[sqlite3.Row]) -> list[UsageLine]:
         agg = grouped.setdefault(
             key,
             {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "model_calls": 0,
-             "retries": 0, "tool_calls": {}, "cost_sources": []},
+             "retries": 0, "tool_calls": {}, "cost_sources": [], "cache_read_tokens": 0},
         )
         agg["calls"] += 1
         agg["input_tokens"] += row["input_tokens"]
+        agg["cache_read_tokens"] += row["cache_read_tokens"]
         agg["output_tokens"] += row["output_tokens"]
         agg["cost_usd"] += row["cost_usd"]
         agg["model_calls"] += row["model_calls"]
@@ -198,6 +204,7 @@ def _group_usage(rows: Sequence[sqlite3.Row]) -> list[UsageLine]:
             tool_calls=agg["tool_calls"],
             retries=agg["retries"],
             cost_source=weakest(agg["cost_sources"]),
+            cache_read_tokens=agg["cache_read_tokens"],
         )
         for (layer, role), agg in grouped.items()
     ]

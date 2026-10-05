@@ -129,7 +129,7 @@ def _usage_table(usage: list[UsageLine]) -> Table:
             escape(line.role),
             str(line.calls),
             str(line.model_calls),
-            f"{line.input_tokens:,}",
+            f"{line.input_tokens:,}" + (f" ({line.cache_read_tokens:,} cached)" if line.cache_read_tokens else ""),
             f"{line.output_tokens:,}",
             escape(format_cost(line.cost_usd, line.cost_source)),
             escape(tools),
