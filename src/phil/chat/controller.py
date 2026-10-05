@@ -30,7 +30,7 @@ from phil.chat.btw import ask_btw
 from phil.chat.design import propose_approaches
 from phil.chat.events import ChatEvent
 from phil.chat.overview import repo_overview
-from phil.chat.planning import Planner, PlanDraft, intake, quick_plan
+from phil.chat.planning import Planner, PlanDraft, PlanningBudgetExceeded, intake, quick_plan
 from phil.chat.session import ChatSession
 from phil.chat.snapshot import export_tree, export_worktree
 from phil.chat.state import ChatState, RunView
@@ -53,7 +53,7 @@ from phil.store.events import run_events, test_cmd_changed_line
 from phil.store.paths import ProjectPaths
 from phil.store.parked import open_count, park
 from phil.store.runs import get_run, list_runs
-from phil.store.telemetry import budget_warning_line, chat_usage, run_totals
+from phil.store.telemetry import budget_warning_line, chat_cost_since, chat_usage, last_telemetry_id, run_totals
 from phil.tomlw import toml_value
 from phil.ui.answer_view import render_answer
 from phil.ui.brief_view import render_brief
@@ -239,6 +239,10 @@ class ChatController:
         self._approach: Approach | None = None  # the user's pick, planned by the architect
         self._approach_note = ""  # or their own description
         self._describing = False  # "Describe your own" was picked: the next input is the description
+        # The goal's planning budget (chat.max_cost_usd) counts the chat's agent calls after this
+        # telemetry row: the newest one when the goal began (or the chat was reopened).
+        self._goal_mark = 0
+        self._budget_warned = False
 
     # --- events and jobs -------------------------------------------------------------------------
 
@@ -582,7 +586,7 @@ class ChatController:
         self._prior_attempt = []
         self._pending, self._replies, self._typing_other = [], [], False
         self._skip_design, self._approach_order, self._approach, self._approach_note = False, [], None, ""
-        self._describing = False
+        self._describing, self._budget_warned = False, False
 
     def _forced_input(self, raw: str, forced: str, rest: str) -> None:
         """A message prefixed with /ask, /quick, /full or /full!: a goal whose depth skips the router."""
@@ -629,6 +633,7 @@ class ChatController:
         self._next_generation()
         self._reset_goal()
         self._skip_design = skip_design
+        self._goal_mark = last_telemetry_id(self.conn)
         self._goal_text = text
         chat = self._prior_turns = list(self._recent)  # the turns before this message
         self._recent.append(f"you: {text[:TURN_CHARS]}")
@@ -982,25 +987,74 @@ class ChatController:
         self._set_stage("planning")
         generation = self._generation
         approach, note = self._approach, self._approach_note
+        budget = self._budget_check()
 
         def fn(ctx: AgentContext) -> dict:
             self._step("snapshot", generation)
             tree = self._snapshot(generation)
             on_step = lambda step: self._step(step, generation)  # noqa: E731
-            draft = self.planner.draft(
-                goal, tree, on_step=on_step, ctx=ctx, prior_attempt=prior_attempt, approach=approach,
-                approach_note=note,
-            )
+            try:
+                draft = self.planner.draft(
+                    goal, tree, on_step=on_step, ctx=ctx, prior_attempt=prior_attempt, approach=approach,
+                    approach_note=note, over_budget=budget(ctx.conn),
+                )
+            except PlanningBudgetExceeded:
+                return {"over_budget": True}
             return {"draft": draft}
 
         self._job("plan_ready", fn)
 
+    def _budget_check(self) -> Callable[[sqlite3.Connection], Callable[[], bool]]:
+        """For a planning job: given its own connection, a check that the goal's planning spend has
+        reached chat.max_cost_usd. The limit and the goal's mark are read now, on the main thread."""
+        chat_id, mark, limit = self.session.id, self._goal_mark, self.config.chat.max_cost_usd
+        return lambda conn: lambda: chat_cost_since(conn, chat_id, mark) >= limit
+
+    def _goal_cost(self) -> float:
+        return chat_cost_since(self.conn, self.session.id, self._goal_mark)
+
+    def _budget_note(self) -> None:
+        """Warn once per goal when its planning spend reaches [run] warn_at of chat.max_cost_usd."""
+        limit = self.config.chat.max_cost_usd
+        cost = self._goal_cost()
+        if not self._budget_warned and cost >= self.config.run.warn_at * limit:
+            self._budget_warned = True
+            self.console.print(
+                f"[phil.warn]Planning this goal has used ${cost:.2f} of its ${limit:.2f} budget (chat.max_cost_usd).[/]"
+            )
+
+    def _budget_stop(self) -> None:
+        """Planning stopped before an architect call: the goal's planning budget is spent. A revision
+        keeps the draft it was revising."""
+        cost, limit = self._goal_cost(), self.config.chat.max_cost_usd
+        self._budget_warned = True
+        self._safe_note("budget_stopped", cost_usd=cost, max_cost_usd=limit)
+        self.console.print(
+            f"[phil.warn]Stopped planning: this goal has used ${cost:.2f} of its ${limit:.2f} planning budget. "
+            f"Raise chat.max_cost_usd (for example `phil --set chat.max_cost_usd={2 * limit:g}`) to plan it.[/]"
+        )
+        if self._revising and self._draft is not None:
+            self._revising = False
+            self._set_stage("approval")
+        else:
+            self._reset_goal()
+            self._set_stage("idle")
+
     def _on_plan_ready(self, data: dict) -> None:
+        if data.get("over_budget"):
+            self._budget_stop()
+            return
         draft: PlanDraft = data["draft"]
         self._record_draft(draft)
         self._draft = draft
         self._revising = False
         self._set_stage("approval")
+        if draft.budget_stopped:
+            self.console.print(
+                "[phil.muted]Skipped the critic's revision: this goal reached its planning budget "
+                "(chat.max_cost_usd).[/]"
+            )
+        self._budget_note()
         self._show_plan(draft)
 
     def _on_job_failed(self, data: dict) -> None:
@@ -1118,14 +1172,18 @@ class ChatController:
         self._revising = True
         self._set_stage("planning")
         generation = self._generation
+        budget = self._budget_check()
 
         def fn(ctx: AgentContext) -> dict:
             self._step("snapshot", generation)
             tree = self._snapshot(generation)
-            revised = self.planner.revise(
-                goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation), ctx=ctx,
-                prior_attempt=prior_attempt, approach=approach, approach_note=note,
-            )
+            try:
+                revised = self.planner.revise(
+                    goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation), ctx=ctx,
+                    prior_attempt=prior_attempt, approach=approach, approach_note=note, over_budget=budget(ctx.conn),
+                )
+            except PlanningBudgetExceeded:
+                return {"over_budget": True}
             return {"draft": revised}
 
         self._job("plan_ready", fn)
@@ -1799,6 +1857,7 @@ class ChatController:
             return
         self._goal, self._draft = goal, draft
         self._approach, self._approach_note = approach, approach_note
+        self._goal_mark = last_telemetry_id(self.conn)  # a reopened goal's budget starts afresh
         self._goal_text = goal.objective if goal else ""
         self._run_id, self._base_sha = run_id, base_sha
         self._done_seen = bool(saved.get("done_seen", False))

@@ -10,7 +10,8 @@ ANSWER_NOW = "Your tool budget is used up. Answer now with what you have found, 
 FINISH_NOW = (
     "Your tool budget is nearly used up. Finish the change now and return your result; say what you didn't get to."
 )
-PROPOSE_NOW = "Your tool budget is used up. Propose your approaches now from what you have read."
+PLAN_NOW = "Your tool budget is used up. Return your plan now from what you have read; note anything you didn't check."
+PROPOSE_NOW ="Your tool budget is used up. Propose your approaches now from what you have read."
 
 
 @dataclass(frozen=True)
@@ -34,7 +35,7 @@ class AgentSpec:
     # and LangChain already ends their loop on an answer with no tool call.)
     end_on_text: bool = False
     read_only_shell: bool = False  # shell runs only M1's read-only commands (no project allowlist)
-    max_model_calls: int | None = None  # light only: the last allowed call must answer
+    max_model_calls: int | None = None  # light or deep: the last allowed call must answer
     cap_message: str = ANSWER_NOW  # with max_model_calls: the instruction added to the last allowed call
     # The prompt file's stem when it differs from `name`, for a spec that reuses another's prompt
     # (the quick implementer reads implementer.md).

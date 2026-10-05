@@ -239,6 +239,10 @@ def _build_deep_agent(
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
     backend = FilesystemBackend(root_dir=workdir, virtual_mode=True) if workdir is not None else None
+    middleware: list[Any] = [PhilModelRetryMiddleware()]
+    if spec.max_model_calls is not None:
+        # Caps the main agent's calls; a sub-agent it starts runs on its own (uncapped) loop.
+        middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
     return create_deep_agent(
         model=chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=tools,
@@ -246,7 +250,7 @@ def _build_deep_agent(
         backend=backend,
         permissions=filesystem_permissions(spec),
         response_format=_tool_strategy(spec),
-        middleware=[PhilModelRetryMiddleware()],
+        middleware=middleware,
         subagents=[_general_purpose_subagent()],
     )
 

@@ -27,6 +27,10 @@ from phil.repo_detect import detect_test_cmd
 MAX_CRITIC_REVISIONS = 1
 
 
+class PlanningBudgetExceeded(Exception):
+    """The goal's planning spend reached its budget before an architect call (chat.max_cost_usd)."""
+
+
 def _empty_check() -> SelfCheck:
     return SelfCheck(assumptions=[], evidence=[], risks=[], unverified=[], out_of_scope=[])
 
@@ -81,6 +85,7 @@ class PlanDraft:
     plan: Plan
     critique: PlanCritique
     version: int
+    budget_stopped: bool = False  # the critic asked for a revision, skipped for the goal's budget
 
 
 class Planner:
@@ -154,8 +159,13 @@ class Planner:
         prior_attempt: Sequence[AttemptWorklog] = (),
         approach: Approach | None = None,
         approach_note: str = "",
+        over_budget: Callable[[], bool] | None = None,
     ) -> PlanDraft:
+        """`over_budget` is checked before each architect call: before the first it stops planning
+        (PlanningBudgetExceeded); before a revision it keeps the plan so far (budget_stopped)."""
         ctx = self.ctx if ctx is None else ctx
+        if over_budget is not None and over_budget():
+            raise PlanningBudgetExceeded()
         if on_step:
             on_step("architect")
         call = self._next_call()
@@ -166,6 +176,8 @@ class Planner:
         for _ in range(MAX_CRITIC_REVISIONS):
             if review.verdict != "revise":
                 break
+            if over_budget is not None and over_budget():
+                return PlanDraft(_with_notes(plan, review), review, self._next_version(), budget_stopped=True)
             if on_step:
                 on_step("revise")
             call = self._next_call()
@@ -185,9 +197,12 @@ class Planner:
         prior_attempt: Sequence[AttemptWorklog] = (),
         approach: Approach | None = None,
         approach_note: str = "",
+        over_budget: Callable[[], bool] | None = None,
     ) -> PlanDraft:
         """`ctx` overrides the planner's context for this cycle (a chat job passes one with its own connection)."""
-        return self._cycle(goal, None, None, tree, on_step, ctx, prior_attempt, approach, approach_note)
+        return self._cycle(
+            goal, None, None, tree, on_step, ctx, prior_attempt, approach, approach_note, over_budget
+        )
 
     def revise(
         self,
@@ -201,6 +216,7 @@ class Planner:
         prior_attempt: Sequence[AttemptWorklog] = (),
         approach: Approach | None = None,
         approach_note: str = "",
+        over_budget: Callable[[], bool] | None = None,
     ) -> PlanDraft:
         request = PlanCritique(
             verdict="revise",
@@ -208,4 +224,6 @@ class Planner:
             notes=[],
             self_check=_empty_check(),
         )
-        return self._cycle(goal, draft.plan, request, tree, on_step, ctx, prior_attempt, approach, approach_note)
+        return self._cycle(
+            goal, draft.plan, request, tree, on_step, ctx, prior_attempt, approach, approach_note, over_budget
+        )

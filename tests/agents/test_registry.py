@@ -43,7 +43,9 @@ def test_only_implementers_and_tester_write_and_run_commands():
 
 def test_only_the_answerer_designer_and_quick_implementer_use_the_light_harness():
     assert {name for name, spec in SPECS.items() if spec.harness == "light"} == {"answer", "quick_implementer", "design"}
-    assert all(spec.max_model_calls is None for spec in SPECS.values() if spec.harness != "light")
+    # Of the others, only the architect is capped (its deep harness takes the same call budget).
+    capped = {name for name, spec in SPECS.items() if spec.harness != "light" and spec.max_model_calls is not None}
+    assert capped == {"architect"}
 
 
 def test_answer_prompt_loads_without_the_shared_block():

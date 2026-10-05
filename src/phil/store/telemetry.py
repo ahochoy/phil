@@ -227,6 +227,21 @@ def run_usage(conn: sqlite3.Connection, run_id: str) -> Totals:
     return _totals_for(conn, "run_id = ?", (run_id,))
 
 
+def last_telemetry_id(conn: sqlite3.Connection) -> int:
+    """The newest telemetry row's id (0 when there is none): a mark to count a goal's spend from."""
+    return int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM telemetry").fetchone()[0])
+
+
+def chat_cost_since(conn: sqlite3.Connection, chat_id: str, after_id: int) -> float:
+    """What the chat's own agent calls cost after telemetry row `after_id`. Runs have their own
+    budget, so their rows aren't counted."""
+    row = conn.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM telemetry WHERE layer = 'chat' AND chat_id = ? AND id > ?",
+        (chat_id, after_id),
+    ).fetchone()
+    return float(row[0])
+
+
 def chat_usage(conn: sqlite3.Connection, chat_id: str) -> Totals:
     return _totals_for(
         conn,
