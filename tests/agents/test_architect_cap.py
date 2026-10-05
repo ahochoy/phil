@@ -13,7 +13,8 @@ from tests.agents.test_model_retry import tool_call
 
 def test_the_architect_spec_is_capped():
     spec = get_spec("architect")
-    assert spec.harness == "deep"
+    # Light: no `task` sub-agent, whose model calls the cap can't see (live, one added 3 calls).
+    assert spec.harness == "light"
     assert spec.max_model_calls == ARCHITECT_MAX_MODEL_CALLS == 10
     assert spec.cap_message == PLAN_NOW
 
@@ -91,7 +92,7 @@ def test_repo_reading_prompts_say_where_paths_start():
         assert "there is no `/repo` or other prefix" in load_prompt(get_spec(name)), name
 
 
-def test_the_deep_harness_caps_and_hard_stops_the_architect(tmp_path, monkeypatch):
+def test_the_architect_is_capped_and_hard_stopped(tmp_path, monkeypatch):
     spec = dataclasses.replace(get_spec("architect"), max_model_calls=3)
     invalid_plans = [tool_call("Plan", {}, f"c{i}") for i in range(50)]
     model = ToolRecordingModel(script=[tool_call("ls", {"path": "/"}, "l1"), *invalid_plans])

@@ -136,12 +136,12 @@ def test_deep_roles_use_deepagents_with_permissions(tmp_path, monkeypatch):
 
     monkeypatch.setattr(deepagents, "create_deep_agent", fake_create_deep_agent)
     monkeypatch.setattr("phil.agents.factory.chat_model", lambda model, timeout_s, **_: sentinel)
-    spec = get_spec("architect")
+    spec = get_spec("implementer")
     assert build_agent(spec, "m", tmp_path, []) == "deep-agent"
     assert captured["model"] is sentinel
     assert captured["permissions"]
     assert captured["response_format"].schema is spec.out_contract
-    assert [type(m).__name__ for m in captured["middleware"]] == ["PhilModelRetryMiddleware", "CallBudget"]
+    assert [type(m).__name__ for m in captured["middleware"]] == ["PhilModelRetryMiddleware"]
     # the general-purpose sub-agent doesn't inherit the parent's middleware: it is passed
     # explicitly, with deepagents' default description and prompt, plus the retry middleware
     from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
