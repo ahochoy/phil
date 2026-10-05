@@ -27,7 +27,7 @@ QUICK_IMPLEMENTER_MAX_MODEL_CALLS = 15
 DESIGN_MAX_MODEL_CALLS = 8
 # The architect's, likewise: every call resends the history so far, so an uncapped exploration
 # grows its cost quadratically (one live plan took 46 calls and 1.56M input tokens).
-ARCHITECT_MAX_MODEL_CALLS = 20
+ARCHITECT_MAX_MODEL_CALLS = 10
 
 SPECS: dict[str, AgentSpec] = {
     "intake": AgentSpec("intake", "orchestrator", IntakeInput, Goal, harness="lean", end_on_text=True),

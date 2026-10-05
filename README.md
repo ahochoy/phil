@@ -388,7 +388,7 @@ The chat's own planning has a budget too. `[chat] max_cost_usd` (default `1.0`) 
 - **Revision:** once the limit is reached, a revision the critic asks for is skipped and the plan so far is shown.
 - **At the limit:** neither a new plan nor an `edit` starts. Approving the plan shown still works, and a raised limit lets planning continue.
 
-Each architect call is also capped at 20 model calls. Every call resends the conversation so far, so an unbounded exploration grows expensive fast.
+Each architect call is also capped at 10 model calls, and its prompt states that budget. Every call resends the conversation so far, so an unbounded exploration grows expensive fast.
 
 ```toml
 [chat]
