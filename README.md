@@ -390,6 +390,8 @@ The chat's own planning has a budget too. `[chat] max_cost_usd` (default `1.0`) 
 
 Each architect call is also capped at 10 model calls, and its prompt states that budget. Every call resends the conversation so far, so an unbounded exploration grows expensive fast.
 
+Anthropic models through OpenRouter use prompt caching, so an agent's repeated history is billed at the cache price. Other vendors on OpenRouter cache on their own. `phil show` and `/show` list cache reads next to input tokens, for example `172,000 (128,000 cached)`.
+
 ```toml
 [chat]
 max_cost_usd = 1.0

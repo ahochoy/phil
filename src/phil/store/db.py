@@ -75,6 +75,7 @@ MIGRATIONS: list[str] = [
     "ALTER TABLE runs ADD COLUMN pr_checked_at TEXT",
     "ALTER TABLE runs ADD COLUMN config_overrides TEXT",  # the run's `--set` overrides, as a JSON list
     "ALTER TABLE runs ADD COLUMN depth TEXT",  # "quick" or "full"; NULL for runs before M3b
+    "ALTER TABLE telemetry ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",  # of input_tokens
 ]
 
 

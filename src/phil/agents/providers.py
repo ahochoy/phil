@@ -170,6 +170,11 @@ def _build_openrouter(spec: ProviderSpec, model_name: str, timeout_s: int, key: 
 
     # ChatOpenRouter's `timeout` (request_timeout) is in milliseconds.
     kwargs: dict[str, Any] = {"timeout": timeout_s * 1000, "max_retries": 0, "api_key": key}
+    if model_name.startswith("anthropic/"):
+        # OpenRouter's automatic prompt caching: one breakpoint on the last cacheable block, moved
+        # forward as the conversation grows, so an agent's tool loop rereads its history at the
+        # cache price. Other vendors on OpenRouter cache on their own and never see this field.
+        kwargs["model_kwargs"] = {"cache_control": {"type": "ephemeral"}}
     if spec.base_url:
         kwargs["openrouter_api_base"] = spec.base_url
     model = init_chat_model(f"openrouter:{model_name}", **kwargs)
