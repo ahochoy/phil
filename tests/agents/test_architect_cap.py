@@ -14,8 +14,17 @@ from tests.agents.test_model_retry import tool_call
 def test_the_architect_spec_is_capped():
     spec = get_spec("architect")
     assert spec.harness == "deep"
-    assert spec.max_model_calls == ARCHITECT_MAX_MODEL_CALLS == 20
+    assert spec.max_model_calls == ARCHITECT_MAX_MODEL_CALLS == 10
     assert spec.cap_message == PLAN_NOW
+
+
+def test_the_architect_prompt_states_its_call_budget():
+    # Live, Sonnet read until the cap whatever it already knew: it has to be told the budget.
+    from phil.agents.spec import load_prompt
+
+    prompt = load_prompt(get_spec("architect"))
+    assert f"about {ARCHITECT_MAX_MODEL_CALLS} model calls" in prompt
+    assert prompt.index("## Exploration budget") < prompt.index("## Tasks")
 
 
 class MessageRecordingModel(ToolRecordingModel):
