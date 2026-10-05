@@ -1,6 +1,51 @@
+import json
 import re
 from collections.abc import Callable
 from typing import Any
+
+PROVIDER_DETAIL_CHARS = 300
+
+
+def provider_detail(exc: BaseException) -> str | None:
+    """The upstream provider's own reason for a rejected request, as "<provider>: <reason>", or
+    None. OpenRouter's error message is often just "Provider returned error"; the provider's name
+    and its raw error ride along in the body's `error.metadata`. A JSON raw error is reduced to
+    its message; the reason is whitespace-folded and clipped."""
+    body = getattr(exc, "body", None)
+    if not isinstance(body, str):
+        return None
+    try:
+        metadata = json.loads(body)["error"]["metadata"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(metadata, dict) or not metadata.get("raw"):
+        return None
+    raw = metadata["raw"]
+    reason = raw if isinstance(raw, str) else json.dumps(raw)
+    try:
+        parsed = json.loads(reason)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        inner = parsed.get("error") if isinstance(parsed.get("error"), dict) else parsed
+        if isinstance(inner.get("message"), str):
+            reason = inner["message"]
+    reason = " ".join(reason.split())[:PROVIDER_DETAIL_CHARS]
+    provider = metadata.get("provider_name")
+    return f"{provider}: {reason}" if isinstance(provider, str) and provider else reason
+
+
+def add_provider_detail(exc: BaseException) -> None:
+    """Append `provider_detail` to an OpenRouter error's message (once), so every place that
+    shows the error shows why the provider refused."""
+    detail = provider_detail(exc)
+    message = getattr(exc, "message", None)
+    if detail is None or not isinstance(message, str) or detail in message:
+        return
+    try:
+        object.__setattr__(exc, "message", f"{message} ({detail})")
+    except (AttributeError, TypeError):
+        pass
 
 TRANSIENT_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}  # 529: Anthropic "overloaded"
 
