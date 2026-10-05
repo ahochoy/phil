@@ -23,7 +23,7 @@ from collections.abc import Awaitable, Callable
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langgraph.errors import GraphBubbleUp
 
-from phil.agents.retry import MODEL_CALL_ATTEMPTS, retry_delay
+from phil.agents.retry import MODEL_CALL_ATTEMPTS, add_provider_detail, retry_delay
 
 TRACKER_KEY = "phil_model_retry"
 _RETRIED_ATTR = "_phil_model_call_retried"
@@ -92,6 +92,7 @@ class PhilModelRetryMiddleware(AgentMiddleware):
                 delay = retry_delay(exc, index, attempts=_attempts(tracker))
                 if delay is None:
                     _mark(exc)
+                    add_provider_detail(exc)
                     raise
                 if tracker is not None:
                     tracker.retried()
@@ -112,6 +113,7 @@ class PhilModelRetryMiddleware(AgentMiddleware):
                 delay = retry_delay(exc, index, attempts=_attempts(tracker))
                 if delay is None:
                     _mark(exc)
+                    add_provider_detail(exc)
                     raise
                 if tracker is not None:
                     tracker.retried()
