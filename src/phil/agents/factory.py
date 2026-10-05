@@ -1,4 +1,5 @@
 import itertools
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -81,10 +82,43 @@ WRITE_TOOLS = ("write_file", "edit_file", "delete")
 
 
 BUDGET_GRACE_CALLS = 2  # capped calls allowed to fix an invalid answer before the hard stop
+# What a tool call made past the cap returns instead of running.
+TOOL_BUDGET_USED = "Not run: your tool budget is used up. Return your structured output now with what you have."
 
 
 def _ai_calls(messages: list[Any]) -> int:
     return sum(1 for m in messages if getattr(m, "type", None) == "ai")
+
+
+def _text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    parts = (b.get("text", "") if isinstance(b, dict) else str(b) for b in content or [])
+    return "".join(parts)
+
+
+def _as_transcript(messages: list[Any]) -> list[Any]:
+    """The conversation for a capped call: the first (task) message, with every later turn folded
+    into it as plain text. Live, Claude through OpenRouter kept calling read_file and ls past the
+    cap although only the answer tool was offered: earlier tool calls in the history invite more.
+    As text, nothing does."""
+    from langchain_core.messages import HumanMessage
+
+    if len(messages) < 2 or getattr(messages[0], "type", None) != "human":
+        return messages
+    lines = ["", "", "## What you did so far: your tool calls and their results"]
+    for message in messages[1:]:
+        kind = getattr(message, "type", None)
+        if kind == "ai":
+            if _text(message.content).strip():
+                lines.append(f"You wrote: {_text(message.content)}")
+            for call in getattr(message, "tool_calls", None) or []:
+                lines.append(f"You called {call['name']}({json.dumps(call['args'], default=str)})")
+        elif kind == "tool":
+            lines.append(f"Result of {getattr(message, 'name', None) or 'that call'}:\n{_text(message.content)}")
+        else:
+            lines.append(_text(message.content))
+    return [HumanMessage(content=_text(messages[0].content) + "\n".join(lines))]
 
 
 def _with_cap_message(system_message: Any, message: str) -> Any:
@@ -105,7 +139,9 @@ def _call_budget_middleware(max_calls: int, message: str = ANSWER_NOW) -> Any:
 
     Soft: from call `max_calls` on, remove the tools and add `message` (the spec's cap_message)
     telling the model to answer, so a capped agent still returns its structured output. (ToolStrategy adds its structured-output tool after
-    this middleware runs, so `tools=[]` leaves the model exactly one tool: the answer.)
+    this middleware runs, so `tools=[]` leaves the model exactly one tool: the answer.) A capped
+    call sees the conversation as text (`_as_transcript`), and a tool call made from a capped call
+    isn't run (`TOOL_BUDGET_USED`): a provider doesn't always hold the model to the tools offered.
 
     Hard: an invalid answer is sent back to the model (ToolStrategy's handle_errors), and so is a
     plain-text one, so the soft cap alone could loop until LangGraph's recursion limit. Once
@@ -120,8 +156,21 @@ def _call_budget_middleware(max_calls: int, message: str = ANSWER_NOW) -> Any:
 
     def capped(request: Any) -> Any:
         if _ai_calls(request.state["messages"]) >= max_calls - 1:
-            return request.override(tools=[], system_message=_with_cap_message(request.system_message, message))
+            return request.override(
+                tools=[],
+                system_message=_with_cap_message(request.system_message, message),
+                messages=_as_transcript(request.messages),
+            )
         return request
+
+    def refused(request: Any) -> Any:
+        """A ToolMessage refusing a tool call made from a capped call, or None to run it."""
+        from langchain_core.messages import ToolMessage
+
+        if _ai_calls(request.state["messages"]) < max_calls:
+            return None
+        call = request.tool_call
+        return ToolMessage(content=TOOL_BUDGET_USED, tool_call_id=call["id"], name=call["name"])
 
     def stop(state: Any) -> dict[str, Any] | None:
         if state.get("structured_response") is None and _ai_calls(state["messages"]) >= hard_stop:
@@ -142,6 +191,12 @@ def _call_budget_middleware(max_calls: int, message: str = ANSWER_NOW) -> Any:
 
         async def awrap_model_call(self, request: Any, handler: Any) -> Any:
             return await handler(capped(request))
+
+        def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+            return refused(request) or handler(request)
+
+        async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
+            return refused(request) or await handler(request)
 
     return CallBudget()
 
@@ -239,6 +294,10 @@ def _build_deep_agent(
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
     backend = FilesystemBackend(root_dir=workdir, virtual_mode=True) if workdir is not None else None
+    middleware: list[Any] = [PhilModelRetryMiddleware()]
+    if spec.max_model_calls is not None:
+        # Caps the main agent's calls; a sub-agent it starts runs on its own (uncapped) loop.
+        middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
     return create_deep_agent(
         model=chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=tools,
@@ -246,7 +305,7 @@ def _build_deep_agent(
         backend=backend,
         permissions=filesystem_permissions(spec),
         response_format=_tool_strategy(spec),
-        middleware=[PhilModelRetryMiddleware()],
+        middleware=middleware,
         subagents=[_general_purpose_subagent()],
     )
 

@@ -124,12 +124,14 @@ def test_light_harness_needs_a_workdir():
 class Req:
     def __init__(self, n, system_message=SystemMessage(content="base")):
         self.state = {"messages": [AIMessage(content="")] * n}
+        self.messages = self.state["messages"]
         self.tools = ["ls", "read_file"]
         self.system_message = system_message
 
     def override(self, **kw):
         r = Req(len(self.state["messages"]), kw.get("system_message", self.system_message))
         r.tools = kw.get("tools", self.tools)
+        r.messages = kw.get("messages", self.messages)
         return r
 
 

@@ -4,6 +4,7 @@ The user asked a question about this repository, or asked why something is broke
 
 ## Tools
 - `ls`, `read_file`, `glob`, `grep` on the repository, and a shell that runs only read-only commands (`git log`, `git diff`, `grep`, `cat`, ...). Running tests or builds is not available.
+- Paths start at the repository root with a leading `/`, for example `/src/app/page.tsx`; there is no `/repo` or other prefix.
 - Read only what you need. Start from `repo_overview` to find likely files.
 
 ## Answer

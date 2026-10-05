@@ -4,6 +4,7 @@ The user wants a change whose approach is still open. Before anyone plans it, pr
 
 ## Tools
 - `ls`, `read_file`, `glob`, `grep` on the repository, and a shell that runs only read-only commands (`git log`, `grep`, `cat`, ...).
+- Paths start at the repository root with a leading `/`, for example `/src/app/page.tsx`; there is no `/repo` or other prefix.
 - Read only what you need to ground the approaches in this repo: start from `repo_overview`, then look at the files the goal touches.
 
 ## Approaches

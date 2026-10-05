@@ -78,6 +78,19 @@ class RunConfig(_Section):
         return value
 
 
+class ChatConfig(_Section):
+    # One goal's planning in the chat (intake, design, architect, critic): it stops at this limit,
+    # warning first at [run] warn_at. A run's own spend has [run] max_cost_usd.
+    max_cost_usd: float = 1.0
+
+    @field_validator("max_cost_usd")
+    @classmethod
+    def _validate_max_cost_usd(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("chat.max_cost_usd must be > 0")
+        return value
+
+
 class ShellConfig(_Section):
     allow: list[str] = [
         "pytest",
@@ -173,6 +186,7 @@ class PhilConfig(_Section):
     tiers: dict[str, str] = {}
     budget: dict[str, RoleBudget] = {}
     run: RunConfig = RunConfig()
+    chat: ChatConfig = ChatConfig()
     shell: ShellConfig = ShellConfig()
     project: ProjectConfig = ProjectConfig()
     git: GitConfig = GitConfig()

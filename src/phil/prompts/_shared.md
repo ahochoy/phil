@@ -14,6 +14,7 @@ Before returning, check your own work and fill `self_check`:
 
 ## Working efficiently
 - Explore with the file tools (ls, read_file, glob, grep), not the shell.
+- Paths start at the repository root with a leading `/`, for example `/src/app/page.tsx`; there is no `/repo` or other prefix.
 - Don't re-read what is already in your input, worklog, or diff.
 - Match the repository's existing conventions. Add no files, abstractions, or features the task doesn't require.
 - Stop as soon as the acceptance criteria are met.

@@ -383,6 +383,18 @@ once at `[run] warn_at` (default `0.8`, i.e. 80%) of whichever limit it's closer
 Because every model call now counts, including a deep agent's sub-agent and summarisation calls,
 the token limit defaults to `1500000`; cost (`max_cost_usd`, default `2.0`) is the primary guard.
 
+The chat's own planning has a budget too. `[chat] max_cost_usd` (default `1.0`) covers one goal's planning in the chat: intake, design proposals, architect and critic. A run's spend counts against the run's budget instead.
+- **Warning:** the chat warns once at `warn_at` of the limit.
+- **Revision:** once the limit is reached, a revision the critic asks for is skipped and the plan so far is shown.
+- **At the limit:** neither a new plan nor an `edit` starts. Approving the plan shown still works, and a raised limit lets planning continue.
+
+Each architect call is also capped at 20 model calls. Every call resends the conversation so far, so an unbounded exploration grows expensive fast.
+
+```toml
+[chat]
+max_cost_usd = 1.0
+```
+
 Model calls time out after `[run] model_timeout_s` (default `180`) and Phil's own retry policy
 runs instead of the provider SDK's (SDK retries are off for OpenRouter, OpenAI, Anthropic and
 Google). An agent's model calls — including a deep agent's sub-agent calls — are retried one
