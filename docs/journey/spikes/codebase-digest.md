@@ -1,6 +1,6 @@
 # Spike: a codebase digest to cut the architect's cost
 
-**Date:** 2026-10-05. **Outcome:** concluded; no repo map. Instead, cap the architect at 10 calls and tell it that budget (PR #16 and the `architect-budget` PR).
+**Date:** 2026-10-05. Told as a story in [part 4](../04-paying-for-what-you-use.md). **Outcome:** concluded; no repo map. Instead, cap the architect at 10 calls and tell it that budget (PR #16 and PR #17).
 
 ## The problem
 
@@ -84,7 +84,7 @@ All the plans were usable, and they put the section in the same place (after `Le
 ## Decision
 
 1. **No repo map for now.** Delete the throwaway branch. Revisit only if a model or harness actually stops exploring when it has enough. The prototype's approach is in this document if we do.
-2. **Cap the architect at 10 calls and state the budget in its prompt** (the `architect-budget` PR). Planning this goal went from $3.17 (and no plan) to about $0.41.
+2. **Cap the architect at 10 calls and state the budget in its prompt** (PR #17). Planning this goal went from $3.17 (and no plan) to about $0.41.
 3. **Rejected: codebase-digest.** It's a full dump that adds nothing.
 4. **Deferred: agentic-codebase.** It may be worth it later as a query tool for very large repos (for example, "what does this change affect?" for the reviewer), on a version newer than v0.1.4.
 5. **Next ways to cut cost, before the Jev revisit:**
