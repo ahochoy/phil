@@ -28,6 +28,9 @@ DESIGN_MAX_MODEL_CALLS = 8
 # The architect's, likewise: every call resends the history so far, so an uncapped exploration
 # grows its cost quadratically (one live plan took 46 calls and 1.56M input tokens).
 ARCHITECT_MAX_MODEL_CALLS = 10
+# A revision (critic or user feedback) starts from the previous plan, which already reflects the
+# repo, so it reads only what a specific issue needs.
+ARCHITECT_REVISE_MAX_MODEL_CALLS = 4
 
 SPECS: dict[str, AgentSpec] = {
     "intake": AgentSpec("intake", "orchestrator", IntakeInput, Goal, harness="lean", end_on_text=True),
