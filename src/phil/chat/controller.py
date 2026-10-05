@@ -27,6 +27,7 @@ from phil.chat.approval import (
     test_cmd_problem,
 )
 from phil.chat.btw import ask_btw
+from phil.chat.design import propose_approaches
 from phil.chat.events import ChatEvent
 from phil.chat.overview import repo_overview
 from phil.chat.planning import Planner, PlanDraft, intake, quick_plan
@@ -35,14 +36,14 @@ from phil.chat.snapshot import export_tree, export_worktree
 from phil.chat.state import ChatState, RunView
 from phil.chat.watcher import RunWatcher
 from phil.config import ConfigError, PhilConfig, load_config
-from phil.contracts import Goal, Plan, PlanCritique, Ref, RunStatus
+from phil.contracts import Approach, Approaches, Goal, Plan, PlanCritique, Question, Ref, RunStatus
 from phil.contracts.results import AttemptWorklog
 from phil.contracts.routing import Answer
 from phil.publish import publisher as publishing
 from phil.publish.service import PrChange, PublishRefused, change_line, publish_run, sweep_prs
 from phil.repo import RepoInfo, resolve_repo
 from phil.repo_detect import detect_test_cmd
-from phil.routing import Route, decide, parse_override, route_state
+from phil.routing import Route, decide, parse_override, route_state, skips_design
 from phil.routing.classify import classify
 from phil.git import GitError, commits_ahead
 from phil.run.launch import is_worker_alive, prepare_run, worker_starting
@@ -64,8 +65,11 @@ logger = logging.getLogger(__name__)  # the chat sends `phil` loggers to its phi
 
 WAKE = object()  # ChatIO.ask returns this when a background event interrupted the prompt
 MAX_QUESTION_ROUNDS = 2
+SOMETHING_ELSE = "Something else (type it)"
+OTHER_PROMPT = "Your answer › "  # after picking "Something else"
 HELP = (
-    "Type a goal or a question. Prefix with /ask, /quick or /full to choose the path. "
+    "Type a goal or a question. Prefix with /ask, /quick or /full to choose the path "
+    "(/full! plans fully without design proposals). "
     "Commands: /runs, /btw <question> (ask while work continues), "
     "/answer (a paused run's question), /resume (a failed or stopped run), /show (the chat's run: usage "
     "and numbered details), /more <n> (print detail n), /park <note> (set an idea aside), /help, "
@@ -79,16 +83,20 @@ PROMPTS = {
     "hint": "Hint for the retry (optional) › ",
     "confirm_pr": "Open a PR? [y / n] › ",
     "confirm_fix": "Fix it? [Enter = quick fix / full = plan it / n] › ",
+    "choose_approach": "Pick an approach [Enter = 1 / number / describe your own] › ",
 }
 PR_ANYWAY_PROMPT = "Open a PR anyway? [y / n] › "  # confirm_pr, for a run finished with blocking issues
 QUICK_FALLBACK = "Couldn't plan this as a quick change; planning it fully."
 MOVING_TO_FULL = "Moving this to a full plan, with what the quick attempt learned."
+DESCRIBE_OWN = "Describe your own"
+DESCRIBE_PROMPT = "Describe your approach › "
+DESIGN_FALLBACK = "Couldn't propose designs; planning directly."
 # The transcript's `stage` label for a non-command input typed at each chat stage (4a's labels).
 TRANSCRIPT_STAGES = {
     "idle": "goal", "intake": "goal", "planning": "goal", "running": "goal", "questions": "answers",
-    "routing": "goal", "answering": "goal",
+    "routing": "goal", "answering": "goal", "designing": "goal", "choose_approach": "approach",
 }
-GOAL_JOB_STAGES = ("routing", "intake", "planning", "answering")
+GOAL_JOB_STAGES = ("routing", "intake", "planning", "answering", "designing")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
 RUN_EVENTS = (
     "run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning",
@@ -99,7 +107,7 @@ NOTICE_REFS = 3  # details a completion notice lists
 PR_CHECK_INTERVAL_S = 300  # how often an open chat checks its runs' PRs for merges
 PR_JOB_ERROR_PREFIXES = ("PublishRefused: ", "PublishError: ")
 NOT_IN_SNAPSHOT = "That detail isn't a file in the repo snapshot; not opening it."
-OVERRIDE_USAGE = "Usage: /ask|/quick|/full <message>"
+OVERRIDE_USAGE = "Usage: /ask|/quick|/full|/full! <message>"
 RECENT_TURNS = 8  # chat turns kept for the router and the answerer
 CONTEXT_TURNS = 4  # of those, the turns an answer sees
 TURN_CHARS = 400
@@ -182,6 +190,9 @@ class ChatController:
         self._goal_text = ""
         self._prior_attempt: list[AttemptWorklog] = []  # a failed quick attempt's worklogs, once moved to full
         self._rounds = 0
+        self._pending: list[Question] = []  # this round's questions, asked one at a time
+        self._replies: list[str] = []  # "question: answer" for the questions answered so far
+        self._typing_other = False  # "Something else" was picked: the next input is the answer
         self._draft: PlanDraft | None = None
         self._shown_test_cmd: str | None = None  # the effective test command in the last plan render
         self._shown_setup_cmd: str | None = None  # the setup command in the last plan render, pinned into its run
@@ -221,6 +232,13 @@ class ChatController:
         self._pr_stop = threading.Event()
         self._pr_busy = threading.Event()
         self._pr_thread: threading.Thread | None = None
+        self._design_calls = 0
+        self._skip_design = False  # the goal was typed with /full!
+        self._replacement_skip = False  # a replacement typed with /full!
+        self._approach_order: list[Approach] = []  # the designer's approaches, recommended first
+        self._approach: Approach | None = None  # the user's pick, planned by the architect
+        self._approach_note = ""  # or their own description
+        self._describing = False  # "Describe your own" was picked: the next input is the description
 
     # --- events and jobs -------------------------------------------------------------------------
 
@@ -356,6 +374,10 @@ class ChatController:
             return f"{self._pause.get('summary', '')} — {' / '.join(self._options())} › "
         if self.stage == "confirm_pr" and self._pr_force:
             return PR_ANYWAY_PROMPT
+        if self.stage == "questions" and self._typing_other:
+            return OTHER_PROMPT
+        if self.stage == "choose_approach" and self._describing:
+            return DESCRIBE_PROMPT
         return PROMPTS.get(self.stage, "you › ")
 
     def _save(self) -> None:
@@ -374,6 +396,8 @@ class ChatController:
                 {
                     "stage": stage,
                     "goal": self._goal.model_dump(mode="json") if self._goal else None,
+                    "approach": self._approach.model_dump(mode="json") if self._approach else None,
+                    "approach_note": self._approach_note,
                     "plan": draft.plan.model_dump(mode="json") if draft else None,
                     "critique": draft.critique.model_dump(mode="json") if draft else None,
                     "version": draft.version if draft else None,
@@ -389,6 +413,7 @@ class ChatController:
                         "btw": self._btw_calls,
                         "route": self._route_calls,
                         "answer": self._answer_calls,
+                        "design": self._design_calls,
                     },
                 }
             )
@@ -465,10 +490,13 @@ class ChatController:
             self._begin_goal(text)
         elif stage in GOAL_JOB_STAGES:
             self._replacement, self._replacement_forced = text, None
+            self._replacement_skip = False
             self._parent_stage = stage
             self._set_stage("confirm_replace")
         elif stage == "questions":
             self._answers(text)
+        elif stage == "choose_approach":
+            self._choose_approach(text)
         elif stage == "approval":
             self._approval(text)
         elif stage == "edit":
@@ -523,7 +551,7 @@ class ChatController:
             self._set_stage("approval")
             self.console.print("[phil.muted]Cancelled the revision.[/]")
             self._show_plan(self._draft)
-        elif self.stage in (*GOAL_JOB_STAGES, "questions"):
+        elif self.stage in (*GOAL_JOB_STAGES, "questions", "choose_approach"):
             self._next_generation()  # an in-flight result is dropped when it lands
             self.state.set_cancelling(True)
             self._reset_goal()
@@ -532,7 +560,7 @@ class ChatController:
         elif self.stage == "edit":
             self._set_stage("approval")
         elif self.stage == "confirm_replace":
-            self._replacement, self._replacement_forced = "", None
+            self._replacement, self._replacement_forced, self._replacement_skip = "", None, False
             self.console.print("[phil.muted]Keeping the current goal.[/]")
             self._set_stage(self._parent_stage)
         elif self.stage in ("paused", "hint"):
@@ -552,25 +580,30 @@ class ChatController:
         self._goal, self._goal_text, self._rounds, self._draft, self._revising = None, "", 0, None, False
         self._route, self._clarifications, self._prior_turns = None, [], []
         self._prior_attempt = []
+        self._pending, self._replies, self._typing_other = [], [], False
+        self._skip_design, self._approach_order, self._approach, self._approach_note = False, [], None, ""
+        self._describing = False
 
     def _forced_input(self, raw: str, forced: str, rest: str) -> None:
-        """A message prefixed with /ask, /quick or /full: a goal whose depth skips the router."""
+        """A message prefixed with /ask, /quick, /full or /full!: a goal whose depth skips the router."""
         if not rest:
             self.session.user(raw, stage="command")
             self.console.print(OVERRIDE_USAGE)
             return
         self.session.user(raw, stage="goal")
+        skip = skips_design(raw)
         stage = self.stage
         if stage in ("idle", "confirm_fix"):
             self._fix_offer = None
-            self._begin_goal(rest, forced=forced)
+            self._begin_goal(rest, forced=forced, skip_design=skip)
         elif stage in GOAL_JOB_STAGES:
             self._replacement, self._replacement_forced = rest, forced
+            self._replacement_skip = skip
             self._parent_stage = stage
             self._set_stage("confirm_replace")
         elif stage == "confirm_pr":
             self._decline_pr()
-            self._begin_goal(rest, forced=forced)
+            self._begin_goal(rest, forced=forced, skip_design=skip)
         elif stage in RUN_STAGES:
             self.console.print(
                 f"This chat is following run [phil.id]{escape(self._run_id or '')}[/]. "
@@ -579,7 +612,9 @@ class ChatController:
         else:
             self.console.print("Finish the current goal first, or press Ctrl-C to cancel it.")
 
-    def _begin_goal(self, text: str, forced: str | None = None, source: str = "forced") -> None:
+    def _begin_goal(
+        self, text: str, forced: str | None = None, source: str = "forced", skip_design: bool = False
+    ) -> None:
         """Start a goal: routed, or at the `forced` depth (`source` says who forced it: the user's
         prefix, "forced", or an accepted fix offer, "fix_offer")."""
         if self._run_id is not None:
@@ -593,6 +628,7 @@ class ChatController:
             self._forget_run()
         self._next_generation()
         self._reset_goal()
+        self._skip_design = skip_design
         self._goal_text = text
         chat = self._prior_turns = list(self._recent)  # the turns before this message
         self._recent.append(f"you: {text[:TURN_CHARS]}")
@@ -654,7 +690,7 @@ class ChatController:
         if route.source == "fix_offer":
             return "Fix · quick path" if route.depth == "quick" else "Fix · full plan"
         if route.source == "forced":
-            return f"Forced: {route.depth} path"
+            return f"Forced: {route.depth} path" + (", no design proposals" if self._skip_design else "")
         if route.reason == "needs_detail":
             return "Unclear request · asking first"
         if route.depth is None:
@@ -743,9 +779,9 @@ class ChatController:
         self._goal = goal
         if goal.open_questions and self._rounds < MAX_QUESTION_ROUNDS:
             self._rounds += 1
-            for n, question in enumerate(goal.open_questions, 1):
-                self.console.print(f"[phil.agent]{n}. {escape(_clip(question))}[/]")
+            self._pending, self._replies, self._typing_other = list(goal.open_questions), [], False
             self._set_stage("questions")
+            self._ask_next()
             return
         intake_decides = self._route is not None and self._route.depth is None
         if intake_decides and goal.depth == "answer" and not goal.open_questions:
@@ -759,12 +795,19 @@ class ChatController:
 
     def _build(self, goal: Goal) -> None:
         """Take the goal to a run: the quick path when the route (or, if it deferred, intake) chose
-        quick, else full planning."""
+        quick; else the design step when the approach is open; else full planning."""
         route = self._route
         if route is not None and (route.depth == "quick" or (route.depth is None and goal.depth == "quick")):
             self._quick(goal)
+        elif self._wants_design(goal):
+            self._design_job(goal)
         else:
             self._plan(goal)
+
+    def _wants_design(self, goal: Goal) -> bool:
+        """The designer runs when the approach is open, nothing is left to ask, and the message
+        didn't start with /full! (spec §3.4)."""
+        return goal.approach_open and not goal.open_questions and not self._skip_design
 
     def _quick(self, goal: Goal) -> None:
         """Start the goal's one-task run straight away, or fall back to full planning (spec §4.1)."""
@@ -804,34 +847,151 @@ class ChatController:
         problems = launch_problems(plan, self.config, root, check_root=root or self.info.root)
         return (None, None, problems) if problems else (plan, setup_cmd, [])
 
+    def _design_job(self, goal: Goal) -> None:
+        render_goal(self.console, goal)
+        self.console.print("[phil.muted]Proposing approaches…[/]")
+        self._set_stage("designing")
+        self._design_calls += 1
+        call, generation, overview = self._design_calls, self._generation, self.overview
+
+        def fn(ctx: AgentContext) -> dict:
+            self._step("snapshot", generation)
+            tree = self._snapshot(generation)
+            self._step("designing", generation)
+            return {"approaches": propose_approaches(ctx, goal, tree=tree, overview=overview, call=call)}
+
+        self._job("design_ready", fn, failed="design_failed")
+
+    def _on_design_ready(self, data: dict) -> None:
+        approaches: Approaches = data["approaches"]
+        self.session.contract("approaches", approaches)
+        rec = approaches.recommended
+        self._approach_order = [approaches.options[rec], *(a for i, a in enumerate(approaches.options) if i != rec)]
+        self.console.print("[phil.brand]Approaches:[/]")
+        for n, approach in enumerate(self._approach_order, 1):
+            mark = " (recommended)" if n == 1 else ""
+            self.console.print(f"[phil.agent]{n}. {escape(_clip(approach.name))}{mark}[/]")
+            self.console.print(f"   {escape(approach.summary)}")
+            for tradeoff in approach.tradeoffs:
+                self.console.print(f"   [phil.muted]– {escape(_clip(tradeoff))}[/]")
+        if approaches.reason:
+            self.console.print(f"[phil.muted]{escape(_clip(approaches.reason))}[/]")
+        self.console.print(f"{len(self._approach_order) + 1}. {DESCRIBE_OWN}")
+        self._set_stage("choose_approach")
+
+    def _on_design_failed(self, data: dict) -> None:
+        self._safe_note("design_failed", error=data["error"])
+        self.console.print(f"[phil.muted]{DESIGN_FALLBACK}[/]")
+        self._plan(self._goal, show_goal=False)
+
+    def _choose_approach(self, text: str) -> None:
+        """Enter, y/yes/ok/go, or a number picks a proposed approach; the last number asks for a
+        description; any other text is the user's own approach. Then the architect plans it."""
+        order = self._approach_order
+        if self._describing:
+            if text:
+                self._describing = False
+                self._chose(None, text)
+            return
+        token = text.rstrip(".)")
+        if not text or text.lower() in ("y", "yes", "ok", "go"):
+            self._chose(order[0], "")
+        elif token.lstrip("-").isdigit():
+            choice = int(token)
+            if 1 <= choice <= len(order):
+                self._chose(order[choice - 1], "")
+            elif choice == len(order) + 1:
+                self._describing = True
+            else:
+                self.console.print(f"Pick 1–{len(order) + 1}, or describe your own approach.")
+        else:
+            self._chose(None, text)
+
+    def _chose(self, approach: Approach | None, note: str) -> None:
+        self._approach, self._approach_note = approach, note
+        self._safe_note("approach_chosen", name=approach.name if approach else None, note=note)
+        self._recent.append(f"you: {(approach.name if approach else note)[:TURN_CHARS]}")
+        self._plan(self._goal, show_goal=False)
+
+    def _ask_next(self) -> None:
+        """Print the next question: its number, text, why, and numbered options plus "Something else"."""
+        question = self._pending[len(self._replies)]
+        self.console.print(f"[phil.agent]{len(self._replies) + 1}. {escape(_clip(question.text))}[/]")
+        if question.why:
+            self.console.print(f"   [phil.muted]{escape(_clip(question.why))}[/]")
+        for n, option in enumerate(question.options, 1):
+            self.console.print(f"     {n}. {escape(_clip(option))}")
+        if question.options:
+            self.console.print(f"     {len(question.options) + 1}. {SOMETHING_ELSE}")
+
     def _answers(self, text: str) -> None:
+        """One reply to the current question. No model call until the last one is answered; then one
+        intake call gets every answer. `go` plans with what's known (Ruling R2)."""
         if not text:
             return
-        if text.lower() == "go":
-            self._build(self._goal)
+        if text.lower() == "go" and not self._typing_other:
+            if self._replies:
+                self._rounds = MAX_QUESTION_ROUNDS  # send what was answered; ask nothing more
+                self._finish_questions()
+            else:
+                self._build(self._goal)
             return
-        self._clarifications.append(text)
-        self._recent.append(f"you: {text[:TURN_CHARS]}")
-        self._set_stage("intake")
-        self._intake_job(self._goal_text, previous=self._goal, answers=[text])
+        question = self._pending[len(self._replies)]
+        answer = self._pick(question, text)
+        if answer is None:
+            return
+        self._typing_other = False
+        self._replies.append(f"{question.text}: {answer}")
+        self._recent.append(f"you: {answer[:TURN_CHARS]}")
+        if len(self._replies) < len(self._pending):
+            self._ask_next()
+        else:
+            self._finish_questions()
 
-    def _plan(self, goal: Goal, prior_attempt: Sequence[AttemptWorklog] = ()) -> None:
+    def _pick(self, question: Question, text: str) -> str | None:
+        """The answer `text` gives `question`, or None while it still needs one (the "Something else"
+        number was picked, or a number with no option). Free-text questions take any reply."""
+        token = text.rstrip(".)")
+        if self._typing_other or not question.options or not token.isdigit():
+            return text
+        choice = int(token)
+        if 1 <= choice <= len(question.options):
+            return question.options[choice - 1]
+        if choice == len(question.options) + 1:
+            self._typing_other = True
+            return None
+        self.console.print(f"Pick 1–{len(question.options) + 1}, or type your answer.")
+        return None
+
+    def _finish_questions(self) -> None:
+        replies, self._pending, self._replies = self._replies, [], []
+        self._clarifications.extend(replies)
+        self._set_stage("intake")
+        self._intake_job(self._goal_text, previous=self._goal, answers=replies)
+
+    def _plan(self, goal: Goal, prior_attempt: Sequence[AttemptWorklog] = (), show_goal: bool = True) -> None:
         # The architect plans from scratch: a stray intake task (a fallen-back quick task, or one written
         # on a full route) never reaches it.
         goal = goal.model_copy(update={"task": None})
         if goal.open_questions:
             self.console.print(f"[phil.muted]Planning with open questions: {len(goal.open_questions)}[/]")
-        render_goal(self.console, goal)
+        if show_goal:
+            render_goal(self.console, goal)
         self.console.print("[phil.muted]Planning…[/]")
         self._revising = False
         self._set_stage("planning")
         generation = self._generation
+        approach, note = self._approach, self._approach_note
 
         def fn(ctx: AgentContext) -> dict:
             self._step("snapshot", generation)
             tree = self._snapshot(generation)
             on_step = lambda step: self._step(step, generation)  # noqa: E731
-            return {"draft": self.planner.draft(goal, tree, on_step=on_step, ctx=ctx, prior_attempt=prior_attempt)}
+            draft = self.planner.draft(
+                goal, tree, on_step=on_step, ctx=ctx, prior_attempt=prior_attempt, approach=approach,
+                approach_note=note,
+            )
+            return {"draft": draft}
 
         self._job("plan_ready", fn)
 
@@ -854,11 +1014,13 @@ class ChatController:
 
     def _confirm_replace(self, text: str) -> None:
         if text.lower() in ("y", "yes"):
-            self._begin_goal(self._replacement, forced=self._replacement_forced)
+            self._begin_goal(
+                self._replacement, forced=self._replacement_forced, skip_design=self._replacement_skip
+            )
         else:
             self.console.print("[phil.muted]Keeping the current goal.[/]")
             self._set_stage(self._parent_stage)
-        self._replacement, self._replacement_forced = "", None
+        self._replacement, self._replacement_forced, self._replacement_skip = "", None, False
 
     # --- approval and start ----------------------------------------------------------------------
 
@@ -951,6 +1113,7 @@ class ChatController:
             self._set_stage("approval")
             return
         goal, draft, prior_attempt = self._goal, self._draft, self._prior_attempt
+        approach, note = self._approach, self._approach_note
         self.console.print("[phil.muted]Revising…[/]")
         self._revising = True
         self._set_stage("planning")
@@ -961,7 +1124,7 @@ class ChatController:
             tree = self._snapshot(generation)
             revised = self.planner.revise(
                 goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation), ctx=ctx,
-                prior_attempt=prior_attempt,
+                prior_attempt=prior_attempt, approach=approach, approach_note=note,
             )
             return {"draft": revised}
 
@@ -1591,6 +1754,12 @@ class ChatController:
         except Exception:
             bad = True
         try:
+            approach = Approach.model_validate(saved["approach"]) if saved.get("approach") else None
+        except Exception:
+            approach = None  # a bad approach falls back alone; it doesn't mark the whole state bad
+        approach_note = saved.get("approach_note")
+        approach_note = approach_note if isinstance(approach_note, str) else ""
+        try:
             if saved.get("plan") and saved.get("critique"):
                 draft = PlanDraft(
                     plan=Plan.model_validate(saved["plan"]),
@@ -1607,7 +1776,7 @@ class ChatController:
             bad, counters = True, {}
         values = {
             key: _count(counters.get(key, 0))
-            for key in ("intake", "btw", "route", "answer", "planner_calls", "planner_version")
+            for key in ("intake", "btw", "route", "answer", "design", "planner_calls", "planner_version")
         }
         bad = bad or None in values.values()
         values = {key: value or 0 for key, value in values.items()}
@@ -1616,6 +1785,7 @@ class ChatController:
         self._btw_calls = max(self._btw_calls, values["btw"])
         self._route_calls = max(self._route_calls, values["route"])
         self._answer_calls = max(self._answer_calls, values["answer"])
+        self._design_calls = max(self._design_calls, values["design"])
         version = max(values["planner_version"], draft.version if draft and not bad else 0)
         self.planner.restore(values["planner_calls"], version)
         self._safe_note("reopened")
@@ -1628,6 +1798,7 @@ class ChatController:
             self._set_stage("idle")
             return
         self._goal, self._draft = goal, draft
+        self._approach, self._approach_note = approach, approach_note
         self._goal_text = goal.objective if goal else ""
         self._run_id, self._base_sha = run_id, base_sha
         self._done_seen = bool(saved.get("done_seen", False))

@@ -30,10 +30,11 @@ def test_goal_task_defaults_to_none():
     assert Goal(objective="Add a map").task is None
 
 
-def test_chat_and_run_roles_cover_all_roles_except_the_classifier_and_answerer():
-    # Neither is a checked chat or run role: routing falls back to the low model, then to intake,
-    # and the answerer falls back to the orchestrator's model.
-    assert set(CHAT_ROLES) | set(RUN_ROLES) == set(ROLES) - {"classifier", "answerer"}
+def test_chat_and_run_roles_cover_all_roles_except_the_classifier_answerer_and_designer():
+    # None of the three is a checked chat or run role: routing falls back to the low model, then to
+    # intake, the answerer falls back to the orchestrator's model, and the designer falls back to
+    # the architect's model.
+    assert set(CHAT_ROLES) | set(RUN_ROLES) == set(ROLES) - {"classifier", "answerer", "designer"}
 
 
 def test_goal_depth_is_optional_and_typed():
@@ -54,6 +55,18 @@ def test_intake_prompt_documents_task():
     spec = get_spec("intake")
     prompt = load_prompt(spec)
     assert "`task`" in prompt
+
+
+def test_intake_prompt_settles_approach_open_from_answers():
+    spec = get_spec("intake")
+    prompt = load_prompt(spec)
+    assert "set `approach_open` to false once the answers settle how to build it" in prompt
+
+
+def test_design_prompt_does_not_reopen_choices_the_user_already_made():
+    spec = get_spec("design")
+    prompt = load_prompt(spec)
+    assert "don't re-propose alternatives to them" in prompt
 
 
 def test_architect_prompt_documents_prior_attempt():
@@ -81,3 +94,11 @@ def test_intake_retries_once_on_a_stub_goal_and_returns_the_real_one(chat_ctx):
     result = intake(ctx, "add subtract", overview="")
     assert result == real
     assert factory.remaining() == {"intake": 0}
+
+
+def test_intake_prompt_asks_for_missing_content_with_options():
+    prompt = load_prompt(get_spec("intake"))
+    assert "## When to ask" in prompt
+    for word in ("link", "copy", "placement", "visual style", "quick"):
+        assert word in prompt
+    assert "`options`" in prompt and "`approach_open`" in prompt

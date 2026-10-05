@@ -145,7 +145,7 @@ def test_forced_ask_answers_directly(calc_repo):
 def test_bare_override_prints_usage(calc_repo):
     seen = {}
     text, spawned, runs, factory, _ = run_chat(calc_repo, ["/ask", peek(seen)], FULL_SCRIPT)
-    assert "Usage: /ask|/quick|/full <message>" in text
+    assert "Usage: /ask|/quick|/full|/full! <message>" in text
     assert seen["stage"] == "idle"
     assert factory.calls == []
 
@@ -373,7 +373,7 @@ def test_clarifications_reach_the_answer_when_intake_chooses_one(calc_repo):
     )
     assert "Unclear request · asking first" in text and "The session cookie expires." in text
     [answer] = payloads(factory, "answer")
-    assert "why does the page fail?" in answer and "Clarification: the login page" in answer
+    assert "why does the page fail?" in answer and "Clarification: Which page?: the login page" in answer
     assert seen["recent"] == [
         "you: why does the page fail?", "you: the login page", "phil: The session cookie expires.",
     ]

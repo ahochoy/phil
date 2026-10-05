@@ -8,7 +8,9 @@ from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError, field_
 from phil.store.paths import phil_home
 from phil.tomlw import dump_toml
 
-ROLES = ("orchestrator", "architect", "critic", "implementer", "tester", "reviewer", "classifier", "answerer")
+ROLES = (
+    "orchestrator", "architect", "critic", "implementer", "tester", "reviewer", "classifier", "answerer", "designer"
+)
 TIERS = ("high", "low", "classifier")
 # Tier each role resolves through when it has no model of its own (and [tiers] doesn't remap it).
 DEFAULT_TIERS: dict[str, str] = {
@@ -20,14 +22,16 @@ DEFAULT_TIERS: dict[str, str] = {
     "tester": "low",
     "classifier": "classifier",
     "answerer": "low",
+    "designer": "high",
 }
 # Roles the chat calls; `phil` checks these have models before the conversation starts. The
 # classifier isn't one: routing falls back to the low model, then to intake. Nor is the answerer:
 # without a model of its own (a legacy per-role config has no low tier) it uses the orchestrator's.
+# Nor is the designer: without a model of its own it uses the architect's.
 CHAT_ROLES = ("orchestrator", "architect", "critic")
 # Roles the run graph calls; `phil run` checks these have models before starting.
 RUN_ROLES = ("implementer", "tester", "reviewer")
-DEFAULT_BUDGETS = {"architect": 24_000, "tester": 48_000, "reviewer": 48_000}
+DEFAULT_BUDGETS = {"architect": 24_000, "tester": 48_000, "reviewer": 48_000, "designer": 24_000}
 
 
 class ConfigError(Exception):

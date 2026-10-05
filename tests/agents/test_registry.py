@@ -10,12 +10,12 @@ def test_registry_covers_chat_and_run_roles():
     # Check registered agent names
     assert set(SPECS) == {
         "intake", "architect", "critic", "implementer", "tester", "reviewer", "btw", "route", "answer",
-        "quick_implementer",
+        "quick_implementer", "design",
     }
-    # Check that agents reference the correct roles. "classifier" and "answerer" are not checked chat
-    # or run roles, but "route" (the LLM routing backend) and "answer" register them here.
+    # Check that agents reference the correct roles. "classifier", "answerer" and "designer" are not
+    # checked chat or run roles, but "route", "answer" and "design" register them here.
     agent_roles = {spec.role for spec in SPECS.values()}
-    assert agent_roles == set(CHAT_ROLES) | set(RUN_ROLES) | {"classifier", "answerer"}
+    assert agent_roles == set(CHAT_ROLES) | set(RUN_ROLES) | {"classifier", "answerer", "designer"}
 
 
 @pytest.mark.parametrize(
@@ -36,13 +36,13 @@ def test_only_implementers_and_tester_write_and_run_commands():
     writers = {name for name, spec in SPECS.items() if spec.writes_files}
     shell_users = {name for name, spec in SPECS.items() if "shell" in spec.tools}
     assert writers == {"implementer", "tester", "quick_implementer"}
-    # The answerer has a shell too, but a read-only one: no project allowlist or approvals.
-    assert shell_users == writers | {"answer"}
-    assert {name for name, spec in SPECS.items() if spec.read_only_shell} == {"answer"}
+    # The answerer and designer have a shell too, but a read-only one: no project allowlist or approvals.
+    assert shell_users == writers | {"answer", "design"}
+    assert {name for name, spec in SPECS.items() if spec.read_only_shell} == {"answer", "design"}
 
 
-def test_only_the_answerer_and_quick_implementer_use_the_light_harness():
-    assert {name for name, spec in SPECS.items() if spec.harness == "light"} == {"answer", "quick_implementer"}
+def test_only_the_answerer_designer_and_quick_implementer_use_the_light_harness():
+    assert {name for name, spec in SPECS.items() if spec.harness == "light"} == {"answer", "quick_implementer", "design"}
     assert all(spec.max_model_calls is None for spec in SPECS.values() if spec.harness != "light")
 
 

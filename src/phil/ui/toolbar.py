@@ -11,6 +11,7 @@ STEP_LABELS = {
     "architect": "Architect drafting",
     "revise": "Architect revising",
     "critic": "Critic reviewing",
+    "designing": "Proposing approaches",
 }  # /btw has no step: in-flight /btw questions show as `/btw ×N`
 
 
