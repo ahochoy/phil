@@ -163,11 +163,13 @@ class RoutingConfig(_Section):
     confidence_threshold: float = 0.5  # below it, intake decides the depth (spec §3.5)
     detail_threshold: float = 0.6  # at or above it, intake asks the user first
     jev_timeout_s: float = 5.0
+    # Jev scores "is this vague?" on its own scale (journal part 3): it gets its own threshold.
+    jev_detail_threshold: float | None = None
 
-    @field_validator("confidence_threshold", "detail_threshold")
+    @field_validator("confidence_threshold", "detail_threshold", "jev_detail_threshold")
     @classmethod
-    def _validate_probability(cls, value: float) -> float:
-        if not 0 <= value <= 1:
+    def _validate_probability(cls, value: float | None) -> float | None:
+        if value is not None and not 0 <= value <= 1:
             raise ValueError("routing thresholds must be between 0 and 1")
         return value
 
@@ -177,6 +179,13 @@ class RoutingConfig(_Section):
         if value <= 0:
             raise ValueError("routing.jev_timeout_s must be > 0")
         return value
+
+    def detail_threshold_for(self, source: str | None) -> float:
+        """The needs-detail threshold for a judgement from `source` ("jev", "llm", or None when
+        the router was unavailable)."""
+        if source == "jev" and self.jev_detail_threshold is not None:
+            return self.jev_detail_threshold
+        return self.detail_threshold
 
 
 class PhilConfig(_Section):

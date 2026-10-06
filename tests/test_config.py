@@ -459,3 +459,21 @@ def test_typesafe_classifier_is_allowed():
 def test_typesafe_on_any_other_role_is_a_config_error(models):
     with pytest.raises(ValueError, match="typesafe.*only.*classifier"):
         PhilConfig(models=models)
+
+
+def test_jev_gets_its_own_detail_threshold_when_set():
+    routing = PhilConfig.model_validate({"routing": {"jev_detail_threshold": 0.5}}).routing
+    assert routing.detail_threshold_for("jev") == 0.5
+    assert routing.detail_threshold_for("llm") == 0.6
+    assert routing.detail_threshold_for(None) == 0.6  # router unavailable: the default
+
+
+def test_without_a_jev_threshold_every_source_uses_the_default():
+    routing = PhilConfig().routing
+    assert routing.jev_detail_threshold is None
+    assert routing.detail_threshold_for("jev") == routing.detail_threshold == 0.6
+
+
+def test_the_jev_detail_threshold_is_a_probability():
+    with pytest.raises(ValueError):
+        PhilConfig.model_validate({"routing": {"jev_detail_threshold": 1.2}})
