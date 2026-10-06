@@ -140,3 +140,38 @@ def test_a_non_string_choice_is_malformed():
         judge_jev(SPEC, "jev-latest", STATE, timeout_s=5, environ=ENV,
                   transport=transport(lambda r: httpx.Response(200, json=body)))
     assert info.value.reason == "malformed"
+
+
+OPENROUTER_FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "jev_openrouter_ok.json").read_text())
+OPENROUTER_SPEC = BUILTIN_PROVIDERS["openrouter_decisions"]
+OPENROUTER_ENV = {"OPENROUTER_API_KEY": "sk-or-TESTSECRET0123456789"}
+
+
+def test_openrouter_decisions_posts_to_openrouters_systemone_endpoint_and_reads_its_cost():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers["Authorization"]
+        return httpx.Response(200, json=OPENROUTER_FIXTURE)
+
+    judgement = judge_jev(
+        OPENROUTER_SPEC, "typesafe/jev-1.13", STATE, timeout_s=5, environ=OPENROUTER_ENV, transport=transport(handler)
+    )
+    assert seen["url"] == "https://openrouter.ai/api/v1/systemone"
+    assert seen["auth"] == "Bearer sk-or-TESTSECRET0123456789"
+    assert judgement.task_class == "simple_change" and judgement.source == "jev"
+    assert judgement.usage.cost_usd == pytest.approx(0.0000173)
+
+
+def test_a_typesafe_response_without_a_cost_leaves_it_unknown():
+    judgement = judge_jev(SPEC, "jev-latest", STATE, timeout_s=5, environ=ENV,
+                          transport=transport(lambda r: httpx.Response(200, json=FIXTURE)))
+    assert judgement.usage.cost_usd is None
+
+
+def test_a_malformed_reported_cost_is_malformed():
+    body = {**OPENROUTER_FIXTURE, "usage": {"input_tokens": 1, "output_tokens": 1, "cost": "lots"}}
+    with pytest.raises(JevError, match="malformed"):
+        judge_jev(OPENROUTER_SPEC, "typesafe/jev-1.13", STATE, timeout_s=5, environ=OPENROUTER_ENV,
+                  transport=transport(lambda r: httpx.Response(200, json=body)))

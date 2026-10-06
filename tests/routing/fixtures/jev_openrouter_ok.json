@@ -1,0 +1,17 @@
+{
+  "id": "gen-dec-1789738314-X5e5eKGQdvR9rblyX250",
+  "model": "typesafe/jev-1.13-20260917",
+  "provider": "TypeSafe",
+  "answers": {
+    "task_class": {
+      "type": "choice",
+      "choice": "simple_change",
+      "probabilities": {"question": 0.02, "diagnosis": 0.01, "small_operation": 0.05, "simple_change": 0.86,
+                        "focused_fix": 0.03, "feature": 0.01, "refactor": 0.005, "design": 0.005,
+                        "broad_project": 0.005, "other": 0.005},
+      "confidence": 0.81
+    },
+    "needs_detail": {"type": "noul", "noul": 0.07}
+  },
+  "usage": {"input_tokens": 412, "output_tokens": 3, "cost": 0.0000173}
+}

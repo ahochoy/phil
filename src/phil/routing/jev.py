@@ -72,12 +72,12 @@ def parse_response(body: object) -> tuple[str, dict[str, float], float, float, U
     usage = None
     raw_usage = body.get("usage") if isinstance(body, dict) else None
     if isinstance(raw_usage, dict):
-        try:
-            input_tokens = _token_count(raw_usage.get("input_tokens", 0))
-            output_tokens = _token_count(raw_usage.get("output_tokens", 0))
-            usage = Usage(input_tokens, output_tokens)
-        except JevError:
-            raise
+        input_tokens = _token_count(raw_usage.get("input_tokens", 0))
+        output_tokens = _token_count(raw_usage.get("output_tokens", 0))
+        cost = raw_usage.get("cost")
+        if cost is not None and (isinstance(cost, bool) or not isinstance(cost, int | float) or cost < 0):
+            raise JevError("malformed")
+        usage = Usage(input_tokens, output_tokens, float(cost) if cost is not None else None)
     return choice, probs, _probability(confidence), _probability(noul), usage
 
 

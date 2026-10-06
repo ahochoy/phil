@@ -125,7 +125,11 @@ def _run_jev(cases: list[dict], config: PhilConfig) -> list[dict]:
             )
             if judgement.usage is not None:
                 input_tokens, output_tokens = judgement.usage.input_tokens, judgement.usage.output_tokens
-                cost_usd = estimate_cost(spec, input_tokens, output_tokens)
+                cost_usd = (
+                    judgement.usage.cost_usd
+                    if judgement.usage.cost_usd is not None
+                    else estimate_cost(spec, input_tokens, output_tokens)
+                )
             else:  # the response carried no usage
                 input_tokens, output_tokens, cost_usd = 0, 0, None
             records.append(

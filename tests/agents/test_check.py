@@ -191,3 +191,28 @@ def test_check_reports_a_failing_typesafe_classifier_plainly(tmp_path, monkeypat
                            jev_transport=httpx.MockTransport(lambda r: httpx.Response(401)))
     [result] = [r for r in results if r.model == "typesafe:jev-latest"]
     assert not result.ok and result.detail == "TypeSafe refused the request (http 401): check TYPESAFE_API_KEY."
+
+
+def test_check_pings_an_openrouter_decisions_classifier_at_openrouter(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    seen = {}
+    ok = {"answers": {"ping": {"type": "choice", "choice": "yes", "probabilities": {"yes": 1.0}, "confidence": 1.0}},
+          "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=ok)
+
+    config = PhilConfig(models={"classifier": "openrouter_decisions:typesafe/jev-1.13"})
+    results = check_models(config, repo_root=tmp_path, jev_transport=httpx.MockTransport(handler))
+    [result] = [r for r in results if r.model == "openrouter_decisions:typesafe/jev-1.13"]
+    assert result.ok and seen["url"] == "https://openrouter.ai/api/v1/systemone"
+
+
+def test_a_refused_openrouter_decision_call_names_openrouter_and_its_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    config = PhilConfig(models={"classifier": "openrouter_decisions:typesafe/jev-1.13"})
+    results = check_models(config, repo_root=tmp_path,
+                           jev_transport=httpx.MockTransport(lambda r: httpx.Response(401)))
+    [result] = [r for r in results if r.model == "openrouter_decisions:typesafe/jev-1.13"]
+    assert result.detail == "OpenRouter refused the request (http 401): check OPENROUTER_API_KEY."
