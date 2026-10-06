@@ -69,6 +69,7 @@ def summarise(records: list[dict], *, confidence_threshold: float, detail_thresh
 
     confusion: dict[str, dict[str, int]] = {}
     answer_as_change = change_as_answer = quick_as_full = full_as_quick = 0
+    wrong_path = missed_detail = 0
     for depth, record in routed:
         expected = record["expected_depth"]
         bucket = confusion.setdefault(expected, {})
@@ -81,6 +82,10 @@ def summarise(records: list[dict], *, confidence_threshold: float, detail_thresh
             quick_as_full += 1
         elif expected == "full" and depth == "quick":
             full_as_quick += 1
+        if depth != "intake" and depth != record["expected_depth"]:
+            wrong_path += 1
+        if record.get("ambiguous") and depth != "intake":
+            missed_detail += 1
 
     detail_tp = detail_fp = detail_fn = 0
     for record in records:
@@ -111,6 +116,10 @@ def summarise(records: list[dict], *, confidence_threshold: float, detail_thresh
         "change_as_answer": change_as_answer,
         "quick_as_full": quick_as_full,
         "full_as_quick": full_as_quick,
+        "wrong_path": wrong_path,
+        "unsafe": answer_as_change + full_as_quick,
+        "intake_count": intake_count,
+        "missed_detail": missed_detail,
         "detail_precision": detail_precision,
         "detail_recall": detail_recall,
         "latency_p50_ms": _percentile(latencies, 50),
@@ -130,3 +139,43 @@ def sweep(
             {"threshold": threshold, "depth_accuracy": summary["depth_accuracy"], "intake_rate": summary["intake_rate"]}
         )
     return rows
+
+
+DEFAULT_CONFIDENCE = 0.5
+DEFAULT_DETAIL = 0.6
+
+
+def sweep_grid(
+    records: list[dict],
+    confidence_grid: tuple[float, ...] = DEFAULT_THRESHOLDS,
+    detail_grid: tuple[float, ...] = DEFAULT_THRESHOLDS,
+) -> list[dict]:
+    """`summarise` at every (confidence, detail) pair, replayed from stored answers (spec §4.2)."""
+    rows = []
+    for confidence in confidence_grid:
+        for detail in detail_grid:
+            summary = summarise(records, confidence_threshold=confidence, detail_threshold=detail)
+            rows.append({
+                "confidence_threshold": confidence, "detail_threshold": detail,
+                **{key: summary[key] for key in ("depth_accuracy", "wrong_path", "unsafe", "intake_count", "missed_detail")},
+            })
+    return rows
+
+
+def choose_thresholds(
+    records: list[dict],
+    confidence_grid: tuple[float, ...] = DEFAULT_THRESHOLDS,
+    detail_grid: tuple[float, ...] = DEFAULT_THRESHOLDS,
+) -> dict:
+    """The grid row a backend should run at (plan B, ruling R1): fewest unsafe errors, then wrong
+    paths, then vague requests not asked about, then deferrals; ties go to the row nearest today's
+    defaults, then the lower thresholds."""
+
+    def key(row: dict) -> tuple:
+        distance = abs(row["confidence_threshold"] - DEFAULT_CONFIDENCE) + abs(row["detail_threshold"] - DEFAULT_DETAIL)
+        return (
+            row["unsafe"], row["wrong_path"], row["missed_detail"], row["intake_count"], round(distance, 6),
+            row["confidence_threshold"], row["detail_threshold"],
+        )
+
+    return min(sweep_grid(records, confidence_grid, detail_grid), key=key)
