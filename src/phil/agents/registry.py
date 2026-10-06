@@ -28,11 +28,16 @@ DESIGN_MAX_MODEL_CALLS = 8
 # The architect's, likewise: every call resends the history so far, so an uncapped exploration
 # grows its cost quadratically (one live plan took 46 calls and 1.56M input tokens).
 ARCHITECT_MAX_MODEL_CALLS = 10
+# A revision (critic or user feedback) starts from the previous plan, which already reflects the
+# repo, so it reads only what a specific issue needs.
+ARCHITECT_REVISE_MAX_MODEL_CALLS = 4
 
 SPECS: dict[str, AgentSpec] = {
     "intake": AgentSpec("intake", "orchestrator", IntakeInput, Goal, harness="lean", end_on_text=True),
+    # Light, not deep: it reads a handful of files, so it needs no sub-agent (whose calls the cap
+    # can't see; live, one added 3 uncapped calls), no to-do tool and no summarization.
     "architect": AgentSpec(
-        "architect", "architect", ArchitectInput, Plan, max_model_calls=ARCHITECT_MAX_MODEL_CALLS,
+        "architect", "architect", ArchitectInput, Plan, harness="light", max_model_calls=ARCHITECT_MAX_MODEL_CALLS,
         cap_message=PLAN_NOW,
     ),
     "critic": AgentSpec("critic", "critic", CriticInput, PlanCritique, harness="lean", end_on_text=True),

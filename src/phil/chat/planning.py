@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import ValidationError
 
 from phil.agents.invoke import AgentContext, invoke_agent
-from phil.agents.registry import get_spec
+from phil.agents.registry import ARCHITECT_REVISE_MAX_MODEL_CALLS, get_spec
 from phil.contracts import (
     Approach,
     ArchitectInput,
@@ -142,7 +142,10 @@ class Planner:
             approach_note=approach_note,
         )
         packet = build_packet("architect", contract, budget_tokens=_budget(ctx, "architect"))
-        return invoke_agent(get_spec("architect"), packet, replace(ctx, workdir=tree), node="architect", call=call)
+        spec = get_spec("architect")
+        if previous is not None:  # a revision: the previous plan already reflects the repo
+            spec = replace(spec, max_model_calls=ARCHITECT_REVISE_MAX_MODEL_CALLS)
+        return invoke_agent(spec, packet, replace(ctx, workdir=tree), node="architect", call=call)
 
     def _critic(self, ctx: AgentContext, goal: Goal, plan: Plan, call: int) -> PlanCritique:
         packet = build_packet("critic", CriticInput(goal=goal, plan=plan), budget_tokens=_budget(ctx, "critic"))
