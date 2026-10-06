@@ -195,7 +195,7 @@ def run_and_record(backend: Literal["jev", "llm"], cases: list[dict], config_pat
         append_record(record)
     return metrics.summarise(
         records, confidence_threshold=config.routing.confidence_threshold,
-        detail_threshold=config.routing.detail_threshold,
+        detail_threshold=config.routing.detail_threshold_for(backend),
     )
 
 
@@ -274,6 +274,21 @@ def _print_summary(label: str, summary: dict) -> None:
         print(f"    error {kind}: {count}")
 
 
+def _print_sweep_grid(tune: list[dict]) -> None:
+    """The M3 spec §5.1 2-D sweep over `tune`: one line per confidence threshold, with each
+    detail threshold's `wrong_path/intake_count` alongside it."""
+    rows = metrics.sweep_grid(tune)
+    by_confidence: dict[float, list[dict]] = {}
+    for row in rows:
+        by_confidence.setdefault(row["confidence_threshold"], []).append(row)
+    for confidence in sorted(by_confidence):
+        cells = " ".join(
+            f"{row['detail_threshold']}={row['wrong_path']}/{row['intake_count']}"
+            for row in sorted(by_confidence[confidence], key=lambda row: row["detail_threshold"])
+        )
+        print(f"  conf {confidence}: {cells}")
+
+
 def _report(records: list[dict]) -> None:
     latest = _relabel(_latest_per_case(records), load_cases())
     chosen: dict[str, dict] = {}
@@ -285,27 +300,40 @@ def _report(records: list[dict]) -> None:
             print(f"--- {backend}: no tune results ---")
             continue
         row = metrics.choose_thresholds(tune)
-        chosen[backend] = {"thresholds": row, "records": backend_records}
+        chosen[backend] = {"thresholds": row, "records": backend_records, "check": check}
         confidence, detail = row["confidence_threshold"], row["detail_threshold"]
         print(f"--- {backend} ---")
-        print(f"  chosen on tune: confidence {confidence}, detail {detail}")
+        print(
+            f"  chosen on tune: confidence {confidence}, detail {detail} "
+            f"(wrong_path={row['wrong_path']}, intake_count={row['intake_count']})"
+        )
+        _print_sweep_grid(tune)
         _print_summary("tune", metrics.summarise(tune, confidence_threshold=confidence, detail_threshold=detail))
         if check:
             print(f"  check ({len(check)} case{'s' if len(check) != 1 else ''}):")
             _print_summary("check", metrics.summarise(check, confidence_threshold=confidence, detail_threshold=detail))
     if "jev" in chosen and "llm" in chosen:
+        jev_ids = {record["case_id"] for record in chosen["jev"]["records"]}
+        llm_ids = {record["case_id"] for record in chosen["llm"]["records"]}
+        shared_ids = jev_ids & llm_ids
+        jev_only, llm_only = sorted(jev_ids - llm_ids), sorted(llm_ids - jev_ids)
+        print("--- decision rule (spec 2026-10-03 §4.1), compared on shared cases at each backend's chosen thresholds ---")
+        if jev_only or llm_only:
+            print(f"  cases differ: jev-only={jev_only}, llm-only={llm_only}")
+        print(f"  compared on {len(shared_ids)} shared case{'s' if len(shared_ids) != 1 else ''}")
         summaries = {
             backend: metrics.summarise(
-                entry["records"],
+                [record for record in entry["records"] if record["case_id"] in shared_ids],
                 confidence_threshold=entry["thresholds"]["confidence_threshold"],
                 detail_threshold=entry["thresholds"]["detail_threshold"],
             )
             for backend, entry in chosen.items()
         }
         result = decision_rule(summaries["jev"], summaries["llm"])
-        print("--- decision rule (spec 2026-10-03 §4.1), all cases at each backend's chosen thresholds ---")
         for name, value in result["conditions"].items():
             print(f"  {name}: {value}")
+        if not chosen["jev"]["check"] or not chosen["llm"]["check"]:
+            print("  check cases not run: verdict is provisional")
         print(f"  jev worth recommending: {result['verdict']}")
 
 

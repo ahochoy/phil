@@ -143,6 +143,9 @@ def sweep(
 
 DEFAULT_CONFIDENCE = 0.5
 DEFAULT_DETAIL = 0.6
+# Ruling RF1 (controller): the room choose_thresholds gives intake_count before it stops
+# preferring a row just because it defers more.
+INTAKE_BUDGET_SLACK = 2
 
 
 def sweep_grid(
@@ -169,7 +172,12 @@ def choose_thresholds(
 ) -> dict:
     """The grid row a backend should run at (plan B, ruling R1): fewest unsafe errors, then wrong
     paths, then vague requests not asked about, then deferrals; ties go to the row nearest today's
-    defaults, then the lower thresholds."""
+    defaults, then the lower thresholds.
+
+    Ruling RF1 (controller): R1 keeps this order, but only among rows within an intake budget --
+    `intake_count <= (ambiguous records in the set) + INTAKE_BUDGET_SLACK` -- so a row can't win
+    just by deferring everything to intake and so paying no wrong-path cost; when no row fits the
+    budget, every row is eligible."""
 
     def key(row: dict) -> tuple:
         distance = abs(row["confidence_threshold"] - DEFAULT_CONFIDENCE) + abs(row["detail_threshold"] - DEFAULT_DETAIL)
@@ -178,4 +186,7 @@ def choose_thresholds(
             row["confidence_threshold"], row["detail_threshold"],
         )
 
-    return min(sweep_grid(records, confidence_grid, detail_grid), key=key)
+    rows = sweep_grid(records, confidence_grid, detail_grid)
+    budget = sum(1 for record in records if record.get("ambiguous")) + INTAKE_BUDGET_SLACK
+    within_budget = [row for row in rows if row["intake_count"] <= budget] or rows
+    return min(within_budget, key=key)

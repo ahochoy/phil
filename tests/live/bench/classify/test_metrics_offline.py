@@ -194,3 +194,14 @@ def test_choose_thresholds_breaks_ties_towards_the_defaults():
     records = [_case("q-1", "answer", "question", confidence=0.95, needs_detail=0.05)]
     chosen = metrics.choose_thresholds(records, confidence_grid=(0.3, 0.5, 0.9), detail_grid=(0.3, 0.6, 0.9))
     assert (chosen["confidence_threshold"], chosen["detail_threshold"]) == (0.5, 0.6)
+
+
+def test_choose_thresholds_does_not_collapse_to_deferring_everything():
+    # 39 correct, non-ambiguous records plus one wrong path (quick_as_full, not unsafe), all at
+    # confidence 0.8. Picking the highest confidence threshold would defer every record to intake
+    # and zero out wrong_path -- ruling RF1's budget (ambiguous count + INTAKE_BUDGET_SLACK = 2
+    # here, since none of these are ambiguous) rules that row out.
+    records = [_case(f"s-{i:02d}", "quick", "simple_change", confidence=0.8) for i in range(1, 40)]
+    records.append(_case("w-01", "quick", "feature", confidence=0.8))
+    chosen = metrics.choose_thresholds(records)
+    assert chosen["intake_count"] <= 2

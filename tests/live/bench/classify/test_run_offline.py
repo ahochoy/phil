@@ -64,30 +64,68 @@ def test_relabel_takes_labels_and_split_from_the_cases_file():
     assert (relabelled["expected_class"], relabelled["expected_depth"], relabelled["split"]) == ("simple_change", "quick", "tune")
 
 
-def test_report_chooses_on_tune_and_shows_check(tmp_path, monkeypatch, capsys):
-    def rec(case_id, backend, task_class, depth, needs_detail=0.1, cost=0.0, latency=10):
-        return {
-            "case_id": case_id, "backend": backend, "expected_class": task_class, "expected_depth": depth,
-            "ambiguous": False, "task_class": task_class, "probabilities": {task_class: 0.9}, "confidence": 0.9,
-            "needs_detail": needs_detail, "latency_ms": latency, "input_tokens": 1, "output_tokens": 0,
-            "cost_usd": cost, "error": None,
-        }
+def _rec(case_id, backend, task_class, depth, needs_detail=0.1, cost=0.0, latency=10):
+    return {
+        "case_id": case_id, "backend": backend, "expected_class": task_class, "expected_depth": depth,
+        "ambiguous": False, "task_class": task_class, "probabilities": {task_class: 0.9}, "confidence": 0.9,
+        "needs_detail": needs_detail, "latency_ms": latency, "input_tokens": 1, "output_tokens": 0,
+        "cost_usd": cost, "error": None,
+    }
 
+
+def test_report_chooses_on_tune_and_shows_check(tmp_path, monkeypatch, capsys):
     cases = [
         {"id": "q-01", "expected_class": "question", "expected_depth": "answer", "ambiguous": False},
         {"id": "n-08", "expected_class": "simple_change", "expected_depth": "quick", "ambiguous": False, "split": "check"},
     ]
     monkeypatch.setattr(run, "load_cases", lambda path=None: cases)
     records = [
-        rec("q-01", "jev", "question", "answer", latency=10), rec("n-08", "jev", "simple_change", "quick", latency=10),
-        rec("q-01", "llm", "question", "answer", cost=0.001, latency=900),
-        rec("n-08", "llm", "simple_change", "quick", cost=0.001, latency=900),
+        _rec("q-01", "jev", "question", "answer", latency=10), _rec("n-08", "jev", "simple_change", "quick", latency=10),
+        _rec("q-01", "llm", "question", "answer", cost=0.001, latency=900),
+        _rec("n-08", "llm", "simple_change", "quick", cost=0.001, latency=900),
     ]
     run._report(records)
     out = capsys.readouterr().out
     assert "chosen on tune: confidence 0.5, detail 0.6" in out
     assert "check (1 case" in out
     assert "jev worth recommending: yes" in out
+
+
+def test_report_compares_only_shared_cases_and_names_the_rest(monkeypatch, capsys):
+    cases = [
+        {"id": "q-01", "expected_class": "question", "expected_depth": "answer", "ambiguous": False},
+        {"id": "n-08", "expected_class": "simple_change", "expected_depth": "quick", "ambiguous": False},
+    ]
+    monkeypatch.setattr(run, "load_cases", lambda path=None: cases)
+    records = [
+        _rec("q-01", "jev", "question", "answer"), _rec("n-08", "jev", "simple_change", "quick"),
+        _rec("q-01", "llm", "question", "answer", cost=0.001, latency=900),
+    ]
+    run._report(records)
+    out = capsys.readouterr().out
+    assert "compared on 1 shared case" in out
+    assert "jev-only=['n-08']" in out
+
+
+def test_report_says_verdict_is_provisional_with_no_check_records(monkeypatch, capsys):
+    cases = [{"id": "q-01", "expected_class": "question", "expected_depth": "answer", "ambiguous": False}]
+    monkeypatch.setattr(run, "load_cases", lambda path=None: cases)
+    records = [
+        _rec("q-01", "jev", "question", "answer"),
+        _rec("q-01", "llm", "question", "answer", cost=0.001, latency=900),
+    ]
+    run._report(records)
+    out = capsys.readouterr().out
+    assert "verdict is provisional" in out
+
+
+def test_report_prints_the_2d_sweep_grid(monkeypatch, capsys):
+    cases = [{"id": "q-01", "expected_class": "question", "expected_depth": "answer", "ambiguous": False}]
+    monkeypatch.setattr(run, "load_cases", lambda path=None: cases)
+    records = [_rec("q-01", "jev", "question", "answer")]
+    run._report(records)
+    out = capsys.readouterr().out
+    assert "conf 0.5:" in out
 
 
 def test_report_says_when_a_backend_has_no_tune_results(monkeypatch, capsys):

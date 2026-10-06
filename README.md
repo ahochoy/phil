@@ -297,21 +297,22 @@ intake instead of guessing:
 [routing]
 confidence_threshold = 0.5   # below it, intake decides the depth instead of the classifier
 detail_threshold = 0.6       # at or above it, intake asks you something first
+jev_detail_threshold = 0.6   # Jev only; unset = detail_threshold
 jev_timeout_s = 5.0          # Jev's connect/read timeout; no retries inside the adapter
 ```
 
 A classifier benchmark (`tests/live/bench/classify/`) compares the Jev and low-model
-backends on about 40 labelled requests — class and depth accuracy, the worst error (a
-question routed to a change), `needs_detail` precision/recall, latency, cost, and a
+backends on 40 `tune` cases and 10 `check` cases — class and depth accuracy, the worst error
+(a question routed to a change), `needs_detail` precision/recall, latency, cost, and a
 threshold sweep. It uses whichever keys you've already stored (or exported) for the models in
 `PHIL_BENCH_CONFIG`'s `[models]` — no `--env-file` is needed:
 
     PHIL_BENCH_CONFIG=~/Code/phil-bench.toml uv run pytest -m bench tests/live/bench/classify -n 0
     uv run python -m tests.live.bench.classify.run --report
 
-`--report` replays the stored answers (no new calls) and prints each backend's numbers, the
-threshold sweep, and spec §5.1's decision rule for whether Jev is worth recommending over
-the low model.
+`--report` replays the stored answers (no new calls): it chooses each backend's thresholds on
+the `tune` cases, shows the `check` cases at those thresholds, and applies spec §4.1's decision
+rule for whether Jev is worth recommending over the low model.
 
 ## Pull requests and cleanup
 
