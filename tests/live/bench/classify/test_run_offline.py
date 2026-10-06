@@ -15,97 +15,91 @@ from tests.live.bench.classify import run
 
 JEV_FIXTURE = json.loads((Path(__file__).parents[3] / "routing" / "fixtures" / "jev_ok.json").read_text())
 
-# A summary with every condition comfortably passing, to flip one at a time below.
-JEV_PASSING = {"depth_accuracy": 0.85, "answer_as_change": 0, "latency_p95_ms": 50, "cost_per_100": 1.0}
-LLM_BASELINE = {"depth_accuracy": 0.85, "answer_as_change": 1, "latency_p95_ms": 300, "cost_per_100": 2.0}
+JEV_PASSING = {"wrong_path": 2, "unsafe": 0, "intake_count": 6, "latency_p95_ms": 50, "cost_per_100": 1.0}
+LLM_BASELINE = {"wrong_path": 1, "unsafe": 1, "intake_count": 4, "latency_p95_ms": 300, "cost_per_100": 2.0}
 
 
 def test_decision_rule_clear_yes():
     result = run.decision_rule(JEV_PASSING, LLM_BASELINE)
     assert result["conditions"] == {
-        "depth_accuracy_within_2_points": True,
-        "answer_as_change_no_more_than_llm": True,
+        "wrong_path_within_one_of_llm": True,  # 2 <= 1 + 1
+        "unsafe_no_more_than_llm": True,
+        "deferrals_within_two_of_llm": True,  # 6 <= 4 + 2
         "p95_latency_at_most_a_third_of_llm": True,
         "cost_per_100_lower_than_llm": True,
     }
     assert result["verdict"] == "yes"
 
 
-def test_decision_rule_no_when_depth_accuracy_is_more_than_2_points_lower():
-    jev = {**JEV_PASSING, "depth_accuracy": 0.75}  # llm 0.85 - 0.10: more than 2 points lower
-    result = run.decision_rule(jev, LLM_BASELINE)
-    assert result["conditions"]["depth_accuracy_within_2_points"] is False
-    assert result["conditions"]["answer_as_change_no_more_than_llm"] is True
-    assert result["conditions"]["p95_latency_at_most_a_third_of_llm"] is True
-    assert result["conditions"]["cost_per_100_lower_than_llm"] is True
+@pytest.mark.parametrize(
+    ("change", "condition"),
+    [
+        ({"wrong_path": 3}, "wrong_path_within_one_of_llm"),
+        ({"unsafe": 2}, "unsafe_no_more_than_llm"),
+        ({"intake_count": 7}, "deferrals_within_two_of_llm"),
+        ({"latency_p95_ms": 101}, "p95_latency_at_most_a_third_of_llm"),
+        ({"cost_per_100": 2.0}, "cost_per_100_lower_than_llm"),
+    ],
+)
+def test_decision_rule_each_condition_can_say_no(change, condition):
+    result = run.decision_rule({**JEV_PASSING, **change}, LLM_BASELINE)
+    assert result["conditions"][condition] is False
+    assert [name for name, ok in result["conditions"].items() if ok is not True] == [condition]
     assert result["verdict"] == "no"
 
 
-def test_decision_rule_no_when_jev_makes_more_answer_as_change_errors():
-    jev = {**JEV_PASSING, "answer_as_change": 2}  # llm makes only 1
-    result = run.decision_rule(jev, LLM_BASELINE)
-    assert result["conditions"]["depth_accuracy_within_2_points"] is True
-    assert result["conditions"]["answer_as_change_no_more_than_llm"] is False
-    assert result["conditions"]["p95_latency_at_most_a_third_of_llm"] is True
-    assert result["conditions"]["cost_per_100_lower_than_llm"] is True
-    assert result["verdict"] == "no"
+def test_decision_rule_unknown_cost_is_undecided_unless_another_condition_fails():
+    assert run.decision_rule({**JEV_PASSING, "cost_per_100": None}, LLM_BASELINE)["verdict"] == "undecided (cost unknown)"
+    failing = {**JEV_PASSING, "cost_per_100": None, "unsafe": 5}
+    assert run.decision_rule(failing, LLM_BASELINE)["verdict"] == "no"
 
 
-def test_decision_rule_no_when_jev_p95_is_not_at_least_3x_faster():
-    jev = {**JEV_PASSING, "latency_p95_ms": 150}  # llm 300 / 3 == 100; 150 > 100
-    result = run.decision_rule(jev, LLM_BASELINE)
-    assert result["conditions"]["depth_accuracy_within_2_points"] is True
-    assert result["conditions"]["answer_as_change_no_more_than_llm"] is True
-    assert result["conditions"]["p95_latency_at_most_a_third_of_llm"] is False
-    assert result["conditions"]["cost_per_100_lower_than_llm"] is True
-    assert result["verdict"] == "no"
+def test_relabel_takes_labels_and_split_from_the_cases_file():
+    records = [
+        {"case_id": "f-01", "backend": "jev", "expected_class": "feature", "expected_depth": "full", "ambiguous": False},
+        {"case_id": "gone", "backend": "jev", "expected_class": "feature", "expected_depth": "full", "ambiguous": False},
+    ]
+    cases = [{"id": "f-01", "expected_class": "simple_change", "expected_depth": "quick", "ambiguous": False}]
+    [relabelled] = run._relabel(records, cases)  # a record whose case is gone is dropped
+    assert (relabelled["expected_class"], relabelled["expected_depth"], relabelled["split"]) == ("simple_change", "quick", "tune")
 
 
-def test_decision_rule_no_when_jevs_cost_is_not_lower():
-    jev = {**JEV_PASSING, "cost_per_100": 2.0}
-    llm = {**LLM_BASELINE, "cost_per_100": 1.0}  # jev is now the more expensive one
-    result = run.decision_rule(jev, llm)
-    assert result["conditions"]["depth_accuracy_within_2_points"] is True
-    assert result["conditions"]["answer_as_change_no_more_than_llm"] is True
-    assert result["conditions"]["p95_latency_at_most_a_third_of_llm"] is True
-    assert result["conditions"]["cost_per_100_lower_than_llm"] is False
-    assert result["verdict"] == "no"
+def test_report_chooses_on_tune_and_shows_check(tmp_path, monkeypatch, capsys):
+    def rec(case_id, backend, task_class, depth, needs_detail=0.1, cost=0.0, latency=10):
+        return {
+            "case_id": case_id, "backend": backend, "expected_class": task_class, "expected_depth": depth,
+            "ambiguous": False, "task_class": task_class, "probabilities": {task_class: 0.9}, "confidence": 0.9,
+            "needs_detail": needs_detail, "latency_ms": latency, "input_tokens": 1, "output_tokens": 0,
+            "cost_usd": cost, "error": None,
+        }
+
+    cases = [
+        {"id": "q-01", "expected_class": "question", "expected_depth": "answer", "ambiguous": False},
+        {"id": "n-08", "expected_class": "simple_change", "expected_depth": "quick", "ambiguous": False, "split": "check"},
+    ]
+    monkeypatch.setattr(run, "load_cases", lambda path=None: cases)
+    records = [
+        rec("q-01", "jev", "question", "answer", latency=10), rec("n-08", "jev", "simple_change", "quick", latency=10),
+        rec("q-01", "llm", "question", "answer", cost=0.001, latency=900),
+        rec("n-08", "llm", "simple_change", "quick", cost=0.001, latency=900),
+    ]
+    run._report(records)
+    out = capsys.readouterr().out
+    assert "chosen on tune: confidence 0.5, detail 0.6" in out
+    assert "check (1 case" in out
+    assert "jev worth recommending: yes" in out
 
 
-def test_decision_rule_undecided_when_jevs_cost_is_unknown():
-    jev = {**JEV_PASSING, "cost_per_100": None}
-    result = run.decision_rule(jev, LLM_BASELINE)
-    assert result["conditions"]["cost_per_100_lower_than_llm"] == "unknown"
-    assert result["verdict"] == "undecided (cost unknown)"
-
-
-def test_decision_rule_undecided_when_llms_cost_is_unknown():
-    llm = {**LLM_BASELINE, "cost_per_100": None}
-    result = run.decision_rule(JEV_PASSING, llm)
-    assert result["conditions"]["cost_per_100_lower_than_llm"] == "unknown"
-    assert result["verdict"] == "undecided (cost unknown)"
-
-
-def test_decision_rule_no_when_a_known_condition_fails_even_with_cost_unknown():
-    jev = {**JEV_PASSING, "latency_p95_ms": 150, "cost_per_100": None}  # too slow; cost unknown
-    result = run.decision_rule(jev, LLM_BASELINE)
-    assert result["conditions"]["p95_latency_at_most_a_third_of_llm"] is False
-    assert result["conditions"]["cost_per_100_lower_than_llm"] == "unknown"
-    assert result["verdict"] == "no"
-
-
-def test_decision_rule_exactly_2_points_lower_passes():
-    jev = {**JEV_PASSING, "depth_accuracy": 0.83}  # llm 0.85 - 0.02 == 0.83, exactly at the slack
-    result = run.decision_rule(jev, LLM_BASELINE)
-    assert result["conditions"]["depth_accuracy_within_2_points"] is True
-    assert result["verdict"] == "yes"
-
-
-def test_decision_rule_exactly_a_third_of_llm_p95_passes():
-    jev = {**JEV_PASSING, "latency_p95_ms": 100}  # llm 300 / 3 == 100, exactly at the boundary
-    result = run.decision_rule(jev, LLM_BASELINE)
-    assert result["conditions"]["p95_latency_at_most_a_third_of_llm"] is True
-    assert result["verdict"] == "yes"
+def test_report_says_when_a_backend_has_no_tune_results(monkeypatch, capsys):
+    cases = [{"id": "n-08", "expected_class": "simple_change", "expected_depth": "quick", "ambiguous": False, "split": "check"}]
+    monkeypatch.setattr(run, "load_cases", lambda path=None: cases)
+    record = {
+        "case_id": "n-08", "backend": "jev", "expected_class": "simple_change", "expected_depth": "quick",
+        "ambiguous": False, "task_class": "simple_change", "probabilities": {}, "confidence": 0.9,
+        "needs_detail": 0.1, "latency_ms": 10, "input_tokens": 1, "output_tokens": 0, "cost_usd": 0.0, "error": None,
+    }
+    run._report([record])
+    assert "--- jev: no tune results ---" in capsys.readouterr().out
 
 
 def test_latest_per_case_keeps_the_newest_record_per_case_and_backend():
