@@ -661,7 +661,7 @@ class ChatController:
         depth, reason = decide(
             judgement,
             confidence_threshold=self.config.routing.confidence_threshold,
-            detail_threshold=self.config.routing.detail_threshold,
+            detail_threshold=self.config.routing.detail_threshold_for(judgement.source if judgement else None),
         )
         source = judgement.source if depth is not None else "intake"
         if fallback_reason:

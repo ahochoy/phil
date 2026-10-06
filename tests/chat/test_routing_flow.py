@@ -425,3 +425,14 @@ def test_the_answerer_reads_a_working_tree_snapshot_not_the_live_root(calc_repo)
     assert seen["secret_exists"] is False
     assert planted not in seen["shell"]
     assert not tree.exists()  # removed after the answer
+
+
+def test_jev_judgements_use_the_jev_detail_threshold(calc_repo, monkeypatch):
+    judgement = Judgement(
+        task_class="simple_change", probabilities={"simple_change": 0.9}, confidence=0.9, needs_detail=0.55,
+        source="jev", latency_ms=5, usage=None,
+    )
+    monkeypatch.setattr(controller_mod, "classify", lambda *a, **k: Classification(judgement, None))
+    config = PhilConfig(models=TEST_MODELS, routing={"jev_detail_threshold": 0.5})
+    text, *_ = run_chat(calc_repo, ["fix the page", peek({})], {"intake": [goal(open_questions=["Which page?"])]}, config=config)
+    assert "Unclear request · asking first" in text  # 0.55 >= Jev's 0.5, though below the default 0.6

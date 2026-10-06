@@ -102,6 +102,10 @@ def test_summarise_every_field():
         "latency_p50_ms": 150,
         "latency_p95_ms": 5000,
         "cost_per_100": None,  # x-01's cost is unknown
+        "wrong_path": 2,  # q-02 answer->quick, f-01 full->answer (intake never counts)
+        "unsafe": 1,  # answer_as_change 1 + full_as_quick 0
+        "intake_count": 3,  # v-01, o-01, x-01
+        "missed_detail": 0,  # the one ambiguous case (v-01) went to intake
     }
 
 
@@ -126,6 +130,10 @@ def test_summarise_with_no_records():
     assert summary["depth_accuracy"] == 0.0
     assert summary["intake_rate"] == 0.0
     assert summary["cost_per_100"] is None
+    assert summary["wrong_path"] == 0
+    assert summary["unsafe"] == 0
+    assert summary["intake_count"] == 0
+    assert summary["missed_detail"] == 0
 
 
 def _ambiguous(case_id: str, task_class: str, needs_detail: float) -> dict:
@@ -145,3 +153,55 @@ def test_an_ambiguous_case_is_depth_correct_at_intake_or_its_own_depth():
     ]
     summary = metrics.summarise(records, confidence_threshold=0.5, detail_threshold=0.6)
     assert summary["depth_accuracy"] == 2 / 4
+
+
+def _case(case_id, expected_depth, task_class, *, confidence=0.9, needs_detail=0.1, ambiguous=False):
+    return {
+        "case_id": case_id, "backend": "jev", "expected_class": task_class, "expected_depth": expected_depth,
+        "ambiguous": ambiguous, "task_class": task_class, "probabilities": {task_class: confidence},
+        "confidence": confidence, "needs_detail": needs_detail, "latency_ms": 10, "input_tokens": 1,
+        "output_tokens": 0, "cost_usd": 0.0, "error": None,
+    }
+
+
+def test_a_vague_case_routed_straight_through_is_missed_detail_not_a_wrong_path():
+    records = [_case("v-1", "full", "feature", needs_detail=0.55, ambiguous=True)]
+    summary = metrics.summarise(records, confidence_threshold=0.5, detail_threshold=0.6)
+    assert (summary["wrong_path"], summary["missed_detail"], summary["intake_count"]) == (0, 1, 0)
+
+
+def test_sweep_grid_covers_both_thresholds():
+    rows = metrics.sweep_grid(RECORDS, confidence_grid=(0.5, 0.9), detail_grid=(0.6, 0.7))
+    assert [(r["confidence_threshold"], r["detail_threshold"]) for r in rows] == [(0.5, 0.6), (0.5, 0.7), (0.9, 0.6), (0.9, 0.7)]
+    assert set(rows[0]) == {
+        "confidence_threshold", "detail_threshold", "depth_accuracy", "wrong_path", "unsafe", "intake_count",
+        "missed_detail",
+    }
+
+
+def test_choose_thresholds_puts_safety_first_then_wrong_paths_then_vague_requests():
+    # A vague request scored 0.55: only a detail threshold of 0.5 or less sends it to intake.
+    # A clear change scored 0.45: a detail threshold of 0.4 or less wrongly defers it.
+    records = [
+        _case("v-1", "full", "feature", needs_detail=0.55, ambiguous=True),
+        _case("s-1", "quick", "simple_change", needs_detail=0.45),
+    ]
+    chosen = metrics.choose_thresholds(records, confidence_grid=(0.5,), detail_grid=(0.4, 0.5, 0.6))
+    assert (chosen["confidence_threshold"], chosen["detail_threshold"]) == (0.5, 0.5)
+
+
+def test_choose_thresholds_breaks_ties_towards_the_defaults():
+    records = [_case("q-1", "answer", "question", confidence=0.95, needs_detail=0.05)]
+    chosen = metrics.choose_thresholds(records, confidence_grid=(0.3, 0.5, 0.9), detail_grid=(0.3, 0.6, 0.9))
+    assert (chosen["confidence_threshold"], chosen["detail_threshold"]) == (0.5, 0.6)
+
+
+def test_choose_thresholds_does_not_collapse_to_deferring_everything():
+    # 39 correct, non-ambiguous records plus one wrong path (quick_as_full, not unsafe), all at
+    # confidence 0.8. Picking the highest confidence threshold would defer every record to intake
+    # and zero out wrong_path -- ruling RF1's budget (ambiguous count + INTAKE_BUDGET_SLACK = 2
+    # here, since none of these are ambiguous) rules that row out.
+    records = [_case(f"s-{i:02d}", "quick", "simple_change", confidence=0.8) for i in range(1, 40)]
+    records.append(_case("w-01", "quick", "feature", confidence=0.8))
+    chosen = metrics.choose_thresholds(records)
+    assert chosen["intake_count"] <= 2

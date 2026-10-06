@@ -222,7 +222,7 @@ def _run_case(case: Case, config_path: Path, work: Path, *, factory: AgentFactor
         depth, _ = decide(
             judgement,
             confidence_threshold=ctx.config.routing.confidence_threshold,
-            detail_threshold=ctx.config.routing.detail_threshold,
+            detail_threshold=ctx.config.routing.detail_threshold_for(judgement.source if judgement else None),
         )
         overview = repo_overview(info.root)
         # Like the chat: the architect (and quick-plan detection) reads the base commit's tracked

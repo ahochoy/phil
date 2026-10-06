@@ -6,7 +6,9 @@
 Every case is read straight from `cases.jsonl` into a `RouteState` (its `repo` is already
 recorded, so no git repository is touched); each backend's answers are appended to
 `~/.phil/bench/classify.jsonl` (or `$PHIL_BENCH_CLASSIFY_RESULTS`), one JSON record per case.
-`--report` replays the stored records with no new calls."""
+`--report` replays the stored records with no new calls: it chooses each backend's thresholds
+on the `tune` cases, shows the `check` cases at those thresholds, and applies the revised
+decision rule."""
 
 import argparse
 import json
@@ -20,7 +22,7 @@ from typing import Literal
 
 from phil.agents.invoke import AgentContext
 from phil.agents.providers import estimate_cost, provider_for_model, split_model
-from phil.config import ConfigError, PhilConfig, RoutingConfig
+from phil.config import ConfigError, PhilConfig
 from phil.key_store import KeyStoreError, key_lookup
 from phil.routing.jev import JevError, judge_jev
 from phil.routing.llm import judge_llm
@@ -33,8 +35,10 @@ from tests.live.bench.harness import phil_sha
 
 CASES_PATH = Path(__file__).parent / "cases.jsonl"
 
-# Jev is worth recommending over the llm backend when all four conditions hold (spec §5.1).
-DEPTH_ACCURACY_SLACK = 0.02
+# Jev is worth recommending over the llm backend when all five conditions hold (spec 2026-10-03
+# §4.1, which replaces the M3 spec's §5.1 rule).
+WRONG_PATH_SLACK = 1
+DEFERRAL_SLACK = 2
 LATENCY_FACTOR = 3
 
 
@@ -191,7 +195,7 @@ def run_and_record(backend: Literal["jev", "llm"], cases: list[dict], config_pat
         append_record(record)
     return metrics.summarise(
         records, confidence_threshold=config.routing.confidence_threshold,
-        detail_threshold=config.routing.detail_threshold,
+        detail_threshold=config.routing.detail_threshold_for(backend),
     )
 
 
@@ -214,22 +218,24 @@ def _latest_per_case(records: list[dict]) -> list[dict]:
 
 
 def decision_rule(jev: dict, llm: dict) -> dict:
-    """Spec §5.1's decision rule: is Jev worth recommending over the llm backend? All four
-    conditions must hold. Any known condition failing makes it "no"; only when every known
-    condition passes does an unknown cost on either side make it undecided."""
-    depth_ok = jev["depth_accuracy"] >= llm["depth_accuracy"] - DEPTH_ACCURACY_SLACK
-    answer_as_change_ok = jev["answer_as_change"] <= llm["answer_as_change"]
+    """The revised rule (spec 2026-10-03 §4.1): is Jev worth recommending over the llm backend?
+    All five conditions must hold. Any known condition failing makes it "no"; only when every
+    known condition passes does an unknown cost on either side make it undecided."""
+    wrong_path_ok = jev["wrong_path"] <= llm["wrong_path"] + WRONG_PATH_SLACK
+    unsafe_ok = jev["unsafe"] <= llm["unsafe"]
+    deferrals_ok = jev["intake_count"] <= llm["intake_count"] + DEFERRAL_SLACK
     latency_ok = jev["latency_p95_ms"] <= llm["latency_p95_ms"] / LATENCY_FACTOR
     jev_cost, llm_cost = jev["cost_per_100"], llm["cost_per_100"]
     cost_unknown = jev_cost is None or llm_cost is None
     cost_ok: bool | Literal["unknown"] = "unknown" if cost_unknown else jev_cost < llm_cost
     conditions = {
-        "depth_accuracy_within_2_points": depth_ok,
-        "answer_as_change_no_more_than_llm": answer_as_change_ok,
+        "wrong_path_within_one_of_llm": wrong_path_ok,
+        "unsafe_no_more_than_llm": unsafe_ok,
+        "deferrals_within_two_of_llm": deferrals_ok,
         "p95_latency_at_most_a_third_of_llm": latency_ok,
         "cost_per_100_lower_than_llm": cost_ok,
     }
-    if not (depth_ok and answer_as_change_ok and latency_ok) or cost_ok is False:
+    if not (wrong_path_ok and unsafe_ok and deferrals_ok and latency_ok) or cost_ok is False:
         verdict = "no"  # a known condition failed: an unknown cost can't rescue it
     elif cost_unknown:
         verdict = "undecided (cost unknown)"
@@ -238,42 +244,96 @@ def decision_rule(jev: dict, llm: dict) -> dict:
     return {"conditions": conditions, "verdict": verdict}
 
 
-def _print_summary(backend: str, summary: dict, sweep: list[dict]) -> None:
-    print(f"--- {backend} ---")
-    for key, value in summary.items():
-        if key == "errors_by_kind":
+def _relabel(records: list[dict], cases: list[dict]) -> list[dict]:
+    """`records` with labels and split taken from the current cases file, so a relabelled case is
+    rescored without a rerun. A record whose case is no longer in the file is dropped."""
+    by_id = {case["id"]: case for case in cases}
+    relabelled = []
+    for record in records:
+        case = by_id.get(record["case_id"])
+        if case is None:
             continue
-        print(f"  {key}: {value}")
-    if summary.get("errors_by_kind"):
-        print("  errors:")
-        for kind, count in summary["errors_by_kind"].items():
-            print(f"    {kind}: {count}")
-    print("  sweep (confidence_threshold -> depth_accuracy, intake_rate):")
-    for row in sweep:
-        print(f"    {row['threshold']}: {row['depth_accuracy']:.3f}, {row['intake_rate']:.3f}")
+        relabelled.append({
+            **record,
+            "expected_class": case["expected_class"],
+            "expected_depth": case["expected_depth"],
+            "ambiguous": case["ambiguous"],
+            "split": case.get("split", "tune"),
+        })
+    return relabelled
+
+
+def _print_summary(label: str, summary: dict) -> None:
+    keys = (
+        "n", "errors", "depth_accuracy", "class_accuracy", "wrong_path", "unsafe", "intake_count", "missed_detail",
+        "answer_as_change", "full_as_quick", "detail_precision", "detail_recall", "latency_p50_ms", "latency_p95_ms",
+        "cost_per_100",
+    )
+    print(f"  [{label}] " + ", ".join(f"{key}={summary[key]}" for key in keys))
+    for kind, count in summary.get("errors_by_kind", {}).items():
+        print(f"    error {kind}: {count}")
+
+
+def _print_sweep_grid(tune: list[dict]) -> None:
+    """The M3 spec §5.1 2-D sweep over `tune`: one line per confidence threshold, with each
+    detail threshold's `wrong_path/intake_count` alongside it."""
+    rows = metrics.sweep_grid(tune)
+    by_confidence: dict[float, list[dict]] = {}
+    for row in rows:
+        by_confidence.setdefault(row["confidence_threshold"], []).append(row)
+    for confidence in sorted(by_confidence):
+        cells = " ".join(
+            f"{row['detail_threshold']}={row['wrong_path']}/{row['intake_count']}"
+            for row in sorted(by_confidence[confidence], key=lambda row: row["detail_threshold"])
+        )
+        print(f"  conf {confidence}: {cells}")
 
 
 def _report(records: list[dict]) -> None:
-    thresholds = RoutingConfig()
-    latest = _latest_per_case(records)
-    summaries: dict[str, dict] = {}
+    latest = _relabel(_latest_per_case(records), load_cases())
+    chosen: dict[str, dict] = {}
     for backend in ("jev", "llm"):
         backend_records = [record for record in latest if record.get("backend") == backend]
-        if not backend_records:
-            print(f"--- {backend}: no results ---")
+        tune = [record for record in backend_records if record["split"] == "tune"]
+        check = [record for record in backend_records if record["split"] == "check"]
+        if not tune:
+            print(f"--- {backend}: no tune results ---")
             continue
-        summary = metrics.summarise(
-            backend_records, confidence_threshold=thresholds.confidence_threshold,
-            detail_threshold=thresholds.detail_threshold,
+        row = metrics.choose_thresholds(tune)
+        chosen[backend] = {"thresholds": row, "records": backend_records, "check": check}
+        confidence, detail = row["confidence_threshold"], row["detail_threshold"]
+        print(f"--- {backend} ---")
+        print(
+            f"  chosen on tune: confidence {confidence}, detail {detail} "
+            f"(wrong_path={row['wrong_path']}, intake_count={row['intake_count']})"
         )
-        summaries[backend] = summary
-        sweep = metrics.sweep(backend_records, detail_threshold=thresholds.detail_threshold)
-        _print_summary(backend, summary, sweep)
-    if "jev" in summaries and "llm" in summaries:
+        _print_sweep_grid(tune)
+        _print_summary("tune", metrics.summarise(tune, confidence_threshold=confidence, detail_threshold=detail))
+        if check:
+            print(f"  check ({len(check)} case{'s' if len(check) != 1 else ''}):")
+            _print_summary("check", metrics.summarise(check, confidence_threshold=confidence, detail_threshold=detail))
+    if "jev" in chosen and "llm" in chosen:
+        jev_ids = {record["case_id"] for record in chosen["jev"]["records"]}
+        llm_ids = {record["case_id"] for record in chosen["llm"]["records"]}
+        shared_ids = jev_ids & llm_ids
+        jev_only, llm_only = sorted(jev_ids - llm_ids), sorted(llm_ids - jev_ids)
+        print("--- decision rule (spec 2026-10-03 §4.1), compared on shared cases at each backend's chosen thresholds ---")
+        if jev_only or llm_only:
+            print(f"  cases differ: jev-only={jev_only}, llm-only={llm_only}")
+        print(f"  compared on {len(shared_ids)} shared case{'s' if len(shared_ids) != 1 else ''}")
+        summaries = {
+            backend: metrics.summarise(
+                [record for record in entry["records"] if record["case_id"] in shared_ids],
+                confidence_threshold=entry["thresholds"]["confidence_threshold"],
+                detail_threshold=entry["thresholds"]["detail_threshold"],
+            )
+            for backend, entry in chosen.items()
+        }
         result = decision_rule(summaries["jev"], summaries["llm"])
-        print("--- decision rule (spec §5.1) ---")
         for name, value in result["conditions"].items():
             print(f"  {name}: {value}")
+        if not chosen["jev"]["check"] or not chosen["llm"]["check"]:
+            print("  check cases not run: verdict is provisional")
         print(f"  jev worth recommending: {result['verdict']}")
 
 
