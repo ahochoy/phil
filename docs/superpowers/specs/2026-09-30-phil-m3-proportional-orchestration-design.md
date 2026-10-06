@@ -236,11 +236,9 @@ Unchanged, apart from the classifier call at the front and the recorded depth.
   - `needs_detail` precision and recall on the vague cases;
   - p50/p95 latency and cost per 100 requests;
   - a **threshold sweep** (0.3 to 0.9, in steps of 0.1), replayed from stored answers with no new calls. It shows accuracy, the share of requests that fall through to intake, and the cost of those fall-throughs.
+  - a two-dimensional sweep of the confidence and detail thresholds.
 
-**Decision rule.** Jev is worth recommending over the `llm` backend if all three hold:
-- its depth accuracy is no more than 2 points lower, and it makes no more *answer mistaken for change* errors;
-- its p95 latency is at least 3× lower;
-- its cost per routed message is lower.
+**Decision rule:** replaced on 2026-10-06 by the revised rule in `2026-10-03-phil-ask-before-acting-design.md` §4.1: wrong paths and deferrals are counted separately, each with a tolerance; thresholds are per classifier and chosen on the `tune` cases, then checked on the `check` cases. The original rule and its "no" verdict are in journal part 3.
 
 If Jev wins, setup recommends it. If it doesn't, it stays optional. Either way, the results go into journal part 3. The chosen thresholds become the config defaults.
 
