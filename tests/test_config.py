@@ -433,7 +433,7 @@ def test_classifier_and_answerer_roles_resolve_through_their_tiers():
 
 def test_routing_defaults_and_bounds():
     config = PhilConfig()
-    assert config.routing.confidence_threshold == 0.5
+    assert config.routing.confidence_threshold == 0.7
     assert config.routing.detail_threshold == 0.6
     assert config.routing.jev_timeout_s == 5.0
     with pytest.raises(ValueError):
@@ -468,9 +468,14 @@ def test_jev_gets_its_own_detail_threshold_when_set():
     assert routing.detail_threshold_for(None) == 0.6  # router unavailable: the default
 
 
-def test_without_a_jev_threshold_every_source_uses_the_default():
+def test_jev_defaults_to_the_threshold_the_benchmark_chose():
     routing = PhilConfig().routing
-    assert routing.jev_detail_threshold is None
+    assert routing.jev_detail_threshold == 0.9
+    assert routing.detail_threshold_for("jev") == 0.9 and routing.detail_threshold_for("llm") == 0.6
+
+
+def test_an_unset_jev_threshold_makes_every_source_use_the_default():
+    routing = PhilConfig.model_validate({"routing": {"jev_detail_threshold": None}}).routing
     assert routing.detail_threshold_for("jev") == routing.detail_threshold == 0.6
 
 
