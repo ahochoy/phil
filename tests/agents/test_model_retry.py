@@ -216,6 +216,14 @@ def test_invoke_agent_does_not_rerun_the_agent_after_the_middleware_gave_up(conf
     assert (row["outcome"], row["retries"]) == ("error", 2)
 
 
+def deep_architect():
+    """The architect's spec on the deep harness: the deep agents (implementer, tester) are the ones
+    with a `task` sub-agent; the architect's contract keeps these scripts short."""
+    import dataclasses
+
+    return dataclasses.replace(get_spec("architect"), harness="deep", max_model_calls=None)
+
+
 def test_sub_agent_model_calls_are_retried_in_place(config, conn, tmp_path, monkeypatch):
     task_args = {"description": "list the files", "subagent_type": "general-purpose"}
     model = ScriptedChatModel(
@@ -230,7 +238,7 @@ def test_sub_agent_model_calls_are_retried_in_place(config, conn, tmp_path, monk
     ctx = AgentContext(
         config=config, conn=conn, layer="chat", workdir=tmp_path, factory=real_factory(model, monkeypatch), sleep=delays.append
     )
-    invoke_agent(get_spec("architect"), architect_packet(), ctx, node="architect")
+    invoke_agent(deep_architect(), architect_packet(), ctx, node="architect")
     assert len(model.received) == 4  # the main agent's first call was not repeated
     row = conn.execute("SELECT retries, model_calls FROM telemetry").fetchone()
     assert (row["retries"], row["model_calls"]) == (1, 3)
@@ -270,7 +278,7 @@ def test_a_sub_agent_call_that_exhausts_its_retries_does_not_rerun_the_parent(co
         config=config, conn=conn, layer="chat", workdir=tmp_path, factory=real_factory(model, monkeypatch), sleep=delays.append
     )
     with pytest.raises(HTTPError):
-        invoke_agent(get_spec("architect"), architect_packet(), ctx, node="architect")
+        invoke_agent(deep_architect(), architect_packet(), ctx, node="architect")
     assert len(model.received) == 4  # the parent's first call ran once; the sub-agent tried 3 times
     assert len(model.script) == 3  # nothing after the sub-agent's failure was consumed
     assert delays == [1.0, 2.0]
