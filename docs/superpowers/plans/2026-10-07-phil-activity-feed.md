@@ -816,9 +816,14 @@ def test_a_burst_collapses_past_the_limit():
     assert len(lines) == BURST_LINES + 1 and lines[-1] == "    … 7 more steps"
 
 
-def test_a_burst_of_reads_says_reads():
+def test_a_burst_of_searches_says_steps():
     records = [end(i, "grep", f'grep "x" f{i}', task=f"T{i}") for i in range(1, BURST_LINES + 4)]
     assert plain(FeedRenderer().tool_lines(records, 120))[-1] == "    … 3 more steps"
+
+
+def test_a_burst_of_reads_says_reads():
+    records = [end(i, "read_file", f"read f{i}.py", task=f"T{i}") for i in range(1, BURST_LINES + 4)]
+    assert plain(FeedRenderer().tool_lines(records, 120))[-1] == "    … 3 more reads"
 
 
 def test_milestones():
