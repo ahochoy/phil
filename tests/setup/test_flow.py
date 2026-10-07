@@ -4,7 +4,7 @@ from phil.agents.check import CheckResult
 from phil.config import global_config_path, load_config
 from phil.key_store import SERVICE
 from phil.setup.catalog import CatalogModel
-from phil.setup.flow import run_setup
+from phil.setup.flow import D1_OPENROUTER, JEV_OPENROUTER, JEV_TYPESAFE, run_setup
 from phil.setup.io import ScriptedSetupIO
 
 SECRET = "sk-TESTSECRET-123"
@@ -53,13 +53,16 @@ class FakeOllama:
 
 @pytest.fixture(autouse=True)
 def no_provider_keys(monkeypatch):
-    for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "LAB_API_KEY"):
+    for var in (
+        "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "LAB_API_KEY", "TYPESAFE_API_KEY",
+    ):
         monkeypatch.delenv(var, raising=False)
 
 
 def setup(answers, tmp_path, *, check=None, ollama=None, config=None, catalog=None, **kwargs):
     io = ScriptedSetupIO(answers)
     check = check or FakeCheck()
+    kwargs.setdefault("classifier_check", lambda model: None)  # never a real call
     wrote = run_setup(
         io,
         config=config or load_config(tmp_path),
@@ -89,7 +92,8 @@ def test_a_fresh_openrouter_setup_stores_the_key_writes_the_tiers_and_checks_onc
     assert memory_keyring.store == {(SERVICE, "OPENROUTER_API_KEY"): SECRET}
     assert "Saved OPENROUTER_API_KEY for openrouter in the keychain." in io.lines
     config = written(tmp_path)
-    assert config.models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW}
+    # Enter at the classifier step takes the recommended Jev through OpenRouter (same key).
+    assert config.models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW, "classifier": JEV_OPENROUTER}
     assert len(check.configs) == 1
     text = global_config_path().read_text()
     assert SECRET not in text
@@ -135,8 +139,8 @@ def test_keys_are_saved_only_after_the_config_is_written(tmp_path, memory_keyrin
         write_global_config(path, **kwargs)
 
     wrote, io, _ = setup(
-        ["", SECRET, "", "", "TypeSafe", TYPESAFE_SECRET],
-        tmp_path, classifier_check=lambda: None, write=recording_write,
+        ["", SECRET, "", "", "Jev through TypeSafe", TYPESAFE_SECRET],
+        tmp_path, classifier_check=lambda model: None, write=recording_write,
     )
     assert wrote is True
     assert order == ["write", "set_key:OPENROUTER_API_KEY", "set_key:TYPESAFE_API_KEY"]
@@ -188,7 +192,7 @@ def test_a_missing_key_in_the_check_repeats_the_hint_instead_of_offering_another
     assert len(check.configs) == 1
     assert not any("Choose a different" in line for line in io.lines)
     assert "OPENROUTER_API_KEY isn't set: export OPENROUTER_API_KEY, or run `phil keys set openrouter`." in io.lines
-    assert written(tmp_path).models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW}
+    assert written(tmp_path).models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW, "classifier": JEV_OPENROUTER}
 
 
 def test_a_missing_key_in_the_check_can_cancel(tmp_path, no_keychain):
@@ -201,7 +205,8 @@ def test_a_missing_key_in_the_check_can_cancel(tmp_path, no_keychain):
 
 def test_a_key_left_empty_then_missing_in_the_check(tmp_path):
     check = FakeCheck(bad={SUGGESTED_HIGH}, detail=MISSING_KEY)
-    wrote, io, _ = setup(["", "", "", "", "Keep", ""], tmp_path, check=check)
+    # The low model at the classifier step: Jev through OpenRouter would ask for the missing key again.
+    wrote, io, _ = setup(["", "", "", "", "Keep", "Your low model"], tmp_path, check=check)
     assert wrote is True
     assert not any("Choose a different" in line for line in io.lines)
 
@@ -215,7 +220,7 @@ def test_a_key_store_error_after_the_write_is_said_and_setup_still_reports_succe
     monkeypatch.setattr(keyring, "set_password", explode)
     wrote, io, _ = setup(["", SECRET, "", "", ""], tmp_path)
     assert wrote is True
-    assert written(tmp_path).models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW}
+    assert written(tmp_path).models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW, "classifier": JEV_OPENROUTER}
     assert (
         "Couldn't save OPENROUTER_API_KEY to the keychain (RuntimeError). "
         "Export OPENROUTER_API_KEY, or run phil keys set openrouter."
@@ -229,7 +234,9 @@ def test_openrouter_typed_text_searches_the_catalog(tmp_path):
     answers = ["", SECRET, "gpt-6", "Type again", "luna", "1", "openrouter:openai/gpt-6-sol", ""]
     wrote, io, _ = setup(answers, tmp_path)
     assert wrote is True
-    assert written(tmp_path).models == {"high": "openrouter:openai/gpt-6-luna", "low": "openrouter:openai/gpt-6-sol"}
+    assert written(tmp_path).models == {
+        "high": "openrouter:openai/gpt-6-luna", "low": "openrouter:openai/gpt-6-sol", "classifier": JEV_OPENROUTER,
+    }
     assert any("openai/gpt-6-sol  $2.00/$10.00 per M" in line for line in io.lines)
     assert io.lines.count("Fetching the OpenRouter model list…") == 1
 
@@ -309,7 +316,7 @@ def test_ctrl_c_during_the_catalog_fetch_cancels(tmp_path):
 
 def test_the_ollama_path_picks_installed_models(tmp_path, memory_keyring):
     ollama = FakeOllama(["qwen3:32b", "llama4:8b"])
-    wrote, io, _ = setup(["Ollama", "1", "2", ""], tmp_path, ollama=ollama)
+    wrote, io, _ = setup(["Ollama", "1", "2", "Your low model"], tmp_path, ollama=ollama)
     assert wrote is True
     assert ollama.urls == ["http://localhost:11434/v1"]
     config = written(tmp_path)
@@ -321,7 +328,7 @@ def test_the_ollama_path_picks_installed_models(tmp_path, memory_keyring):
 
 def test_unreachable_ollama_then_retry(tmp_path):
     ollama = FakeOllama(None, ["qwen3:32b"])
-    wrote, io, _ = setup(["Ollama", "Retry", "", "", ""], tmp_path, ollama=ollama)
+    wrote, io, _ = setup(["Ollama", "Retry", "", "", "Your low model"], tmp_path, ollama=ollama)
     assert wrote is True
     assert any("ollama serve" in line for line in io.lines)
     assert written(tmp_path).models == {"high": "ollama:qwen3:32b", "low": "ollama:qwen3:32b"}
@@ -329,13 +336,13 @@ def test_unreachable_ollama_then_retry(tmp_path):
 
 def test_unreachable_ollama_then_back_to_the_provider_choice(tmp_path):
     ollama = FakeOllama(None)
-    wrote, _, _ = setup(["Ollama", "Back", "OpenAI", SECRET, "", "gpt-x", ""], tmp_path, ollama=ollama)
+    wrote, _, _ = setup(["Ollama", "Back", "OpenAI", SECRET, "", "gpt-x", "Your low model"], tmp_path, ollama=ollama)
     assert wrote is True
     assert written(tmp_path).models["low"] == "openai:gpt-x"
 
 
 def test_the_custom_provider_writes_a_providers_table(tmp_path, memory_keyring):
-    answers = ["Custom", "Lab!", "openai", "lab", "http://lab:8000/v1", "", SECRET, "big", "lab:small", ""]
+    answers = ["Custom", "Lab!", "openai", "lab", "http://lab:8000/v1", "", SECRET, "big", "lab:small", "Your low model"]
     wrote, io, check = setup(answers, tmp_path)
     assert wrote is True
     assert any("isn't a valid provider name" in line for line in io.lines)
@@ -350,7 +357,7 @@ def test_the_custom_provider_writes_a_providers_table(tmp_path, memory_keyring):
 
 
 def test_a_keyless_custom_provider(tmp_path):
-    wrote, io, _ = setup(["Custom", "local", "http://box:8080/v1", "none", "m1", "m2", ""], tmp_path)
+    wrote, io, _ = setup(["Custom", "local", "http://box:8080/v1", "none", "m1", "m2", "Your low model"], tmp_path)
     assert wrote is True
     assert written(tmp_path).providers["local"].api_key_env is None
     assert not [kind for kind, _ in io.prompts if kind == "secret"]
@@ -362,7 +369,9 @@ def test_a_failed_check_then_a_different_choice_then_the_check_passes(tmp_path):
     wrote, io, _ = setup(answers, tmp_path, check=check)
     assert wrote is True
     assert len(check.configs) == 2
-    assert written(tmp_path).models == {"high": "openrouter:openai/gpt-6-sol", "low": SUGGESTED_LOW}
+    assert written(tmp_path).models == {
+        "high": "openrouter:openai/gpt-6-sol", "low": SUGGESTED_LOW, "classifier": JEV_OPENROUTER,
+    }
     assert any(line.startswith("✗ high") for line in io.lines)
     assert any(line.startswith("✓ high") for line in io.lines)
 
@@ -407,7 +416,9 @@ def test_a_rerun_prefills_the_current_models_and_ignores_role_keys_in_the_check(
         '# mine\n[models]\nhigh = "openrouter:openai/gpt-6-sol"\nlow = "openrouter:openai/gpt-6-luna"\n'
     )
     (git_repo / "phil.toml").write_text('[models]\ncritic = "openrouter:openai/gpt-6-sol"\n')
-    io = ScriptedSetupIO(["", "", "", "", ""])
+    # The low model at the classifier step: this calls run_setup directly, so a Jev choice would
+    # run the real classifier check.
+    io = ScriptedSetupIO(["", "", "", "", "Your low model"])
     check = FakeCheck()
     wrote = run_setup(
         io, config=load_config(git_repo), check=check, catalog=lambda: CATALOG, ollama=FakeOllama()
@@ -426,7 +437,7 @@ def test_repo_and_set_values_are_not_prefilled(tmp_path, git_repo):
     config = load_config(git_repo, overrides=["models.low=openrouter:openai/gpt-6-luna"])
     wrote, io, _ = setup(["", SECRET, "", "", ""], tmp_path, config=config)
     assert wrote is True
-    assert written(tmp_path).models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW}
+    assert written(tmp_path).models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW, "classifier": JEV_OPENROUTER}
     assert "Note: phil.toml sets models.high here, which overrides the global file." in io.lines
     assert not any("--set" in line for line in io.lines)
 
@@ -444,7 +455,7 @@ def test_a_rerun_prefills_a_custom_provider(tmp_path):
         '[models]\nhigh = "lab:big"\nlow = "lab:small"\n'
         '[providers.lab]\nkind = "openai"\nbase_url = "http://lab/v1"\napi_key_env = "LAB_API_KEY"\n'
     )
-    wrote, io, _ = setup(["", "", "", "", SECRET, "", "", ""], tmp_path)
+    wrote, io, _ = setup(["", "", "", "", SECRET, "", "", "Your low model"], tmp_path)
     assert wrote is True
     config = written(tmp_path)
     assert config.models == {"high": "lab:big", "low": "lab:small"}
@@ -458,13 +469,13 @@ def test_a_rerun_keeps_a_saved_lower_case_key_variable_but_a_typed_one_must_be_u
         '[providers.lab]\nkind = "openai"\nbase_url = "http://lab/v1"\napi_key_env = "lab_key"\n'
     )
     # Enter at the variable prompt keeps the saved name, even though it isn't upper case.
-    wrote, io, _ = setup(["", "", "", "", "", "", "", ""], tmp_path)
+    wrote, io, _ = setup(["", "", "", "", "", "", "", "Your low model"], tmp_path)
     assert wrote is True
     assert not any("isn't a valid variable name" in line for line in io.lines)
     assert written(tmp_path).providers["lab"].api_key_env == "lab_key"
 
     # Typing a different lower-case name is still refused.
-    wrote, io, _ = setup(["", "", "", "other_key", "OTHER_KEY", "", "", "", ""], tmp_path)
+    wrote, io, _ = setup(["", "", "", "other_key", "OTHER_KEY", "", "", "", "Your low model"], tmp_path)
     assert wrote is True
     assert any("isn't a valid variable name" in line for line in io.lines)
     assert written(tmp_path).providers["lab"].api_key_env == "OTHER_KEY"
@@ -489,7 +500,7 @@ def assert_never_leaked(io, check):
 
 
 def test_a_key_at_the_custom_key_variable_prompt_is_refused(tmp_path, memory_keyring):
-    answers = ["Custom", "lab", "http://lab:8000/v1", PLANTED, "", SECRET, "big", "small", ""]
+    answers = ["Custom", "lab", "http://lab:8000/v1", PLANTED, "", SECRET, "big", "small", "Your low model"]
     wrote, io, check = setup(answers, tmp_path)
     assert wrote is True
     assert_never_leaked(io, check)
@@ -498,7 +509,7 @@ def test_a_key_at_the_custom_key_variable_prompt_is_refused(tmp_path, memory_key
 
 
 def test_a_key_at_the_custom_name_and_base_url_prompts_is_refused(tmp_path, memory_keyring):
-    answers = ["Custom", PLANTED, "lab", PLANTED, "http://lab:8000/v1", "", SECRET, "big", "small", ""]
+    answers = ["Custom", PLANTED, "lab", PLANTED, "http://lab:8000/v1", "", SECRET, "big", "small", "Your low model"]
     wrote, io, check = setup(answers, tmp_path)
     assert wrote is True
     assert_never_leaked(io, check)
@@ -506,7 +517,7 @@ def test_a_key_at_the_custom_name_and_base_url_prompts_is_refused(tmp_path, memo
 
 
 def test_the_custom_key_variable_must_be_upper_case_and_is_not_echoed(tmp_path, memory_keyring):
-    answers = ["Custom", "lab", "http://lab:8000/v1", "lab_key", "LAB_KEY", SECRET, "big", "small", ""]
+    answers = ["Custom", "lab", "http://lab:8000/v1", "lab_key", "LAB_KEY", SECRET, "big", "small", "Your low model"]
     wrote, io, _ = setup(answers, tmp_path)
     assert wrote is True
     assert any("isn't a valid variable name" in line for line in io.lines)
@@ -517,9 +528,9 @@ def test_the_custom_key_variable_must_be_upper_case_and_is_not_echoed(tmp_path, 
 @pytest.mark.parametrize(
     "answers",
     [
-        ["OpenAI", SECRET, PLANTED, "gpt-x", "gpt-y", ""],  # the high model
-        ["OpenAI", SECRET, "gpt-x", PLANTED, "gpt-y", ""],  # the low model
-        ["OpenAI", SECRET, f"openai:{PLANTED}", "gpt-x", "gpt-y", ""],  # behind the provider prefix
+        ["OpenAI", SECRET, PLANTED, "gpt-x", "gpt-y", "Your low model"],  # the high model
+        ["OpenAI", SECRET, "gpt-x", PLANTED, "gpt-y", "Your low model"],  # the low model
+        ["OpenAI", SECRET, f"openai:{PLANTED}", "gpt-x", "gpt-y", "Your low model"],  # behind the provider prefix
     ],
 )
 def test_a_key_at_a_model_prompt_is_refused(tmp_path, memory_keyring, answers):
@@ -536,7 +547,7 @@ def test_a_key_at_the_openrouter_search_is_refused(tmp_path, memory_keyring, typ
     assert_never_leaked(io, check)
     assert io.lines.count(KEY_WARNING) == 2
     assert "Fetching the OpenRouter model list…" not in io.lines  # nothing was searched
-    assert written(tmp_path).models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW}
+    assert written(tmp_path).models == {"high": SUGGESTED_HIGH, "low": SUGGESTED_LOW, "classifier": JEV_OPENROUTER}
 
 
 def test_a_key_when_choosing_a_model_after_a_failed_check_is_refused(tmp_path, memory_keyring):
@@ -548,7 +559,7 @@ def test_a_key_when_choosing_a_model_after_a_failed_check_is_refused(tmp_path, m
     assert written(tmp_path).models["high"] == "openrouter:openai/gpt-6-sol"
 
 
-# The classifier step (after the models are checked): a fast TypeSafe classifier for routing.
+# The classifier step (after the models are checked): a decision model for routing.
 
 
 def test_choosing_your_low_model_at_the_classifier_step_writes_no_classifier_key(tmp_path):
@@ -559,7 +570,7 @@ def test_choosing_your_low_model_at_the_classifier_step_writes_no_classifier_key
 
 def test_choosing_typesafe_jev_asks_for_its_key_and_writes_the_classifier_model(tmp_path, memory_keyring):
     wrote, io, _ = setup(
-        ["", SECRET, "", "", "TypeSafe", SECRET], tmp_path, classifier_check=lambda: None
+        ["", SECRET, "", "", "Jev through TypeSafe", SECRET], tmp_path, classifier_check=lambda model: None
     )
     assert wrote is True
     assert memory_keyring.store[(SERVICE, "TYPESAFE_API_KEY")] == SECRET
@@ -579,13 +590,14 @@ def test_the_classifier_check_runs_with_the_pending_typesafe_key_before_anything
 
     seen: dict[str, object] = {}
 
-    def classifier_check():
+    def classifier_check(model):
         seen["key"] = key_lookup().get("TYPESAFE_API_KEY")
         seen["store_during_check"] = dict(memory_keyring.store)
         return None
 
     wrote, io, _ = setup(
-        ["", SECRET, "", "", "TypeSafe", "sk-TESTSECRET-typesafe"], tmp_path, classifier_check=classifier_check
+        ["", SECRET, "", "", "Jev through TypeSafe", "sk-TESTSECRET-typesafe"],
+        tmp_path, classifier_check=classifier_check,
     )
     assert wrote is True
     assert seen["key"] == "sk-TESTSECRET-typesafe"
@@ -598,8 +610,8 @@ def test_the_classifier_check_runs_with_the_pending_typesafe_key_before_anything
 
 def test_a_failing_classifier_check_offers_to_fall_back_to_the_low_model(tmp_path, memory_keyring):
     wrote, io, _ = setup(
-        ["", SECRET, "", "", "TypeSafe", SECRET, "Use your low model"],
-        tmp_path, classifier_check=lambda: "http 401",
+        ["", SECRET, "", "", "Jev through TypeSafe", SECRET, "Use your low model"],
+        tmp_path, classifier_check=lambda model: "http 401",
     )
     assert wrote is True
     assert "✗ classifier  typesafe:jev-latest  http 401" in io.lines
@@ -608,8 +620,8 @@ def test_a_failing_classifier_check_offers_to_fall_back_to_the_low_model(tmp_pat
 
 def test_a_failing_classifier_check_can_be_kept_anyway(tmp_path, memory_keyring):
     wrote, io, _ = setup(
-        ["", SECRET, "", "", "TypeSafe", SECRET, "Keep TypeSafe"],
-        tmp_path, classifier_check=lambda: "http 401",
+        ["", SECRET, "", "", "Jev through TypeSafe", SECRET, "Keep typesafe:jev-latest"],
+        tmp_path, classifier_check=lambda model: "http 401",
     )
     assert wrote is True
     assert written(tmp_path).models["classifier"] == "typesafe:jev-latest"
@@ -619,11 +631,11 @@ TYPESAFE_SECRET = "sk-TESTSECRET-typesafe"
 
 
 def test_cancelling_after_the_classifier_key_is_entered_saves_nothing(tmp_path, memory_keyring):
-    # Cancelled (end of scripted input) at the "TypeSafe Jev failed the check." choice, after a
-    # new TypeSafe key was entered (on top of the provider's own): neither key is saved, and the
+    # Cancelled (end of scripted input) at the "typesafe:jev-latest failed the check." choice, after
+    # a new TypeSafe key was entered (on top of the provider's own): neither key is saved, and the
     # config is never written (replaces the old M2b "the key was saved" message).
-    answers = ["", SECRET, "", "", "TypeSafe", TYPESAFE_SECRET]
-    wrote, io, _ = setup(answers, tmp_path, classifier_check=lambda: "http 401")
+    answers = ["", SECRET, "", "", "Jev through TypeSafe", TYPESAFE_SECRET]
+    wrote, io, _ = setup(answers, tmp_path, classifier_check=lambda model: "http 401")
     assert wrote is False
     assert "Setup cancelled; nothing was saved." in io.lines
     assert not global_config_path().exists()
@@ -636,8 +648,8 @@ def test_cancelling_when_both_keys_come_from_the_environment(tmp_path, monkeypat
     # pending; the same cancellation point reports the same "nothing was saved" message.
     monkeypatch.setenv("OPENROUTER_API_KEY", SECRET)
     monkeypatch.setenv("TYPESAFE_API_KEY", TYPESAFE_SECRET)
-    answers = ["", "", "", "TypeSafe"]
-    wrote, io, _ = setup(answers, tmp_path, classifier_check=lambda: "http 401")
+    answers = ["", "", "", "Jev through TypeSafe"]
+    wrote, io, _ = setup(answers, tmp_path, classifier_check=lambda model: "http 401")
     assert wrote is False
     assert "Setup cancelled; nothing was saved." in io.lines
     assert not global_config_path().exists()
@@ -671,4 +683,95 @@ def test_the_default_classifier_check_reports_an_unsendable_key_without_it(monke
     from phil.setup.flow import _default_classifier_check
 
     monkeypatch.setenv("TYPESAFE_API_KEY", "ts-“smart”-quote")
-    assert _default_classifier_check(PhilConfig()) == "request failed"
+    assert _default_classifier_check(PhilConfig(), JEV_TYPESAFE) == "request failed"
+
+
+def classifier_options(io):
+    start = io.lines.index("Route requests with a fast classifier?")
+    return [line for line in io.lines[start + 1:start + 6] if line.startswith("  ")]
+
+
+def test_on_openrouter_the_classifier_step_lists_the_sources_and_preselects_jev_through_openrouter(tmp_path, memory_keyring):
+    seen = []
+    wrote, io, _ = setup(["", SECRET, "", "", ""], tmp_path, classifier_check=lambda model: seen.append(model))
+    assert wrote is True
+    assert classifier_options(io) == [
+        "  1. Jev through OpenRouter (recommended; uses your OpenRouter key)",
+        "  2. Jev through TypeSafe (recommended without OpenRouter; needs TYPESAFE_API_KEY)",
+        "  3. d1 through OpenRouter (experimental: routing thresholds were tuned for Jev)",
+        "  4. Your low model",
+    ]
+    assert seen == [JEV_OPENROUTER]  # Enter took the pre-selected option, and the check used it
+    assert f"✓ classifier  {JEV_OPENROUTER}" in io.lines
+    assert written(tmp_path).models["classifier"] == JEV_OPENROUTER
+    assert memory_keyring.store == {(SERVICE, "OPENROUTER_API_KEY"): SECRET}  # one key, asked once
+    assert sum(1 for kind, prompt in io.prompts if kind == "secret") == 1
+
+
+def test_off_openrouter_jev_through_typesafe_is_preselected(tmp_path, memory_keyring):
+    # Anthropic as the main provider: Enter at the classifier step takes Jev through TypeSafe.
+    wrote, io, _ = setup(["Anthropic", SECRET, "", "", "", TYPESAFE_SECRET], tmp_path)
+    assert wrote is True
+    assert written(tmp_path).models["classifier"] == JEV_TYPESAFE
+    assert memory_keyring.store[(SERVICE, "TYPESAFE_API_KEY")] == TYPESAFE_SECRET
+
+
+def test_off_openrouter_choosing_jev_through_openrouter_asks_for_the_openrouter_key_once(tmp_path, memory_keyring):
+    or_secret = "sk-or-TESTSECRET-classifier"
+    wrote, io, _ = setup(["Anthropic", SECRET, "", "", "Jev through OpenRouter", or_secret], tmp_path)
+    assert wrote is True
+    assert written(tmp_path).models["classifier"] == JEV_OPENROUTER
+    assert memory_keyring.store[(SERVICE, "OPENROUTER_API_KEY")] == or_secret
+    assert all(or_secret not in line for line in io.lines)
+
+
+def test_an_openrouter_key_from_the_environment_is_not_asked_for(tmp_path, monkeypatch, memory_keyring):
+    monkeypatch.setenv("OPENROUTER_API_KEY", SECRET)
+    wrote, io, _ = setup(["", "", "", ""], tmp_path)
+    assert wrote is True
+    assert written(tmp_path).models["classifier"] == JEV_OPENROUTER
+    assert not any(kind == "secret" for kind, prompt in io.prompts)
+
+
+def test_d1_can_be_chosen_and_is_checked(tmp_path, memory_keyring):
+    seen = []
+    wrote, io, _ = setup(["", SECRET, "", "", "d1"], tmp_path, classifier_check=lambda model: seen.append(model))
+    assert wrote is True and seen == [D1_OPENROUTER]
+    assert written(tmp_path).models["classifier"] == D1_OPENROUTER
+
+
+def test_a_failed_openrouter_check_falls_back_to_the_low_model_by_default(tmp_path, memory_keyring):
+    wrote, io, _ = setup(["", SECRET, "", "", "", ""], tmp_path, classifier_check=lambda model: "http 401")
+    assert wrote is True
+    assert f"✗ classifier  {JEV_OPENROUTER}  http 401" in io.lines
+    assert f"{JEV_OPENROUTER} failed the check." in io.lines
+    assert "classifier" not in written(tmp_path).models
+
+
+def test_a_rerun_with_an_openrouter_classifier_keeps_it_on_enter(tmp_path, memory_keyring):
+    memory_keyring.store[(SERVICE, "OPENROUTER_API_KEY")] = SECRET
+    global_config_path().parent.mkdir(parents=True)
+    global_config_path().write_text(
+        '[models]\nhigh = "openrouter:openai/gpt-6-sol"\nlow = "openrouter:openai/gpt-6-luna"\n'
+        f'classifier = "{JEV_OPENROUTER}"\n'
+    )
+    seen = []
+    wrote, io, _ = setup(["", "", "", "", ""], tmp_path, classifier_check=lambda model: seen.append(model))
+    assert wrote is True
+    assert classifier_options(io)[0] == f"  1. Keep {JEV_OPENROUTER}"
+    assert seen == []  # keeping the current classifier needs no new check
+    assert written(tmp_path).models["classifier"] == JEV_OPENROUTER
+
+
+def test_the_default_classifier_check_pings_the_chosen_provider(monkeypatch):
+    from phil.config import PhilConfig
+    from phil.setup import flow
+
+    seen = {}
+
+    def fake_ping(spec, model_name, *, timeout_s):
+        seen["call"] = (spec.name, model_name)
+
+    monkeypatch.setattr(flow, "ping_jev", fake_ping)
+    assert flow._default_classifier_check(PhilConfig(), JEV_OPENROUTER) is None
+    assert seen["call"] == ("openrouter_decisions", "typesafe/jev-1.13")
