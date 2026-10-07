@@ -1,8 +1,10 @@
+import json
 import logging
 
 from phil.chat.watcher import RunWatcher
 from phil.repo import resolve_repo
 from phil.run.launch import prepare_run
+from phil.store.activity import activity_log
 from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
@@ -243,3 +245,100 @@ def test_a_test_cmd_change_from_before_the_watcher_started_is_not_reposted(calc_
     reopened = RunWatcher(paths, run_id, reopened_posts.append, alive=lambda r: True, starting=lambda e: False)
     reopened.poll_once()
     assert "test_cmd_changed" not in kinds(reopened_posts)
+
+
+# --- the activity feed -----------------------------------------------------------------------------
+
+
+def _shell(log, command="pytest -q", result="→ 7 passed", *, end=True):
+    """Record one run_shell call (its start, and its end unless `end=False`); returns its seq."""
+    summary = f"run {command}"
+    seq = log.start(task="CALC-001", role="implementer", tool="run_shell", summary=summary)
+    if end:
+        log.end(seq, task="CALC-001", role="implementer", tool="run_shell", summary=summary, result=result,
+                ok=True, detail="exit_code: 0\n7 passed", duration_ms=1200)
+    return seq
+
+
+def _watch(paths, run_id, now):
+    posted = []
+    watcher = RunWatcher(paths, run_id, posted.append, alive=lambda r: True, starting=lambda e: False,
+                         clock=lambda: now[0])
+    return watcher, posted
+
+
+def test_watcher_starts_at_the_end_and_posts_only_new_activity(calc_repo):
+    """Given activity.jsonl and events.jsonl with old records before the watcher is created:
+    - the first poll posts no 'activity' and no 'milestone' events;
+    - after appending one end record and one task_started milestone, the next poll posts exactly one
+      'activity' event whose records are the new start+end, and one 'milestone' event."""
+    paths, run_id, conn, events, _, _, now = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    _shell(log, "pytest -q tests/old")
+    events.append("task_started", task="CALC-000", title="Old", seq=1)
+    watcher, posted = _watch(paths, run_id, now)
+
+    watcher.poll_once()
+    assert "activity" not in kinds(posted) and "milestone" not in kinds(posted)
+
+    events.append("task_started", task="CALC-001", title="Add subtract", seq=1)
+    seq = _shell(log)
+    watcher.poll_once()
+    activity = [e for e in posted if e.kind == "activity"]
+    assert len(activity) == 1
+    records = activity[0].data["records"]
+    assert [(r["seq"], r["phase"]) for r in records] == [(seq, "start"), (seq, "end")]
+    assert records[1]["summary"] == "run pytest -q" and records[1]["result"] == "→ 7 passed"
+    milestones = [e for e in posted if e.kind == "milestone"]
+    assert len(milestones) == 1
+    assert (milestones[0].data["kind"], milestones[0].data["task"]) == ("task_started", "CALC-001")
+
+
+def test_watcher_seeds_the_live_step_from_a_running_tool(calc_repo):
+    """A start record without an end exists before the watcher starts: the first poll posts
+    live_step with that record's summary; after its end record is appended, the next poll posts live_step {}."""
+    paths, run_id, conn, events, _, _, now = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    seq = _shell(log, end=False)
+    watcher, posted = _watch(paths, run_id, now)
+
+    watcher.poll_once()
+    live = [e for e in posted if e.kind == "live_step"]
+    assert len(live) == 1
+    assert (live[0].data["task"], live[0].data["role"], live[0].data["summary"]) == (
+        "CALC-001", "implementer", "run pytest -q"
+    )
+    assert isinstance(live[0].data["started"], float)
+
+    log.end(seq, task="CALC-001", role="implementer", tool="run_shell", summary="run pytest -q",
+            result="→ 7 passed", ok=True, detail=None, duration_ms=900)
+    watcher.poll_once()
+    live = [e for e in posted if e.kind == "live_step"]
+    assert len(live) == 2 and live[1].data == {}
+    watcher.poll_once()
+    assert kinds(posted).count("live_step") == 2  # posted only when it changes
+
+
+def test_watcher_skips_a_half_written_activity_line(calc_repo):
+    """A trailing partial line is not posted; once completed it is."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    path = activity_log(paths, run_id).path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps({"seq": 1, "ts": "2026-10-07T10:00:00Z", "phase": "end", "task": "CALC-001",
+                       "role": "implementer", "tool": "read_file", "summary": "read calc.py", "result": "",
+                       "ok": True, "detail": None, "duration_ms": 3})
+    half = len(line) // 2
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(line[:half])
+    watcher.poll_once()
+    assert "activity" not in kinds(posted)
+
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(line[half:] + "\n")
+    watcher.poll_once()
+    activity = [e for e in posted if e.kind == "activity"]
+    assert len(activity) == 1
+    assert [r["summary"] for r in activity[0].data["records"]] == ["read calc.py"]

@@ -164,10 +164,11 @@ def _plain(text: str) -> str:
 class _FakeTerminal:
     """Stands in for TerminalIO under CliRunner (no real terminal): line IO plus a toolbar probe."""
 
-    def __init__(self, toolbar):
+    def __init__(self, toolbar, live_row=None):
         from phil.chat.terminal import LineIO
 
         self.toolbar = toolbar
+        self.live_row = live_row
         self.line = LineIO(cli.console)
         self.closed = False
         made.append(self)

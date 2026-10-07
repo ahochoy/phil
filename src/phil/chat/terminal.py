@@ -51,8 +51,11 @@ class TerminalIO:
     so an event posted between the controller's drain and the next prompt still wakes it.
     """
 
-    def __init__(self, toolbar: Callable[[], str], *, input=None, output=None) -> None:
+    def __init__(
+        self, toolbar: Callable[[], str], live_row: Callable[[], str] | None = None, *, input=None, output=None
+    ) -> None:
         self._toolbar = toolbar
+        self._live_row = live_row  # the running step, shown on its own line above the input
         self.session: PromptSession = PromptSession(
             bottom_toolbar=self._render_toolbar, refresh_interval=0.5, input=input, output=output
         )
@@ -93,15 +96,26 @@ class TerminalIO:
                 return WAKE
         default, self._carried = self._carried, ""
         try:
-            return self.session.prompt(
-                FormattedText([("bold", prompt)]), default=default, pre_run=self._started
-            )
+            return self.session.prompt(self._message(prompt), default=default, pre_run=self._started)
         except EOFError:
             return None
         finally:
             with self._lock:
                 self._active = False
             self.session.app.erase_when_done = False  # a submitted line stays in the scrollback
+
+    def _message(self, prompt: str) -> Callable[[], FormattedText]:
+        """The prompt's message, re-rendered on every redraw: the live row (if any) above the prompt."""
+
+        def message() -> FormattedText:
+            try:
+                row = self._live_row() if self._live_row else ""
+            except Exception:  # a redraw must never take the prompt down
+                row = ""
+            parts = [("class:live", row + "\n")] if row else []
+            return FormattedText([*parts, ("bold", prompt)])
+
+        return message
 
     def _started(self) -> None:
         # Runs on the prompt's event loop once the app is running (its future is set).

@@ -6,8 +6,9 @@ from datetime import datetime
 
 from phil.chat.events import ChatEvent
 from phil.run.launch import is_worker_alive, worker_starting
+from phil.store.activity import activity_log
 from phil.store.db import connect
-from phil.store.events import run_events
+from phil.store.events import MILESTONE_KINDS, run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
 from phil.store.telemetry import run_totals, run_usage
@@ -23,6 +24,23 @@ ENDED_IF_IDLE = ("failed", "stopped")
 CONSECUTIVE_FAILURES_BEFORE_REPORT = 5
 # Run events posted to the chat as they are, once each: the latest of each kind since the last poll.
 NOTICES = ("budget_warning", "test_cmd_changed")
+
+
+def _size(path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _live_of(record: dict) -> dict:
+    """The live row's step for a tool call's start record; `started` falls back to now on a bad `ts`."""
+    try:
+        started = datetime.fromisoformat(str(record["ts"]).replace("Z", "+00:00")).timestamp()
+    except (KeyError, TypeError, ValueError):
+        started = time.time()
+    return {"task": record.get("task"), "role": record.get("role"), "summary": record.get("summary", ""),
+            "started": started}
 
 
 class RunWatcher:
@@ -44,6 +62,14 @@ class RunWatcher:
         self.alive, self.starting, self.clock = alive, starting, clock
         self.lost_after_s, self.interval_s = lost_after_s, interval_s
         self.events = run_events(paths, run_id)
+        # The feed starts at the current end of both logs: a reopened chat shows only what's new,
+        # except the tool call still running, which seeds the live row.
+        self.activity = activity_log(paths, run_id)
+        self._event_offset = _size(self.events.path)
+        self._activity_offset = self.activity.end_offset()
+        pending = self.activity.pending()
+        self._live: dict = _live_of(pending) if pending else {}
+        self._live_posted: dict = {}  # the chat starts with no live step
         self.done = False
         self._last: tuple | None = None
         self._paused_ts: str | None = None
@@ -71,6 +97,7 @@ class RunWatcher:
             return
         conn = connect(self.paths.db_path)
         try:
+            self._poll_feed()
             record = get_run(conn, self.run_id)
             if record is None:
                 return
@@ -119,6 +146,27 @@ class RunWatcher:
                 self._idle_since, self._lost_posted = None, False
         finally:
             conn.close()
+
+    def _poll_feed(self) -> None:
+        """Post the milestones and tool calls written since the last poll, and the live step if it changed."""
+        new_events, self._event_offset = self.events.read(self._event_offset)
+        for event in new_events:
+            if event.get("kind") in MILESTONE_KINDS:
+                self.post(ChatEvent("milestone", event))
+        records, self._activity_offset = self.activity.read(self._activity_offset)
+        if records:
+            self.post(ChatEvent("activity", {"records": records}))
+            open_starts = {r["seq"]: r for r in records if r.get("phase") == "start" and isinstance(r.get("seq"), int)}
+            for record in records:
+                if record.get("phase") == "end":
+                    open_starts.pop(record.get("seq"), None)
+                    if self._live and record.get("summary") == self._live.get("summary"):
+                        self._live = {}
+            if open_starts:
+                self._live = _live_of(open_starts[max(open_starts)])
+        if self._live != self._live_posted:
+            self._live_posted = dict(self._live)
+            self.post(ChatEvent("live_step", dict(self._live)))
 
     def rearm(self) -> None:
         """Re-post the current escalation if the run is still paused with no worker at the next poll.

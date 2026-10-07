@@ -156,11 +156,11 @@ def _interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _terminal(toolbar):
+def _terminal(toolbar, live_row=None):
     """The live terminal IO (patched in tests, where CliRunner has no real terminal)."""
     from phil.chat.terminal import TerminalIO
 
-    return TerminalIO(toolbar)
+    return TerminalIO(toolbar, live_row=live_row)
 
 
 def _open_chat_line(n: int, chat) -> str:
@@ -291,7 +291,7 @@ def _run_chat(
 ) -> None:
     from phil.chat.controller import ChatController
     from phil.chat.terminal import LineIO
-    from phil.ui.toolbar import render_toolbar
+    from phil.ui.toolbar import render_live_row, render_toolbar
 
     controller = None
 
@@ -300,7 +300,12 @@ def _run_chat(
             return ""
         return render_toolbar(controller.state.view(), time.time(), width=terminal.width())
 
-    terminal = _terminal(toolbar) if tty else LineIO(out)
+    def live_row() -> str:
+        if controller is None:
+            return ""
+        return render_live_row(controller.state.view(), time.time(), width=terminal.width())
+
+    terminal = _terminal(toolbar, live_row) if tty else LineIO(out)
     try:
         io = terminal.chat_io(lambda root, run_id, mode, decision=None: spawn_worker(root, run_id, mode, decision))
         try:

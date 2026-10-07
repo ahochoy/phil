@@ -280,3 +280,27 @@ def test_a_chat_runs_real_jobs_through_submit_post_and_wake(calc_repo):
     assert "Phil couldn't finish that" not in text, text
     assert "Plan CALC v1" in text
     assert spawned and spawned[0][1] == "start"
+
+
+def test_prompt_message_puts_the_live_row_above_the_input():
+    from prompt_toolkit.formatted_text import to_plain_text
+
+    with create_pipe_input() as pipe:
+        terminal = TerminalIO(lambda: "", live_row=lambda: "⠋ T1 · implementer · run pytest · 3s",
+                              input=pipe, output=DummyOutput())
+        assert to_plain_text(terminal._message("you › ")()) == "⠋ T1 · implementer · run pytest · 3s\nyou › "
+        quiet = TerminalIO(lambda: "", live_row=lambda: "", input=pipe, output=DummyOutput())
+        assert to_plain_text(quiet._message("you › ")()) == "you › "
+
+
+def test_a_failing_live_row_never_takes_the_prompt_down():
+    from prompt_toolkit.formatted_text import to_plain_text
+
+    def broken() -> str:
+        raise RuntimeError("boom")
+
+    with create_pipe_input() as pipe:
+        terminal = TerminalIO(lambda: "", live_row=broken, input=pipe, output=DummyOutput())
+        assert to_plain_text(terminal._message("you › ")()) == "you › "
+        plain = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
+        assert to_plain_text(plain._message("you › ")()) == "you › "

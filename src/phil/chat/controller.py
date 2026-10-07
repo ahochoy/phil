@@ -33,7 +33,7 @@ from phil.chat.overview import repo_overview
 from phil.chat.planning import Planner, PlanDraft, PlanningBudgetExceeded, intake, quick_plan
 from phil.chat.session import ChatSession
 from phil.chat.snapshot import export_tree, export_worktree
-from phil.chat.state import ChatState, RunView
+from phil.chat.state import ChatState, LiveStep, RunView
 from phil.chat.watcher import RunWatcher
 from phil.config import ConfigError, PhilConfig, load_config
 from phil.contracts import Approach, Approaches, Goal, Plan, PlanCritique, Question, Ref, RunStatus
@@ -57,6 +57,7 @@ from phil.store.telemetry import budget_warning_line, chat_cost_since, chat_usag
 from phil.tomlw import toml_value
 from phil.ui.answer_view import render_answer
 from phil.ui.brief_view import render_brief
+from phil.ui.feed_view import FeedRenderer
 from phil.ui.plan_view import _clip, render_goal, render_plan
 from phil.ui.runs_view import render_runs
 from phil.ui.show_view import detail_text, render_show, show_refs
@@ -100,7 +101,7 @@ GOAL_JOB_STAGES = ("routing", "intake", "planning", "answering", "designing")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
 RUN_EVENTS = (
     "run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning",
-    "test_cmd_changed",
+    "test_cmd_changed", "activity", "milestone", "live_step",
 )
 RECENT_EVENTS = 10  # run events a /btw answer sees
 NOTICE_REFS = 3  # details a completion notice lists
@@ -198,6 +199,7 @@ class ChatController:
         self._shown_setup_cmd: str | None = None  # the setup command in the last plan render, pinned into its run
         self._revising = False
         self._run_id: str | None = None
+        self._feed = FeedRenderer()  # the run's tool lines and milestone bands
         self._base_sha: str | None = None
         self._done_seen = False
         self._replacement = ""
@@ -1295,6 +1297,7 @@ class ChatController:
         self._stop_watcher()
         self._run_id, self._lost, self._pause, self._answer_sent = None, False, None, False
         self.state.set_run(None)
+        self.state.set_live(None)
         self.state.set_paused(False)
 
     def _closing(self) -> None:
@@ -1326,6 +1329,22 @@ class ChatController:
 
     def _on_test_cmd_changed(self, data: dict) -> None:
         self.console.print(f"[phil.warn]{escape(test_cmd_changed_line(str(data.get('cmd'))))}[/]")
+
+    def _on_activity(self, data: dict) -> None:
+        for line in self._feed.tool_lines(data.get("records", []), self.console.width):
+            self.console.print(line, soft_wrap=True)
+
+    def _on_milestone(self, data: dict) -> None:
+        self.console.print(self._feed.milestone(data, self.console.width))
+
+    def _on_live_step(self, data: dict) -> None:
+        if not data:
+            self.state.set_live(None)
+            return
+        self.state.set_live(LiveStep(
+            task=data.get("task"), role=str(data.get("role", "")), summary=str(data.get("summary", "")),
+            started=float(data.get("started", time.time())),
+        ))
 
     def _on_run_paused(self, data: dict) -> None:
         escalation = data["escalation"]
@@ -1407,6 +1426,7 @@ class ChatController:
 
     def _on_run_done(self, data: dict) -> None:
         # Settle the chat first, so a notice that fails to print can't leave it following a finished run.
+        self.state.set_live(None)
         self._stop_watcher()
         self.state.set_run(None)
         self.state.set_paused(False)
