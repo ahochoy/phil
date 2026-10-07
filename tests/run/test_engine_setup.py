@@ -232,22 +232,25 @@ def test_retry_after_a_baseline_that_cannot_run_reruns_setup_then_the_baseline(m
     # installs it, as `npm ci` would install vitest. The retry must rerun setup before the baseline.
     counter = tmp_path / "setup-count"
     runner = "__pycache__/run-tests"  # ignored by the calc repo, as node_modules/ would be
+    # Embedded with repr, as bytes: on Windows TEST_CMD is a quoted path with backslashes, which
+    # can't sit inside a hand-written '...' literal, and text mode would end the shebang in \r.
+    script = f'#!/bin/sh\nexec {TEST_CMD} "$@"\n'.encode()
     cmd = py(
         f"import os, pathlib; p = pathlib.Path({str(counter)!r}); "
         "n = int(p.read_text()) + 1 if p.exists() else 1; p.write_text(str(n)); "
         "os.makedirs('__pycache__', exist_ok=True); "
-        f"n > 1 and pathlib.Path({runner!r}).write_text('#!/bin/sh\\nexec {TEST_CMD} \"$@\"\\n'); "
+        f"n > 1 and pathlib.Path({runner!r}).write_bytes({script!r}); "
         f"n > 1 and os.chmod({runner!r}, 0o755)"
     )
     harness = make_harness(HAPPY, config=setup_config(cmd))
     state = initial_state(harness.deps.run_id, harness.plan, harness.base_sha, f"./{runner}")
     escalation = harness.graph.invoke(state, harness.thread)["__interrupt__"][0].value
-    assert escalation["reason"] == "cmd_not_found"
+    assert escalation["reason"] == "cmd_not_found", escalation
     assert escalation["resume_to"] == "setup"
 
     final = harness.resume({"action": "retry"})
 
-    assert final["status"] == "completed"
+    assert final["status"] == "completed", final.get("__interrupt__")
     assert counter.read_text() == "2"
     assert harness.run_record().needs_attention is None
 
