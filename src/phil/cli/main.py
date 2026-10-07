@@ -927,9 +927,8 @@ def show_command(
     _require_run(conn, run_id)
     paths = ProjectPaths(info.slug)
     if step is not None:
-        log = activity_log(paths, run_id)
-        record, path = log.find(step), log.detail_path(step)
-        if record is None or not record.get("detail") or not path.exists():
+        path = activity_log(paths, run_id).detail_for(step)
+        if path is None:
             console.print(f"[phil.error]#{step} has no details.[/]")
             raise typer.Exit(1)
         typer.echo(show_view.detail_text(path))

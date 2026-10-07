@@ -127,6 +127,23 @@ def test_more_hash_without_a_run(controller_without_run):
     assert controller.console.export_text().strip() == "No run to look in."
 
 
+def test_more_hash_keeps_working_after_the_run_ends_and_is_forgotten(controller_with_run):
+    controller = controller_with_run
+    run_dir = ProjectPaths(controller.info.slug).run_dir(controller._run_id)
+    ActivityLog(run_dir).end(
+        5, task="CALC-001", role="implementer", tool="run_shell", summary="run pytest -q",
+        result="→ 7 passed", ok=True, detail="7 passed\n", duration_ms=800,
+    )
+    controller._forget_run()
+    assert controller._run_id is None  # the chat no longer follows it
+
+    controller._more_command("#5")
+    text = controller.console.export_text()
+    assert "No run to look in." not in text
+    assert "run pytest -q" in text
+    assert "7 passed" in text
+
+
 def test_more_plain_number_keeps_its_meaning(controller_with_run):
     controller = controller_with_run
     controller._more_command("2")

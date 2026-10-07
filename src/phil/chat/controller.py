@@ -1629,9 +1629,8 @@ class ChatController:
             self.console.print("No run to look in.")
             return
         log = activity_log(ProjectPaths(self.info.slug), run_id)
-        record = log.find(seq)
-        path = log.detail_path(seq)
-        if record is None or not record.get("detail") or not path.exists():
+        path = log.detail_for(seq)
+        if path is None:
             self.console.print(f"#{seq} has no details.")
             return
         try:
@@ -1639,6 +1638,7 @@ class ChatController:
         except (OSError, UnicodeDecodeError) as exc:
             self.console.print(f"[phil.error]Couldn't read {escape(str(path))}: {escape(type(exc).__name__)}[/]")
             return
+        record = log.find(seq) or {}
         self.console.print(Panel(Text(text), title=Text(str(record.get("summary", f"#{seq}"))), title_align="left"))
 
     def _park_command(self, note: str) -> None:

@@ -171,6 +171,14 @@ class ActivityLog:
                 found = record
         return found
 
+    def detail_for(self, seq: int) -> Path | None:
+        """`seq`'s detail file: None unless a record exists, names a detail, and the file is there."""
+        record = self.find(seq)
+        if record is None or not record.get("detail"):
+            return None
+        path = self.detail_path(seq)
+        return path if path.exists() else None
+
 
 def activity_log(paths: ProjectPaths, run_id: str) -> ActivityLog:
     return ActivityLog(paths.run_dir(run_id))

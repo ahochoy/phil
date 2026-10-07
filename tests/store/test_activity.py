@@ -76,6 +76,22 @@ def test_a_write_failure_disables_the_log_and_never_raises(tmp_path, monkeypatch
     assert sum("activity log disabled" in r.message for r in caplog.records) == 1
 
 
+def test_detail_for_returns_the_path_only_when_a_detail_file_exists(tmp_path):
+    log = ActivityLog(tmp_path)
+    seq = log.record(task="T1", role="implementer", tool="run_shell", summary="run pytest -q",
+                     result="→ 7 passed", ok=True, detail="7 passed in 0.1s", duration_ms=1200)
+    assert log.detail_for(seq) == log.detail_path(seq)
+
+    no_detail = log.record(task="T1", role="implementer", tool="read_file", summary="read a.py",
+                           result="", ok=True, detail=None, duration_ms=3)
+    assert log.detail_for(no_detail) is None
+
+    assert log.detail_for(seq + 100) is None  # no such record
+
+    log.detail_path(seq).unlink()  # the record names a detail file that's gone
+    assert log.detail_for(seq) is None
+
+
 def test_a_corrupted_seq_does_not_raise(tmp_path):
     log = ActivityLog(tmp_path)
     log.path.parent.mkdir(parents=True, exist_ok=True)
