@@ -13,6 +13,7 @@ from pathlib import Path
 from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
+from rich.panel import Panel
 from rich.text import Text
 
 from phil.agents.invoke import AgentContext
@@ -48,6 +49,7 @@ from phil.routing.classify import classify
 from phil.git import GitError, commits_ahead
 from phil.run.launch import is_worker_alive, prepare_run, worker_starting
 from phil.run.state import blocking_count
+from phil.store.activity import activity_log
 from phil.store.db import connect
 from phil.store.events import run_events, test_cmd_changed_line
 from phil.store.paths import ProjectPaths
@@ -73,7 +75,8 @@ HELP = (
     "(/full! plans fully without design proposals). "
     "Commands: /runs, /btw <question> (ask while work continues), "
     "/answer (a paused run's question), /resume (a failed or stopped run), /show (the chat's run: usage "
-    "and numbered details), /more <n> (print detail n), /park <note> (set an idea aside), /help, "
+    "and numbered details), /more <n> (print detail n), /more #<step> (a feed step's detail), "
+    "/park <note> (set an idea aside), /help, "
     "/quit (or Ctrl-D)."
 )
 PROMPTS = {
@@ -1593,12 +1596,15 @@ class ChatController:
         self._set_refs(render_show(self.console, self.conn, ProjectPaths(self.info.slug), run_id))
 
     def _more_command(self, arg: str) -> None:
+        if arg.startswith("#") and arg[1:].isdigit():
+            self._more_step(int(arg[1:]))
+            return
         if not arg.isdigit():
-            self.console.print("Usage: /more <n>")
+            self.console.print("Usage: /more <n> or /more #<step>")
             return
         n = int(arg)
         if not 1 <= n <= len(self._last_refs):
-            self.console.print(f"No detail #{n}. Use /show to list them.")
+            self.console.print(f"No detail {n}. Use /show to list them.")
             return
         ref = self._last_refs[n - 1]
         if self._refs_from_btw:
@@ -1614,6 +1620,26 @@ class ChatController:
             self.console.print(f"[phil.error]Couldn't read {escape(str(path))}: {escape(type(exc).__name__)}[/]")
             return
         self.console.print(Text(text))  # plain text: never markup
+
+    def _more_step(self, seq: int) -> None:
+        """`/more #n`: a feed step's detail, in a panel. Looks in the run this chat follows, else the
+        most recent run it followed (so details keep working after a run ends and is forgotten)."""
+        run_id = self._chat_run()
+        if run_id is None:
+            self.console.print("No run to look in.")
+            return
+        log = activity_log(ProjectPaths(self.info.slug), run_id)
+        record = log.find(seq)
+        path = log.detail_path(seq)
+        if record is None or not record.get("detail") or not path.exists():
+            self.console.print(f"#{seq} has no details.")
+            return
+        try:
+            text = detail_text(path)
+        except (OSError, UnicodeDecodeError) as exc:
+            self.console.print(f"[phil.error]Couldn't read {escape(str(path))}: {escape(type(exc).__name__)}[/]")
+            return
+        self.console.print(Panel(Text(text), title=Text(str(record.get("summary", f"#{seq}"))), title_align="left"))
 
     def _park_command(self, note: str) -> None:
         if not note:

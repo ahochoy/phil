@@ -739,11 +739,11 @@ def test_show_and_more_after_a_run(calc_repo):
     )
     run_id = runs[0].run_id
     assert "No run to show yet." in text
-    assert "No detail #1. Use /show to list them." in text
+    assert "No detail 1. Use /show to list them." in text
     assert "1 summary" in text  # the completion notice numbers its refs
     assert "# Run summary" in text and "- [x] CALC-001 [done]" in text  # /more 1 prints the file as-is
-    assert "No detail #9. Use /show to list them." in text
-    assert "Usage: /more <n>" in text
+    assert "No detail 9. Use /show to list them." in text
+    assert "Usage: /more <n> or /more #<step>" in text
     assert f"Run {run_id} · CALC · full · completed" in text  # /show renders the chat's last run
     assert text.count("- [x] CALC-001 [done]") == 2  # /more 1 and /show's task list
 
@@ -780,7 +780,7 @@ def test_more_expands_btw_details_only_from_the_snapshot(calc_repo, tmp_path):
     assert text.count("def add(a, b):") == 2 and "LIVE EDIT" not in text  # /more 1 and /more 7
     assert text.count(REFUSED) == 5
     assert "TOP SECRET" not in text
-    assert "No detail #8. Use /show to list them." in text
+    assert "No detail 8. Use /show to list them." in text
 
 
 def test_btw_details_without_a_snapshot_are_refused(calc_repo):

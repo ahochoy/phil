@@ -916,14 +916,24 @@ def show_command(
     ctx: typer.Context,
     run_id: str,
     n: int | None = typer.Argument(None, help="Print detail #N in full instead of the overview."),
+    step: int | None = typer.Option(None, "--step", help="Print activity step #N's detail."),
 ) -> None:
     """Show a run's tasks, usage, open issues, and numbered details."""
+    from phil.store.activity import activity_log
     from phil.ui import show_view
     from phil.ui.show_view import render_show, show_refs
 
     info, conn = _open_project(ctx)
     _require_run(conn, run_id)
     paths = ProjectPaths(info.slug)
+    if step is not None:
+        log = activity_log(paths, run_id)
+        record, path = log.find(step), log.detail_path(step)
+        if record is None or not record.get("detail") or not path.exists():
+            console.print(f"[phil.error]#{step} has no details.[/]")
+            raise typer.Exit(1)
+        typer.echo(show_view.detail_text(path))
+        return
     if n is None:
         _sweep_quietly(info, conn)
         render_show(console, conn, paths, run_id)

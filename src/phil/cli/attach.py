@@ -7,9 +7,11 @@ from rich.console import Console
 from rich.markup import escape
 
 from phil.run.launch import is_worker_alive, worker_starting
-from phil.store.events import EventLog, test_cmd_changed_line
+from phil.store.activity import ActivityLog
+from phil.store.events import EventLog, MILESTONE_KINDS, test_cmd_changed_line
 from phil.store.runs import RunRecord, get_run
 from phil.store.telemetry import budget_warning_line
+from phil.ui.feed_view import FeedRenderer
 
 TERMINAL = ("completed", "incomplete", "aborted", "cleaned")
 
@@ -24,9 +26,11 @@ class AttachIO:
     starting: Callable[[EventLog], bool] = field(default=worker_starting)
 
 
-def render_event(console: Console, event: dict, run_id: str = "") -> None:
+def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRenderer | None = None) -> None:
     kind = event["kind"]
-    if kind == "node":
+    if kind in MILESTONE_KINDS:
+        console.print((feed or FeedRenderer()).milestone(event, console.width))
+    elif kind == "node":
         console.print(f"[phil.muted]· {escape(str(event['node']))}[/]")
     elif kind == "state":
         note = f" — {escape(event['needs_attention'])}" if event.get("needs_attention") else ""
@@ -80,6 +84,9 @@ def attach(
     offset = 0
     idle_since = time.monotonic()
     proc: object = None
+    feed = FeedRenderer()
+    activity = ActivityLog(events.path.parent)
+    activity_offset = activity.end_offset()
 
     def active(record: RunRecord) -> bool:
         if proc is not None:
@@ -89,7 +96,10 @@ def attach(
     while True:
         new, offset = events.read(offset)
         for event in new:
-            render_event(console, event, run_id)
+            render_event(console, event, run_id, feed)
+        records, activity_offset = activity.read(activity_offset)
+        for line in feed.tool_lines(records, console.width):
+            console.print(line, soft_wrap=True)
         record = get_run(conn, run_id)
         assert record is not None
         if record.state in TERMINAL:

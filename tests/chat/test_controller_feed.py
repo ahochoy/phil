@@ -7,6 +7,8 @@ from phil.chat.controller import WAKE
 from phil.chat.events import ChatEvent
 from phil.chat.state import LiveStep
 from phil.run.worker import run_worker
+from phil.store.activity import ActivityLog
+from phil.store.paths import ProjectPaths
 from tests.chat.conftest import critique, goal, plan
 from tests.chat.test_controller import run_chat
 from tests.run.conftest import TEST_CMD, review, tester_report, write_green, write_red
@@ -80,6 +82,57 @@ def test_forgetting_the_run_clears_the_live_step_and_the_feed(controller_with_ru
     controller._forget_run()
     assert controller.state.view().live is None
     assert controller._feed is not feed and controller._feed._task_started == {}
+
+
+@pytest.fixture
+def controller_without_run(calc_repo):
+    """A chat that has never followed a run."""
+    box = {}
+
+    def grab(controller):
+        box["controller"] = controller
+        return None
+
+    run_chat(
+        calc_repo, ["add subtract", "n", grab], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}
+    )
+    controller = box["controller"]
+    assert controller._run_id is None
+    controller.console.export_text()  # clear
+    return controller
+
+
+def test_more_hash_prints_the_detail_in_a_panel(controller_with_run):
+    controller = controller_with_run
+    run_dir = ProjectPaths(controller.info.slug).run_dir(controller._run_id)
+    ActivityLog(run_dir).end(
+        14, task="CALC-001", role="implementer", tool="run_shell", summary="run pytest -q",
+        result="→ 2 failed", ok=False, detail="2 failed\n", duration_ms=1200,
+    )
+    controller._more_command("#14")
+    text = controller.console.export_text()
+    assert "run pytest -q" in text
+    assert "2 failed" in text
+
+
+def test_more_hash_without_detail(controller_with_run):
+    controller = controller_with_run
+    controller._more_command("#3")
+    assert controller.console.export_text().strip() == "#3 has no details."
+
+
+def test_more_hash_without_a_run(controller_without_run):
+    controller = controller_without_run
+    controller._more_command("#3")
+    assert controller.console.export_text().strip() == "No run to look in."
+
+
+def test_more_plain_number_keeps_its_meaning(controller_with_run):
+    controller = controller_with_run
+    controller._more_command("2")
+    assert "No detail 2. Use /show to list them." in controller.console.export_text()
+    controller._more_command("x")
+    assert "Usage: /more <n> or /more #<step>" in controller.console.export_text()
 
 
 def _green_with_tests(turn: Turn):

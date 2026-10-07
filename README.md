@@ -252,6 +252,14 @@ The prompt stays usable while a goal is being planned or a run works in the back
 - `/runs` lists runs, `/help` shows the commands, `/quit` (or Ctrl-D) leaves the chat — a run
   left running keeps going in the background.
 
+**Following a run:** while a run works, the chat follows its live activity feed — a compact
+tool line per call (`run   pytest -q  → 7 passed  #14`) under highlighted milestone bands
+(`▸ CALC-001 Add subtract`, `✓ CALC-001 done · 1m12s`) — plus a live row on the toolbar for the
+step in progress. A tool line's trailing `#n` is a feed step: `/more #n` prints its detail (the
+full command output, diff, or agent text) in a panel, and it keeps working after the run ends.
+`phil show <run> --step N` prints the same detail outside the chat. `phil attach <run>` shows
+the same milestone bands and tool lines too, picking up from when you attach.
+
 Reopen a chat later:
 
     phil                      # lists this repo's open chats; pick a number or press Enter for a new one
@@ -392,6 +400,8 @@ just the top-level ones. `phil runs` shows accurate tokens and cost per run; `ph
 breaks it down by layer and role (calls, model calls, tokens in/out, cost, tool calls, retries),
 lists open issues, and numbers the run's details (worker log, test logs, reviewer/tester output,
 packets); `phil show <run> <n>` prints one detail in full (`/more <n>` does the same in the chat).
+`phil show <run> --step N` prints a feed step's detail instead (`/more #N` does the same in the
+chat) — the `#n` shown at the end of a tool line in the activity feed.
 
 Cost markers, wherever a cost is shown:
 
