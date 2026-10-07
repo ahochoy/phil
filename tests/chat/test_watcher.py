@@ -321,6 +321,57 @@ def test_watcher_seeds_the_live_step_from_a_running_tool(calc_repo):
     assert kinds(posted).count("live_step") == 2  # posted only when it changes
 
 
+def test_milestones_are_posted_between_the_tool_records_they_follow(calc_repo):
+    """One poll whose activity holds records seq 1–4 and whose events hold task_done with seq=2:
+    activity [1, 2], then task_done, then activity [3, 4]."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    for n in range(1, 5):
+        log.record(task="CALC-001", role="implementer", tool="read_file", summary=f"read f{n}.py", result="",
+                   ok=True, detail=None, duration_ms=1)
+    events.append("task_done", task="CALC-001", files=1, seq=2)
+    watcher.poll_once()
+    feed = [e for e in posted if e.kind in ("activity", "milestone")]
+    assert [e.kind for e in feed] == ["activity", "milestone", "activity"]
+    assert sorted({r["seq"] for r in feed[0].data["records"]}) == [1, 2]
+    assert feed[1].data["kind"] == "task_done"
+    assert sorted({r["seq"] for r in feed[2].data["records"]}) == [3, 4]
+
+
+def test_a_milestone_without_a_seq_keeps_its_file_position(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    _shell(activity_log(paths, run_id))
+    events.append("task_started", task="CALC-001", title="Add subtract")
+    watcher.poll_once()
+    feed = [e.kind for e in posted if e.kind in ("activity", "milestone")]
+    assert feed == ["milestone", "activity"]
+
+
+def test_ending_an_older_call_with_the_same_summary_keeps_the_newer_live(calc_repo):
+    """Two concurrent starts with the same summary: ending the older one doesn't clear the newer one."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    first = _shell(log, end=False)
+    second = _shell(log, end=False)
+    watcher.poll_once()
+    live = [e for e in posted if e.kind == "live_step"]
+    assert len(live) == 1 and live[0].data["seq"] == second
+
+    log.end(first, task="CALC-001", role="implementer", tool="run_shell", summary="run pytest -q",
+            result="→ 7 passed", ok=True, detail=None, duration_ms=900)
+    watcher.poll_once()
+    assert kinds(posted).count("live_step") == 1  # the newer call is still the live step
+
+    log.end(second, task="CALC-001", role="implementer", tool="run_shell", summary="run pytest -q",
+            result="→ 7 passed", ok=True, detail=None, duration_ms=900)
+    watcher.poll_once()
+    live = [e for e in posted if e.kind == "live_step"]
+    assert len(live) == 2 and live[1].data == {}
+
+
 def test_watcher_skips_a_half_written_activity_line(calc_repo):
     """A trailing partial line is not posted; once completed it is."""
     paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)

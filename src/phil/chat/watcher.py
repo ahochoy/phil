@@ -34,13 +34,19 @@ def _size(path) -> int:
 
 
 def _live_of(record: dict) -> dict:
-    """The live row's step for a tool call's start record; `started` falls back to now on a bad `ts`."""
+    """The live row's step for a tool call's start record; `started` falls back to now on a bad `ts`.
+    `seq` says which call it is, so only that call's end clears it (the chat ignores it)."""
     try:
         started = datetime.fromisoformat(str(record["ts"]).replace("Z", "+00:00")).timestamp()
     except (KeyError, TypeError, ValueError):
         started = time.time()
     return {"task": record.get("task"), "role": record.get("role"), "summary": record.get("summary", ""),
-            "started": started}
+            "started": started, "seq": record.get("seq")}
+
+
+def _int_seq(item: dict) -> int | None:
+    seq = item.get("seq")
+    return seq if isinstance(seq, int) and not isinstance(seq, bool) else None
 
 
 class RunWatcher:
@@ -148,25 +154,48 @@ class RunWatcher:
             conn.close()
 
     def _poll_feed(self) -> None:
-        """Post the milestones and tool calls written since the last poll, and the live step if it changed."""
+        """Post the milestones and tool calls written since the last poll, in order, and the live step
+        if it changed.
+
+        A milestone carries the activity log's last seq when it was written: the tool records up to that
+        seq are posted before it, the rest after it (a milestone without one goes in its file position).
+        """
         new_events, self._event_offset = self.events.read(self._event_offset)
-        for event in new_events:
-            if event.get("kind") in MILESTONE_KINDS:
-                self.post(ChatEvent("milestone", event))
         records, self._activity_offset = self.activity.read(self._activity_offset)
-        if records:
-            self.post(ChatEvent("activity", {"records": records}))
-            open_starts = {r["seq"]: r for r in records if r.get("phase") == "start" and isinstance(r.get("seq"), int)}
-            for record in records:
-                if record.get("phase") == "end":
-                    open_starts.pop(record.get("seq"), None)
-                    if self._live and record.get("summary") == self._live.get("summary"):
-                        self._live = {}
-            if open_starts:
-                self._live = _live_of(open_starts[max(open_starts)])
+        unposted = list(records)
+        for event in new_events:
+            if event.get("kind") not in MILESTONE_KINDS:
+                continue
+            upto = _int_seq(event)
+            if upto is not None:
+                before = [r for r in unposted if (seq := _int_seq(r)) is not None and seq <= upto]
+                if before:
+                    unposted = [r for r in unposted if not any(r is b for b in before)]
+                    self.post(ChatEvent("activity", {"records": before}))
+            self.post(ChatEvent("milestone", event))
+        if unposted:
+            self.post(ChatEvent("activity", {"records": unposted}))
+        self._follow_live(records)
         if self._live != self._live_posted:
             self._live_posted = dict(self._live)
             self.post(ChatEvent("live_step", dict(self._live)))
+
+    def _follow_live(self, records: list[dict]) -> None:
+        """The live step is the newest call started in `records` and not ended there; otherwise it's
+        kept until the end record with its own seq arrives."""
+        open_starts: dict[int, dict] = {}
+        for record in records:
+            seq = _int_seq(record)
+            if seq is None:
+                continue
+            if record.get("phase") == "start":
+                open_starts[seq] = record
+            elif record.get("phase") == "end":
+                open_starts.pop(seq, None)
+                if self._live and seq == self._live.get("seq"):
+                    self._live = {}
+        if open_starts:
+            self._live = _live_of(open_starts[max(open_starts)])
 
     def rearm(self) -> None:
         """Re-post the current escalation if the run is still paused with no worker at the next poll.
