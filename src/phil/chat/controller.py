@@ -1474,7 +1474,7 @@ class ChatController:
             if attention:
                 self.console.print(f"[phil.warn]Open issues: {escape(attention)}[/]")
             self.console.print(f"[phil.muted]Review it: phil diff {rid}[/]")
-            self.console.print(summary)
+            self.console.print(summary, soft_wrap=True)  # the path stays whole
         elif state == "incomplete":
             # Finished with a blocker or major issue open: say so plainly; a PR is only offered
             # "anyway". A finished run can't be resumed, so the chat then takes its next goal.
@@ -1482,10 +1482,10 @@ class ChatController:
             issues = f"{count} blocking issue(s)" if count is not None else "blocking issues"
             self.console.print(f"[phil.warn]Run {rid} finished with {issues} open; nothing to merge yet. See /show.[/]")
             self.console.print(f"[phil.muted]Review it: phil diff {rid}[/]")
-            self.console.print(summary)
+            self.console.print(summary, soft_wrap=True)  # the path stays whole
         else:
             self.console.print(f"Run {rid} was {escape(state)}.")
-            self.console.print(summary)
+            self.console.print(summary, soft_wrap=True)  # the path stays whole
         self._notice_refs(run_id)
 
     def _blocking_count(self, run_id: str) -> int | None:
