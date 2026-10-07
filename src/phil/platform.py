@@ -93,8 +93,26 @@ def _kill(proc: psutil.Process) -> None:
         pass
 
 
-# How many generations of stragglers _kill_stragglers chases before giving up.
+# How many generations of stragglers _kill_stragglers chases, and how long it may take in all.
 _STRAGGLER_ROUNDS = 5
+_STRAGGLER_DEADLINE_S = 5.0
+
+
+def _gone(proc: psutil.Process) -> bool:
+    """Whether `proc` has exited. is_running() compares create times, so a pid since reused by
+    another process counts as gone; a zombie counts as gone too. Never reaps."""
+    try:
+        return not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE
+    except psutil.Error:
+        return True
+
+
+def _pid_reused(pid: int, started: float) -> bool:
+    """Whether `pid` now names a live process other than the one that started at `started`."""
+    try:
+        return psutil.Process(pid).create_time() != started
+    except psutil.Error:
+        return False
 
 
 def _kill_stragglers(killed: list[psutil.Process]) -> None:
@@ -104,12 +122,14 @@ def _kill_stragglers(killed: list[psutil.Process]) -> None:
     inside CreateProcess still creates its child, which then never runs (it was never resumed)
     but holds the command's inherited output pipes open forever. So, once the killed processes
     have exited, kill every process whose parent is one of them and that started after that
-    parent (an older one only reuses the parent's pid); then do the same for those, until a
-    round finds none. The wait polls `pid_alive`, so it never takes the root's exit status
-    from its Popen."""
+    parent; then do the same for those, until a round finds none. A process is never taken for
+    a parent's child when that parent's pid already names another live process (Windows reuses
+    pids, and the new owner's children are no straggler of ours), nor when it is older than the
+    parent. All rounds together take at most _STRAGGLER_DEADLINE_S. The waits never take the
+    root's exit status from its Popen."""
+    deadline = time.monotonic() + _STRAGGLER_DEADLINE_S
     for _ in range(_STRAGGLER_ROUNDS):
-        deadline = time.monotonic() + 5
-        while any(pid_alive(proc.pid) for proc in killed) and time.monotonic() < deadline:
+        while not all(_gone(proc) for proc in killed) and time.monotonic() < deadline:
             time.sleep(0.02)
         started = {}
         for proc in killed:
@@ -117,9 +137,12 @@ def _kill_stragglers(killed: list[psutil.Process]) -> None:
                 started[proc.pid] = proc.create_time()  # psutil caches it, so a dead one still has it
             except psutil.Error:
                 pass
+        snapshot = list(psutil.process_iter(["ppid"]))
+        # Checked after the snapshot, so a pid reused before it was taken is caught.
+        parents = {pid: when for pid, when in started.items() if not _pid_reused(pid, when)}
         stragglers = []
-        for proc in psutil.process_iter(["ppid"]):
-            parent_started = started.get(proc.info["ppid"])
+        for proc in snapshot:
+            parent_started = parents.get(proc.info["ppid"])
             if parent_started is None or proc.pid in started:
                 continue
             try:
@@ -132,6 +155,8 @@ def _kill_stragglers(killed: list[psutil.Process]) -> None:
         for proc in stragglers:
             _kill(proc)
         killed = stragglers
+        if time.monotonic() >= deadline:
+            return
 
 
 def detach_kwargs() -> dict:
@@ -151,12 +176,21 @@ def detach_kwargs() -> dict:
 def request_stop(pid: int, stop_file: Path) -> None:
     """Ask a worker to stop cleanly. On POSIX, sends SIGTERM to `pid` (stop_file is
     ignored). On Windows, writes `pid` to `stop_file`: the worker's heartbeat thread notices
-    it naming its own pid on its next poll and interrupts itself; no signal is sent."""
+    it naming its own pid on its next poll and interrupts itself; no signal is sent.
+
+    On both, a `pid` that isn't running raises ProcessLookupError (on POSIX, os.kill does)."""
     if IS_WINDOWS:
+        if not pid_alive(pid):
+            raise ProcessLookupError(errno.ESRCH, f"no process {pid}")
         stop_file.parent.mkdir(parents=True, exist_ok=True)
         stop_file.write_text(f"{pid}\n", encoding="utf-8")
     else:
         os.kill(pid, signal.SIGTERM)
+
+
+# The error msvcrt.locking raises when LK_LOCK gives up. Windows' errno has it (36); macOS's
+# doesn't, so tests of the Windows path can run anywhere.
+_EDEADLOCK = getattr(errno, "EDEADLOCK", 36)
 
 
 def lock_file(handle) -> None:
@@ -174,7 +208,7 @@ def lock_file(handle) -> None:
                 return
             except OSError as exc:
                 # Only the lock-timeout error is retried; anything else (a bad handle) is real.
-                if exc.errno != errno.EDEADLOCK:
+                if exc.errno != _EDEADLOCK:
                     raise
     else:
         import fcntl
@@ -199,6 +233,17 @@ def _is_wsl_launcher(path: PureWindowsPath, environ: Mapping[str, str]) -> bool:
     return str(path).lower().startswith(str(system32).lower())
 
 
+def _git_for_windows_root(git: PureWindowsPath) -> PureWindowsPath | None:
+    """The Git for Windows install `git` belongs to, from its known layouts only:
+    <Git>\\cmd\\git.exe, <Git>\\bin\\git.exe and <Git>\\mingw64\\bin\\git.exe. None otherwise."""
+    folders = [parent.name.lower() for parent in git.parents]
+    if folders[:2] == ["bin", "mingw64"]:
+        return git.parents[2]
+    if folders[:1] in (["cmd"], ["bin"]):
+        return git.parents[1]
+    return None
+
+
 def find_bash(
     configured: str | None = None,
     *,
@@ -213,10 +258,9 @@ def find_bash(
     if configured:
         candidates.append(PureWindowsPath(configured))
     git = which("git")
-    if git:
-        # Covers <Git>\cmd\git.exe, <Git>\bin\git.exe and <Git>\mingw64\bin\git.exe; no further.
-        for parent in list(PureWindowsPath(git).parents)[:3]:
-            candidates.append(parent / "bin" / "bash.exe")
+    git_root = _git_for_windows_root(PureWindowsPath(git)) if git else None
+    if git_root is not None:
+        candidates.append(git_root / "bin" / "bash.exe")
     if environ.get("ProgramFiles"):
         candidates.append(PureWindowsPath(environ["ProgramFiles"], "Git", "bin", "bash.exe"))
     if environ.get("LocalAppData"):

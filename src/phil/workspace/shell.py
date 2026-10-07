@@ -622,6 +622,9 @@ def _output_after_kill(proc: subprocess.Popen) -> tuple[str, str]:
     return stdout, stderr
 
 
+_BASH_STARTUP_VARS = frozenset({"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"})
+
+
 def kill_active_groups() -> list[int]:
     """Kill every running command's whole process tree; returns the root pids it attempted
     (a root that had already exited is listed too)."""
@@ -662,6 +665,14 @@ def run_command(
         if found is None:
             return ShellResult(command, 127, "", platform.MISSING_BASH, False, elapsed())
         args, extra_env = platform.windows_command(args, found)
+        # Bash itself runs here (on POSIX there's no shell), so drop what would make it run
+        # other code first: startup files (BASH_ENV, ENV), options (SHELLOPTS, BASHOPTS) and
+        # exported functions (BASH_FUNC_*), which could shadow the command's program.
+        run_env = {
+            name: value
+            for name, value in run_env.items()
+            if name not in _BASH_STARTUP_VARS and not name.startswith("BASH_FUNC_")
+        }
         run_env |= extra_env
 
     try:

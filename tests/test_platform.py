@@ -1,7 +1,9 @@
+import errno
 import os
 import subprocess
 import sys
 from pathlib import PureWindowsPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -61,12 +63,12 @@ FAKE_ROOT = 4_000_001  # never a real pid: psutil and os are faked wherever it's
 
 
 class FakeProc:
-    """A psutil.Process stand-in. `kills` records every kill(); `tree` maps a pid to its
-    children."""
+    """A psutil.Process stand-in. `kills` records every kill(), and a killed process stops
+    running; `tree` maps a pid to its children."""
 
-    def __init__(self, pid, *, kills, tree=None, denied=(), started=0.0, ppid=None):
+    def __init__(self, pid, *, kills, tree=None, denied=(), started=0.0, ppid=None, running=True):
         self.pid, self.kills, self.tree, self.denied = pid, kills, tree or {}, denied
-        self.started, self.info = started, {"ppid": ppid}
+        self.started, self.info, self.running = started, {"ppid": ppid}, running
 
     def children(self, recursive=False):
         return [FakeProc(pid, kills=self.kills, denied=self.denied) for pid in self.tree.get(self.pid, [])]
@@ -74,30 +76,45 @@ class FakeProc:
     def create_time(self):
         return self.started
 
+    def is_running(self):
+        return self.running
+
+    def status(self):
+        return "running"
+
     def kill(self):
         import psutil
 
         if self.pid in self.denied:
             raise psutil.AccessDenied(self.pid)
         self.kills.append(self.pid)
+        self.running = False
 
 
 @pytest.fixture
 def fake_processes(monkeypatch):
     """psutil and the POSIX group calls faked: nothing real is ever signalled. Returns the
-    record: kills (pids kill() was called on), killpg (pids killpg was called with) and
-    pgids (what getpgid answers per pid; FAKE_ROOT leads its own group by default)."""
+    record: kills (pids kill() was called on), killpg (pids killpg was called with), pgids
+    (what getpgid answers per pid; FAKE_ROOT leads its own group by default) and live (pid ->
+    the FakeProc psutil.Process(pid) finds now; any other pid is NoSuchProcess)."""
     import signal
 
     import psutil
 
-    record = {"kills": [], "killpg": [], "pgids": {FAKE_ROOT: FAKE_ROOT}, "tree": {}, "denied": ()}
-    monkeypatch.setattr(
-        psutil, "Process", lambda pid: FakeProc(pid, kills=record["kills"], tree=record["tree"], denied=record["denied"])
-    )
+    record = {"kills": [], "killpg": [], "pgids": {FAKE_ROOT: FAKE_ROOT}, "tree": {}, "denied": (), "live": {}}
+
+    def process(pid):
+        if pid in record["live"]:
+            return record["live"][pid]
+        if not record["live"]:  # no table: any pid is a fresh fake
+            return FakeProc(pid, kills=record["kills"], tree=record["tree"], denied=record["denied"])
+        raise psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(psutil, "Process", process)
     monkeypatch.setattr(psutil, "wait_procs", lambda procs, timeout=None: ([], []))
     monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: [])
-    monkeypatch.setattr(platform, "pid_alive", lambda pid: False)  # every killed process is gone
+    # An unkillable fake never stops running: don't let the Windows sweep wait 5 s on it.
+    monkeypatch.setattr(platform, "_STRAGGLER_DEADLINE_S", 0.2)
     monkeypatch.setattr(os, "getpgid", lambda pid: record["pgids"].get(pid, -1), raising=False)
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: record["killpg"].append(pgid), raising=False)
     # So the POSIX branch can run under a patched IS_WINDOWS on Windows too.
@@ -143,16 +160,81 @@ def test_kill_tree_on_windows_kills_a_child_started_after_the_listing(fake_proce
 
     monkeypatch.setattr(platform, "IS_WINDOWS", True)
     kills = fake_processes["kills"]
-    monkeypatch.setattr(psutil, "Process", lambda pid: FakeProc(pid, kills=kills, started=100.0))
+    root = FakeProc(FAKE_ROOT, kills=kills, started=100.0)
+    fake_processes["live"][FAKE_ROOT] = root
     snapshots = iter([
         [FakeProc(7, kills=kills, started=101.0, ppid=FAKE_ROOT), FakeProc(8, kills=kills, started=50.0, ppid=FAKE_ROOT)],
         [FakeProc(9, kills=kills, started=102.0, ppid=7)],
         [],
     ])
-    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: next(snapshots))
+
+    def process_iter(attrs=None):
+        fake_processes["live"].pop(FAKE_ROOT, None)  # the root has exited by the first sweep
+        fake_processes["live"][-1] = root  # keeps the table non-empty: other pids don't exist
+        return next(snapshots)
+
+    monkeypatch.setattr(psutil, "process_iter", process_iter)
     platform.kill_tree(FAKE_ROOT)
     assert kills == [FAKE_ROOT, 7, 9]
     assert fake_processes["killpg"] == []
+
+
+def test_kill_tree_on_windows_spares_the_children_of_a_reused_parent_pid(fake_processes, monkeypatch):
+    # The root exited and Windows gave its pid to an unrelated process, which started a child:
+    # that child has the root's pid as ppid and is newer than the root, but isn't ours.
+    import psutil
+
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    kills = fake_processes["kills"]
+    fake_processes["live"][FAKE_ROOT] = FakeProc(FAKE_ROOT, kills=kills, started=100.0)
+    newcomer = FakeProc(FAKE_ROOT, kills=kills, started=200.0)
+
+    def process_iter(attrs=None):
+        fake_processes["live"][FAKE_ROOT] = newcomer  # the pid now names someone else
+        return [FakeProc(7, kills=kills, started=201.0, ppid=FAKE_ROOT)]
+
+    monkeypatch.setattr(psutil, "process_iter", process_iter)
+    platform.kill_tree(FAKE_ROOT)
+    assert kills == [FAKE_ROOT]
+
+
+def test_kill_tree_on_windows_does_not_wait_on_a_reused_pid(fake_processes, monkeypatch):
+    # is_running() compares create times, so a killed process whose pid was reused counts as
+    # gone at once: no stall until the deadline.
+    import time
+
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    kills = fake_processes["kills"]
+    # Once killed, the FakeProc's is_running() is False, while the pid itself still looks alive.
+    fake_processes["live"][FAKE_ROOT] = FakeProc(FAKE_ROOT, kills=kills, started=100.0)
+    monkeypatch.setattr(platform, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(platform, "_STRAGGLER_DEADLINE_S", 5.0)
+    started = time.monotonic()
+    platform.kill_tree(FAKE_ROOT)
+    assert time.monotonic() - started < 1
+    assert kills == [FAKE_ROOT]
+
+
+def test_kill_tree_on_windows_gives_up_after_one_overall_deadline(fake_processes, monkeypatch):
+    import psutil
+
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform, "_STRAGGLER_DEADLINE_S", 0.3)
+    kills = fake_processes["kills"]
+    # Unkillable, so every round waits on it: the rounds share the one deadline.
+    fake_processes["live"][FAKE_ROOT] = FakeProc(FAKE_ROOT, kills=kills, started=100.0, denied=(FAKE_ROOT,))
+    counter = iter(range(1000, 2000))
+
+    def process_iter(attrs=None):
+        pid = next(counter)
+        return [FakeProc(pid, kills=kills, started=101.0, ppid=FAKE_ROOT, denied=(pid,))]
+
+    monkeypatch.setattr(psutil, "process_iter", process_iter)
+    import time
+
+    started = time.monotonic()
+    platform.kill_tree(FAKE_ROOT)
+    assert time.monotonic() - started < 1.0
 
 
 def git_layout(root):
@@ -186,6 +268,22 @@ def test_find_bash_caps_the_git_derived_walk_at_three_parents():
         None, which=lambda n: git if n == "git" else None, environ={}, exists=lambda p: str(p) == bash
     )
     assert found is None
+
+
+def test_find_bash_only_derives_from_a_git_for_windows_layout():
+    # <Git>\cmd\git.exe means <Git> is C:\Git; C:\bin\bash.exe is no part of that install.
+    bash = str(PureWindowsPath(r"C:\bin", "bash.exe"))
+    found = platform.find_bash(
+        None, which=lambda n: r"C:\Git\cmd\git.exe" if n == "git" else None, environ={},
+        exists=lambda p: str(p) == bash,
+    )
+    assert found is None
+
+
+def test_find_bash_derives_from_a_bin_git():
+    bash = str(PureWindowsPath(r"C:\Git", "bin", "bash.exe"))
+    which = lambda name: r"C:\Git\bin\git.exe" if name == "git" else None  # noqa: E731
+    assert str(platform.find_bash(None, which=which, environ={}, exists=lambda p: str(p) == bash)) == bash
 
 
 def test_find_bash_falls_back_to_program_files():
@@ -237,12 +335,41 @@ def test_lock_file_round_trip(tmp_path):
         platform.unlock_file(handle)
 
 
-def test_lock_file_retries_past_msvcrt_lk_lock_giving_up():
-    # msvcrt.locking(LK_LOCK) gives up with OSError after ~10 one-second retries of its own;
-    # lock_file must retry past that to block the way fcntl.flock does. Not observable on
-    # macOS (no msvcrt) beyond the round trip above, so this only runs on Windows.
-    if not platform.IS_WINDOWS:
-        pytest.skip("msvcrt behaviour isn't observable on macOS")
+EDEADLOCK = getattr(errno, "EDEADLOCK", 36)  # Windows' value; macOS's errno lacks it
+
+
+@pytest.fixture
+def fake_msvcrt(monkeypatch, tmp_path):
+    """A fake msvcrt whose locking() raises the queued errors in turn, then succeeds; with
+    IS_WINDOWS patched, lock_file takes its Windows path on any OS."""
+    calls, errors = [], []
+
+    def locking(fd, mode, nbytes):
+        calls.append((fd, mode, nbytes))
+        if errors:
+            raise OSError(errors.pop(0), "locking failed")
+
+    monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace(locking=locking, LK_LOCK=2, LK_UNLCK=0))
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    handle = (tmp_path / "lock").open("a+", encoding="utf-8")
+    yield SimpleNamespace(calls=calls, errors=errors, handle=handle)
+    handle.close()
+
+
+def test_lock_file_retries_past_msvcrt_lk_lock_giving_up(fake_msvcrt):
+    # msvcrt.locking(LK_LOCK) gives up with EDEADLOCK after ~10 one-second retries of its own;
+    # lock_file must retry past that to block the way fcntl.flock does.
+    fake_msvcrt.errors.extend([EDEADLOCK, EDEADLOCK])
+    platform.lock_file(fake_msvcrt.handle)
+    assert fake_msvcrt.calls == [(fake_msvcrt.handle.fileno(), 2, 1)] * 3
+
+
+def test_lock_file_raises_any_other_msvcrt_error(fake_msvcrt):
+    fake_msvcrt.errors.append(errno.EBADF)
+    with pytest.raises(OSError) as raised:
+        platform.lock_file(fake_msvcrt.handle)
+    assert raised.value.errno == errno.EBADF
+    assert len(fake_msvcrt.calls) == 1
 
 
 def test_detach_kwargs_on_posix():
@@ -279,5 +406,16 @@ def test_request_stop_writes_a_file_on_windows_and_never_signals(monkeypatch, tm
     monkeypatch.setattr(platform, "IS_WINDOWS", True)
     monkeypatch.setattr(os, "kill", lambda *a: (_ for _ in ()).throw(AssertionError("os.kill called")))
     stop_file = tmp_path / "run" / "stop-requested"
-    platform.request_stop(4242, stop_file)
-    assert stop_file.read_text(encoding="utf-8") == "4242\n"
+    platform.request_stop(os.getpid(), stop_file)
+    assert stop_file.read_text(encoding="utf-8") == f"{os.getpid()}\n"
+
+
+def test_request_stop_on_windows_raises_for_a_worker_that_is_gone(monkeypatch, tmp_path):
+    # As os.kill does on POSIX, so `phil stop` treats both the same way.
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait()
+    stop_file = tmp_path / "run" / "stop-requested"
+    with pytest.raises(ProcessLookupError):
+        platform.request_stop(done.pid, stop_file)
+    assert not stop_file.exists()

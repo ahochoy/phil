@@ -871,6 +871,20 @@ def test_on_windows_a_command_runs_through_bash(tmp_path, fake_windows):
     assert FakePopen.envs == [{"KEEP": "1"} | extra_env]
 
 
+def test_on_windows_bash_startup_variables_never_reach_bash(tmp_path, fake_windows):
+    risky = {
+        "BASH_ENV": "evil.sh", "ENV": "evil.sh", "SHELLOPTS": "xtrace", "BASHOPTS": "extglob",
+        "BASH_FUNC_npm%%": "() { echo pwned; }",
+    }
+    run_command("npm test", cwd=tmp_path, timeout_s=10, env={"KEEP": "1", **risky})
+    assert FakePopen.envs[0].keys() == {"KEEP", platform.SHELL_COMMAND_VAR}
+
+
+def test_on_windows_a_callers_shell_command_variable_is_overwritten(tmp_path, fake_windows):
+    run_command("npm test", cwd=tmp_path, timeout_s=10, env={platform.SHELL_COMMAND_VAR: "rm -rf /"})
+    assert FakePopen.envs[0][platform.SHELL_COMMAND_VAR] == "npm test"
+
+
 def test_on_windows_the_argv_keeps_its_backslashes(tmp_path, fake_windows):
     run_command(WINDOWS_COMMAND, cwd=tmp_path, timeout_s=10)
     assert FakePopen.calls[0][:2] == [r"C:\Git\bin\bash.exe", "-c"]
