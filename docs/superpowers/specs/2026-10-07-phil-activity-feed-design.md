@@ -175,7 +175,19 @@ The existing kinds (`node`, `state`, `escalation`, `outcome`, `worker`, `test_cm
 ## 5. Done means
 
 - During a run, the chat shows compact tool lines under each task, highlighted milestones, and a live row that updates while tools run.
-- `/more #n` and `phil show <run> #n` open the detail.
+- `/more #n` and `phil show <run> --step n` open the detail.
 - `phil attach` shows the same feed.
 - CI passes on Ubuntu, macOS and Windows.
 - A live run, checked by the user, feels "obvious what Phil is doing" without flooding the screen.
+
+## 6. Plan-time amendments (2026-10-07)
+
+These came out of reading the code while writing the plan. They override the sections above where they differ.
+
+- **A1: a callback, not middleware.** Tool calls are recorded by a LangChain callback (`ActivityCallback`), which `invoke_agent` adds next to the existing `UsageCollector`. That replaces the agent middleware in §3.2.
+  - Callbacks already reach every harness and every nested sub-agent run.
+  - It needs no change to how agents are built, and scripted test agents can fire it.
+- **A2: no per-task cost in `task_done`.** It carries the task and the number of files changed. The elapsed time is worked out by the renderer from `task_started`. The run's running cost stays in the toolbar.
+- **A3: `phil show <run> --step N`.** This replaces `phil show <run> #N` from §3.7, because `#` starts a comment in shells. In the chat, `/more #N` is unchanged.
+- **A4: `gate` milestones only for passing gates** (red, green, check). A failing gate shows as `attempt_failed`, with its retry count. The engine's own test runs still appear as `gate …` tool lines, whether they pass or fail.
+- **A5: `phil attach` and old activity.** `phil attach` replays milestones from the start, as it already does for events. Tool lines start from when it attaches.
