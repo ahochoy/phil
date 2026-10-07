@@ -40,6 +40,8 @@ class ChatLocked(Exception):
 
 
 def _pid_alive(pid: int) -> bool:
+    if os.name == "nt":  # SPIKE: os.kill(pid, 0) is CTRL_C_EVENT on Windows
+        return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

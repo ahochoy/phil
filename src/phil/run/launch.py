@@ -81,7 +81,8 @@ def is_worker_alive(record: RunRecord, *, stale_after_s: float = 30.0) -> bool:
     if record.pid is None:
         return False
     try:
-        os.kill(record.pid, 0)
+        if os.name != "nt":  # SPIKE: os.kill(pid, 0) is CTRL_C_EVENT on Windows
+            os.kill(record.pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
