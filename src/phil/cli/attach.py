@@ -93,7 +93,8 @@ def attach(
         record = get_run(conn, run_id)
         assert record is not None
         if record.state in TERMINAL:
-            console.print(f"[phil.muted]Summary: {escape(str(events.path.parent / 'summary.md'))}[/]")
+            # soft_wrap: a long path stays whole (copyable) instead of wrapping mid-name.
+            console.print(f"[phil.muted]Summary: {escape(str(events.path.parent / 'summary.md'))}[/]", soft_wrap=True)
             return record.state
         alive = active(record)
         if record.state == "escalated" and not alive:

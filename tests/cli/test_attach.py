@@ -46,6 +46,23 @@ def test_attach_answers_an_escalation_and_follows_to_the_end(calc_repo):
     assert "summary.md" in text
 
 
+def test_the_summary_path_is_never_wrapped_so_it_stays_copyable(calc_repo):
+    # Rich wraps long lines at the console width; a run's summary path (long under a CI temp dir)
+    # was split mid-name ("su" / "mmary.md"). It's printed whole, whatever the width.
+    info, record = escalated_run(calc_repo)
+    paths = ProjectPaths(info.slug)
+    io = AttachIO(
+        choose=lambda prompt, options: "retry",
+        ask_hint=lambda: None,
+        spawn=lambda mode, decision: run_worker(calc_repo, record.run_id, mode, decision, factory=finishing()),
+        sleep=lambda _: None,
+    )
+    console = make_console(record=True, width=40)
+    attach(connect(paths.db_path), record.run_id, run_events(paths, record.run_id), console, io, poll_s=0)
+    summary = str(paths.run_dir(record.run_id) / "summary.md")
+    assert f"Summary: {summary}" in console.export_text()
+
+
 def test_attach_does_not_offer_full(calc_repo):
     # `full` needs the chat that started the run; from the terminal only retry and abort are offered.
     info, record = escalated_run(calc_repo)

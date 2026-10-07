@@ -302,7 +302,11 @@ def test_heartbeat_survives_a_transient_update_failure(calc_repo, monkeypatch):
     monkeypatch.setattr(worker_module, "update_run", flaky_update_run)
     beat = Heartbeat(db_path, record.run_id, 0.02)
     beat.start()
-    time.sleep(0.2)
+    # Wait for the beat after the failed one rather than a fixed time: a busy CI runner can starve
+    # the heartbeat thread (seen on macOS CI, where 0.2s gave a single beat).
+    deadline = time.monotonic() + 10
+    while calls["n"] < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
     beat.stop()
     assert calls["n"] >= 2
     assert row(info, record.run_id).heartbeat_at is not None
