@@ -4,9 +4,9 @@ Kept free of langgraph/langchain/deepagents at module import time (see
 `implementer-common.md`), even though the modules used here are all safe to import eagerly.
 """
 
-import fcntl
 from pathlib import Path
 
+from phil import platform
 from phil.publish.pr_body import newest_output, pr_title
 from phil.run.state import clean_note, dedupe_issues, issue_line
 from phil.store.artifacts import ArtifactStore
@@ -63,8 +63,8 @@ def append_learnings(paths: ProjectPaths, entry: str, run_id: str) -> bool:
     path = paths.project_dir / "learnings.md"
     marker = f"## {run_id} "
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a+", encoding="utf-8", errors="replace") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+    with open(path, "a+", encoding="utf-8", errors="replace", newline="\n") as handle:
+        platform.lock_file(handle)
         try:
             handle.seek(0)
             existing = handle.read()
@@ -76,5 +76,5 @@ def append_learnings(paths: ProjectPaths, entry: str, run_id: str) -> bool:
                 handle.write(("" if existing.endswith("\n") else "\n") + "\n" + entry)
             handle.flush()
         finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            platform.unlock_file(handle)
     return True

@@ -41,28 +41,28 @@ class ArtifactStore:
 
     def write_plan(self, plan: Plan) -> Path:
         path = self._file("plan.json")
-        path.write_text(plan.model_dump_json(indent=2))
+        path.write_text(plan.model_dump_json(indent=2), encoding="utf-8", newline="\n")
         return path
 
     def read_plan(self) -> Plan:
-        return Plan.model_validate_json((self.run_dir / "plan.json").read_text())
+        return Plan.model_validate_json((self.run_dir / "plan.json").read_text(encoding="utf-8"))
 
     def write(self, subdir: str, name: str, contract: BaseModel) -> Path:
         path = self._file(f"{subdir}/{name}.json")
-        path.write_text(contract.model_dump_json(indent=2))
+        path.write_text(contract.model_dump_json(indent=2), encoding="utf-8", newline="\n")
         return path
 
     def write_json(self, subdir: str, name: str, data: dict) -> Path:
         path = self._file(f"{subdir}/{name}.json")
-        path.write_text(json.dumps(data, default=repr, indent=2))
+        path.write_text(json.dumps(data, default=repr, indent=2), encoding="utf-8", newline="\n")
         return path
 
     def read[T: BaseModel](self, path: Path, model: type[T]) -> T:
-        return model.model_validate_json(path.read_text())
+        return model.model_validate_json(path.read_text(encoding="utf-8"))
 
     def append_assumptions(self, *, node: str, task_id: str | None, assumptions: list[str]) -> None:
         path = self._file("assumptions.jsonl")
-        with self._append_lock, path.open("a") as handle:
+        with self._append_lock, path.open("a", encoding="utf-8", newline="\n") as handle:
             for assumption in assumptions:
                 entry = {"node": node, "task_id": task_id, "assumption": assumption, "status": "open"}
                 handle.write(json.dumps(entry) + "\n")
@@ -71,7 +71,7 @@ class ArtifactStore:
         path = self.run_dir / "assumptions.jsonl"
         if not path.exists():
             return []
-        return [json.loads(line) for line in path.read_text().splitlines() if line]
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
     def log_path(self, name: str) -> Path:
         """Where `write_log(name, ...)` writes (or will write): resolved, inside the run dir."""
@@ -79,10 +79,10 @@ class ArtifactStore:
 
     def write_log(self, name: str, text: str) -> Path:
         path = self.log_path(name)
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8", newline="\n")
         return path
 
     def write_text(self, relative: str, text: str) -> Path:
         path = self._file(relative)
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8", newline="\n")
         return path

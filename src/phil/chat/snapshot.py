@@ -44,7 +44,7 @@ def export_tree(repo_root: Path, sha: str, dest: Path) -> Path:
     dest.mkdir(parents=True)
     with tarfile.open(fileobj=io.BytesIO(proc.stdout), mode="r:") as archive:
         archive.extractall(dest, filter=_safe_members)
-    _marker(dest, sha).write_text("")
+    _marker(dest, sha).write_text("", encoding="utf-8")
     return dest
 
 

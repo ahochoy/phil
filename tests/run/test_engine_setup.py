@@ -102,6 +102,21 @@ def test_setup_that_times_out_escalates(make_harness):
     assert not (logs_dir(harness) / "baseline.log").exists()
 
 
+def test_setup_runs_with_the_configured_bash(make_harness, monkeypatch):
+    seen: list[str | None] = []
+    real_run_command = engine_module.run_command
+
+    def spy(cmd, cwd, timeout_s, env=None, *, bash=None):
+        seen.append(bash)
+        return real_run_command(cmd, cwd, timeout_s, env=env, bash=bash)
+
+    monkeypatch.setattr(engine_module, "run_command", spy)
+    config = PhilConfig(project={"setup_cmd": WRITE_MARKER}, shell={"bash": r"D:\Git\bin\bash.exe"})
+    harness = make_harness(HAPPY, config=config)
+    assert harness.start()["status"] == "completed"
+    assert seen[0] == r"D:\Git\bin\bash.exe"
+
+
 def test_setup_sees_no_secret_env_vars(make_harness, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-planted-fake")
     cmd = py(
@@ -217,22 +232,25 @@ def test_retry_after_a_baseline_that_cannot_run_reruns_setup_then_the_baseline(m
     # installs it, as `npm ci` would install vitest. The retry must rerun setup before the baseline.
     counter = tmp_path / "setup-count"
     runner = "__pycache__/run-tests"  # ignored by the calc repo, as node_modules/ would be
+    # Embedded with repr, as bytes: on Windows TEST_CMD is a quoted path with backslashes, which
+    # can't sit inside a hand-written '...' literal, and text mode would end the shebang in \r.
+    script = f'#!/bin/sh\nexec {TEST_CMD} "$@"\n'.encode()
     cmd = py(
         f"import os, pathlib; p = pathlib.Path({str(counter)!r}); "
         "n = int(p.read_text()) + 1 if p.exists() else 1; p.write_text(str(n)); "
         "os.makedirs('__pycache__', exist_ok=True); "
-        f"n > 1 and pathlib.Path({runner!r}).write_text('#!/bin/sh\\nexec {TEST_CMD} \"$@\"\\n'); "
+        f"n > 1 and pathlib.Path({runner!r}).write_bytes({script!r}); "
         f"n > 1 and os.chmod({runner!r}, 0o755)"
     )
     harness = make_harness(HAPPY, config=setup_config(cmd))
     state = initial_state(harness.deps.run_id, harness.plan, harness.base_sha, f"./{runner}")
     escalation = harness.graph.invoke(state, harness.thread)["__interrupt__"][0].value
-    assert escalation["reason"] == "cmd_not_found"
+    assert escalation["reason"] == "cmd_not_found", escalation
     assert escalation["resume_to"] == "setup"
 
     final = harness.resume({"action": "retry"})
 
-    assert final["status"] == "completed"
+    assert final["status"] == "completed", final.get("__interrupt__")
     assert counter.read_text() == "2"
     assert harness.run_record().needs_attention is None
 

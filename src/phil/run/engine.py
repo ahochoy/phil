@@ -80,7 +80,7 @@ def _write_json_atomic(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(data, indent=2, default=repr))
         os.replace(tmp_name, path)
     except BaseException:
@@ -419,7 +419,7 @@ class RunEngine:
             return {"status": "running", "escalation": escalation}
         baseline = self._test({**state, "baseline_failures": []}, "baseline")
         if baseline.exit_code == COMMAND_NOT_FOUND:
-            output = Path(baseline.log_path).read_text() if baseline.log_path else ""
+            output = Path(baseline.log_path).read_text(encoding="utf-8") if baseline.log_path else ""
             escalation = self._cmd_not_found(baseline.command, output, baseline.log_path, resume_to="setup")
             return {"status": "running", "escalation": escalation}
         return {
@@ -438,7 +438,9 @@ class RunEngine:
         if not cmd:
             return None
         timeout_s = config.project.setup_timeout_s
-        result = run_command(cmd, self.deps.worktree, timeout_s, env=child_env(os.environ, config.shell.pass_env))
+        result = run_command(
+            cmd, self.deps.worktree, timeout_s, env=child_env(os.environ, config.shell.pass_env), bash=config.shell.bash
+        )
         log = self.deps.artifacts.write_log("setup", result.stdout + (f"\n{result.stderr}" if result.stderr else ""))
         if result.ok:
             # Installed dependencies git doesn't ignore would look like the task's changes (and a

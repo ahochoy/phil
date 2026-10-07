@@ -1441,7 +1441,7 @@ class ChatController:
         """The quick run's worklogs from its handoff; [] (with a note) when it's missing or unreadable."""
         path = ProjectPaths(self.info.slug).run_dir(run_id) / "handoff" / "prior_attempt.json"
         try:
-            items = json.loads(path.read_text())["worklogs"]
+            items = json.loads(path.read_text(encoding="utf-8"))["worklogs"]
             if not isinstance(items, list):
                 raise TypeError(f"worklogs is a {type(items).__name__}, not a list")
         except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -1492,7 +1492,7 @@ class ChatController:
         """The run's open blocker and major issues, from its open_issues.json; None if unreadable."""
         path = ProjectPaths(self.info.slug).run_dir(run_id) / "open_issues.json"
         try:
-            issues = json.loads(path.read_text())
+            issues = json.loads(path.read_text(encoding="utf-8"))
             return blocking_count([issue for issue in issues if isinstance(issue, dict)])
         except (OSError, ValueError, TypeError):
             logger.warning("couldn't read the open issues of %s", run_id, exc_info=True)

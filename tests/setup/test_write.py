@@ -1,5 +1,6 @@
 import pytest
 
+from phil import platform
 from phil.config import load_config
 from phil.setup.write import HEADER, write_global_config
 
@@ -146,6 +147,7 @@ def test_a_symlinked_config_is_written_through_to_its_target(tmp_path, phil_home
     assert 'high = "a:b"' in target.read_text()
 
 
+@pytest.mark.skipif(platform.IS_WINDOWS, reason="POSIX file modes")
 def test_the_file_keeps_its_permission_mode(phil_home):
     import stat
 
@@ -157,9 +159,20 @@ def test_the_file_keeps_its_permission_mode(phil_home):
     assert stat.S_IMODE(path.stat().st_mode) == 0o640
 
 
+@pytest.mark.skipif(platform.IS_WINDOWS, reason="POSIX file modes")
 def test_a_new_file_is_private(phil_home):
     import stat
 
     path = phil_home / "config.toml"
     write_global_config(path, models={"high": "a:b"}, provider_name=None, provider_fields={})
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_on_windows_the_write_never_calls_fchmod(phil_home, monkeypatch):
+    import os
+
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    calls = []
+    monkeypatch.setattr(os, "fchmod", lambda fd, mode: calls.append((fd, mode)))
+    write_global_config(phil_home / "config.toml", models={"high": "a:b"}, provider_name=None, provider_fields={})
+    assert calls == []

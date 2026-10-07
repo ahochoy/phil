@@ -5,6 +5,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+from phil import platform
 from phil.repo import resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, spawn_worker, worker_command, worker_starting
 from phil.store.db import connect, utcnow
@@ -121,6 +122,69 @@ def test_is_worker_alive(calc_repo):
     assert not is_worker_alive(replace(me, pid=done.pid))
 
 
+def _no_os_kill(*args):
+    raise AssertionError("os.kill must not be used to probe a process")
+
+
+def test_is_worker_alive_never_signals(calc_repo, monkeypatch):
+    _, record = new_run(calc_repo)
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait()
+    monkeypatch.setattr(os, "kill", _no_os_kill)
+    me = replace(record, pid=os.getpid(), heartbeat_at=utcnow())
+    assert is_worker_alive(me)
+    assert not is_worker_alive(replace(me, pid=done.pid))
+
+
+def test_worker_starting_never_signals(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    events = run_events(ProjectPaths(info.slug), record.run_id)
+    events.append("spawn", pid=os.getpid(), mode="start")
+    monkeypatch.setattr(os, "kill", _no_os_kill)
+    assert worker_starting(events)
+
+
+def test_worker_starting_on_windows_does_not_reap(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    events = run_events(ProjectPaths(info.slug), record.run_id)
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait()
+
+    def no_waitpid(*args):
+        raise AssertionError("os.waitpid is POSIX-only")
+
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(os, "waitpid", no_waitpid)
+    monkeypatch.setattr(os, "kill", _no_os_kill)
+    events.append("spawn", pid=os.getpid(), mode="start")
+    assert worker_starting(events)
+    events.append("spawn", pid=done.pid, mode="start")
+    assert not worker_starting(events)
+
+
+def test_spawn_worker_detaches_the_worker(calc_repo, monkeypatch):
+    _, record = new_run(calc_repo)
+    real_popen = subprocess.Popen
+    captured = []
+
+    def fake_popen(command, **kwargs):
+        if command[0] != sys.executable:
+            return real_popen(command, **kwargs)
+        captured.append(kwargs)
+
+        class FakeProc:
+            pid = 999999
+
+        return FakeProc()
+
+    detach = {"creationflags": 0x208}
+    monkeypatch.setattr("phil.run.launch.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(platform, "detach_kwargs", lambda: detach)
+    spawn_worker(calc_repo, record.run_id, "start", env=None)
+    assert captured[-1]["creationflags"] == 0x208
+    assert "start_new_session" not in captured[-1]
+
+
 def test_worker_starting_with_no_spawn_event(calc_repo):
     info, record = new_run(calc_repo)
     assert not worker_starting(run_events(ProjectPaths(info.slug), record.run_id))
@@ -142,8 +206,20 @@ def test_worker_starting_with_a_reaped_pid(calc_repo):
     assert not worker_starting(events)
 
 
-def _wait_until_zombie(pid: int, deadline: float) -> bool:
-    """Poll `ps` (which never reaps) until the OS reports `pid` as a zombie, or the deadline passes."""
+def _wait_until_exited_unwaited(pid: int, deadline: float) -> bool:
+    """Wait, without reaping, until `pid` has exited, or the deadline passes. On POSIX that's
+    `ps` (which never reaps) reporting a zombie. Windows has no zombies; waiting on a process
+    there never takes the exit status from its Popen, so psutil can wait directly."""
+    if platform.IS_WINDOWS:
+        import psutil
+
+        try:
+            psutil.Process(pid).wait(timeout=max(deadline - time.monotonic(), 0))
+        except psutil.NoSuchProcess:
+            pass
+        except psutil.TimeoutExpired:
+            return False
+        return True
     while time.monotonic() < deadline:
         result = subprocess.run(["ps", "-o", "state=", "-p", str(pid)], capture_output=True, text=True)
         if result.stdout.strip().startswith("Z"):
@@ -152,14 +228,14 @@ def _wait_until_zombie(pid: int, deadline: float) -> bool:
     return False
 
 
-def test_worker_starting_treats_an_unreaped_zombie_as_not_starting(calc_repo):
-    # A worker the chat spawned and never waited on: it exits but stays a zombie, so
+def test_worker_starting_treats_an_exited_unwaited_child_as_not_starting(calc_repo):
+    # A worker the chat spawned and never waited on: it exits but, on POSIX, stays a zombie, so
     # `os.kill(pid, 0)` alone (the old implementation) would wrongly keep reading it as alive.
     info, record = new_run(calc_repo)
     events = run_events(ProjectPaths(info.slug), record.run_id)
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
     events.append("spawn", pid=proc.pid, mode="start")
-    assert _wait_until_zombie(proc.pid, time.monotonic() + 5.0), "child never became a zombie"
+    assert _wait_until_exited_unwaited(proc.pid, time.monotonic() + 5.0), "child never exited"
     assert not worker_starting(events)
 
 

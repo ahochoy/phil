@@ -3,7 +3,6 @@ import importlib
 import json
 import logging
 import os
-import signal
 import sqlite3
 import sys
 import time
@@ -15,7 +14,7 @@ import typer
 from pydantic import ValidationError
 from rich.markup import escape
 
-from phil import __version__
+from phil import __version__, platform
 from phil.chat.approval import effective_setup_cmd, git_policy_note, launch_problems, terminated
 from phil.config import (
     CHAT_ROLES,
@@ -36,7 +35,7 @@ from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
-from phil.store.runs import get_run, update_run
+from phil.store.runs import RunRecord, get_run, update_run
 from phil.tomlw import toml_value
 from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
@@ -60,6 +59,7 @@ _read_secret = getpass.getpass
 # (its worker process hasn't written a pid/heartbeat yet); older than this, treat it as a worker
 # that never started and let `phil resume` continue it from scratch.
 PENDING_STALE_AFTER_S = 30.0
+FORCE_STOP_WAIT_S = 5.0  # how long `phil stop` waits for a killed worker to exit
 FULL_FROM_TERMINAL = "full is only available in the chat that started this run; answer retry or abort."
 
 SET_HELP = "Override a setting for this command, e.g. --set run.max_cost_usd=5 (repeatable)."
@@ -87,6 +87,11 @@ def root(
     new: bool = typer.Option(False, "--new", help="Start a new chat without listing open ones."),
     overrides: list[str] | None = typer.Option(None, "--set", help=SET_HELP),
 ) -> None:
+    if platform.IS_WINDOWS:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8")
     ctx.obj = {"repo": repo, "base": base, "resume": resume_chat, "new": new, "overrides": list(overrides or [])}
     if ctx.invoked_subcommand is None:
         _chat(ctx)
@@ -124,6 +129,13 @@ def _load_config(root: Path, overrides: list[str]) -> PhilConfig:
     except ConfigError as exc:
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
+
+
+def _require_bash(config: PhilConfig) -> None:
+    """On Windows, stop unless Git Bash can be found: every agent command runs through it."""
+    if platform.IS_WINDOWS and platform.find_bash(config.shell.bash) is None:
+        console.print(f"[phil.error]{escape(platform.MISSING_BASH)}[/]", soft_wrap=True)
+        raise typer.Exit(1)
 
 
 def _require_api_keys(config: PhilConfig, roles: tuple[str, ...]) -> None:
@@ -198,6 +210,7 @@ def _chat(ctx: typer.Context) -> None:
     info, conn = _open_project(ctx)
     overrides = ctx.obj.get("overrides", [])
     config = _load_config(info.root, overrides)
+    _require_bash(config)
     if _interactive() and config.missing_model_messages(CHAT_ROLES + RUN_ROLES):
         console.print("Phil isn't set up yet. Let's choose your models (about a minute).")
         if _run_setup(ctx, info.root):
@@ -375,11 +388,12 @@ def run_plan(
     # `phil --set a=1 run --set b=2`: both apply, the command's own last. The run keeps them.
     overrides = [*ctx.obj.get("overrides", []), *(run_overrides or [])]
     try:
-        plan = Plan.model_validate_json(plan_file.read_text())
+        plan = Plan.model_validate_json(plan_file.read_text(encoding="utf-8"))
     except ValidationError as exc:
         console.print(f"[phil.error]invalid plan: {escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
     config = _load_config(info.root, overrides)
+    _require_bash(config)
     problems = launch_problems(plan, config, info.root)
     if problems:
         for problem in problems:
@@ -467,6 +481,7 @@ def models_check(ctx: typer.Context) -> None:
 
     info = _resolve(ctx)
     config = _load_config(info.root, ctx.obj.get("overrides", []))
+    _require_bash(config)
     try:
         factory = _factory_from_env()
     except Exception as exc:
@@ -523,6 +538,7 @@ def _run_setup(ctx: typer.Context, root: Path) -> bool:
         if str(exc).startswith(f"Invalid {global_path}"):
             console.print(f"Fix {escape(global_path)} or move it aside, then run phil setup again.", soft_wrap=True)
         raise typer.Exit(1) from exc
+    _require_bash(config)
     try:
         factory = _factory_from_env()
     except Exception as exc:
@@ -775,7 +791,7 @@ def stop(
     timeout: float = typer.Option(15.0, "--timeout", help="Seconds to wait for the worker to stop."),
 ) -> None:
     """Stop a running run; continue it later with `phil resume`."""
-    _, conn = _open_project(ctx)
+    info, conn = _open_project(ctx)
     record = _require_run(conn, run_id)
     if record.state == "escalated":
         console.print(
@@ -795,7 +811,7 @@ def stop(
             raise typer.Exit(1)
     if alive:
         try:
-            os.kill(record.pid, signal.SIGTERM)
+            platform.request_stop(record.pid, ProjectPaths(info.slug).stop_request(run_id))
         except ProcessLookupError:
             alive = False
         except PermissionError as exc:
@@ -805,9 +821,18 @@ def stop(
             deadline = time.monotonic() + timeout
             current = get_run(conn, run_id)
             while current is not None and current.state in ("running", "pending"):
+                if not platform.pid_alive(record.pid):
+                    # It got the request but exited without settling its row (it crashed, or
+                    # was killed): record that rather than wait out the timeout.
+                    current = get_run(conn, run_id)
+                    if current is not None and current.state in ("running", "pending"):
+                        current = update_run(
+                            conn, run_id, state="stopped", needs_attention="stopped by user (worker exited)"
+                        )
+                    break
                 if time.monotonic() > deadline:
-                    console.print("[phil.error]the worker did not stop in time[/]")
-                    raise typer.Exit(1)
+                    current = _force_stop(conn, run_id, record.pid)
+                    break
                 time.sleep(0.2)
                 current = get_run(conn, run_id)
             _finish_stop(run_id, current)
@@ -818,6 +843,22 @@ def stop(
     if current is not None and current.state in ("running", "pending"):
         current = update_run(conn, run_id, state="stopped", needs_attention="stopped by user (worker was not running)")
     _finish_stop(run_id, current)
+
+
+def _force_stop(conn: sqlite3.Connection, run_id: str, pid: int) -> RunRecord | None:
+    """Kill a worker that ignored the stop request, then mark its run stopped ourselves."""
+    console.print("[phil.warn]the worker did not stop in time; stopping it by force[/]")
+    platform.kill_tree(pid)
+    deadline = time.monotonic() + FORCE_STOP_WAIT_S
+    while platform.pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if platform.pid_alive(pid):
+        console.print(f"[phil.error]could not stop the worker (pid {pid})[/]")
+        raise typer.Exit(1)
+    current = get_run(conn, run_id)
+    if current is not None and current.state in ("running", "pending"):
+        current = update_run(conn, run_id, state="stopped", needs_attention="stopped by user (forced)")
+    return current
 
 
 def _finish_stop(run_id: str, current) -> None:

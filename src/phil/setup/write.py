@@ -8,6 +8,8 @@ from pathlib import Path
 
 import tomlkit
 
+from phil import platform
+
 HEADER = "# Phil settings (written by phil setup; edit freely)"
 # The only fields setup writes under [providers.<name>]. Keys never go in the file, only the
 # name of the variable that holds one.
@@ -38,7 +40,7 @@ def write_global_config(
     if unknown:
         raise ValueError(f"setup can't write provider field(s) {unknown}; allowed: {list(PROVIDER_FIELDS)}")
     if path.is_file():
-        document = tomlkit.parse(path.read_text())
+        document = tomlkit.parse(path.read_text(encoding="utf-8"))
     else:
         document = tomlkit.document()
         document.add(tomlkit.comment(HEADER.removeprefix("# ")))
@@ -67,8 +69,9 @@ def _write_atomically(path: Path, text: str) -> None:
         mode = 0o600
     fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".config-", suffix=".toml")
     try:
-        with os.fdopen(fd, "w") as handle:
-            os.fchmod(handle.fileno(), mode)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            if not platform.IS_WINDOWS:
+                os.fchmod(handle.fileno(), mode)
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())

@@ -45,6 +45,22 @@ a stored one. When no keychain is available here (containers, some CI, headless 
 `phil setup` and `phil keys set` tell you to export the variable instead of trying to store it
 — see Configuration → Keys below for the full rule.
 
+### Windows
+
+Phil runs natively on Windows. It needs Git for Windows, which includes Git Bash:
+https://git-scm.com/download/win. Agent commands always run through Git Bash, so allowlists
+and commands look the same on every OS. If Phil can't find `bash.exe` on its own, set
+`[shell] bash` in your config to its path. Phil never treats
+`C:\Windows\System32\bash.exe` as Git Bash — that's WSL's launcher, not Git's.
+
+Phil also runs inside WSL; there it's simply Linux, and nothing in this section applies.
+
+Write Windows paths with forward slashes (`C:/tools/python.exe`) in commands and in
+`[shell] allow` patterns, or quote them — an unquoted backslash is read as an escape
+character, not a path separator. Also note that Git Bash rewrites an argument starting with
+`/` into a Windows path before handing it to a native (non-Bash) program; if a native tool
+receives a mangled `/flag`, that conversion is why. Set `MSYS_NO_PATHCONV=1` to turn it off.
+
 ## Configuration
 
 Settings resolve in layers, each overriding the last: built-in defaults, then your global

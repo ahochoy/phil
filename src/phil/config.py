@@ -105,6 +105,7 @@ class ShellConfig(_Section):
     timeout_s: int = 300
     max_output_lines: int = 200
     pass_env: list[str] = []
+    bash: str | None = None  # Windows only: Git Bash's bash.exe, when Phil can't find it
 
 
 class GitConfig(_Section):
@@ -427,7 +428,7 @@ def _merge(base: dict, layer: Mapping, source: str, sources: dict[str, str], pre
 
 def _read_layer(path: Path, label: str) -> dict:
     try:
-        return tomllib.loads(path.read_text())
+        return tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"Invalid {label}: {exc}") from exc
 

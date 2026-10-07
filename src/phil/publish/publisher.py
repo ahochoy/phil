@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from phil import platform
 from phil.git import GitError, git
 
 GH_TIMEOUT_S = 60  # gh calls and `git ls-remote`
@@ -92,7 +93,8 @@ class GhPublisher:
             # A new session has no controlling terminal: nothing (ssh, a credential helper) can
             # prompt on it, whatever the user configured.
             return subprocess.run(args, cwd=self.repo_root, input=stdin, capture_output=True, text=True,
-                                  timeout=timeout, env=unattended_env(self.repo_root), start_new_session=True)
+                                  encoding="utf-8", errors="replace",
+                                  timeout=timeout, env=unattended_env(self.repo_root), **platform.detach_kwargs())
         except subprocess.TimeoutExpired as exc:
             raise PublishError(f"`{' '.join(args[:3])}` timed out after {timeout}s") from exc
         except OSError as exc:

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from phil import platform
 from phil.contracts import Contract
 from phil.store.artifacts import ArtifactStore
 from phil.store.events import EventLog
@@ -40,21 +41,13 @@ class ChatLocked(Exception):
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # alive, owned by someone else
-    except OSError:
-        return False
-    return True
+    return platform.pid_alive(pid)
 
 
 def lock_holder(directory: Path) -> int | None:
     """The pid of another live process holding this chat's lock, else None (no lock, stale, or ours)."""
     try:
-        pid = int((directory / LOCK_FILE).read_text().strip())
+        pid = int((directory / LOCK_FILE).read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None
     if pid <= 0 or pid == os.getpid() or not _pid_alive(pid):
@@ -124,7 +117,7 @@ class ChatSession:
     def save_state(self, data: dict) -> None:
         target = self.dir / STATE_FILE
         tmp = target.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, default=str))
+        tmp.write_text(json.dumps(data, default=str), encoding="utf-8", newline="\n")
         os.replace(tmp, target)
 
     def lock(self) -> None:
@@ -137,21 +130,21 @@ class ChatSession:
             raise ChatLocked(holder)
         target = self.dir / LOCK_FILE
         tmp = self.dir / f"{LOCK_FILE}.{os.getpid()}.tmp"
-        tmp.write_text(str(os.getpid()))
+        tmp.write_text(str(os.getpid()), encoding="utf-8", newline="\n")
         os.replace(tmp, target)
 
     def unlock(self) -> None:
         """Release the lock if this process holds it."""
         target = self.dir / LOCK_FILE
         try:
-            if int(target.read_text().strip()) == os.getpid():
+            if int(target.read_text(encoding="utf-8").strip()) == os.getpid():
                 target.unlink()
         except (OSError, ValueError):
             pass
 
     def load_state(self) -> dict:
         try:
-            return json.loads((self.dir / STATE_FILE).read_text())
+            return json.loads((self.dir / STATE_FILE).read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
 

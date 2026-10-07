@@ -67,7 +67,7 @@ class PriceBook:
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(dir=str(self._cache_path.parent), prefix=".pricebook-")
         try:
-            with os.fdopen(fd, "w") as handle:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
                 json.dump(envelope, handle)
             os.replace(tmp_path, self._cache_path)
         except Exception:
@@ -77,7 +77,7 @@ class PriceBook:
 
     def _read_cache_envelope(self) -> dict | None:
         try:
-            return json.loads(self._cache_path.read_text())
+            return json.loads(self._cache_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
 

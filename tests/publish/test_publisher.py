@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from phil import platform
 from phil.publish import publisher as publishing
 from phil.publish.publisher import FakePublisher, GhPublisher, PrInfo, PublishError, PullRequest
 from tests.helpers import run_git
@@ -12,6 +13,12 @@ from tests.helpers import run_git
 
 def completed(args, code=0, out="", err=""):
     return subprocess.CompletedProcess(args, code, out, err)
+
+
+def assert_detached(kwargs):
+    """The subprocess was started detached from Phil's console and process group, as
+    platform.detach_kwargs() says for this OS (start_new_session on POSIX)."""
+    assert platform.detach_kwargs().items() <= kwargs.items()
 
 
 class Runner:
@@ -211,7 +218,7 @@ def test_git_commands_run_with_no_prompts_and_a_timeout(git_repo: Path, monkeypa
     kwargs = seen["kwargs"]
     assert seen["args"][:2] == ["git", "push"]
     assert kwargs["timeout"] == publishing.GIT_PUSH_TIMEOUT_S == 600
-    assert kwargs["start_new_session"] is True
+    assert_detached(kwargs)
     assert kwargs["cwd"] == git_repo
     assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
     assert kwargs["env"]["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
@@ -256,7 +263,7 @@ def test_ls_remote_and_gh_keep_the_short_timeout(git_repo: Path, monkeypatch):
 
     assert seen["args"][:2] == ["git", "ls-remote"]
     assert seen["kwargs"]["timeout"] == publishing.GH_TIMEOUT_S
-    assert seen["kwargs"]["start_new_session"] is True
+    assert_detached(seen["kwargs"])
 
 
 def test_deleting_a_remote_branch_uses_the_push_timeout(git_repo: Path, monkeypatch):
@@ -289,7 +296,7 @@ def test_gh_runs_with_prompts_disabled(git_repo: Path, monkeypatch):
     assert seen["args"][:3] == ["gh", "pr", "create"]
     assert (env["GH_PROMPT_DISABLED"], env["GIT_TERMINAL_PROMPT"]) == ("1", "0")
     assert seen["kwargs"]["timeout"] == publishing.GH_TIMEOUT_S
-    assert seen["kwargs"]["start_new_session"] is True
+    assert_detached(seen["kwargs"])
 
 
 def test_a_git_timeout_is_a_publish_error(git_repo: Path, monkeypatch):

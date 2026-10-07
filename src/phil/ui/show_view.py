@@ -27,7 +27,7 @@ def detail_text(path: Path) -> str:
     """A detail file as plain text for `phil show RUN N` and the chat's `/more N`: JSON is
     pretty-printed, terminal control characters are dropped, and anything past 2000 lines or
     200,000 characters is cut with a note."""
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     if path.suffix == ".json":
         try:
             text = json.dumps(json.loads(text), indent=2, default=repr)
@@ -93,7 +93,7 @@ def _tasks_section(paths: ProjectPaths, run_id: str) -> list[str]:
     run_dir = paths.run_dir(run_id)
     summary = run_dir / "summary.md"
     if summary.exists():
-        lines = summary.read_text().splitlines()
+        lines = summary.read_text(encoding="utf-8").splitlines()
         try:
             start = lines.index("## Tasks") + 1
         except ValueError:
@@ -113,7 +113,7 @@ def _open_issues(paths: ProjectPaths, run_id: str) -> list[dict] | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
 

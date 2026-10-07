@@ -1,3 +1,4 @@
+import _thread
 import json
 import logging
 import os
@@ -8,6 +9,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from phil import platform
 from phil.agents.invoke import AgentFactory
 from phil.config import PhilConfig, load_config
 from phil.repo import resolve_repo
@@ -90,21 +92,48 @@ def _test_cmd_switch(values: dict, config: PhilConfig, run_id: str) -> dict | No
 
 
 class Heartbeat:
-    def __init__(self, db_path: Path, run_id: str, interval_s: float) -> None:
+    """Writes the run row's heartbeat every `interval_s`. On Windows, given a `stop_file`, it also
+    checks on every beat for that file naming this process's pid (`phil stop` writes it; see
+    phil.platform.request_stop). The first time it does, the heartbeat interrupts the main thread
+    with SIGTERM so the worker's SIGTERM handler runs there, then kills the running commands so a
+    main thread waiting on one wakes up to take it. On POSIX the file is ignored: `phil stop`
+    sends SIGTERM itself."""
+
+    def __init__(self, db_path: Path, run_id: str, interval_s: float, stop_file: Path | None = None) -> None:
         self._stop = threading.Event()
+        self._stop_file = stop_file
         self._thread = threading.Thread(target=self._beat, args=(db_path, run_id, interval_s), daemon=True)
         self._started = False
 
     def _beat(self, db_path: Path, run_id: str, interval_s: float) -> None:
         conn = connect(db_path)
+        interrupted = False
         try:
             while not self._stop.wait(interval_s):
                 try:
                     update_run(conn, run_id, heartbeat_at=utcnow())
                 except Exception:
                     _logger.warning("heartbeat update failed for run %s", run_id, exc_info=True)
+                if interrupted:
+                    continue
+                try:
+                    # A set event means the run is already finishing: don't interrupt its cleanup.
+                    if self._stop_requested() and not self._stop.is_set():
+                        interrupted = True
+                        _thread.interrupt_main(signal.SIGTERM)
+                        kill_active_groups()
+                except Exception:
+                    _logger.warning("stop-request check failed for run %s", run_id, exc_info=True)
         finally:
             conn.close()
+
+    def _stop_requested(self) -> bool:
+        if not platform.IS_WINDOWS or self._stop_file is None:
+            return False
+        try:
+            return self._stop_file.read_text(encoding="utf-8").strip() == str(os.getpid())
+        except FileNotFoundError:
+            return False
 
     def start(self) -> None:
         self._started = True
@@ -155,8 +184,11 @@ def run_worker(
     engine = RunEngine(deps)
     saver = open_checkpointer(paths.db_path)
     graph = engine.build(saver)
-    heartbeat = Heartbeat(paths.db_path, run_id, heartbeat_s)
     installed = threading.current_thread() is threading.main_thread()
+    stop_file = paths.stop_request(run_id)
+    # Only a worker that installed its SIGTERM handler may be interrupted through the stop file:
+    # interrupt_main always targets the main thread.
+    heartbeat = Heartbeat(paths.db_path, run_id, heartbeat_s, stop_file if installed else None)
     previous_handler = signal.signal(signal.SIGTERM, _raise_stop) if installed else None
     claimed = False
     try:
@@ -171,6 +203,12 @@ def run_worker(
         if not claim_run(conn, run_id, os.getpid(), utcnow(), stale_pid=stale_pid):
             raise WorkerError(f"{run_id} is already being run by another worker")
         claimed = True
+        # A stop request left over from an earlier worker (e.g. one `phil stop` had to kill) is
+        # stale; removed only once this worker holds the run, so another worker's is never touched.
+        try:
+            stop_file.unlink(missing_ok=True)
+        except OSError:
+            _logger.warning("could not remove the stale stop request %s", stop_file, exc_info=True)
         events.append("worker", mode=mode, pid=os.getpid())
         heartbeat.start()
         if snapshot.interrupts and mode != "resume":

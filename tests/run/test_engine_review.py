@@ -36,7 +36,7 @@ def test_review_round_cap_leaves_issues_open(make_harness):
     final = harness.start()
     assert final["review_rounds"] == 2
     assert [issue["note"] for issue in final["open_issues"]] == ["docstrings missing"]
-    assert "- (major) docstrings missing [calc.py]" in (harness.deps.artifacts.run_dir / "summary.md").read_text()
+    assert "- (major) docstrings missing [calc.py]" in (harness.deps.artifacts.run_dir / "summary.md").read_text(encoding="utf-8")
 
 
 def test_reviewer_sees_open_assumptions(make_harness):
@@ -79,7 +79,7 @@ def test_failed_review_finish_leaves_a_major_issue(make_harness):
     final = harness.resume({"action": "finish"})
     assert final["status"] == "incomplete"  # an unfinished review is a major issue left open
     assert {"severity": "major", "note": "review not completed"}.items() <= final["open_issues"][-1].items()
-    assert "- (major) review not completed" in (harness.deps.artifacts.run_dir / "summary.md").read_text()
+    assert "- (major) review not completed" in (harness.deps.artifacts.run_dir / "summary.md").read_text(encoding="utf-8")
 
 
 def finish_with(make_harness, issues):
@@ -90,7 +90,7 @@ def finish_with(make_harness, issues):
 
 
 def summary_header(harness) -> str:
-    lines = (harness.deps.artifacts.run_dir / "summary.md").read_text().splitlines()
+    lines = (harness.deps.artifacts.run_dir / "summary.md").read_text(encoding="utf-8").splitlines()
     return next(line for line in lines if line.startswith("Status: "))
 
 

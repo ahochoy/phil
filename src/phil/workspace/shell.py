@@ -2,14 +2,16 @@ import fnmatch
 import os
 import re
 import shlex
-import signal
 import subprocess
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-_ACTIVE_GROUPS: set[int] = set()
+from phil import platform
+
+# Root pids of the commands running now, for kill_active_groups().
+_ACTIVE_ROOTS: set[int] = set()
 
 _FORBIDDEN = set(";&|$`<>\n")
 
@@ -26,6 +28,14 @@ def needs_a_shell(command: str) -> bool:
     return False
 
 _GLOB_CHARS = set("*?[")
+
+
+def normalise_path_text(text: str) -> str:
+    """`text` with every backslash turned into a forward slash, so a Windows path such as
+    `C:\\x\\python.exe` matches an allowlist written either way. Phil's allowlist is POSIX-style,
+    and a backslash in an allowed command is never meaningful. Only allowlist matching on
+    Windows uses this: the command that runs keeps its backslashes on every OS."""
+    return text.replace("\\", "/")
 
 
 def literal_pattern(command: str) -> str:
@@ -391,11 +401,14 @@ def _worktree_entry_exists(candidate: str, root: Path) -> bool:
 
 
 def _needs_containment_check(candidate: str, root: Path) -> bool:
-    return "/" in candidate or candidate == ".." or _worktree_entry_exists(candidate, root)
+    if "/" in candidate or candidate == ".." or (platform.IS_WINDOWS and "\\" in candidate):
+        return True
+    return _worktree_entry_exists(candidate, root)
 
 
 def _outside_root(arg: str, root: Path) -> bool:
-    candidate = Path(arg)
+    # Windows paths accept either separator; normalising lets `..\x` be resolved as `../x`.
+    candidate = Path(normalise_path_text(arg) if platform.IS_WINDOWS else arg)
     resolved = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
     return not resolved.is_relative_to(root)
 
@@ -438,8 +451,29 @@ def _matches_pattern(argv: list[str], pattern_tokens: list[str]) -> bool:
     return all(fnmatch.fnmatchcase(a, p) for a, p in zip(rest, pattern_rest))
 
 
+def _for_matching(tokens: list[str]) -> list[str]:
+    """Tokens as allowlist matching compares them: on Windows each token's backslashes become
+    forward slashes, so either path style matches the other. Never used for safety checks."""
+    if platform.IS_WINDOWS:
+        return [normalise_path_text(token) for token in tokens]
+    return tokens
+
+
+def _program_name(arg0: str) -> str:
+    """The program `arg0` names, as compared with _RISKY_PROGRAMS. On Windows that's its
+    basename (either separator), lowercased, without a .exe/.cmd/.bat suffix, so
+    `C:/x/python3.exe` is `python3`. Elsewhere `arg0` itself."""
+    if not platform.IS_WINDOWS:
+        return arg0
+    name = re.split(r"[\\/]", arg0)[-1].lower()
+    for suffix in (".exe", ".cmd", ".bat"):
+        if name.endswith(suffix):
+            return name.removesuffix(suffix)
+    return name
+
+
 def _is_denied(argv: list[str]) -> bool:
-    if argv[0] not in _RISKY_PROGRAMS:
+    if _program_name(argv[0]) not in _RISKY_PROGRAMS:
         return False
     return any(arg.startswith(_RISKY_PREFIXES) or arg in _RISKY_EXACT for arg in argv[1:])
 
@@ -465,7 +499,12 @@ class ShellPolicy:
     def _classify(self, command: str) -> tuple[str | None, str | None]:
         """(reason, detail): reason is None if allowed, "forbidden" if no approval could make it
         safe, or "not_allowed" if only off the allowlist. detail is set only when reason is
-        "forbidden", and is the one-line reason why."""
+        "forbidden", and is the one-line reason why.
+
+        The command is tokenised once, exactly as `run_command` tokenises it, and every safety
+        check runs on those tokens: what is checked is what runs. Only the allowlist comparison
+        differs by OS: on Windows the command's and each pattern's tokens have backslashes turned
+        into forward slashes (`_for_matching`), so either path style matches the other."""
         command = command.strip()
         if _FORBIDDEN & set(command):
             return "forbidden", _GENERIC_FORBIDDEN_DETAIL
@@ -490,26 +529,27 @@ class ShellPolicy:
                         if _needs_containment_check(candidate, root) and _outside_root(candidate, root):
                             return "forbidden", CONTAINMENT_DETAIL
             return None, None
+        match_argv = _for_matching(argv)
         for pattern in self.approved:
             try:
-                pattern_tokens = shlex.split(literal_pattern(pattern))
+                pattern_tokens = _for_matching(shlex.split(literal_pattern(pattern)))
             except ValueError:
                 continue
-            if _matches_pattern(argv, pattern_tokens):
+            if _matches_pattern(match_argv, pattern_tokens):
                 return None, None
         for pattern in self.extra_allow:
             try:
-                pattern_tokens = [*shlex.split(literal_pattern(pattern)), "*"]
+                pattern_tokens = [*_for_matching(shlex.split(literal_pattern(pattern))), "*"]
             except ValueError:
                 continue
-            if _matches_pattern(argv, pattern_tokens):
+            if _matches_pattern(match_argv, pattern_tokens):
                 return None, None
         for pattern in self.allow:
             try:
-                pattern_tokens = shlex.split(pattern)
+                pattern_tokens = _for_matching(shlex.split(pattern))
             except ValueError:
                 continue
-            if _matches_pattern(argv, pattern_tokens):
+            if _matches_pattern(match_argv, pattern_tokens):
                 return None, None
         return "not_allowed", None
 
@@ -541,21 +581,71 @@ class ShellResult:
         return self.exit_code == 0 and not self.timed_out
 
 
-def kill_active_groups(sig: int = signal.SIGKILL) -> list[int]:
+# How long a killed command's output may take to finish arriving. Only a process that escaped
+# the kill (one that started a session of its own, say) can keep the pipes open longer.
+POST_KILL_WAIT_S = 5.0
+
+
+def _partial_text(data: bytes | str | None) -> str:
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return data or ""
+
+
+def _output_after_kill(proc: subprocess.Popen) -> tuple[str, str]:
+    """(stdout, stderr) of a command whose tree was just killed, waiting at most
+    POST_KILL_WAIT_S. If something still holds the pipes open after that, give up on it and
+    keep the output read so far."""
+    try:
+        return proc.communicate(timeout=POST_KILL_WAIT_S)
+    except subprocess.TimeoutExpired as exc:
+        stdout, stderr = _partial_text(exc.output), _partial_text(exc.stderr)
+    # Best effort: the root is already dead, so this only catches anything it spawned since.
+    # A holder outside the root's tree (and, on POSIX, its process group) can't be found
+    # portably.
+    platform.kill_tree(proc.pid)
+    # On POSIX, once closed the pipes can't hold up Phil; the holder dies on its next write
+    # (SIGPIPE). On Windows they are left open: communicate()'s reader threads are blocked in
+    # read() holding each pipe's lock, so close() would wait on them forever. They're daemon
+    # threads, so abandoning them is safe. TimeoutExpired carries no partial output there.
+    if not platform.IS_WINDOWS:
+        for pipe in (proc.stdout, proc.stderr):
+            try:
+                if pipe is not None:
+                    pipe.close()
+            except OSError:
+                pass
+    try:
+        proc.wait(timeout=POST_KILL_WAIT_S)
+    except subprocess.TimeoutExpired:
+        pass
+    return stdout, stderr
+
+
+_BASH_STARTUP_VARS = frozenset({"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"})
+
+
+def kill_active_groups() -> list[int]:
+    """Kill every running command's whole process tree; returns the root pids it attempted
+    (a root that had already exited is listed too)."""
     killed: list[int] = []
-    for group in list(_ACTIVE_GROUPS):
-        try:
-            os.killpg(group, sig)
-            killed.append(group)
-        except ProcessLookupError:
-            pass
-        _ACTIVE_GROUPS.discard(group)
+    for root in list(_ACTIVE_ROOTS):
+        platform.kill_tree(root)
+        killed.append(root)
+        _ACTIVE_ROOTS.discard(root)
     return killed
 
 
 def run_command(
-    command: str, cwd: Path, timeout_s: float, env: Mapping[str, str] | None = None
+    command: str,
+    cwd: Path,
+    timeout_s: float,
+    env: Mapping[str, str] | None = None,
+    *,
+    bash: str | None = None,
 ) -> ShellResult:
+    """Run `command` (no shell) in `cwd`. On Windows it runs through Git Bash: `bash` is the
+    configured `[shell] bash`, used when `platform.find_bash` looks for it."""
     started = time.monotonic()
 
     def elapsed() -> int:
@@ -569,6 +659,22 @@ def run_command(
     except ValueError as exc:
         return ShellResult(command, 2, "", str(exc), False, elapsed())
 
+    run_env = dict(env) if env is not None else child_env(os.environ)
+    if platform.IS_WINDOWS:
+        found = platform.find_bash(bash)
+        if found is None:
+            return ShellResult(command, 127, "", platform.MISSING_BASH, False, elapsed())
+        args, extra_env = platform.windows_command(args, found)
+        # Bash itself runs here (on POSIX there's no shell), so drop what would make it run
+        # other code first: startup files (BASH_ENV, ENV), options (SHELLOPTS, BASHOPTS) and
+        # exported functions (BASH_FUNC_*), which could shadow the command's program.
+        run_env = {
+            name: value
+            for name, value in run_env.items()
+            if name not in _BASH_STARTUP_VARS and not name.startswith("BASH_FUNC_")
+        }
+        run_env |= extra_env
+
     try:
         proc = subprocess.Popen(
             args,
@@ -577,8 +683,8 @@ def run_command(
             stderr=subprocess.PIPE,
             encoding="utf-8",
             errors="replace",
-            start_new_session=True,
-            env=dict(env) if env is not None else child_env(os.environ),
+            **platform.detach_kwargs(),
+            env=run_env,
         )
     except FileNotFoundError as exc:
         return ShellResult(command, 127, "", str(exc), False, elapsed())
@@ -587,27 +693,21 @@ def run_command(
     except OSError as exc:
         return ShellResult(command, 126, "", str(exc), False, elapsed())
 
-    _ACTIVE_GROUPS.add(proc.pid)
+    _ACTIVE_ROOTS.add(proc.pid)
     try:
         try:
             stdout, stderr = proc.communicate(timeout=timeout_s)
             return ShellResult(command, proc.returncode, stdout, stderr, False, elapsed())
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            stdout, stderr = proc.communicate()
+            platform.kill_tree(proc.pid)
+            stdout, stderr = _output_after_kill(proc)
             return ShellResult(command, -9, stdout, stderr, True, elapsed())
         except BaseException:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            platform.kill_tree(proc.pid)
             proc.wait()
             raise
     finally:
-        _ACTIVE_GROUPS.discard(proc.pid)
+        _ACTIVE_ROOTS.discard(proc.pid)
 
 
 def truncate_output(

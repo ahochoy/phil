@@ -53,7 +53,7 @@ def run_tests(
     env = child_env(os.environ, shell.pass_env) | {"PYTHONDONTWRITEBYTECODE": "1"}
     addopts = env.get("PYTEST_ADDOPTS")
     env["PYTEST_ADDOPTS"] = f"{addopts} {_CONTINUE}" if addopts else _CONTINUE
-    result = run_command(test_cmd, worktree, shell.timeout_s, env=env)
+    result = run_command(test_cmd, worktree, shell.timeout_s, env=env, bash=shell.bash)
     output = result.stdout + (f"\n{result.stderr}" if result.stderr else "")
     all_failures = parse_failures(output, result.exit_code, result.timed_out)
     log_path = str(artifacts.write_log(name, output)) if artifacts is not None else ""
@@ -181,7 +181,7 @@ def run_check(check_cmd: str, worktree: Path, *, shell: ShellConfig, artifacts: 
             duration_ms=0,
         )
     env = child_env(os.environ, shell.pass_env) | {"PYTHONDONTWRITEBYTECODE": "1"}
-    result = run_command(check_cmd, worktree, shell.timeout_s, env=env)
+    result = run_command(check_cmd, worktree, shell.timeout_s, env=env, bash=shell.bash)
     if artifacts is not None:
         artifacts.write_log(name, result.stdout + (f"\n{result.stderr}" if result.stderr else ""))
     return result

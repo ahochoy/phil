@@ -4,11 +4,15 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
 import phil.run.worker as worker_module
+import phil.workspace.shell as shell_module
+from phil import platform
 from phil.agents.fake import ScriptedAgentFactory
 from phil.config import PhilConfig
 from phil.repo import resolve_repo
@@ -270,6 +274,7 @@ def test_exception_during_outcome_write_does_not_mask_original_or_corrupt_state(
     assert row(info, record.run_id).state == "completed"
 
 
+@pytest.mark.skipif(platform.IS_WINDOWS, reason="a real SIGTERM is POSIX-only; Windows uses the stop file")
 def test_real_sigterm_stops_cleanly_and_restores_handler(calc_repo):
     info, record = new_run(calc_repo)
     original_handler = signal.getsignal(signal.SIGTERM)
@@ -285,6 +290,184 @@ def test_real_sigterm_stops_cleanly_and_restores_handler(calc_repo):
     stopped = row(info, record.run_id)
     assert (stopped.state, stopped.pid) == ("stopped", None)
     assert signal.getsignal(signal.SIGTERM) == original_handler
+
+
+def blocks_until_stopped(seconds: float = 10.0):
+    """A scripted turn that waits (in Python, so a signal handler can run) until the worker is
+    stopped. Falls through to write_red after `seconds` so a broken stop can't hang the test."""
+
+    def turn(t):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            time.sleep(0.01)
+        return write_red(t)
+
+    return turn
+
+
+def test_on_windows_the_stop_file_stops_a_running_worker_cleanly(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    stop_file = ProjectPaths(info.slug).stop_request(record.run_id)
+    original_handler = signal.getsignal(signal.SIGTERM)
+    block = blocks_until_stopped()
+
+    def stop_from_windows(turn):
+        # Only the heartbeat's view of the OS changes, and only while this turn runs: the setup
+        # before it runs the test command, which on "Windows" would need Git Bash.
+        monkeypatch.setattr(platform, "IS_WINDOWS", True)
+        try:
+            platform.request_stop(os.getpid(), stop_file)  # what `phil stop` does on Windows
+            return block(turn)
+        finally:
+            monkeypatch.setattr(platform, "IS_WINDOWS", False)
+
+    stopping = ScriptedAgentFactory({"implementer": [stop_from_windows]})
+    started = time.monotonic()
+    outcome = run_worker(calc_repo, record.run_id, "start", factory=stopping, heartbeat_s=0.05)
+    assert outcome.status == "stopped"
+    assert time.monotonic() - started < 9  # stopped by the file, not by the turn running out
+    stopped = row(info, record.run_id)
+    assert (stopped.state, stopped.needs_attention, stopped.pid) == ("stopped", "stopped by user", None)
+    assert signal.getsignal(signal.SIGTERM) == original_handler
+
+
+def test_on_posix_the_heartbeat_ignores_the_stop_file(calc_repo, monkeypatch):
+    monkeypatch.setattr(platform, "IS_WINDOWS", False)
+    info, record = new_run(calc_repo)
+    stop_file = ProjectPaths(info.slug).stop_request(record.run_id)
+
+    def write_stop_file_then_red(turn):
+        stop_file.write_text("stop\n")
+        time.sleep(0.3)  # several beats
+        return write_red(turn)
+
+    factory = ScriptedAgentFactory(
+        {"implementer": [write_stop_file_then_red, write_green], "tester": [tester_report()], "reviewer": [review()]}
+    )
+    assert run_worker(calc_repo, record.run_id, "start", factory=factory, heartbeat_s=0.05).status == "completed"
+
+
+def test_a_stale_stop_file_is_removed_when_the_worker_starts(calc_repo):
+    info, record = new_run(calc_repo)
+    stop_file = ProjectPaths(info.slug).stop_request(record.run_id)
+    seen = []
+
+    def check_stop_file(turn):
+        seen.append(stop_file.exists())
+        return write_red(turn)
+
+    stop_file.parent.mkdir(parents=True, exist_ok=True)
+    stop_file.write_text("stop\n")
+    factory = ScriptedAgentFactory(
+        {"implementer": [check_stop_file, write_green], "tester": [tester_report()], "reviewer": [review()]}
+    )
+    assert run_worker(calc_repo, record.run_id, "start", factory=factory).status == "completed"
+    assert seen == [False]
+
+
+def test_a_worker_that_cannot_claim_the_run_leaves_its_stop_file_alone(calc_repo):
+    info, record = escalated_run(calc_repo)
+    conn = connect(ProjectPaths(info.slug).db_path)
+    update_run(conn, record.run_id, pid=live_foreign_pid(), heartbeat_at=utcnow())
+    conn.close()
+    stop_file = ProjectPaths(info.slug).stop_request(record.run_id)
+    stop_file.write_text("stop\n")
+    with pytest.raises(WorkerError, match="already being run by another worker"):
+        run_worker(calc_repo, record.run_id, "continue", factory=finishing())
+    assert stop_file.exists()
+
+
+def wait_for(condition, seconds: float = 10.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return condition()
+
+
+def spy_interrupts(monkeypatch) -> list[int]:
+    interrupts: list[int] = []
+    monkeypatch.setattr(worker_module, "_thread", SimpleNamespace(interrupt_main=interrupts.append))
+    return interrupts
+
+
+def test_on_windows_a_stop_request_also_kills_the_running_commands(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    paths = ProjectPaths(info.slug)
+    stop_file = paths.stop_request(record.run_id)
+    command = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        monkeypatch.setattr(platform, "IS_WINDOWS", True)
+        monkeypatch.setattr(shell_module, "_ACTIVE_ROOTS", {command.pid})
+        interrupts = spy_interrupts(monkeypatch)
+        killed = []
+        real_kill_active_groups = worker_module.kill_active_groups
+
+        def spy_kill_active_groups():
+            killed.append(real_kill_active_groups())
+            return killed[-1]
+
+        monkeypatch.setattr(worker_module, "kill_active_groups", spy_kill_active_groups)
+        stop_file.write_text(f"{os.getpid()}\n")
+        beat = Heartbeat(paths.db_path, record.run_id, 0.02, stop_file)
+        beat.start()
+        try:
+            assert wait_for(lambda: killed)
+            time.sleep(0.1)  # more beats: the stop is acted on once
+        finally:
+            beat.stop()
+        assert interrupts == [signal.SIGTERM]
+        assert killed == [[command.pid]]
+        assert command.wait(timeout=10) != 0
+    finally:
+        if command.poll() is None:
+            command.kill()
+            command.wait()
+
+
+def test_on_windows_a_stop_file_naming_another_pid_is_ignored(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    paths = ProjectPaths(info.slug)
+    stop_file = paths.stop_request(record.run_id)
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    interrupts = spy_interrupts(monkeypatch)
+    stop_file.write_text(f"{os.getpid() + 1}\n")
+    beat = Heartbeat(paths.db_path, record.run_id, 0.02, stop_file)
+    beat.start()
+    time.sleep(0.2)
+    stop_file.write_text(f"{os.getpid()}\n")
+    try:
+        assert wait_for(lambda: interrupts)  # the same heartbeat acts once the file names it
+    finally:
+        beat.stop()
+    assert interrupts == [signal.SIGTERM]
+
+
+def test_heartbeat_survives_a_failing_stop_check(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    db_path = ProjectPaths(info.slug).db_path
+    checks = {"n": 0}
+    beats = []
+    original_update_run = worker_module.update_run
+
+    def failing_once(self):
+        checks["n"] += 1
+        if checks["n"] == 1:
+            raise PermissionError("sharing violation")
+        return False
+
+    def counting_update_run(conn, run_id, **fields):
+        beats.append(fields)
+        return original_update_run(conn, run_id, **fields)
+
+    monkeypatch.setattr(Heartbeat, "_stop_requested", failing_once)
+    monkeypatch.setattr(worker_module, "update_run", counting_update_run)
+    beat = Heartbeat(db_path, record.run_id, 0.02)
+    beat.start()
+    try:
+        assert wait_for(lambda: len(beats) >= 3)
+    finally:
+        beat.stop()
+    assert checks["n"] >= 2
 
 
 def test_heartbeat_survives_a_transient_update_failure(calc_repo, monkeypatch):

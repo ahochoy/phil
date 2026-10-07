@@ -127,6 +127,24 @@ def test_chat_lock_refuses_a_live_holder_and_takes_over_a_stale_one(git_repo):
     assert lock.exists()
 
 
+def test_chat_lock_never_signals_to_probe_the_holder(git_repo, monkeypatch):
+    import os
+
+    from phil.chat.session import lock_holder
+
+    def no_os_kill(*args):
+        raise AssertionError("os.kill must not be used to probe a process")
+
+    session = ChatSession.create(ProjectPaths(resolve_repo(git_repo).slug))
+    lock = session.dir / "chat.lock"
+    dead = _dead_pid()
+    monkeypatch.setattr(os, "kill", no_os_kill)
+    lock.write_text(str(os.getppid()))
+    assert lock_holder(session.dir) == os.getppid()
+    lock.write_text(str(dead))
+    assert lock_holder(session.dir) is None
+
+
 def test_list_open_chats_marks_chats_open_elsewhere(git_repo):
     import os
 

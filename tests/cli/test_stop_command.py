@@ -1,9 +1,11 @@
+import os
 import subprocess
 import sys
 import time
 
 from typer.testing import CliRunner
 
+from phil import platform
 from phil.cli import main as cli
 from phil.repo import resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, spawn_worker
@@ -73,18 +75,138 @@ def test_stop_falls_through_when_worker_already_exited(calc_repo, monkeypatch):
     assert stopped.needs_attention == "stopped by user (worker was not running)"
 
 
+def test_stop_on_windows_falls_through_when_the_worker_already_exited(calc_repo, monkeypatch):
+    # The Windows request is a file, so it checks the pid itself: a worker already gone is
+    # "not running", as on POSIX, and gets no stop file.
+    info, record, conn = new_run(calc_repo)
+    update_run(conn, record.run_id, state="running")
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    update_run(conn, record.run_id, pid=proc.pid)
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(cli, "is_worker_alive", lambda record: True)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "stop", record.run_id, "--timeout", "30"])
+    assert result.exit_code == 0, result.output
+    assert not ProjectPaths(info.slug).stop_request(record.run_id).exists()
+    stopped = get_run(conn, record.run_id)
+    assert (stopped.state, stopped.needs_attention) == ("stopped", "stopped by user (worker was not running)")
+
+
+def test_stop_on_windows_records_a_worker_that_exits_without_settling(calc_repo, monkeypatch):
+    # The worker got the request, then died without recording "stopped": phil stop must notice
+    # the dead pid rather than wait out the timeout and report a forced stop.
+    info, record, conn = new_run(calc_repo)
+    update_run(conn, record.run_id, state="running")
+    worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        update_run(conn, record.run_id, pid=worker.pid)
+        monkeypatch.setattr(platform, "IS_WINDOWS", True)
+        monkeypatch.setattr(cli, "is_worker_alive", lambda record: True)
+        real_request_stop = platform.request_stop
+
+        def request_then_die(pid, stop_file):
+            real_request_stop(pid, stop_file)
+            worker.kill()
+            worker.wait()
+
+        monkeypatch.setattr(platform, "request_stop", request_then_die)
+        started = time.monotonic()
+        result = runner.invoke(cli.app, ["--repo", str(calc_repo), "stop", record.run_id, "--timeout", "30"])
+        assert result.exit_code == 0, result.output
+        assert time.monotonic() - started < 10
+        assert ProjectPaths(info.slug).stop_request(record.run_id).exists()
+        assert "by force" not in result.output
+        stopped = get_run(conn, record.run_id)
+        assert (stopped.state, stopped.needs_attention) == ("stopped", "stopped by user (worker exited)")
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            worker.wait()
+
+
 def test_stop_reports_when_the_row_ends_in_another_state(calc_repo, monkeypatch):
     info, record, conn = new_run(calc_repo)
     update_run(conn, record.run_id, state="running", pid=424242)
 
-    def fake_kill(pid, sig):
+    def fake_request_stop(pid, stop_file):
+        # The worker, asked to stop (by SIGTERM or by stop file), fails instead.
         update_run(conn, record.run_id, state="failed", needs_attention="boom")
 
     monkeypatch.setattr(cli, "is_worker_alive", lambda record: True)
-    monkeypatch.setattr(cli.os, "kill", fake_kill)
+    monkeypatch.setattr(platform, "request_stop", fake_request_stop)
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "stop", record.run_id, "--timeout", "2"])
     assert result.exit_code == 1
     assert "ended as failed" in result.output
+
+
+def test_stop_asks_first_then_kills_a_worker_that_does_not_stop(calc_repo, monkeypatch):
+    info, record, conn = new_run(calc_repo)
+    stubborn = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        update_run(conn, record.run_id, state="running", pid=stubborn.pid)
+        requests, kills = [], []
+        real_kill_tree = platform.kill_tree
+        monkeypatch.setattr(cli, "is_worker_alive", lambda record: True)
+        monkeypatch.setattr(platform, "request_stop", lambda pid, stop_file: requests.append((pid, stop_file)))
+
+        def recording_kill_tree(pid):
+            kills.append(pid)
+            real_kill_tree(pid)
+
+        monkeypatch.setattr(platform, "kill_tree", recording_kill_tree)
+        result = runner.invoke(cli.app, ["--repo", str(calc_repo), "stop", record.run_id, "--timeout", "0.5"])
+        assert result.exit_code == 0, result.output
+        assert requests == [(stubborn.pid, ProjectPaths(info.slug).stop_request(record.run_id))]
+        assert kills == [stubborn.pid]
+        assert stubborn.wait(timeout=10) != 0
+        assert "by force" in result.output
+        assert "did not stop in time" in result.output
+        assert f"Stopped {record.run_id}" in result.output
+        stopped = get_run(conn, record.run_id)
+        assert (stopped.state, stopped.needs_attention) == ("stopped", "stopped by user (forced)")
+    finally:
+        if stubborn.poll() is None:
+            stubborn.kill()
+            stubborn.wait()
+
+
+def test_stop_reports_a_worker_it_could_not_kill_and_leaves_the_row(calc_repo, monkeypatch):
+    _, record, conn = new_run(calc_repo)
+    update_run(conn, record.run_id, state="running", pid=os.getpid())
+    monkeypatch.setattr(cli, "is_worker_alive", lambda record: True)
+    monkeypatch.setattr(cli, "FORCE_STOP_WAIT_S", 0.2)
+    monkeypatch.setattr(platform, "request_stop", lambda pid, stop_file: None)
+    monkeypatch.setattr(platform, "kill_tree", lambda pid: None)  # the kill doesn't take
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "stop", record.run_id, "--timeout", "0.2"])
+    assert result.exit_code == 1
+    assert f"could not stop the worker (pid {os.getpid()})" in result.output
+    assert get_run(conn, record.run_id).state == "running"
+
+
+def test_stop_on_windows_writes_the_stop_file_instead_of_signalling(calc_repo, monkeypatch):
+    info, record, conn = new_run(calc_repo)
+    # A live pid (this process): the request checks it. Nothing is signalled; os.kill is faked.
+    update_run(conn, record.run_id, state="running", pid=os.getpid())
+    stop_file = ProjectPaths(info.slug).stop_request(record.run_id)
+
+    def no_os_kill(*args):
+        raise AssertionError("phil stop must not signal on Windows")
+
+    def worker_sees_the_file(*args):
+        # Stands in for the worker: it stops once the stop file appears.
+        if stop_file.exists():
+            update_run(conn, record.run_id, state="stopped", needs_attention="stopped by user")
+        return get_run(conn, record.run_id)
+
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(cli.os, "kill", no_os_kill)
+    monkeypatch.setattr(cli, "is_worker_alive", lambda record: True)
+    monkeypatch.setattr(cli, "get_run", worker_sees_the_file)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "stop", record.run_id, "--timeout", "5"])
+    assert result.exit_code == 0, result.output
+    assert stop_file.exists()
+    assert "by force" not in result.output
+    assert f"Stopped {record.run_id}" in result.output
 
 
 def test_stop_young_pending_run_is_still_starting(calc_repo):

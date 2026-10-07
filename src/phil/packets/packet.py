@@ -99,7 +99,7 @@ def build_packet(
         if not path.is_file():
             omitted.append(f"{relative} (not found)")
             continue
-        content = path.read_text(errors="replace")
+        content = path.read_text(encoding="utf-8", errors="replace")
         cost = estimate_tokens(_file_section(relative, content))
         extra = cost + (header_cost if not kept_files else 0)
         if used + extra + reserve <= budget_tokens:

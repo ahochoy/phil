@@ -104,7 +104,7 @@ def _error_detail(exc: Exception) -> str:
 def _violation_detail(exc: ContractViolation) -> str:
     raw = None
     if exc.rejected_path is not None:
-        raw = json.loads(Path(exc.rejected_path).read_text()).get("raw")
+        raw = json.loads(Path(exc.rejected_path).read_text(encoding="utf-8")).get("raw")
     if exc.problems == [NO_STRUCTURED_OUTPUT]:
         if isinstance(raw, str) and raw.strip():
             excerpt = " ".join(raw.split())[:EXCERPT_CHARS]

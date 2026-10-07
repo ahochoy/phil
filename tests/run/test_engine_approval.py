@@ -1,3 +1,4 @@
+import json
 import shlex
 import sys
 
@@ -55,7 +56,10 @@ def test_deny_continues_to_verify_with_a_hint(make_harness, calc_repo):
     final = harness.resume({"action": "deny"})
     assert final["status"] == "completed"
     green_packet = [p for role, p in harness.factory.calls if role == "implementer"][-1]["messages"][0]["content"]
-    assert f"Not approved: {BUILD}. Do not use them." in green_packet
+    # The hint reaches the packet inside its JSON input, so a Windows path's backslashes are
+    # JSON-escaped there; json.dumps gives the same escaping (and none for a POSIX path).
+    hint = f"Not approved: {BUILD}. Do not use them."
+    assert json.dumps(hint)[1:-1] in green_packet
 
 
 REFUSED_CMD = "python -c 'print(1)'"
