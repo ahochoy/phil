@@ -821,13 +821,19 @@ def stop(
             deadline = time.monotonic() + timeout
             current = get_run(conn, run_id)
             while current is not None and current.state in ("running", "pending"):
+                if not platform.pid_alive(record.pid):
+                    # Gone without settling its row: it exited before the request reached it.
+                    # On Windows the request is a file, so this is the only way to tell; on POSIX
+                    # the SIGTERM already raised ProcessLookupError.
+                    break
                 if time.monotonic() > deadline:
                     current = _force_stop(conn, run_id, record.pid)
                     break
                 time.sleep(0.2)
                 current = get_run(conn, run_id)
-            _finish_stop(run_id, current)
-            return
+            if current is None or current.state not in ("running", "pending"):
+                _finish_stop(run_id, current)
+                return
     # No live worker (or it exited between the liveness check and the kill): mark the row
     # stopped ourselves, unless it's already settled into some other terminal state on its own.
     current = get_run(conn, run_id)

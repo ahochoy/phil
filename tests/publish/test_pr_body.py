@@ -1,4 +1,7 @@
+import sys
 from pathlib import Path
+
+import pytest
 
 from phil.publish.pr_body import find_pr_template, newest_output, output_count, pr_title, render_pr_body
 from phil.store.artifacts import ArtifactStore
@@ -166,12 +169,30 @@ def test_find_pr_template_skips_a_symlinked_template(tmp_path):
     assert find_pr_template(repo) == "docs template"
 
 
-def test_find_pr_template_tolerates_bad_bytes_and_unreadable_files(tmp_path):
+def test_find_pr_template_tolerates_bad_bytes(tmp_path):
     (tmp_path / ".github").mkdir()
     template = tmp_path / ".github" / "pull_request_template.md"
     template.write_bytes(b"caf\xe9 checklist")
     assert find_pr_template(tmp_path) == "caf\ufffd checklist"
 
+
+def test_find_pr_template_tolerates_a_read_error(tmp_path, monkeypatch):
+    # Portable stand-in for an unreadable file (chmod 0 doesn't block reads on Windows).
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "pull_request_template.md").write_text("checklist", encoding="utf-8")
+
+    def denied(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    assert find_pr_template(tmp_path) is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="chmod 0 doesn't make a file unreadable on Windows")
+def test_find_pr_template_tolerates_unreadable_files(tmp_path):
+    (tmp_path / ".github").mkdir()
+    template = tmp_path / ".github" / "pull_request_template.md"
+    template.write_bytes(b"caf\xe9 checklist")
     template.chmod(0)
     try:
         assert find_pr_template(tmp_path) is None

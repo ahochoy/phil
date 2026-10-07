@@ -656,11 +656,13 @@ def run_command(
     except ValueError as exc:
         return ShellResult(command, 2, "", str(exc), False, elapsed())
 
+    run_env = dict(env) if env is not None else child_env(os.environ)
     if platform.IS_WINDOWS:
         found = platform.find_bash(bash)
         if found is None:
             return ShellResult(command, 127, "", platform.MISSING_BASH, False, elapsed())
-        args = platform.windows_argv(args, found)
+        args, extra_env = platform.windows_command(args, found)
+        run_env |= extra_env
 
     try:
         proc = subprocess.Popen(
@@ -671,7 +673,7 @@ def run_command(
             encoding="utf-8",
             errors="replace",
             **platform.detach_kwargs(),
-            env=dict(env) if env is not None else child_env(os.environ),
+            env=run_env,
         )
     except FileNotFoundError as exc:
         return ShellResult(command, 127, "", str(exc), False, elapsed())

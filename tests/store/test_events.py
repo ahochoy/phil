@@ -17,7 +17,8 @@ def test_append_and_read_with_offsets(tmp_path):
 
 def test_partial_lines_are_not_returned(tmp_path):
     path = tmp_path / "events.jsonl"
-    path.write_text('{"ts": "t", "kind": "node", "node": "a"}\n{"ts": "t", "kind": "no')
+    # Bytes, not write_text: on Windows text mode would write "\r\n" and shift the offset.
+    path.write_bytes(b'{"ts": "t", "kind": "node", "node": "a"}\n{"ts": "t", "kind": "no')
     events, offset = EventLog(path).read()
     assert [e["node"] for e in events] == ["a"]
     assert offset == len('{"ts": "t", "kind": "node", "node": "a"}\n')

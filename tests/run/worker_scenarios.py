@@ -6,7 +6,12 @@ from tests.run.conftest import bad_green, review, tester_report, write_green, wr
 
 
 def _slow(turn):
-    time.sleep(60)
+    # Short sleeps, like a streaming agent call that keeps returning to Python. One long
+    # time.sleep would be a single C call that a stop request on Windows can't wake:
+    # interrupt_main(SIGTERM) only runs the handler once the main thread is back in Python.
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        time.sleep(0.1)
     return write_red(turn)
 
 

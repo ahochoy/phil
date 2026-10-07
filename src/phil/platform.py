@@ -24,6 +24,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePath, PureWindowsPath
 
@@ -52,15 +53,17 @@ def pid_alive(pid: int) -> bool:
 
 def kill_tree(pid: int) -> None:
     """Kill every descendant of `pid`, then `pid` itself. Missing processes, and ones we may not
-    kill, are skipped. Waits only for the descendants, never the root: reaping the root is its
-    parent's job (Popen.wait in shell.py), and waiting here would take its exit status away
-    from Popen. A caller whose root isn't its own child (e.g. `phil stop` on a worker) polls
-    `pid_alive` instead.
+    kill, are skipped. On POSIX it waits only for the descendants, never the root: reaping the
+    root is its parent's job (Popen.wait in shell.py), and waiting here would take its exit
+    status away from Popen. A caller whose root isn't its own child (e.g. `phil stop` on a
+    worker) polls `pid_alive` instead.
 
     On POSIX, when `pid` leads its own process group (as `start_new_session=True` makes it), the
     whole group is also sent SIGKILL. psutil only finds descendants through parent links, and a
     double-forked grandchild that was reparented to init has none: it would survive, holding the
-    command's output pipes open. The group still holds it."""
+    command's output pipes open. The group still holds it.
+
+    Windows has no such group, so it sweeps for stragglers instead (`_kill_stragglers`)."""
     try:
         root = psutil.Process(pid)
         children = root.children(recursive=True)
@@ -68,16 +71,67 @@ def kill_tree(pid: int) -> None:
         return
     if not IS_WINDOWS:
         try:
-            if os.getpgid(pid) == pid:
+            # Never pid 1's group or Phil's own: killpg would signal every process in it.
+            pgid = os.getpgid(pid)
+            if pid > 1 and pgid == pid and pgid != os.getpgrp():
                 os.killpg(pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
-    for proc in [*children, root]:
-        try:
-            proc.kill()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-    psutil.wait_procs(children, timeout=5)
+    killed = [*children, root]
+    for proc in killed:
+        _kill(proc)
+    if IS_WINDOWS:
+        _kill_stragglers(killed)
+    else:
+        psutil.wait_procs(children, timeout=5)
+
+
+def _kill(proc: psutil.Process) -> None:
+    try:
+        proc.kill()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+
+
+# How many generations of stragglers _kill_stragglers chases before giving up.
+_STRAGGLER_ROUNDS = 5
+
+
+def _kill_stragglers(killed: list[psutil.Process]) -> None:
+    """Windows only: kill processes the tree was still starting when `kill_tree` ran.
+
+    `children()` lists only the processes that existed at that moment. A parent killed while
+    inside CreateProcess still creates its child, which then never runs (it was never resumed)
+    but holds the command's inherited output pipes open forever. So, once the killed processes
+    have exited, kill every process whose parent is one of them and that started after that
+    parent (an older one only reuses the parent's pid); then do the same for those, until a
+    round finds none. The wait polls `pid_alive`, so it never takes the root's exit status
+    from its Popen."""
+    for _ in range(_STRAGGLER_ROUNDS):
+        deadline = time.monotonic() + 5
+        while any(pid_alive(proc.pid) for proc in killed) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        started = {}
+        for proc in killed:
+            try:
+                started[proc.pid] = proc.create_time()  # psutil caches it, so a dead one still has it
+            except psutil.Error:
+                pass
+        stragglers = []
+        for proc in psutil.process_iter(["ppid"]):
+            parent_started = started.get(proc.info["ppid"])
+            if parent_started is None or proc.pid in started:
+                continue
+            try:
+                if proc.create_time() >= parent_started:
+                    stragglers.append(proc)
+            except psutil.Error:
+                pass
+        if not stragglers:
+            return
+        for proc in stragglers:
+            _kill(proc)
+        killed = stragglers
 
 
 def detach_kwargs() -> dict:
@@ -173,6 +227,20 @@ def find_bash(
     return None
 
 
-def windows_argv(argv: list[str], bash: os.PathLike | str) -> list[str]:
-    """The argv Windows runs: bash -c with every (already checked) argument quoted."""
-    return [str(bash), "-c", shlex.join(argv)]
+# The environment variable that carries an agent command to Git Bash on Windows.
+SHELL_COMMAND_VAR = "PHIL_SHELL_COMMAND"
+# A fixed script: it takes the command out of the environment, removes the variable so the
+# command never sees it, and runs it.
+_BASH_SCRIPT = f'set -- "${SHELL_COMMAND_VAR}"; unset {SHELL_COMMAND_VAR}; eval "$1"'
+
+
+def windows_command(argv: list[str], bash: os.PathLike | str) -> tuple[list[str], dict[str, str]]:
+    r"""(args, extra environment) that run the (already checked) `argv` through Git Bash.
+
+    The command reaches bash in an environment variable, quoted with shlex.join, and never on
+    bash's command line. Bash is an MSYS (Cygwin) program, and those parse a command line from
+    a Windows parent by their own rules rather than the ones subprocess quotes for: inside
+    quotes, `\\` becomes `\`, so `python -c "open('C:\\x')"` would arrive as `open('C:\x')`.
+    The environment carries the text unchanged, and the script on the command line is fixed
+    and has no backslash."""
+    return [str(bash), "-c", _BASH_SCRIPT], {SHELL_COMMAND_VAR: shlex.join(argv)}

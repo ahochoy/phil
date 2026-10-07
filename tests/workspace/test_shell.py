@@ -142,6 +142,10 @@ def test_run_command_missing_cwd(tmp_path):
     assert str(missing) in result.stderr
 
 
+@pytest.mark.skipif(
+    platform.IS_WINDOWS,
+    reason="Windows has no execute bit: Git Bash runs any script with a #! line, so there is no 126 case",
+)
 def test_run_command_non_executable_file(tmp_path):
     script = tmp_path / "not-executable.sh"
     script.write_text("#!/bin/sh\necho hi\n")
@@ -827,12 +831,14 @@ def test_on_posix_a_backslash_reaches_the_command_intact(tmp_path, monkeypatch):
 
 
 class FakePopen:
-    """Stands in for subprocess.Popen: records the argv and finishes at once."""
+    """Stands in for subprocess.Popen: records the argv and env, and finishes at once."""
 
     calls: ClassVar[list[list[str]]] = []
+    envs: ClassVar[list[dict[str, str]]] = []
 
     def __init__(self, args, **kwargs):
         FakePopen.calls.append(args)
+        FakePopen.envs.append(kwargs["env"])
         self.pid = 4242
         self.returncode = 0
 
@@ -852,20 +858,23 @@ def fake_windows(monkeypatch):
     monkeypatch.setattr(platform, "IS_WINDOWS", True)
     monkeypatch.setattr(platform, "find_bash", find_bash)
     monkeypatch.setattr(platform, "detach_kwargs", dict)
-    FakePopen.calls = []
+    FakePopen.calls, FakePopen.envs = [], []
     monkeypatch.setattr(shell_module.subprocess, "Popen", FakePopen)
     return found
 
 
 def test_on_windows_a_command_runs_through_bash(tmp_path, fake_windows):
-    result = run_command("npm test -- 'a b'", cwd=tmp_path, timeout_s=10)
+    result = run_command("npm test -- 'a b'", cwd=tmp_path, timeout_s=10, env={"KEEP": "1"})
     assert result.ok
-    assert FakePopen.calls == [[r"C:\Git\bin\bash.exe", "-c", "npm test -- 'a b'"]]
+    args, extra_env = platform.windows_command(["npm", "test", "--", "a b"], r"C:\Git\bin\bash.exe")
+    assert FakePopen.calls == [args]
+    assert FakePopen.envs == [{"KEEP": "1"} | extra_env]
 
 
 def test_on_windows_the_argv_keeps_its_backslashes(tmp_path, fake_windows):
     run_command(WINDOWS_COMMAND, cwd=tmp_path, timeout_s=10)
-    assert FakePopen.calls == [[r"C:\Git\bin\bash.exe", "-c", r"'C:\x\python.exe' a.py"]]
+    assert FakePopen.calls[0][:2] == [r"C:\Git\bin\bash.exe", "-c"]
+    assert FakePopen.envs[0][platform.SHELL_COMMAND_VAR] == r"'C:\x\python.exe' a.py"
 
 
 def test_on_windows_the_configured_bash_is_looked_up(tmp_path, fake_windows):

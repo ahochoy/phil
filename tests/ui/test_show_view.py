@@ -267,8 +267,9 @@ def test_detail_text_strips_terminal_control_characters(tmp_path):
     from phil.ui.show_view import detail_text
 
     path = tmp_path / "evil.log"
-    path.write_text(
-        "ok\tline\n\x1b]0;pwned\x07\x1b[2Jclear\r\nbell\x07 del\x7f c1\x9b31m end\n", encoding="utf-8"
+    # Bytes, not write_text: on Windows text mode would turn each "\n" into "\r\n".
+    path.write_bytes(
+        "ok\tline\n\x1b]0;pwned\x07\x1b[2Jclear\r\nbell\x07 del\x7f c1\x9b31m end\n".encode("utf-8")
     )
     text = detail_text(path)
     assert "\x1b" not in text and "\x07" not in text and "\r" not in text

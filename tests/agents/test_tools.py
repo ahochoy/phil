@@ -9,7 +9,8 @@ PY = shlex.quote(sys.executable)
 
 
 def shell_config(**overrides) -> ShellConfig:
-    return ShellConfig(**({"allow": [f"{sys.executable} *"], "timeout_s": 10} | overrides))
+    # Quoted, as a Windows path must be: an unquoted backslash in a pattern is an escape.
+    return ShellConfig(**({"allow": [f"{PY} *"], "timeout_s": 10} | overrides))
 
 
 def test_allowed_command_runs_and_is_logged(tmp_path):

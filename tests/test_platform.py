@@ -57,27 +57,102 @@ def test_kill_tree_leaves_the_root_for_its_parent_to_reap():
         assert returncode == -9
 
 
-def test_kill_tree_skips_a_process_it_may_not_kill(monkeypatch):
+FAKE_ROOT = 4_000_001  # never a real pid: psutil and os are faked wherever it's used
+
+
+class FakeProc:
+    """A psutil.Process stand-in. `kills` records every kill(); `tree` maps a pid to its
+    children."""
+
+    def __init__(self, pid, *, kills, tree=None, denied=(), started=0.0, ppid=None):
+        self.pid, self.kills, self.tree, self.denied = pid, kills, tree or {}, denied
+        self.started, self.info = started, {"ppid": ppid}
+
+    def children(self, recursive=False):
+        return [FakeProc(pid, kills=self.kills, denied=self.denied) for pid in self.tree.get(self.pid, [])]
+
+    def create_time(self):
+        return self.started
+
+    def kill(self):
+        import psutil
+
+        if self.pid in self.denied:
+            raise psutil.AccessDenied(self.pid)
+        self.kills.append(self.pid)
+
+
+@pytest.fixture
+def fake_processes(monkeypatch):
+    """psutil and the POSIX group calls faked: nothing real is ever signalled. Returns the
+    record: kills (pids kill() was called on), killpg (pids killpg was called with) and
+    pgids (what getpgid answers per pid; FAKE_ROOT leads its own group by default)."""
+    import signal
+
     import psutil
 
-    killed = []
-
-    class Proc:
-        def __init__(self, pid, denied):
-            self.pid, self.denied = pid, denied
-
-        def children(self, recursive=False):
-            return [Proc(2, denied=True), Proc(3, denied=False)]
-
-        def kill(self):
-            if self.denied:
-                raise psutil.AccessDenied(self.pid)
-            killed.append(self.pid)
-
-    monkeypatch.setattr(psutil, "Process", lambda pid: Proc(pid, denied=False))
+    record = {"kills": [], "killpg": [], "pgids": {FAKE_ROOT: FAKE_ROOT}, "tree": {}, "denied": ()}
+    monkeypatch.setattr(
+        psutil, "Process", lambda pid: FakeProc(pid, kills=record["kills"], tree=record["tree"], denied=record["denied"])
+    )
     monkeypatch.setattr(psutil, "wait_procs", lambda procs, timeout=None: ([], []))
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: [])
+    monkeypatch.setattr(platform, "pid_alive", lambda pid: False)  # every killed process is gone
+    monkeypatch.setattr(os, "getpgid", lambda pid: record["pgids"].get(pid, -1), raising=False)
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: record["killpg"].append(pgid), raising=False)
+    # So the POSIX branch can run under a patched IS_WINDOWS on Windows too.
+    monkeypatch.setattr(os, "getpgrp", lambda: -2, raising=False)
+    monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
+    return record
+
+
+def test_kill_tree_skips_a_process_it_may_not_kill(fake_processes):
+    fake_processes["tree"][FAKE_ROOT] = [2, 3]
+    fake_processes["denied"] = (2,)
+    platform.kill_tree(FAKE_ROOT)
+    assert fake_processes["kills"] == [3, FAKE_ROOT]
+
+
+def test_kill_tree_kills_the_group_of_a_group_leader_on_posix(fake_processes, monkeypatch):
+    monkeypatch.setattr(platform, "IS_WINDOWS", False)
+    platform.kill_tree(FAKE_ROOT)
+    assert fake_processes["killpg"] == [FAKE_ROOT]
+
+
+def test_kill_tree_never_kills_pid_1s_group(fake_processes, monkeypatch):
+    # P11: os.getpgid(1) == 1, and killpg(1) signals every process we may signal.
+    monkeypatch.setattr(platform, "IS_WINDOWS", False)
+    fake_processes["pgids"][1] = 1
     platform.kill_tree(1)
-    assert killed == [3, 1]
+    assert fake_processes["killpg"] == []
+    assert fake_processes["kills"] == [1]
+
+
+def test_kill_tree_never_kills_phils_own_group(fake_processes, monkeypatch):
+    monkeypatch.setattr(platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(os, "getpgrp", lambda: FAKE_ROOT, raising=False)
+    platform.kill_tree(FAKE_ROOT)
+    assert fake_processes["killpg"] == []
+
+
+def test_kill_tree_on_windows_kills_a_child_started_after_the_listing(fake_processes, monkeypatch):
+    # The root was inside CreateProcess when killed: its child didn't exist yet when children()
+    # ran, but has the root as parent afterwards. So does that child's own late child. A process
+    # older than the root that only reuses its pid as ppid is left alone.
+    import psutil
+
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    kills = fake_processes["kills"]
+    monkeypatch.setattr(psutil, "Process", lambda pid: FakeProc(pid, kills=kills, started=100.0))
+    snapshots = iter([
+        [FakeProc(7, kills=kills, started=101.0, ppid=FAKE_ROOT), FakeProc(8, kills=kills, started=50.0, ppid=FAKE_ROOT)],
+        [FakeProc(9, kills=kills, started=102.0, ppid=7)],
+        [],
+    ])
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: next(snapshots))
+    platform.kill_tree(FAKE_ROOT)
+    assert kills == [FAKE_ROOT, 7, 9]
+    assert fake_processes["killpg"] == []
 
 
 def git_layout(root):
@@ -126,11 +201,33 @@ def test_find_bash_never_returns_the_wsl_launcher():
     assert found is None
 
 
-def test_windows_argv_quotes_every_argument_for_bash():
+def test_windows_command_passes_the_quoted_command_in_the_environment():
     argv = ["npm", "test", "--", "a b", "$HOME", "it's"]
-    wrapped = platform.windows_argv(argv, PureWindowsPath(r"C:\Git\bin\bash.exe"))
-    assert wrapped[:2] == [r"C:\Git\bin\bash.exe", "-c"]
-    assert wrapped[2] == "npm test -- 'a b' '$HOME' 'it'\"'\"'s'"
+    args, env = platform.windows_command(argv, PureWindowsPath(r"C:\Git\bin\bash.exe"))
+    assert args[:2] == [r"C:\Git\bin\bash.exe", "-c"]
+    assert env == {platform.SHELL_COMMAND_VAR: "npm test -- 'a b' '$HOME' 'it'\"'\"'s'"}
+    # Nothing on bash's command line that an MSYS program could parse differently.
+    assert "\\" not in args[2] and "'" not in args[2]
+
+
+def test_windows_command_runs_the_exact_argv_through_a_real_bash(tmp_path):
+    import json
+    import shutil
+
+    bash = platform.find_bash() if platform.IS_WINDOWS else shutil.which("bash")
+    if bash is None:
+        pytest.skip("no bash here")
+    argv = [
+        sys.executable, "-c",
+        f"import json, os, sys; print(json.dumps([sys.argv[1:], {platform.SHELL_COMMAND_VAR!r} in os.environ]))",
+        "a  b", r"C:\x\\y\\", 'say "hi"', "it's", "$HOME", "*", "\u00e9", "",
+    ]
+    args, extra_env = platform.windows_command(argv, bash)
+    env = os.environ | extra_env
+    out = subprocess.run(args, env=env, cwd=tmp_path, capture_output=True, encoding="utf-8", timeout=60)
+    assert out.returncode == 0, out.stderr
+    # The exact argv arrives, and the variable that carried it doesn't.
+    assert json.loads(out.stdout) == [argv[3:], False]
 
 
 def test_lock_file_round_trip(tmp_path):

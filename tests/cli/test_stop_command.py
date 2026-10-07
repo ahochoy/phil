@@ -75,15 +75,35 @@ def test_stop_falls_through_when_worker_already_exited(calc_repo, monkeypatch):
     assert stopped.needs_attention == "stopped by user (worker was not running)"
 
 
+def test_stop_on_windows_falls_through_when_the_worker_exits_without_stopping(calc_repo, monkeypatch):
+    # On Windows the request is only a file, so nothing fails when the worker is already gone;
+    # phil stop must notice the dead pid rather than wait out the timeout and report a forced stop.
+    info, record, conn = new_run(calc_repo)
+    update_run(conn, record.run_id, state="running")
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    update_run(conn, record.run_id, pid=proc.pid)
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(cli, "is_worker_alive", lambda record: True)
+    started = time.monotonic()
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "stop", record.run_id, "--timeout", "30"])
+    assert result.exit_code == 0, result.output
+    assert time.monotonic() - started < 10
+    assert ProjectPaths(info.slug).stop_request(record.run_id).exists()
+    stopped = get_run(conn, record.run_id)
+    assert (stopped.state, stopped.needs_attention) == ("stopped", "stopped by user (worker was not running)")
+
+
 def test_stop_reports_when_the_row_ends_in_another_state(calc_repo, monkeypatch):
     info, record, conn = new_run(calc_repo)
     update_run(conn, record.run_id, state="running", pid=424242)
 
-    def fake_kill(pid, sig):
+    def fake_request_stop(pid, stop_file):
+        # The worker, asked to stop (by SIGTERM or by stop file), fails instead.
         update_run(conn, record.run_id, state="failed", needs_attention="boom")
 
     monkeypatch.setattr(cli, "is_worker_alive", lambda record: True)
-    monkeypatch.setattr(cli.os, "kill", fake_kill)
+    monkeypatch.setattr(platform, "request_stop", fake_request_stop)
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "stop", record.run_id, "--timeout", "2"])
     assert result.exit_code == 1
     assert "ended as failed" in result.output
