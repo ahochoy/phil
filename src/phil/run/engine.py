@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -53,12 +54,15 @@ from phil.run.state import (
     run_depth,
     with_task_status,
 )
+from phil.store.activity import ActivityLog
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.events import EventLog
 from phil.store.runs import get_run, update_run
 from phil.store.telemetry import run_usage, usage_by_role
 from phil.workspace.shell import child_env, run_command
 from phil.workspace.worktree import WorktreeManager, rebaseline_path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -72,6 +76,7 @@ class RunDeps:
     factory: AgentFactory | None = None
     sleep: Callable[[float], None] = time.sleep
     events: EventLog | None = None
+    activity: ActivityLog | None = None
 
 
 def _write_json_atomic(path: Path, data: Any) -> None:
@@ -170,11 +175,28 @@ class RunEngine:
         if "state" in fields:
             events.append("state", state=fields["state"], needs_attention=fields.get("needs_attention"))
 
+    def _milestone(self, kind: str, **data: object) -> None:
+        events = self.deps.events
+        if events is None:
+            return
+        seq = self.deps.activity.last_seq if self.deps.activity is not None else 0
+        try:
+            events.append(kind, seq=seq, **data)
+        except Exception:
+            logger.warning("couldn't record the %s milestone", kind, exc_info=True)
+
+    @staticmethod
+    def _current_task(state: RunState) -> str | None:
+        index = state.get("task_index", -1)
+        if index is None or index < 0:
+            return None
+        return load_plan(state).tasks[index].id
+
     def _test(self, state: RunState, name: str, worktree: Path | None = None) -> TestReport:
         if not state["test_cmd"]:
             # A run of check tasks only may have no test suite: its gates rely on each check_cmd.
             return TestReport(command="", passed=True, failures=[], log_path="")
-        return run_tests(
+        report = run_tests(
             state["test_cmd"],
             worktree or self.deps.worktree,
             shell=self.deps.config.shell,
@@ -182,6 +204,19 @@ class RunEngine:
             name=name,
             baseline=state.get("baseline_failures", []),
         )
+        activity = self.deps.activity
+        if activity is not None:
+            detail = None
+            if report.log_path:
+                try:
+                    detail = Path(report.log_path).read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    detail = None
+            counts = "passed" if report.passed else f"{len(report.failures)} failed"
+            activity.record(task=self._current_task(state), role="engine", tool="gate",
+                            summary=f"gate {report.command}", result=f"→ {counts}", ok=report.passed,
+                            detail=detail, duration_ms=0)
+        return report
 
     def _rebaseline(self, state: RunState) -> dict:
         """After a resume switched the test command, re-capture the baseline with it (once).
@@ -250,6 +285,7 @@ class RunEngine:
             command_log=log,
             extra_allow=extra_allow,
             approved=tuple(state.get("approved", [])),
+            activity=self.deps.activity,
         )
 
     def _budget(self, role: str) -> int:
@@ -489,6 +525,7 @@ class RunEngine:
         self._update_run(current_node="pick_task")
         if index is None:
             return {"task_index": -1}
+        self._milestone("task_started", task=plan.tasks[index].id, title=plan.tasks[index].description)
         worktree = self.deps.worktree
         base_sha = self.worktrees.head(worktree)
         check = plan.tasks[index].verify == "check"
@@ -653,6 +690,7 @@ class RunEngine:
                 tree = self.worktrees.snapshot(worktree)
                 # An unreferenced tree can be garbage-collected while the run sits paused.
                 self.worktrees.pin_ref(f"refs/phil/{self.deps.run_id}/red", tree)
+                self._milestone("gate", task=task.id, name="red")
                 return {
                     "phase": "green",
                     "attempts": 0,
@@ -667,6 +705,11 @@ class RunEngine:
             check = run_check(
                 task.check_cmd, worktree, shell=self.deps.config.shell, artifacts=self.deps.artifacts, name=check_name
             )
+            if self.deps.activity is not None:
+                self.deps.activity.record(
+                    task=task.id, role="engine", tool="gate", summary=f"gate {check.command}",
+                    result=f"→ exit {check.exit_code}", ok=check.exit_code == 0,
+                    detail=check.stdout + (f"\n{check.stderr}" if check.stderr else ""), duration_ms=check.duration_ms)
             if check.exit_code == COMMAND_NOT_FOUND:
                 output = check.stdout + (f"\n{check.stderr}" if check.stderr else "")
                 log = str(self.deps.artifacts.log_path(check_name))
@@ -681,6 +724,7 @@ class RunEngine:
                 state.get("base_skipped"),
             )
             if not problems:
+                self._milestone("gate", task=task.id, name="check" if task.verify == "check" else "green")
                 return {"last_report": report.model_dump(), "last_problems": [], "verdict": "green_ok"}
         else:
             problems = verify_green(
@@ -691,6 +735,7 @@ class RunEngine:
                 state.get("base_skipped"),
             )
             if not problems:
+                self._milestone("gate", task=task.id, name="check" if task.verify == "check" else "green")
                 return {"last_report": report.model_dump(), "last_problems": [], "verdict": "green_ok"}
         return self._failed_attempt(state, [*problems, *refused], report.model_dump())
 
@@ -727,6 +772,10 @@ class RunEngine:
                 "summary": summary,
                 "log": (report or {}).get("log_path") or None,
             }
+        task = load_plan(state).tasks[state["task_index"]]
+        self._milestone("attempt_failed", task=task.id, attempt=attempts, limit=self._attempt_limit(state),
+                        problem=(problems[0] if problems else "the gate failed"),
+                        retrying=update["verdict"] == "retry")
         return update
 
     def escalate(self, state: RunState) -> dict:
@@ -791,6 +840,10 @@ class RunEngine:
         worktree = self.deps.worktree
         patching = bool(state.get("patching"))
         message = f"{task.id}: fix after review" if patching else f"{task.id}: {task.description}"
+        # What the task changed, for its task_done milestone: read before the commit below moves HEAD.
+        # A fix after review may have no task_base_sha: count what's uncommitted instead.
+        since = state.get("task_base_sha") or self.worktrees.head(worktree)
+        changed = self.worktrees.changed_files(worktree, since=since)
         if self.worktrees.changed_files(worktree, since=self.worktrees.head(worktree)):
             try:
                 self._commit(message, bypass=state.get("commit_bypass", False))
@@ -813,6 +866,7 @@ class RunEngine:
         plan = with_task_status(plan, index, "DONE")
         done = sum(1 for item in plan.tasks if item.status == "DONE")
         self._update_run(current_node="commit", tasks_done=done, tasks_total=len(plan.tasks))
+        self._milestone("task_done", task=task.id, files=len(changed))
         passed = TestReport.model_validate(state["last_report"])
         return {
             "plan": plan.model_dump(),
@@ -862,6 +916,8 @@ class RunEngine:
         minor = [issue for issue in issues if issue.severity == "minor"]
         plan = issues_to_tasks(plan, blocking, "tester", state["test_cmd"]) if blocking else plan
         open_issues = [*state.get("open_issues", []), *(issue.model_dump() for issue in [*minor, *notes])]
+        self._milestone("verdict", role="tester", outcome="issues" if issues else "passed", issues=len(issues),
+                        blocking=len(blocking))
         return {
             "plan": plan.model_dump(),
             "call_seq": seq,
@@ -938,6 +994,8 @@ class RunEngine:
             return {**budget_warn, "call_seq": seq, "escalation": escalation}
         blocking = [issue for issue in verdict.issues if issue.severity in ("blocker", "major")]
         minor = [issue for issue in verdict.issues if issue.severity == "minor"]
+        self._milestone("verdict", role="reviewer", outcome="passed" if verdict.verdict == "approve" else "changes",
+                        issues=len(verdict.issues), blocking=len(blocking))
         if verdict.verdict == "changes" and blocking and self._is_quick(state):
             patch = self._patch_after_review(state, plan, blocking, minor)
             if patch is not None:

@@ -24,6 +24,14 @@ def test_partial_lines_are_not_returned(tmp_path):
     assert offset == len('{"ts": "t", "kind": "node", "node": "a"}\n')
 
 
+def test_malformed_complete_lines_are_skipped(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"ts": "t", "kind": "node", "node": "a"}\nnot json\n{"ts": "t", "kind": "node", "node": "b"}\n')
+    events, offset = EventLog(path).read()
+    assert [e["node"] for e in events] == ["a", "b"]
+    assert offset == path.stat().st_size
+
+
 def test_latest_by_kind(tmp_path):
     log = EventLog(tmp_path / "events.jsonl")
     log.append("escalation", escalation={"summary": "first"})

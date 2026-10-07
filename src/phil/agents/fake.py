@@ -70,6 +70,17 @@ class Turn:
     config: dict | None = None  # the invoke config, e.g. its LangChain callbacks
 
 
+def fire_tool(turn: "Turn", name: str, args: dict, output: str) -> None:
+    """Make a scripted turn's tool call visible to the invoke config's callbacks, the way a real
+    agent's tool call is (start, then end)."""
+    import uuid
+
+    run_id = uuid.uuid4()
+    for callback in (turn.config or {}).get("callbacks", []):
+        callback.on_tool_start({"name": name}, "", run_id=run_id, inputs=args)
+        callback.on_tool_end(output, run_id=run_id)
+
+
 class _ScriptedAgent:
     def __init__(
         self, factory: "ScriptedAgentFactory", role: str, workdir: Path | None, tools: dict[str, Callable[..., str]]

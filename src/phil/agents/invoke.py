@@ -4,7 +4,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
@@ -21,6 +21,9 @@ from phil.packets import Packet
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.parked import park
 from phil.store.telemetry import CallRow, CostSource, TelemetryRow, record, record_calls, weakest
+
+if TYPE_CHECKING:
+    from phil.store.activity import ActivityLog
 
 # `Callable[...]` can't express the keyword-only parameters; real factories (build_agent) and
 # scripted ones (ScriptedAgentFactory/FakeAgentFactory) all accept
@@ -43,6 +46,7 @@ class AgentContext:
     approved: tuple[str, ...] = ()
     chat_id: str | None = None
     prices: PriceBook | None = None  # None: the process-wide default book, created on first use
+    activity: "ActivityLog | None" = None  # the run's activity log: every tool call is recorded into it
 
 
 class ContractViolation(Exception):
@@ -358,13 +362,20 @@ def invoke_agent(
         # error raised outside a wrapped model call (a fake agent, a summarisation call), never
         # again for one the middleware already handled.
         tracker = ModelRetryTracker(sleep=counting_sleep, attempts=retry_attempts)
+        callbacks: list = [collector]
+        if ctx.activity is not None:
+            from phil.agents.activity import ActivityCallback
+
+            callbacks.append(
+                ActivityCallback(ctx.activity, task=task_id, role=spec.role, ignore_tools={spec.out_contract.__name__})
+            )
         try:
             result, _ = call_with_retry(
                 agent,
                 {"messages": payload_messages},
                 sleep=counting_sleep,
                 attempts=retry_attempts,
-                config={"callbacks": [collector], "configurable": {TRACKER_KEY: tracker}},
+                config={"callbacks": callbacks, "configurable": {TRACKER_KEY: tracker}},
                 retryable=lambda exc: not model_call_retried(exc),
             )
             retries = len(sleeps)  # each retry — per model call or whole agent — sleeps exactly once

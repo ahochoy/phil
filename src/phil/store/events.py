@@ -4,6 +4,9 @@ from pathlib import Path
 from phil.store.db import utcnow
 from phil.store.paths import ProjectPaths
 
+# The run milestones the activity feed shows between tool lines (each carries the activity `seq`).
+MILESTONE_KINDS = ("task_started", "gate", "attempt_failed", "task_done", "verdict")
+
 
 class EventLog:
     def __init__(self, path: Path) -> None:
@@ -22,7 +25,14 @@ class EventLog:
             handle.seek(offset)
             data = handle.read()
         end = data.rfind(b"\n") + 1
-        events = [json.loads(line) for line in data[:end].decode().splitlines() if line]
+        events = []
+        for line in data[:end].decode("utf-8", errors="replace").splitlines():
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue  # a malformed complete line: skip it, keep reading
         return events, offset + end
 
     def latest(self, kind: str) -> dict | None:

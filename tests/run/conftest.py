@@ -11,6 +11,7 @@ from phil.contracts import Plan, Review, SelfCheck, Task, TaskResult, TesterRepo
 from phil.run.checkpoint import open_checkpointer
 from phil.run.engine import RunDeps, RunEngine
 from phil.run.state import initial_state
+from phil.store.activity import ActivityLog
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
 from phil.store.events import EventLog
@@ -120,7 +121,13 @@ class Harness:
 
 @pytest.fixture
 def make_harness(calc_repo: Path):
-    def _make(scripts: dict, plan: Plan | None = None, config: PhilConfig | None = None, usage=(100, 20, 0.0)):
+    def _make(
+        scripts: dict,
+        plan: Plan | None = None,
+        config: PhilConfig | None = None,
+        usage=(100, 20, 0.0),
+        activity: ActivityLog | None = None,
+    ):
         plan = plan or calc_plan()
         paths = ProjectPaths("calc-test")
         conn = connect(paths.db_path)
@@ -135,7 +142,7 @@ def make_harness(calc_repo: Path):
             config=_with_test_models(config or PhilConfig()), conn=conn, repo_root=calc_repo, run_id=RUN_ID,
             worktree=paths.worktree_dir(RUN_ID), artifacts=ArtifactStore(paths.run_dir(RUN_ID)),
             factory=factory, sleep=lambda _: None,
-            events=EventLog(paths.run_dir(RUN_ID) / "events.jsonl"),
+            events=EventLog(paths.run_dir(RUN_ID) / "events.jsonl"), activity=activity,
         )
         engine = RunEngine(deps)
         return Harness(engine, engine.build(open_checkpointer(paths.db_path)), deps, factory, plan, base_sha)
