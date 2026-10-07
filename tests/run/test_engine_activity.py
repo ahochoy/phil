@@ -1,8 +1,13 @@
+import time
+
+import phil.run.engine as engine_module
 from phil.agents.fake import Turn, fire_tool
+from phil.contracts import Plan, Task
 from phil.store.activity import activity_log
 from phil.store.events import MILESTONE_KINDS
 from phil.store.paths import ProjectPaths
-from tests.run.conftest import RUN_ID, bad_green, review, tester_report, write_green, write_red
+from phil.ui.plan_view import _clip
+from tests.run.conftest import RUN_ID, TEST_CMD, bad_green, review, tester_report, write_green, write_red
 
 
 def _red_with_tools(turn: Turn):
@@ -82,3 +87,65 @@ def test_a_failed_attempt_writes_attempt_failed_with_retrying(make_harness):
     assert len(failed) == 1
     assert (failed[0]["task"], failed[0]["attempt"], failed[0]["retrying"]) == ("CALC-001", 1, True)
     assert kinds.index("attempt_failed") < kinds.index("task_done")
+
+
+def test_attempt_failed_keeps_only_the_first_line_of_a_multi_line_problem(make_harness, monkeypatch):
+    """A gate problem of two lines: the attempt_failed milestone's `problem` is its first line."""
+    real = engine_module.verify_green
+    calls = []
+
+    def two_line_problem_once(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return ["2 tests failed\n  FAILED tests/test_sub.py::test_subtract"]
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(engine_module, "verify_green", two_line_problem_once)
+    harness, _, _ = _activity_harness(
+        make_harness,
+        {"implementer": [write_red, write_green, write_green], "tester": [tester_report()], "reviewer": [review()]},
+    )
+    assert harness.start()["status"] == "completed"
+    (failed,) = [m for m in _milestones(harness) if m["kind"] == "attempt_failed"]
+    assert failed["problem"] == "2 tests failed"
+
+
+def test_a_long_task_title_is_clipped_in_task_started(make_harness):
+    task = Task(id="CALC-001", description="Add subtract " + "x" * 300,
+                acceptance_criteria=["subtract(3, 1) == 2"], files_hint=["calc.py"])
+    plan = Plan(keyword="CALC", description="Add arithmetic", tasks=[task], test_cmd=TEST_CMD)
+    log = activity_log(ProjectPaths("calc-test"), RUN_ID)
+    harness = make_harness({"implementer": [write_red, write_green], "tester": [tester_report()],
+                            "reviewer": [review()]}, plan=plan, activity=log)
+    assert harness.start()["status"] == "completed"
+    (started,) = [m for m in _milestones(harness) if m["kind"] == "task_started"]
+    assert started["title"] == _clip(task.description) and started["title"].endswith("…")
+
+
+def test_a_gate_records_its_start_before_the_tests_run_and_its_real_duration(make_harness, monkeypatch):
+    """The gate's start record is written before run_tests runs (so the live row shows it), its end
+    comes after, and the end's duration_ms is the real run time (> 0 for a run that takes 0.05s)."""
+    real = engine_module.run_tests
+    open_while_running = []
+
+    def slow_run_tests(*args, **kwargs):
+        open_while_running.append(log.pending())
+        time.sleep(0.05)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(engine_module, "run_tests", slow_run_tests)
+    harness, log, test_calls = _activity_harness(
+        make_harness,
+        {"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]},
+    )
+    assert harness.start()["status"] == "completed"
+
+    assert open_while_running and len(open_while_running) == len(test_calls)
+    assert all(p is not None and p["tool"] == "gate" and p["phase"] == "start" for p in open_while_running)
+    records = log.read()[0]
+    gate_ends = [r for r in records if r["tool"] == "gate" and r["phase"] == "end"]
+    assert len(gate_ends) == len(test_calls)
+    for end in gate_ends:
+        positions = [i for i, r in enumerate(records) if r["seq"] == end["seq"]]
+        assert [records[i]["phase"] for i in positions] == ["start", "end"]
+        assert end["duration_ms"] > 0

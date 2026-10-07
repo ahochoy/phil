@@ -59,6 +59,7 @@ from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.events import EventLog
 from phil.store.runs import get_run, update_run
 from phil.store.telemetry import run_usage, usage_by_role
+from phil.ui.plan_view import _clip
 from phil.workspace.shell import child_env, run_command
 from phil.workspace.worktree import WorktreeManager, rebaseline_path
 
@@ -115,6 +116,12 @@ def _tool_reads(log: CommandLog) -> list[str]:
 
 def _cap_diff(diff: str) -> str:
     return diff if len(diff) <= MAX_DIFF_CHARS else diff[:MAX_DIFF_CHARS] + DIFF_TRUNCATED
+
+
+def _first_line(problem: str) -> str:
+    """A problem's first non-empty line, clipped: what fits an `attempt_failed` band."""
+    line = next((line.strip() for line in problem.splitlines() if line.strip()), "")
+    return _clip(line) if line else "the gate failed"
 
 
 class RunEngine:
@@ -200,6 +207,9 @@ class RunEngine:
         if not state["test_cmd"]:
             # A run of check tasks only may have no test suite: its gates rely on each check_cmd.
             return TestReport(command="", passed=True, failures=[], log_path="")
+        # The gate's start goes in before the tests run, so the live row shows them while they run.
+        task, seq = self._gate_start(state, f"gate {state['test_cmd']}")
+        started = time.monotonic()
         report = run_tests(
             state["test_cmd"],
             worktree or self.deps.worktree,
@@ -208,14 +218,27 @@ class RunEngine:
             name=name,
             baseline=state.get("baseline_failures", []),
         )
-        if self.deps.activity is not None:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        if self.deps.activity is not None and seq is not None:
             try:
-                self._record_test_gate(self.deps.activity, state, report)
+                self._record_test_gate(self.deps.activity, task, seq, report, duration_ms)
             except Exception:
                 logger.warning("couldn't record the gate line for %s", report.command, exc_info=True)
         return report
 
-    def _record_test_gate(self, activity: ActivityLog, state: RunState, report: TestReport) -> None:
+    def _gate_start(self, state: RunState, summary: str) -> tuple[str | None, int | None]:
+        """Record a gate's start (the current task, and the seq for its end); never fails the run."""
+        if self.deps.activity is None:
+            return None, None
+        try:
+            task = self._current_task(state)
+            return task, self.deps.activity.start(task=task, role="engine", tool="gate", summary=summary)
+        except Exception:
+            logger.warning("couldn't record the start of %s", summary, exc_info=True)
+            return None, None
+
+    def _record_test_gate(self, activity: ActivityLog, task: str | None, seq: int, report: TestReport,
+                          duration_ms: int) -> None:
         detail = None
         if report.log_path:
             with open(report.log_path, encoding="utf-8", errors="replace") as handle:
@@ -228,9 +251,8 @@ class RunEngine:
             result = f"→ failed (exit {report.exit_code})"
         else:
             result = "→ failed"
-        activity.record(task=self._current_task(state), role="engine", tool="gate",
-                        summary=f"gate {report.command}", result=result, ok=report.passed,
-                        detail=detail, duration_ms=0)
+        activity.end(seq, task=task, role="engine", tool="gate", summary=f"gate {report.command}",
+                     result=result, ok=report.passed, detail=detail, duration_ms=duration_ms)
 
     def _rebaseline(self, state: RunState) -> dict:
         """After a resume switched the test command, re-capture the baseline with it (once).
@@ -539,7 +561,7 @@ class RunEngine:
         self._update_run(current_node="pick_task")
         if index is None:
             return {"task_index": -1}
-        self._milestone("task_started", task=plan.tasks[index].id, title=plan.tasks[index].description)
+        self._milestone("task_started", task=plan.tasks[index].id, title=_clip(plan.tasks[index].description))
         worktree = self.deps.worktree
         base_sha = self.worktrees.head(worktree)
         check = plan.tasks[index].verify == "check"
@@ -716,14 +738,19 @@ class RunEngine:
                 }
         elif task.verify == "check":
             check_name = artifact_name("check", task.id, state["call_seq"])
+            _, gate_seq = self._gate_start(state, f"gate {task.check_cmd}")
             check = run_check(
                 task.check_cmd, worktree, shell=self.deps.config.shell, artifacts=self.deps.artifacts, name=check_name
             )
-            if self.deps.activity is not None:
-                self.deps.activity.record(
-                    task=task.id, role="engine", tool="gate", summary=f"gate {check.command}",
-                    result=f"→ exit {check.exit_code}", ok=check.ok,
-                    detail=check.stdout + (f"\n{check.stderr}" if check.stderr else ""), duration_ms=check.duration_ms)
+            if self.deps.activity is not None and gate_seq is not None:
+                try:
+                    self.deps.activity.end(
+                        gate_seq, task=task.id, role="engine", tool="gate", summary=f"gate {check.command}",
+                        result=f"→ exit {check.exit_code}", ok=check.ok,
+                        detail=check.stdout + (f"\n{check.stderr}" if check.stderr else ""),
+                        duration_ms=check.duration_ms)
+                except Exception:
+                    logger.warning("couldn't record the gate line for %s", check.command, exc_info=True)
             if check.exit_code == COMMAND_NOT_FOUND:
                 output = check.stdout + (f"\n{check.stderr}" if check.stderr else "")
                 log = str(self.deps.artifacts.log_path(check_name))
@@ -792,7 +819,7 @@ class RunEngine:
             logger.warning("couldn't find the task for the attempt_failed milestone", exc_info=True)
         else:
             self._milestone("attempt_failed", task=task_id, attempt=attempts, limit=self._attempt_limit(state),
-                            problem=(problems[0] if problems else "the gate failed"),
+                            problem=_first_line(problems[0]) if problems else "the gate failed",
                             retrying=update["verdict"] == "retry")
         return update
 
