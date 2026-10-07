@@ -5,6 +5,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+from phil import platform
 from phil.repo import resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, spawn_worker, worker_command, worker_starting
 from phil.store.db import connect, utcnow
@@ -119,6 +120,69 @@ def test_is_worker_alive(calc_repo):
     done = subprocess.Popen([sys.executable, "-c", "pass"])
     done.wait()
     assert not is_worker_alive(replace(me, pid=done.pid))
+
+
+def _no_os_kill(*args):
+    raise AssertionError("os.kill must not be used to probe a process")
+
+
+def test_is_worker_alive_never_signals(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait()
+    monkeypatch.setattr(os, "kill", _no_os_kill)
+    me = replace(record, pid=os.getpid(), heartbeat_at=utcnow())
+    assert is_worker_alive(me)
+    assert not is_worker_alive(replace(me, pid=done.pid))
+
+
+def test_worker_starting_never_signals(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    events = run_events(ProjectPaths(info.slug), record.run_id)
+    events.append("spawn", pid=os.getpid(), mode="start")
+    monkeypatch.setattr(os, "kill", _no_os_kill)
+    assert worker_starting(events)
+
+
+def test_worker_starting_on_windows_does_not_reap(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    events = run_events(ProjectPaths(info.slug), record.run_id)
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait()
+
+    def no_waitpid(*args):
+        raise AssertionError("os.waitpid is POSIX-only")
+
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(os, "waitpid", no_waitpid)
+    monkeypatch.setattr(os, "kill", _no_os_kill)
+    events.append("spawn", pid=os.getpid(), mode="start")
+    assert worker_starting(events)
+    events.append("spawn", pid=done.pid, mode="start")
+    assert not worker_starting(events)
+
+
+def test_spawn_worker_detaches_the_worker(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    real_popen = subprocess.Popen
+    captured = []
+
+    def fake_popen(command, **kwargs):
+        if command[0] != sys.executable:
+            return real_popen(command, **kwargs)
+        captured.append(kwargs)
+
+        class FakeProc:
+            pid = 999999
+
+        return FakeProc()
+
+    detach = {"creationflags": 0x208}
+    monkeypatch.setattr("phil.run.launch.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(platform, "detach_kwargs", lambda: detach)
+    spawn_worker(calc_repo, record.run_id, "start", env=None)
+    assert captured[-1]["creationflags"] == 0x208
+    assert "start_new_session" not in captured[-1]
 
 
 def test_worker_starting_with_no_spawn_event(calc_repo):

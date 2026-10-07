@@ -3,7 +3,6 @@ import importlib
 import json
 import logging
 import os
-import signal
 import sqlite3
 import sys
 import time
@@ -15,7 +14,7 @@ import typer
 from pydantic import ValidationError
 from rich.markup import escape
 
-from phil import __version__
+from phil import __version__, platform
 from phil.chat.approval import effective_setup_cmd, git_policy_note, launch_problems, terminated
 from phil.config import (
     CHAT_ROLES,
@@ -128,8 +127,6 @@ def _load_config(root: Path, overrides: list[str]) -> PhilConfig:
 
 def _require_bash(config: PhilConfig) -> None:
     """On Windows, stop unless Git Bash can be found: every agent command runs through it."""
-    from phil import platform
-
     if platform.IS_WINDOWS and platform.find_bash(config.shell.bash) is None:
         console.print(f"[phil.error]{escape(platform.MISSING_BASH)}[/]", soft_wrap=True)
         raise typer.Exit(1)
@@ -788,7 +785,7 @@ def stop(
     timeout: float = typer.Option(15.0, "--timeout", help="Seconds to wait for the worker to stop."),
 ) -> None:
     """Stop a running run; continue it later with `phil resume`."""
-    _, conn = _open_project(ctx)
+    info, conn = _open_project(ctx)
     record = _require_run(conn, run_id)
     if record.state == "escalated":
         console.print(
@@ -808,7 +805,7 @@ def stop(
             raise typer.Exit(1)
     if alive:
         try:
-            os.kill(record.pid, signal.SIGTERM)
+            platform.request_stop(record.pid, ProjectPaths(info.slug).stop_request(run_id))
         except ProcessLookupError:
             alive = False
         except PermissionError as exc:
@@ -819,8 +816,8 @@ def stop(
             current = get_run(conn, run_id)
             while current is not None and current.state in ("running", "pending"):
                 if time.monotonic() > deadline:
-                    console.print("[phil.error]the worker did not stop in time[/]")
-                    raise typer.Exit(1)
+                    current = _force_stop(conn, run_id, record.pid)
+                    break
                 time.sleep(0.2)
                 current = get_run(conn, run_id)
             _finish_stop(run_id, current)
@@ -831,6 +828,19 @@ def stop(
     if current is not None and current.state in ("running", "pending"):
         current = update_run(conn, run_id, state="stopped", needs_attention="stopped by user (worker was not running)")
     _finish_stop(run_id, current)
+
+
+def _force_stop(conn: sqlite3.Connection, run_id: str, pid: int):
+    """Kill a worker that ignored the stop request, then mark its run stopped ourselves."""
+    console.print("[phil.warn]the worker did not stop in time; stopping it by force[/]")
+    platform.kill_tree(pid)
+    deadline = time.monotonic() + 5
+    while platform.pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    current = get_run(conn, run_id)
+    if current is not None and current.state in ("running", "pending"):
+        current = update_run(conn, run_id, state="stopped", needs_attention="stopped by user (forced)")
+    return current
 
 
 def _finish_stop(run_id: str, current) -> None:

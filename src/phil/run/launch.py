@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from phil import platform
 from phil.contracts import Plan
 from phil.repo import RepoInfo, resolve_repo
 from phil.store.artifacts import ArtifactStore
@@ -70,22 +71,16 @@ def spawn_worker(
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
             env=env,
+            **platform.detach_kwargs(),
         )
     run_events(paths, run_id).append("spawn", pid=proc.pid, mode=mode)
     return proc
 
 
 def is_worker_alive(record: RunRecord, *, stale_after_s: float = 30.0) -> bool:
-    if record.pid is None:
+    if record.pid is None or not platform.pid_alive(record.pid):
         return False
-    try:
-        os.kill(record.pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        pass
     if record.heartbeat_at is None:
         return True
     age = (datetime.now(UTC) - datetime.fromisoformat(record.heartbeat_at)).total_seconds()
@@ -105,21 +100,16 @@ def worker_starting(events: EventLog) -> bool:
         return False
     pid = event["pid"]
     # A worker whose Popen was discarded (the long-lived chat never waits on it) exits into a
-    # zombie: `os.kill(pid, 0)` alone still succeeds for it, so check for a since-exited child
-    # first. This also reaps it, clearing the zombie.
-    try:
-        reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
-    except ChildProcessError:
-        pass  # not our child (already reaped, or never was) — fall back to os.kill below
-    else:
-        if reaped_pid == pid:
-            return False  # it had exited; we just reaped it
-        # (0, 0): still running
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    # zombie on POSIX, so check for a since-exited child first. This also reaps it, clearing the
+    # zombie. Windows has no zombies to reap.
+    if not platform.IS_WINDOWS:
+        try:
+            reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass  # not our child (already reaped, or never was) — fall back to pid_alive below
+        else:
+            if reaped_pid == pid:
+                return False  # it had exited; we just reaped it
+            # (0, 0): still running
+            return True
+    return platform.pid_alive(pid)

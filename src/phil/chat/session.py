@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from phil import platform
 from phil.contracts import Contract
 from phil.store.artifacts import ArtifactStore
 from phil.store.events import EventLog
@@ -40,15 +41,7 @@ class ChatLocked(Exception):
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # alive, owned by someone else
-    except OSError:
-        return False
-    return True
+    return platform.pid_alive(pid)
 
 
 def lock_holder(directory: Path) -> int | None:

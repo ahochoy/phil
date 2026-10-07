@@ -31,5 +31,9 @@ class ProjectPaths:
     def run_dir(self, run_id: str) -> Path:
         return self.runs_dir / run_id
 
+    def stop_request(self, run_id: str) -> Path:
+        """The file `phil stop` writes on Windows to ask a run's worker to stop (see phil.platform)."""
+        return self.run_dir(run_id) / "stop-requested"
+
     def worktree_dir(self, run_id: str) -> Path:
         return self.worktrees_dir / run_id
