@@ -541,7 +541,7 @@ class ShellResult:
         return self.exit_code == 0 and not self.timed_out
 
 
-def kill_active_groups(sig: int = signal.SIGKILL) -> list[int]:
+def kill_active_groups(sig: int = getattr(signal, "SIGKILL", signal.SIGTERM)) -> list[int]:  # SPIKE
     killed: list[int] = []
     for group in list(_ACTIVE_GROUPS):
         try:

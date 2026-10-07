@@ -4,7 +4,10 @@ Kept free of langgraph/langchain/deepagents at module import time (see
 `implementer-common.md`), even though the modules used here are all safe to import eagerly.
 """
 
-import fcntl
+try:  # SPIKE: Windows has no fcntl
+    import fcntl
+except ImportError:
+    fcntl = None
 from pathlib import Path
 
 from phil.publish.pr_body import newest_output, pr_title
