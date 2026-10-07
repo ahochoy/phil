@@ -22,7 +22,7 @@ class GitNotFound(GitError):
 
 def git(cwd: Path, *args: str) -> str:
     try:
-        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except FileNotFoundError as exc:
         if exc.filename == "git":
             raise GitNotFound(list(args), 127, str(exc)) from exc

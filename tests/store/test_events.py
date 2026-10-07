@@ -35,3 +35,15 @@ def test_latest_by_kind(tmp_path):
 def test_run_events_path(phil_home):
     paths = ProjectPaths("demo-12345678")
     assert run_events(paths, "r-0001").path == paths.run_dir("r-0001") / "events.jsonl"
+
+
+def test_append_writes_lf_only(tmp_path):
+    """Appended lines end with `\\n`, never `\\r\\n`, whatever OS writes them."""
+    path = tmp_path / "events.jsonl"
+    log = EventLog(path)
+    log.append("node", node="setup")
+    log.append("state", state="running")
+
+    raw = path.read_bytes()
+    assert b"\r\n" not in raw
+    assert raw.count(b"\n") == 2

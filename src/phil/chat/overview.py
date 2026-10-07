@@ -13,6 +13,6 @@ def repo_overview(root: Path, *, max_files: int = 200, readme_chars: int = 1500)
     for name in README_NAMES:
         readme = root / name
         if readme.is_file():
-            lines += ["", f"{name} (start):", readme.read_text(errors="replace")[:readme_chars]]
+            lines += ["", f"{name} (start):", readme.read_text(encoding="utf-8", errors="replace")[:readme_chars]]
             break
     return "\n".join(lines)

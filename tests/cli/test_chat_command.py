@@ -267,7 +267,7 @@ def test_a_chat_open_in_another_window_is_refused(calc_repo, monkeypatch):
     chat_id = _approved_chat(calc_repo, monkeypatch)
     lock = ProjectPaths(resolve_repo(calc_repo).slug).project_dir / "chats" / chat_id / "chat.lock"
     assert not lock.exists()  # released when the first chat ended
-    lock.write_text(str(os.getppid()))
+    lock.write_text(str(os.getppid()), encoding="utf-8")
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "--resume", chat_id], input="")
     assert result.exit_code == 1
     assert f"Chat {chat_id} is already open in another window (pid {os.getppid()})." in " ".join(result.output.split())
@@ -282,14 +282,14 @@ def test_a_stale_chat_lock_is_taken_over_and_released(calc_repo, monkeypatch):
     process = subprocess.Popen([sys.executable, "-c", "pass"])
     process.wait()
     lock = ProjectPaths(resolve_repo(calc_repo).slug).project_dir / "chats" / chat_id / "chat.lock"
-    lock.write_text(str(process.pid))
+    lock.write_text(str(process.pid), encoding="utf-8")
     seen = {}
     from phil.chat.controller import ChatController
 
     original = ChatController.run
 
     def run(self):
-        seen["lock"] = lock.read_text().strip()
+        seen["lock"] = lock.read_text(encoding="utf-8").strip()
         seen["propagate"] = __import__("logging").getLogger("phil").propagate
         return original(self)
 

@@ -35,7 +35,7 @@ def _outputs_for(run_dir: Path, kind: str) -> list[tuple[int, Path]]:
         if path.name.endswith(".rejected.json"):
             continue
         try:
-            json.loads(path.read_text())
+            json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         stem = path.stem
@@ -53,7 +53,7 @@ def newest_output(run_dir: Path, kind: str) -> dict | None:
     if not candidates:
         return None
     _, path = max(candidates, key=lambda item: item[0])
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def output_count(run_dir: Path, kind: str) -> int:
@@ -92,7 +92,7 @@ def read_open_issues(run_dir: Path) -> list[dict]:
     if not path.exists():
         return []
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     if not isinstance(data, list):

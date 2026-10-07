@@ -87,6 +87,11 @@ def root(
     new: bool = typer.Option(False, "--new", help="Start a new chat without listing open ones."),
     overrides: list[str] | None = typer.Option(None, "--set", help=SET_HELP),
 ) -> None:
+    if platform.IS_WINDOWS:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8")
     ctx.obj = {"repo": repo, "base": base, "resume": resume_chat, "new": new, "overrides": list(overrides or [])}
     if ctx.invoked_subcommand is None:
         _chat(ctx)
@@ -383,7 +388,7 @@ def run_plan(
     # `phil --set a=1 run --set b=2`: both apply, the command's own last. The run keeps them.
     overrides = [*ctx.obj.get("overrides", []), *(run_overrides or [])]
     try:
-        plan = Plan.model_validate_json(plan_file.read_text())
+        plan = Plan.model_validate_json(plan_file.read_text(encoding="utf-8"))
     except ValidationError as exc:
         console.print(f"[phil.error]invalid plan: {escape(str(exc))}[/]")
         raise typer.Exit(1) from exc

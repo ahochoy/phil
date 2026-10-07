@@ -33,7 +33,8 @@ class Judgement:
 def _tracked_files(root: Path) -> list[str]:
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), "ls-files"], capture_output=True, text=True, timeout=10, check=False
+            ["git", "-C", str(root), "ls-files"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []

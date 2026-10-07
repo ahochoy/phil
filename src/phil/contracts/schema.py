@@ -9,6 +9,6 @@ def export_schemas(out_dir: Path) -> list[Path]:
     paths: list[Path] = []
     for model in ALL_CONTRACTS:
         path = out_dir / f"{model.__name__}.schema.json"
-        path.write_text(json.dumps(model.model_json_schema(), indent=2) + "\n")
+        path.write_text(json.dumps(model.model_json_schema(), indent=2) + "\n", encoding="utf-8", newline="\n")
         paths.append(path)
     return paths

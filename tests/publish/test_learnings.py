@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from phil import platform
 from phil.publish.learnings import append_learnings, learnings_entry
 from phil.store.artifacts import ArtifactStore
 from phil.store.paths import ProjectPaths
@@ -173,6 +174,20 @@ def test_append_learnings_writes_the_header_once(tmp_path, monkeypatch):
     assert text.count("# Phil learnings") == 1
     assert text.count("## r-0001 ") == 1
     assert text.count("## r-0002 ") == 1
+
+
+def test_append_learnings_locks_and_unlocks_once_through_platform(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(platform, "lock_file", lambda handle: calls.append("lock"))
+    monkeypatch.setattr(platform, "unlock_file", lambda handle: calls.append("unlock"))
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    paths = ProjectPaths("calc-abc123")
+    run_dir = make_run_dir(tmp_path)
+    entry = learnings_entry(record=make_record(), run_dir=run_dir, today="2026-09-29")
+
+    assert append_learnings(paths, entry, "r-7f3a") is True
+
+    assert calls == ["lock", "unlock"]
 
 
 def test_concurrent_appends_both_land(tmp_path, monkeypatch):

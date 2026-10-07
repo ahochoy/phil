@@ -12,7 +12,7 @@ class EventLog:
     def append(self, kind: str, **data: object) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps({"ts": utcnow(), "kind": kind, **data}, default=str)
-        with self.path.open("a") as handle:
+        with self.path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(line + "\n")
 
     def read(self, offset: int = 0) -> tuple[list[dict], int]:

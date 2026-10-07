@@ -21,7 +21,7 @@ LOCKFILE_SETUP_CMDS = (
 
 def _npm_test_script(root: Path) -> bool:
     try:
-        data = json.loads((root / "package.json").read_text())
+        data = json.loads((root / "package.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
     scripts = data.get("scripts") if isinstance(data, dict) else None

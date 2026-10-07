@@ -43,7 +43,7 @@ class AgentSpec:
 
 
 def _read_prompt(filename: str) -> str:
-    return files("phil.prompts").joinpath(filename).read_text()
+    return files("phil.prompts").joinpath(filename).read_text(encoding="utf-8")
 
 
 def load_prompt(spec: AgentSpec) -> str:
