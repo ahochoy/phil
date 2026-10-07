@@ -4,9 +4,11 @@ import signal
 import sys
 import threading
 import time
+from typing import ClassVar
 
 import pytest
 
+from phil import platform
 from phil.config import ShellConfig
 from phil.workspace import shell as shell_module
 from phil.workspace.shell import (
@@ -15,6 +17,7 @@ from phil.workspace.shell import (
     child_env,
     is_secret_name,
     literal_pattern,
+    normalise_path_text,
     run_command,
     truncate_output,
 )
@@ -541,14 +544,61 @@ def test_kill_active_groups_stops_running_commands(tmp_path):
     )
     thread.start()
     deadline = time.monotonic() + 10
-    while not shell_module._ACTIVE_GROUPS and time.monotonic() < deadline:
+    while not shell_module._ACTIVE_ROOTS and time.monotonic() < deadline:
         time.sleep(0.05)
-    assert shell_module._ACTIVE_GROUPS
+    assert shell_module._ACTIVE_ROOTS
     killed = shell_module.kill_active_groups()
     thread.join(timeout=10)
     assert killed
     assert results and not results[0].ok
-    assert not shell_module._ACTIVE_GROUPS
+    assert not shell_module._ACTIVE_ROOTS
+
+
+def _spawns_a_sleeping_child(pid_file) -> str:
+    """A command whose process starts a sleeping child, writes the child's pid, then sleeps."""
+    code = (
+        "import subprocess, sys, time; "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        f"open({str(pid_file)!r}, 'w').write(str(child.pid)); "
+        "time.sleep(60)"
+    )
+    return f"{PY} -c {shlex.quote(code)}"
+
+
+def _wait_for_pid(pid_file) -> int:
+    deadline = time.monotonic() + 10
+    while not (pid_file.exists() and pid_file.read_text()) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return int(pid_file.read_text())
+
+
+def test_a_timed_out_command_leaves_no_child_alive(tmp_path):
+    pid_file = tmp_path / "child_pid.txt"
+    result = run_command(_spawns_a_sleeping_child(pid_file), cwd=tmp_path, timeout_s=2)
+    assert result.timed_out
+    child_pid = _wait_for_pid(pid_file)
+    deadline = time.monotonic() + 5
+    while platform.pid_alive(child_pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not platform.pid_alive(child_pid)
+
+
+def test_kill_active_groups_kills_the_whole_tree(tmp_path):
+    pid_file = tmp_path / "child_pid.txt"
+    results = []
+    thread = threading.Thread(
+        target=lambda: results.append(run_command(_spawns_a_sleeping_child(pid_file), cwd=tmp_path, timeout_s=60))
+    )
+    thread.start()
+    child_pid = _wait_for_pid(pid_file)
+    killed = shell_module.kill_active_groups()
+    thread.join(timeout=10)
+    assert killed
+    assert results and not results[0].ok
+    deadline = time.monotonic() + 5
+    while platform.pid_alive(child_pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not platform.pid_alive(child_pid)
 
 
 class SignalReceived(BaseException):
@@ -556,6 +606,7 @@ class SignalReceived(BaseException):
     pass
 
 
+@pytest.mark.skipif(platform.IS_WINDOWS, reason="SIGALRM is POSIX-only")
 def test_run_command_kills_child_on_sigalrm(tmp_path):
     """Test that child processes are killed even if a BaseException interrupts run_command."""
     pid_file = tmp_path / "child_pid.txt"
@@ -580,14 +631,10 @@ def test_run_command_kills_child_on_sigalrm(tmp_path):
 
         # Read child pid and verify it's dead
         child_pid = int(pid_file.read_text())
-        try:
-            os.kill(child_pid, 0)
-            pytest.fail(f"Child process {child_pid} should be dead")
-        except ProcessLookupError:
-            pass  # Expected: child is gone
+        assert not platform.pid_alive(child_pid), f"Child process {child_pid} should be dead"
 
         # Verify registry is empty
-        assert not shell_module._ACTIVE_GROUPS
+        assert not shell_module._ACTIVE_ROOTS
     finally:
         # Clean up: cancel timer and restore old handler
         signal.setitimer(signal.ITIMER_REAL, 0)
@@ -618,3 +665,96 @@ def test_files0_from_is_forbidden(command):
 
 def test_wc_plain_count_is_still_allowed():
     assert ShellPolicy([]).is_allowed("wc -l README.md")
+
+
+def test_normalise_path_text_turns_backslashes_into_slashes():
+    assert normalise_path_text(r"'C:\x\python.exe' a.py") == "'C:/x/python.exe' a.py"
+    assert normalise_path_text("pytest -q tests/a.py") == "pytest -q tests/a.py"
+
+
+WINDOWS_COMMAND = r"'C:\x\python.exe' a.py"
+
+
+@pytest.mark.parametrize("pattern", [r"C:\x\python.exe *", "C:/x/python.exe *"])
+def test_on_windows_a_backslash_path_matches_either_allow_pattern_style(monkeypatch, pattern):
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    assert ShellPolicy([pattern]).is_allowed(WINDOWS_COMMAND)
+
+
+@pytest.mark.parametrize("plan_command", [r"'C:\x\python.exe' a.py", "C:/x/python.exe a.py"])
+def test_on_windows_a_backslash_path_matches_either_extra_allow_style(monkeypatch, plan_command):
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    assert ShellPolicy([], extra_allow=(plan_command,)).is_allowed(WINDOWS_COMMAND)
+
+
+@pytest.mark.parametrize("approved", [r"'C:\x\python.exe' a.py", "C:/x/python.exe a.py"])
+def test_on_windows_a_backslash_path_matches_either_approved_style(monkeypatch, approved):
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    assert ShellPolicy([], approved=(approved,)).is_allowed(WINDOWS_COMMAND)
+
+
+def test_on_posix_backslashes_are_not_normalised_for_matching(monkeypatch):
+    monkeypatch.setattr(platform, "IS_WINDOWS", False)
+    assert not ShellPolicy(["C:/x/python.exe *"]).is_allowed(WINDOWS_COMMAND)
+
+
+def test_on_posix_a_backslash_reaches_the_command_intact(tmp_path, monkeypatch):
+    monkeypatch.setattr(platform, "IS_WINDOWS", False)
+    result = run_command(r"printf '%s' 'a\.b'", cwd=tmp_path, timeout_s=10)
+    assert result.ok, result.stderr
+    assert result.stdout == r"a\.b"
+
+
+class FakePopen:
+    """Stands in for subprocess.Popen: records the argv and finishes at once."""
+
+    calls: ClassVar[list[list[str]]] = []
+
+    def __init__(self, args, **kwargs):
+        FakePopen.calls.append(args)
+        self.pid = 4242
+        self.returncode = 0
+
+    def communicate(self, timeout=None):
+        return "", ""
+
+
+@pytest.fixture
+def fake_windows(monkeypatch):
+    """Windows code paths on any OS: IS_WINDOWS, a found bash, no real process spawned."""
+    found: list[str | None] = []
+
+    def find_bash(configured=None, **_):
+        found.append(configured)
+        return r"C:\Git\bin\bash.exe"
+
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform, "find_bash", find_bash)
+    monkeypatch.setattr(platform, "detach_kwargs", dict)
+    FakePopen.calls = []
+    monkeypatch.setattr(shell_module.subprocess, "Popen", FakePopen)
+    return found
+
+
+def test_on_windows_a_command_runs_through_bash(tmp_path, fake_windows):
+    result = run_command("npm test -- 'a b'", cwd=tmp_path, timeout_s=10)
+    assert result.ok
+    assert FakePopen.calls == [[r"C:\Git\bin\bash.exe", "-c", "npm test -- 'a b'"]]
+
+
+def test_on_windows_the_argv_keeps_its_backslashes(tmp_path, fake_windows):
+    run_command(WINDOWS_COMMAND, cwd=tmp_path, timeout_s=10)
+    assert FakePopen.calls == [[r"C:\Git\bin\bash.exe", "-c", r"'C:\x\python.exe' a.py"]]
+
+
+def test_on_windows_the_configured_bash_is_looked_up(tmp_path, fake_windows):
+    run_command("npm test", cwd=tmp_path, timeout_s=10, bash=r"D:\Git\bin\bash.exe")
+    assert fake_windows == [r"D:\Git\bin\bash.exe"]
+
+
+def test_on_windows_without_bash_the_command_cannot_run(tmp_path, fake_windows, monkeypatch):
+    monkeypatch.setattr(platform, "find_bash", lambda configured=None, **_: None)
+    result = run_command("npm test", cwd=tmp_path, timeout_s=10)
+    assert result.exit_code == 127
+    assert platform.MISSING_BASH in result.stderr
+    assert FakePopen.calls == []

@@ -175,3 +175,15 @@ def test_run_check_runs_a_contained_read_only_command(tmp_path):
     result = run_check("cat a.txt", tmp_path, shell=ShellConfig(), artifacts=None, name="check")
     assert result.ok
     assert result.stdout == "hello\n"
+
+
+def test_on_windows_run_check_looks_up_the_configured_bash(tmp_path, monkeypatch):
+    from phil import platform
+
+    found = []
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform, "find_bash", lambda configured=None, **_: found.append(configured))
+    result = run_check("npm test", tmp_path, shell=ShellConfig(bash=r"D:\Git\bin\bash.exe"), artifacts=None, name="c")
+    assert found == [r"D:\Git\bin\bash.exe"]
+    assert result.exit_code == 127
+    assert platform.MISSING_BASH in result.stderr

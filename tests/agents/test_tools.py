@@ -136,6 +136,19 @@ def test_log_prefix_keeps_two_runs_from_overwriting_each_other(tmp_path):
     assert (tmp_path / "run" / "logs" / "implement-T2-1-shell-1.log").read_text().strip() == "b"
 
 
+def test_on_windows_the_tool_looks_up_the_configured_bash(tmp_path, monkeypatch):
+    from phil import platform
+
+    found = []
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform, "find_bash", lambda configured=None, **_: found.append(configured))
+    run_shell = make_shell_tool(tmp_path, shell_config(bash=r"D:\Git\bin\bash.exe"), CommandLog())
+    output = run_shell(f"{PY} hello.py")
+    assert found == [r"D:\Git\bin\bash.exe"]
+    assert output.startswith("exit_code: 127")
+    assert platform.MISSING_BASH in output
+
+
 def test_default_log_prefix_is_unchanged(tmp_path):
     (tmp_path / "hello.py").write_text("print('hi')\n")
     artifacts = ArtifactStore(tmp_path / "run")

@@ -102,6 +102,21 @@ def test_setup_that_times_out_escalates(make_harness):
     assert not (logs_dir(harness) / "baseline.log").exists()
 
 
+def test_setup_runs_with_the_configured_bash(make_harness, monkeypatch):
+    seen: list[str | None] = []
+    real_run_command = engine_module.run_command
+
+    def spy(cmd, cwd, timeout_s, env=None, *, bash=None):
+        seen.append(bash)
+        return real_run_command(cmd, cwd, timeout_s, env=env, bash=bash)
+
+    monkeypatch.setattr(engine_module, "run_command", spy)
+    config = PhilConfig(project={"setup_cmd": WRITE_MARKER}, shell={"bash": r"D:\Git\bin\bash.exe"})
+    harness = make_harness(HAPPY, config=config)
+    assert harness.start()["status"] == "completed"
+    assert seen[0] == r"D:\Git\bin\bash.exe"
+
+
 def test_setup_sees_no_secret_env_vars(make_harness, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-planted-fake")
     cmd = py(

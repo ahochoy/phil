@@ -438,7 +438,9 @@ class RunEngine:
         if not cmd:
             return None
         timeout_s = config.project.setup_timeout_s
-        result = run_command(cmd, self.deps.worktree, timeout_s, env=child_env(os.environ, config.shell.pass_env))
+        result = run_command(
+            cmd, self.deps.worktree, timeout_s, env=child_env(os.environ, config.shell.pass_env), bash=config.shell.bash
+        )
         log = self.deps.artifacts.write_log("setup", result.stdout + (f"\n{result.stderr}" if result.stderr else ""))
         if result.ok:
             # Installed dependencies git doesn't ignore would look like the task's changes (and a

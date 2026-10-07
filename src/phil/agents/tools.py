@@ -56,7 +56,7 @@ def make_shell_tool(
             allowed = ", ".join(shell.allow)
             return f"DENIED: `{command}` is not on the allowlist. Allowed patterns: {allowed}"
         log.commands.append(command)
-        result = run_command(command, workdir, shell.timeout_s, env=env)
+        result = run_command(command, workdir, shell.timeout_s, env=env, bash=shell.bash)
         full_output = result.stdout + (f"\n[stderr]\n{result.stderr}" if result.stderr else "")
         status = f"exit_code: {result.exit_code}" + (" (timed out)" if result.timed_out else "")
         lines = [status]

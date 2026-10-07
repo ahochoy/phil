@@ -118,3 +118,14 @@ def test_run_tests_failing_with_baseline(tmp_path):
     assert report.failures == ["tests/test_calc.py::test_add"]
     assert report.new_failures_vs_baseline == []
     assert report.log_path == ""
+
+
+def test_on_windows_run_tests_looks_up_the_configured_bash(tmp_path, monkeypatch):
+    from phil import platform
+
+    found = []
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform, "find_bash", lambda configured=None, **_: found.append(configured))
+    report = run_tests(TEST_CMD, tmp_path, shell=ShellConfig(bash=r"D:\Git\bin\bash.exe"), artifacts=None, name="t")
+    assert found == [r"D:\Git\bin\bash.exe"]
+    assert not report.passed

@@ -126,6 +126,15 @@ def _load_config(root: Path, overrides: list[str]) -> PhilConfig:
         raise typer.Exit(1) from exc
 
 
+def _require_bash(config: PhilConfig) -> None:
+    """On Windows, stop unless Git Bash can be found: every agent command runs through it."""
+    from phil import platform
+
+    if platform.IS_WINDOWS and platform.find_bash(config.shell.bash) is None:
+        console.print(f"[phil.error]{escape(platform.MISSING_BASH)}[/]", soft_wrap=True)
+        raise typer.Exit(1)
+
+
 def _require_api_keys(config: PhilConfig, roles: tuple[str, ...]) -> None:
     problems = config.missing_keys(roles)
     if problems:
@@ -198,6 +207,7 @@ def _chat(ctx: typer.Context) -> None:
     info, conn = _open_project(ctx)
     overrides = ctx.obj.get("overrides", [])
     config = _load_config(info.root, overrides)
+    _require_bash(config)
     if _interactive() and config.missing_model_messages(CHAT_ROLES + RUN_ROLES):
         console.print("Phil isn't set up yet. Let's choose your models (about a minute).")
         if _run_setup(ctx, info.root):
@@ -380,6 +390,7 @@ def run_plan(
         console.print(f"[phil.error]invalid plan: {escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
     config = _load_config(info.root, overrides)
+    _require_bash(config)
     problems = launch_problems(plan, config, info.root)
     if problems:
         for problem in problems:
@@ -467,6 +478,7 @@ def models_check(ctx: typer.Context) -> None:
 
     info = _resolve(ctx)
     config = _load_config(info.root, ctx.obj.get("overrides", []))
+    _require_bash(config)
     try:
         factory = _factory_from_env()
     except Exception as exc:
@@ -523,6 +535,7 @@ def _run_setup(ctx: typer.Context, root: Path) -> bool:
         if str(exc).startswith(f"Invalid {global_path}"):
             console.print(f"Fix {escape(global_path)} or move it aside, then run phil setup again.", soft_wrap=True)
         raise typer.Exit(1) from exc
+    _require_bash(config)
     try:
         factory = _factory_from_env()
     except Exception as exc:
