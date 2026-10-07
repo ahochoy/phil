@@ -392,6 +392,27 @@ def test_when_the_live_call_ends_the_newest_open_call_becomes_live(calc_repo):
     assert (live[2].data["seq"], live[2].data["summary"]) == (outer, "agent explore the repo")
 
 
+def test_a_spawn_clears_the_previous_workers_unfinished_calls(calc_repo):
+    """An open start (seq 3) from a worker, then a spawn, then the new worker's start seq 4 and its
+    end: the live step is empty, not seq 3."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    for _ in range(2):
+        _shell(log)
+    old = _shell(log, end=False)
+    assert old == 3
+    watcher.poll_once()
+    assert [e.data.get("seq") for e in posted if e.kind == "live_step"] == [3]
+
+    events.append("spawn", pid=12345, mode="resume")
+    new = _shell(log)
+    assert new == 4
+    watcher.poll_once()
+    live = [e for e in posted if e.kind == "live_step"]
+    assert live[-1].data == {}
+
+
 def test_a_watcher_for_a_run_without_a_live_worker_does_not_seed_the_live_step(calc_repo):
     paths, run_id, conn, events, _, _, now = setup(calc_repo)
     update_run(conn, run_id, state="running")

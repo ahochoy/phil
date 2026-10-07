@@ -159,7 +159,14 @@ class RunWatcher:
                 self._post_records(value)
             else:
                 self.post(ChatEvent("milestone", value))
-        self._follow_live(records)
+        spawns = [event for event in new_events if event.get("kind") == "spawn"]
+        spawned = None
+        if spawns:
+            # A new worker: the previous worker's unfinished calls are dead, so none of them is live.
+            self._open.clear()
+            self._live = {}
+            spawned = _seconds(spawns[-1].get("ts"))
+        self._follow_live(records, spawned)
         if self._live != self._live_posted:
             self._live_posted = dict(self._live)
             self.post(ChatEvent("live_step", dict(self._live)))
@@ -185,14 +192,18 @@ class RunWatcher:
         if _int_seq(seed) is not None:
             self._open[_int_seq(seed)] = seed
 
-    def _follow_live(self, records: list[dict]) -> None:
+    def _follow_live(self, records: list[dict], spawned: float | None = None) -> None:
         """The live step is the newest call started and not yet ended, kept across polls: when it
-        ends, the newest call still open (an outer sub-agent, say) takes its place, or none."""
+        ends, the newest call still open (an outer sub-agent, say) takes its place, or none. With
+        `spawned` (a spawn read in this poll), a start from before it belongs to the dead worker."""
         for record in records:
             seq = _int_seq(record)
             if seq is None:
                 continue
             if record.get("phase") == "start":
+                started = _seconds(record.get("ts"))
+                if spawned is not None and (started is None or started <= spawned):
+                    continue
                 self._open[seq] = record
             elif record.get("phase") == "end":
                 self._open.pop(seq, None)
