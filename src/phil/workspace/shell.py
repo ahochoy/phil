@@ -10,11 +10,8 @@ from pathlib import Path
 
 from phil import platform
 
-# Root pids of the commands running now, and those kill_active_groups() killed. kill_tree waits
-# on (so reaps) the root before Popen does, which leaves Popen a returncode of 0: run_command
-# reports a killed root as -9 instead, so a killed command never looks like it succeeded.
+# Root pids of the commands running now, for kill_active_groups().
 _ACTIVE_ROOTS: set[int] = set()
-_KILLED_ROOTS: set[int] = set()
 
 _FORBIDDEN = set(";&|$`<>\n")
 
@@ -566,7 +563,6 @@ def kill_active_groups() -> list[int]:
     """Kill every running command's whole process tree; returns the root pids killed."""
     killed: list[int] = []
     for root in list(_ACTIVE_ROOTS):
-        _KILLED_ROOTS.add(root)
         platform.kill_tree(root)
         killed.append(root)
         _ACTIVE_ROOTS.discard(root)
@@ -624,8 +620,7 @@ def run_command(
     try:
         try:
             stdout, stderr = proc.communicate(timeout=timeout_s)
-            exit_code = -9 if proc.pid in _KILLED_ROOTS else proc.returncode
-            return ShellResult(command, exit_code, stdout, stderr, False, elapsed())
+            return ShellResult(command, proc.returncode, stdout, stderr, False, elapsed())
         except subprocess.TimeoutExpired:
             platform.kill_tree(proc.pid)
             stdout, stderr = proc.communicate()
@@ -636,7 +631,6 @@ def run_command(
             raise
     finally:
         _ACTIVE_ROOTS.discard(proc.pid)
-        _KILLED_ROOTS.discard(proc.pid)
 
 
 def truncate_output(

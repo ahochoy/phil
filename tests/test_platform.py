@@ -48,6 +48,38 @@ def test_kill_tree_kills_children_too():
     assert not alive
 
 
+def test_kill_tree_leaves_the_root_for_its_parent_to_reap():
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    platform.kill_tree(proc.pid)
+    returncode = proc.wait(timeout=10)
+    assert returncode != 0
+    if not platform.IS_WINDOWS:
+        assert returncode == -9
+
+
+def test_kill_tree_skips_a_process_it_may_not_kill(monkeypatch):
+    import psutil
+
+    killed = []
+
+    class Proc:
+        def __init__(self, pid, denied):
+            self.pid, self.denied = pid, denied
+
+        def children(self, recursive=False):
+            return [Proc(2, denied=True), Proc(3, denied=False)]
+
+        def kill(self):
+            if self.denied:
+                raise psutil.AccessDenied(self.pid)
+            killed.append(self.pid)
+
+    monkeypatch.setattr(psutil, "Process", lambda pid: Proc(pid, denied=False))
+    monkeypatch.setattr(psutil, "wait_procs", lambda procs, timeout=None: ([], []))
+    platform.kill_tree(1)
+    assert killed == [3, 1]
+
+
 def git_layout(root):
     """which/exists fakes for a Git for Windows install at `root`."""
     git = str(PureWindowsPath(root, "cmd", "git.exe"))

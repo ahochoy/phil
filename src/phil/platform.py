@@ -43,7 +43,11 @@ def pid_alive(pid: int) -> bool:
 
 
 def kill_tree(pid: int) -> None:
-    """Kill `pid` and every descendant. Missing processes are ignored."""
+    """Kill every descendant of `pid`, then `pid` itself. Missing processes, and ones we may not
+    kill, are skipped. Waits only for the descendants, never the root: reaping the root is its
+    parent's job (Popen.wait in shell.py), and waiting here would take its exit status away
+    from Popen. A caller whose root isn't its own child (e.g. `phil stop` on a worker) polls
+    `pid_alive` instead."""
     try:
         root = psutil.Process(pid)
         children = root.children(recursive=True)
@@ -52,9 +56,9 @@ def kill_tree(pid: int) -> None:
     for proc in [*children, root]:
         try:
             proc.kill()
-        except psutil.NoSuchProcess:
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
-    psutil.wait_procs([*children, root], timeout=5)
+    psutil.wait_procs(children, timeout=5)
 
 
 def detach_kwargs() -> dict:

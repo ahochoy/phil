@@ -595,6 +595,10 @@ def test_kill_active_groups_kills_the_whole_tree(tmp_path):
     thread.join(timeout=10)
     assert killed
     assert results and not results[0].ok
+    # The killed command's own exit status comes through, never a reaped-away 0.
+    assert results[0].exit_code != 0
+    if not platform.IS_WINDOWS:
+        assert results[0].exit_code == -9
     deadline = time.monotonic() + 5
     while platform.pid_alive(child_pid) and time.monotonic() < deadline:
         time.sleep(0.05)
