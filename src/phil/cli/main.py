@@ -615,8 +615,24 @@ def _providers_to_list(config: PhilConfig):
             continue
     for name, builtin in BUILTIN_PROVIDERS.items():
         if builtin.api_key_env and key_source(builtin.api_key_env) is not None:
+            # A provider no role uses, whose key another row already shows, adds nothing.
+            if any(spec.api_key_env == builtin.api_key_env for spec in seen.values()):
+                continue
             add(resolve_provider(config, name))
     return list(seen.values())
+
+
+def _key_owner(spec) -> str | None:
+    """The built-in provider that owns the key `spec` shares (openrouter, for
+    openrouter_decisions), or None when the key is `spec`'s own."""
+    from phil.agents.providers import BUILTIN_PROVIDERS
+
+    if spec.name not in BUILTIN_PROVIDERS:
+        return None
+    for name, builtin in BUILTIN_PROVIDERS.items():
+        if builtin.api_key_env == spec.api_key_env:
+            return name if name != spec.name else None
+    return None
 
 
 @keys_app.command("list")
@@ -631,7 +647,11 @@ def keys_list(ctx: typer.Context) -> None:
             console.print(f"{escape(spec.name)}  (no key needed)", soft_wrap=True, highlight=False)
             continue
         source = key_source(spec.api_key_env) or "missing"
-        console.print(f"{escape(spec.name)}  {escape(spec.api_key_env)}  {source}", soft_wrap=True, highlight=False)
+        owner = _key_owner(spec)
+        shared = f"  (shared with {owner})" if owner else ""
+        console.print(
+            f"{escape(spec.name)}  {escape(spec.api_key_env)}  {source}{escape(shared)}", soft_wrap=True, highlight=False
+        )
 
 
 @keys_app.command("remove")
@@ -643,6 +663,14 @@ def keys_remove(ctx: typer.Context, provider: str) -> None:
     config = _load_config(root, ctx.obj.get("overrides", []))
     spec = _resolve_keyed_provider(config, provider)
     var = spec.api_key_env
+    owner = _key_owner(spec)
+    if owner is not None:
+        console.print(
+            f"[phil.error]{escape(spec.name)} uses {escape(var)}, which {escape(owner)} shares; "
+            f"remove it with `phil keys remove {escape(owner)}`.[/]",
+            soft_wrap=True, highlight=False,
+        )
+        raise typer.Exit(1)
     try:
         removed = delete_key(var)
     except KeyStoreError as exc:

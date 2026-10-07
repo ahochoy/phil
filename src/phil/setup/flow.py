@@ -258,10 +258,11 @@ def _custom_provider(io: SetupIO, config: PhilConfig, current: str | None) -> _P
 # 2. Key
 
 
-def _key_step(io: SetupIO, provider: _Provider) -> str | None:
+def _key_step(io: SetupIO, provider: _Provider, *, hint_if_empty: bool = True) -> str | None:
     """Make sure the provider's key can be found. Returns the entered key (held in memory,
     saved to the keychain only once setup finishes), or None if none was entered, the key was
-    kept, or it comes from the environment."""
+    kept, or it comes from the environment. `hint_if_empty=False` leaves the "No key entered"
+    advice to the caller (the classifier step offers its own choice instead)."""
     var = provider.api_key_env
     if var is None:
         return None
@@ -277,7 +278,8 @@ def _key_step(io: SetupIO, provider: _Provider) -> str | None:
         return None
     value = io.secret(f"{var} (input hidden)")
     if not value:
-        io.say(f"No key entered. Export {var}, or run `phil keys set {provider.name}` later.")
+        if hint_if_empty:
+            io.say(f"No key entered. Export {var}, or run `phil keys set {provider.name}` later.")
         return None
     io.say(f"Got it: {var} will be saved to the keychain when setup finishes.")
     return value
@@ -486,23 +488,38 @@ def _classifier_step(
     if current and index == 0:
         # Keeping it writes nothing: write_global_config leaves the file's other keys as they are.
         return {}
-    if choice == LOW_MODEL:
+
+    def use_low_model() -> dict[str, str]:
+        # On a rerun, writing no classifier leaves the current one in the file: say so.
         if current:
             io.say(f"models.classifier = {current} stays in {target}; remove it there to route with your low model.")
         return {}
+
+    if choice == LOW_MODEL:
+        return use_low_model()
     _, model, var, key_provider = CLASSIFIER_SOURCES[index - offset]
-    # The main provider's key step already covered this key (entered, stored or exported).
-    if not (var == provider.api_key_env and (var in pending or key_source(var) is not None)):
-        key = _key_step(io, _Provider(key_provider, var))
-        if key is not None:
-            pending[var] = key
-            to_save.append((var, key_provider))
+    # A key already entered, stored or exported is reused (spec §3.2): ask only when there's none.
+    if var not in pending:
+        source = key_source(var)
+        if source is not None:
+            io.say(f"Using {var} from {source}.")
+        else:
+            key = _key_step(io, _Provider(key_provider, var), hint_if_empty=False)
+            if key is not None:
+                pending[var] = key
+                to_save.append((var, key_provider))
+    if var not in pending and key_source(var) is None:
+        # Nothing to check with: a ping could only fail for want of the key.
+        if io.choose(f"No {var} yet.", ["Use your low model for now", f"Keep {model} and set the key later"]) == 0:
+            return use_low_model()
+        io.say(f"Set {var} with `phil keys set {key_provider}` or export it; routing uses your low model until then.")
+        return {"classifier": model}
     with pending_keys(pending):
         reason = classifier_check(model)
     if reason is not None:
         io.say(f"✗ classifier  {model}  {reason}")
         if io.choose(f"{model} failed the check.", ["Use your low model instead", f"Keep {model} anyway"]) == 0:
-            return {}
+            return use_low_model()
     else:
         io.say(f"✓ classifier  {model}")
     return {"classifier": model}

@@ -176,10 +176,12 @@ def test_a_keychain_key_can_be_kept_or_replaced(tmp_path, memory_keyring):
 
 
 def test_no_keychain_says_so_and_carries_on(tmp_path, no_keychain):
-    wrote, io, _ = setup(["", "", "", ""], tmp_path)  # no key is asked for: there is nowhere to keep it
+    wrote, io, _ = setup(["", "", "", "", ""], tmp_path)  # no key is asked for: there is nowhere to keep it
     assert wrote is True
     assert "No keychain is available here; export OPENROUTER_API_KEY instead." in io.lines
     assert not [kind for kind, _ in io.prompts if kind == "secret"]
+    assert "No OPENROUTER_API_KEY yet." in io.lines  # the classifier step can't check without it
+    assert "classifier" not in written(tmp_path).models
 
 
 MISSING_KEY = "openrouter needs OPENROUTER_API_KEY (used by high, low)."
@@ -187,7 +189,8 @@ MISSING_KEY = "openrouter needs OPENROUTER_API_KEY (used by high, low)."
 
 def test_a_missing_key_in_the_check_repeats_the_hint_instead_of_offering_another_model(tmp_path, no_keychain):
     check = FakeCheck(bad={SUGGESTED_HIGH, SUGGESTED_LOW}, detail=MISSING_KEY)
-    wrote, io, _ = setup(["", "", "", "Keep", ""], tmp_path, check=check)
+    # Enter takes Jev through OpenRouter; with no key yet, "Keep … and set the key later" keeps it.
+    wrote, io, _ = setup(["", "", "", "Keep", "", "Keep"], tmp_path, check=check)
     assert wrote is True
     assert len(check.configs) == 1
     assert not any("Choose a different" in line for line in io.lines)
@@ -723,6 +726,108 @@ def test_off_openrouter_choosing_jev_through_openrouter_asks_for_the_openrouter_
     assert written(tmp_path).models["classifier"] == JEV_OPENROUTER
     assert memory_keyring.store[(SERVICE, "OPENROUTER_API_KEY")] == or_secret
     assert all(or_secret not in line for line in io.lines)
+    assert sum(1 for kind, prompt in io.prompts if kind == "secret") == 2  # Anthropic's, then OpenRouter's
+
+
+def secret_prompts(io):
+    return [prompt for kind, prompt in io.prompts if kind == "secret"]
+
+
+def test_no_classifier_key_means_no_check_and_the_low_model_by_default(tmp_path, memory_keyring):
+    # Anthropic, Enter everywhere (the TypeSafe key left empty too): nothing to check with.
+    seen = []
+    wrote, io, _ = setup(
+        ["Anthropic", SECRET, "", "", "", "", ""], tmp_path, classifier_check=lambda model: seen.append(model)
+    )
+    assert wrote is True
+    assert seen == []
+    assert not any(line.startswith("✗") for line in io.lines)
+    assert not any("failed the check" in line for line in io.lines)
+    assert not any(line.startswith("No key entered. Export TYPESAFE_API_KEY") for line in io.lines)
+    start = io.lines.index("No TYPESAFE_API_KEY yet.")
+    assert io.lines[start + 1:start + 3] == [
+        "  1. Use your low model for now",
+        f"  2. Keep {JEV_TYPESAFE} and set the key later",
+    ]
+    assert "classifier" not in written(tmp_path).models
+
+
+def test_no_classifier_key_can_keep_the_classifier_and_set_the_key_later(tmp_path, memory_keyring):
+    seen = []
+    wrote, io, _ = setup(
+        ["Anthropic", SECRET, "", "", "", "", "Keep"], tmp_path, classifier_check=lambda model: seen.append(model)
+    )
+    assert wrote is True
+    assert seen == []
+    assert written(tmp_path).models["classifier"] == JEV_TYPESAFE
+    assert (
+        "Set TYPESAFE_API_KEY with `phil keys set typesafe` or export it; routing uses your low model until then."
+        in io.lines
+    )
+
+
+def test_on_openrouter_an_empty_key_is_asked_for_once_more_then_offers_the_low_model(tmp_path, memory_keyring):
+    seen = []
+    wrote, io, _ = setup(["", "", "", "", "", "", ""], tmp_path, classifier_check=lambda model: seen.append(model))
+    assert wrote is True
+    assert secret_prompts(io) == ["OPENROUTER_API_KEY (input hidden)"] * 2
+    # The main provider's key step still gives its hint; the classifier step gives its choice instead.
+    assert io.lines.count(
+        "No key entered. Export OPENROUTER_API_KEY, or run `phil keys set openrouter` later."
+    ) == 1
+    assert "No OPENROUTER_API_KEY yet." in io.lines
+    assert seen == []
+    assert not any(line.startswith("✗ classifier") for line in io.lines)
+    assert "classifier" not in written(tmp_path).models
+
+
+def test_off_openrouter_a_stored_openrouter_key_is_reused_for_the_classifier(tmp_path, memory_keyring):
+    memory_keyring.store[(SERVICE, "OPENROUTER_API_KEY")] = SECRET
+    seen = []
+    wrote, io, _ = setup(
+        ["Anthropic", SECRET, "", "", "Jev through OpenRouter"], tmp_path,
+        classifier_check=lambda model: seen.append(model),
+    )
+    assert wrote is True
+    assert secret_prompts(io) == ["ANTHROPIC_API_KEY (input hidden)"]
+    assert not any(prompt.startswith("Keep the saved OPENROUTER_API_KEY") for _, prompt in io.prompts)
+    assert "Using OPENROUTER_API_KEY from keychain." in io.lines
+    assert seen == [JEV_OPENROUTER]
+    assert written(tmp_path).models["classifier"] == JEV_OPENROUTER
+
+
+def _write_global_classifier(model):
+    global_config_path().parent.mkdir(parents=True)
+    global_config_path().write_text(
+        '[models]\nhigh = "openrouter:openai/gpt-6-sol"\nlow = "openrouter:openai/gpt-6-luna"\n'
+        f'classifier = "{model}"\n'
+    )
+
+
+def test_a_rerun_that_falls_back_after_a_failed_check_says_the_current_classifier_stays(tmp_path, memory_keyring):
+    memory_keyring.store[(SERVICE, "OPENROUTER_API_KEY")] = SECRET
+    _write_global_classifier(JEV_TYPESAFE)
+    wrote, io, _ = setup(
+        ["", "", "", "", "d1", "Use your low model"], tmp_path, classifier_check=lambda model: "http 401"
+    )
+    assert wrote is True
+    assert f"✗ classifier  {D1_OPENROUTER}  http 401" in io.lines
+    assert (
+        f"models.classifier = {JEV_TYPESAFE} stays in {global_config_path()}; "
+        "remove it there to route with your low model."
+    ) in io.lines
+
+
+def test_a_rerun_that_falls_back_for_want_of_a_key_says_the_current_classifier_stays(tmp_path, memory_keyring):
+    memory_keyring.store[(SERVICE, "OPENROUTER_API_KEY")] = SECRET
+    _write_global_classifier(JEV_OPENROUTER)
+    wrote, io, _ = setup(["", "", "", "", "Jev through TypeSafe", "", ""], tmp_path)
+    assert wrote is True
+    assert "No TYPESAFE_API_KEY yet." in io.lines
+    assert (
+        f"models.classifier = {JEV_OPENROUTER} stays in {global_config_path()}; "
+        "remove it there to route with your low model."
+    ) in io.lines
 
 
 def test_an_openrouter_key_from_the_environment_is_not_asked_for(tmp_path, monkeypatch, memory_keyring):

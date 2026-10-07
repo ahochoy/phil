@@ -361,9 +361,12 @@ class PhilConfig(_Section):
             if role == "classifier":
                 continue
             if self.is_systemone(role):
+                from phil.agents.providers import resolve_provider, split_model
+
                 model = self.model_for(role)
+                provider = resolve_provider(self, split_model(model)[0]).name
                 raise ValueError(
-                    f"models for {role} resolve to {model}: the typesafe provider (kind systemone) only "
+                    f"models for {role} resolve to {model}: the {provider} provider (kind systemone) only "
                     "answers routing questions, so it can be set only for the classifier ([models] classifier)."
                 )
         return self

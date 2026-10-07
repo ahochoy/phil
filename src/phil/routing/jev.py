@@ -75,9 +75,9 @@ def parse_response(body: object) -> tuple[str, dict[str, float], float, float, U
         input_tokens = _token_count(raw_usage.get("input_tokens", 0))
         output_tokens = _token_count(raw_usage.get("output_tokens", 0))
         cost = raw_usage.get("cost")
-        if cost is not None and (isinstance(cost, bool) or not isinstance(cost, int | float) or cost < 0):
-            raise JevError("malformed")
-        usage = Usage(input_tokens, output_tokens, float(cost) if cost is not None else None)
+        # Cost is metadata: one that can't be read is unknown, and the decision still stands.
+        readable = not isinstance(cost, bool) and isinstance(cost, int | float) and cost >= 0
+        usage = Usage(input_tokens, output_tokens, float(cost) if readable else None)
     return choice, probs, _probability(confidence), _probability(noul), usage
 
 

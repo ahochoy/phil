@@ -170,8 +170,12 @@ def test_a_typesafe_response_without_a_cost_leaves_it_unknown():
     assert judgement.usage.cost_usd is None
 
 
-def test_a_malformed_reported_cost_is_malformed():
-    body = {**OPENROUTER_FIXTURE, "usage": {"input_tokens": 1, "output_tokens": 1, "cost": "lots"}}
-    with pytest.raises(JevError, match="malformed"):
-        judge_jev(OPENROUTER_SPEC, "typesafe/jev-1.13", STATE, timeout_s=5, environ=OPENROUTER_ENV,
-                  transport=transport(lambda r: httpx.Response(200, json=body)))
+@pytest.mark.parametrize("cost", ["lots", -1, True])
+def test_an_unreadable_reported_cost_is_unknown(cost):
+    # Cost is metadata: one that can't be read doesn't throw away a valid decision.
+    body = {**OPENROUTER_FIXTURE, "usage": {"input_tokens": 1, "output_tokens": 1, "cost": cost}}
+    judgement = judge_jev(OPENROUTER_SPEC, "typesafe/jev-1.13", STATE, timeout_s=5, environ=OPENROUTER_ENV,
+                          transport=transport(lambda r: httpx.Response(200, json=body)))
+    assert judgement.task_class == "simple_change" and judgement.source == "jev"
+    assert judgement.usage.cost_usd is None
+    assert (judgement.usage.input_tokens, judgement.usage.output_tokens) == (1, 1)
