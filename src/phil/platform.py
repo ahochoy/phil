@@ -18,6 +18,7 @@ instead writes a stop-request file next to the run. The worker's heartbeat threa
 for that file on every beat and, on finding it, calls `_thread.interrupt_main(signal.SIGTERM)`
 to run its SIGTERM handler in the main thread (Task 3 implements that polling)."""
 
+import errno
 import os
 import shlex
 import shutil
@@ -117,8 +118,10 @@ def lock_file(handle) -> None:
             try:
                 msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
                 return
-            except OSError:
-                continue
+            except OSError as exc:
+                # Only the lock-timeout error is retried; anything else (a bad handle) is real.
+                if exc.errno != errno.EDEADLOCK:
+                    raise
     else:
         import fcntl
 

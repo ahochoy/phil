@@ -59,8 +59,7 @@ Write Windows paths with forward slashes (`C:/tools/python.exe`) in commands and
 `[shell] allow` patterns, or quote them — an unquoted backslash is read as an escape
 character, not a path separator. Also note that Git Bash rewrites an argument starting with
 `/` into a Windows path before handing it to a native (non-Bash) program; if a native tool
-receives a mangled `/flag`, that's why Git Bash itself does it — set `MSYS_NO_PATHCONV=1` to
-turn that conversion off.
+receives a mangled `/flag`, that conversion is why. Set `MSYS_NO_PATHCONV=1` to turn it off.
 
 ## Configuration
 
