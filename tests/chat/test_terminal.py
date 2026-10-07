@@ -67,7 +67,7 @@ def test_terminal_io_prompt_wake_keeps_typed_text_and_eof():
             thread = _wake_when_prompting(terminal, typed="half")
             assert _ask(io_) is WAKE
             thread.join(TIMEOUT)
-            assert terminal._carried == "half"
+            assert terminal._carried.text == "half"
             pipe.send_text(" done\n")
             assert _ask(io_) == "half done"  # typed text survives the wake
 
@@ -291,6 +291,67 @@ def test_prompt_message_puts_the_live_row_above_the_input():
         assert to_plain_text(terminal._message("you › ")()) == "⠋ T1 · implementer · run pytest · 3s\nyou › "
         quiet = TerminalIO(lambda: "", live_row=lambda: "", input=pipe, output=DummyOutput())
         assert to_plain_text(quiet._message("you › ")()) == "you › "
+
+
+def test_a_finished_prompt_leaves_the_live_row_out():
+    """The final redraw of a submitted prompt has no live row, so none is left in the scrollback."""
+    from prompt_toolkit.formatted_text import to_plain_text
+
+    with create_pipe_input() as pipe:
+        terminal = TerminalIO(lambda: "", live_row=lambda: "⠋ T1 · implementer · run pytest · 3s",
+                              input=pipe, output=DummyOutput())
+        io_ = terminal.chat_io(lambda *a: None)
+        original = terminal._message
+        seen: list[tuple[bool, str]] = []
+
+        def recording(prompt):
+            inner = original(prompt)
+
+            def message():
+                out = inner()
+                seen.append((terminal.session.app.is_done, to_plain_text(out)))
+                return out
+
+            return message
+
+        terminal._message = recording
+        try:
+            pipe.send_text("x\n")
+            assert _ask(io_) == "x"
+            row = "⠋ T1 · implementer · run pytest · 3s\nyou › "
+            assert (False, row) in seen  # while the prompt runs
+            assert seen[-1] == (True, "you › ")  # the final, done redraw: what stays in the scrollback
+            assert all(text == row for done, text in seen if not done)
+        finally:
+            terminal.close()
+
+
+def test_a_wake_keeps_the_cursor_position():
+    with create_pipe_input() as pipe:
+        terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
+        io_ = terminal.chat_io(lambda *a: None)
+
+        def poke() -> None:
+            deadline = time.monotonic() + TIMEOUT
+            while time.monotonic() < deadline:
+                if terminal.prompting:
+                    document = terminal.session.app.current_buffer.document
+                    if document.text == "abcd" and document.cursor_position == 2:
+                        break
+                time.sleep(0.01)
+            terminal.wake()
+
+        try:
+            pipe.send_text("abcd\x1b[D\x1b[D")  # type, then move the cursor two cells left
+            thread = threading.Thread(target=poke, daemon=True)
+            thread.start()
+            assert _ask(io_) is WAKE
+            thread.join(TIMEOUT)
+            assert (terminal._carried.text, terminal._carried.cursor_position) == ("abcd", 2)
+            pipe.send_text("X\n")
+            assert _ask(io_) == "abXcd"  # typing resumes where the cursor was
+        finally:
+            terminal.close()
 
 
 def test_a_failing_live_row_never_takes_the_prompt_down():

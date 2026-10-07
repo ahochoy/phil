@@ -59,6 +59,29 @@ def test_live_step_sets_and_clears_the_live_row(controller_with_run):
     assert controller.state.view().live is None
 
 
+STEP = {"task": "T1", "role": "implementer", "summary": "run pytest", "started": 1.0, "seq": 4}
+
+
+def test_worker_lost_clears_the_live_step(controller_with_run):
+    controller = controller_with_run
+    controller._handle(ChatEvent("live_step", STEP))
+    assert controller.state.view().live == LiveStep("T1", "implementer", "run pytest", 1.0)
+    controller._handle(ChatEvent("worker_lost", {}))
+    assert controller.state.view().live is None
+    assert "stopped responding" in controller.console.export_text()
+
+
+def test_forgetting_the_run_clears_the_live_step_and_the_feed(controller_with_run):
+    controller = controller_with_run
+    controller._handle(ChatEvent("milestone", {"kind": "task_started", "task": "CALC-001", "title": "x",
+                                               "ts": "2026-10-07T10:00:00Z"}))
+    controller._handle(ChatEvent("live_step", STEP))
+    feed = controller._feed
+    controller._forget_run()
+    assert controller.state.view().live is None
+    assert controller._feed is not feed and controller._feed._task_started == {}
+
+
 def _green_with_tests(turn: Turn):
     fire_tool(turn, "run_shell", {"command": "pytest -q"}, "exit_code: 0\n7 passed")
     return write_green(turn)

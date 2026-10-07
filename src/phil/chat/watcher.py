@@ -33,12 +33,18 @@ def _size(path) -> int:
         return 0
 
 
+def _seconds(ts: object) -> float | None:
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
 def _live_of(record: dict) -> dict:
     """The live row's step for a tool call's start record; `started` falls back to now on a bad `ts`.
     `seq` says which call it is, so only that call's end clears it (the chat ignores it)."""
-    try:
-        started = datetime.fromisoformat(str(record["ts"]).replace("Z", "+00:00")).timestamp()
-    except (KeyError, TypeError, ValueError):
+    started = _seconds(record.get("ts")) if record.get("ts") else None
+    if started is None:
         started = time.time()
     return {"task": record.get("task"), "role": record.get("role"), "summary": record.get("summary", ""),
             "started": started, "seq": record.get("seq")}
@@ -69,12 +75,12 @@ class RunWatcher:
         self.lost_after_s, self.interval_s = lost_after_s, interval_s
         self.events = run_events(paths, run_id)
         # The feed starts at the current end of both logs: a reopened chat shows only what's new,
-        # except the tool call still running, which seeds the live row.
+        # except a tool call still running, which can seed the live row at the first poll (_seed_live).
         self.activity = activity_log(paths, run_id)
         self._event_offset = _size(self.events.path)
         self._activity_offset = self.activity.end_offset()
-        pending = self.activity.pending()
-        self._live: dict = _live_of(pending) if pending else {}
+        self._seed: dict | None = self.activity.pending()
+        self._live: dict = {}
         self._live_posted: dict = {}  # the chat starts with no live step
         self.done = False
         self._last: tuple | None = None
@@ -103,8 +109,10 @@ class RunWatcher:
             return
         conn = connect(self.paths.db_path)
         try:
-            self._poll_feed()
             record = get_run(conn, self.run_id)
+            if self._seed is not None:
+                self._seed_live(record)
+            self._poll_feed()
             if record is None:
                 return
             snapshot = (record.current_node, record.state, record.tasks_done, record.tasks_total)
@@ -168,17 +176,37 @@ class RunWatcher:
                 continue
             upto = _int_seq(event)
             if upto is not None:
-                before = [r for r in unposted if (seq := _int_seq(r)) is not None and seq <= upto]
-                if before:
-                    unposted = [r for r in unposted if not any(r is b for b in before)]
-                    self.post(ChatEvent("activity", {"records": before}))
+                before, after = [], []
+                for record in unposted:
+                    seq = _int_seq(record)
+                    (before if seq is not None and seq <= upto else after).append(record)
+                unposted = after
+                self._post_records(before)
             self.post(ChatEvent("milestone", event))
-        if unposted:
-            self.post(ChatEvent("activity", {"records": unposted}))
+        self._post_records(unposted)
         self._follow_live(records)
         if self._live != self._live_posted:
             self._live_posted = dict(self._live)
             self.post(ChatEvent("live_step", dict(self._live)))
+
+    def _post_records(self, records: list[dict]) -> None:
+        # Only end records make tool lines: a batch of starts alone would print nothing, and posting
+        # it would only wake the prompt (the live step reports a start).
+        if any(record.get("phase") == "end" for record in records):
+            self.post(ChatEvent("activity", {"records": records}))
+
+    def _seed_live(self, record) -> None:
+        """At the first poll: the tool call still running when the watcher started becomes the live
+        step, but only if the run's worker is alive and the call started after the latest spawn (a
+        dead worker's unfinished call, or one from before a `/resume`, is not running)."""
+        seed, self._seed = self._seed, None
+        if seed is None or record is None or not self.alive(record):
+            return
+        spawn = self.events.latest("spawn")
+        started, spawned = _seconds(seed.get("ts")), _seconds(spawn.get("ts")) if spawn else None
+        if spawned is not None and (started is None or started <= spawned):
+            return
+        self._live = _live_of(seed)
 
     def _follow_live(self, records: list[dict]) -> None:
         """The live step is the newest call started in `records` and not ended there; otherwise it's

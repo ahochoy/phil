@@ -1298,6 +1298,7 @@ class ChatController:
         self._run_id, self._lost, self._pause, self._answer_sent = None, False, None, False
         self.state.set_run(None)
         self.state.set_live(None)
+        self._feed = FeedRenderer()  # no task timings carried into the next run
         self.state.set_paused(False)
 
     def _closing(self) -> None:
@@ -1530,6 +1531,7 @@ class ChatController:
 
     def _on_worker_lost(self, data: dict) -> None:
         self._lost = True
+        self.state.set_live(None)  # the step it was running isn't running any more
         self.console.print(
             f"[phil.warn]The worker for {escape(self._run_id)} stopped responding. Continue it with /resume.[/]"
         )

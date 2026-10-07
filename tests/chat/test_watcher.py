@@ -372,6 +372,42 @@ def test_ending_an_older_call_with_the_same_summary_keeps_the_newer_live(calc_re
     assert len(live) == 2 and live[1].data == {}
 
 
+def test_a_watcher_for_a_run_without_a_live_worker_does_not_seed_the_live_step(calc_repo):
+    paths, run_id, conn, events, _, _, now = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    _shell(activity_log(paths, run_id), end=False)  # the dead worker's unfinished call
+    posted = []
+    watcher = RunWatcher(paths, run_id, posted.append, alive=lambda r: False, starting=lambda e: True,
+                         clock=lambda: now[0])
+    watcher.poll_once()
+    watcher.poll_once()
+    assert "live_step" not in kinds(posted)
+
+
+def test_a_call_from_before_the_latest_spawn_does_not_seed_the_live_step(calc_repo):
+    # `/resume` spawns a new worker, then follows the run: the old worker's unfinished call isn't running.
+    paths, run_id, conn, events, _, _, now = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    _shell(log, end=False)
+    with log.path.open("r", encoding="utf-8") as handle:
+        started = json.loads(handle.readline())["ts"]
+    events.append("spawn", pid=12345, mode="resume")
+    assert events.latest("spawn")["ts"] >= started
+    watcher, posted = _watch(paths, run_id, now)  # the new worker is alive
+    watcher.poll_once()
+    assert "live_step" not in kinds(posted)
+
+
+def test_a_batch_of_starts_alone_posts_no_activity(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    _shell(activity_log(paths, run_id), end=False)
+    watcher.poll_once()
+    assert "activity" not in kinds(posted)
+    assert [e.data["summary"] for e in posted if e.kind == "live_step"] == ["run pytest -q"]
+
+
 def test_watcher_skips_a_half_written_activity_line(calc_repo):
     """A trailing partial line is not posted; once completed it is."""
     paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
