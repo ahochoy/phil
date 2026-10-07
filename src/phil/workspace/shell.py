@@ -401,11 +401,14 @@ def _worktree_entry_exists(candidate: str, root: Path) -> bool:
 
 
 def _needs_containment_check(candidate: str, root: Path) -> bool:
-    return "/" in candidate or candidate == ".." or _worktree_entry_exists(candidate, root)
+    if "/" in candidate or candidate == ".." or (platform.IS_WINDOWS and "\\" in candidate):
+        return True
+    return _worktree_entry_exists(candidate, root)
 
 
 def _outside_root(arg: str, root: Path) -> bool:
-    candidate = Path(arg)
+    # Windows paths accept either separator; normalising lets `..\x` be resolved as `../x`.
+    candidate = Path(normalise_path_text(arg) if platform.IS_WINDOWS else arg)
     resolved = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
     return not resolved.is_relative_to(root)
 
@@ -456,8 +459,21 @@ def _for_matching(tokens: list[str]) -> list[str]:
     return tokens
 
 
+def _program_name(arg0: str) -> str:
+    """The program `arg0` names, as compared with _RISKY_PROGRAMS. On Windows that's its
+    basename (either separator), lowercased, without a .exe/.cmd/.bat suffix, so
+    `C:/x/python3.exe` is `python3`. Elsewhere `arg0` itself."""
+    if not platform.IS_WINDOWS:
+        return arg0
+    name = re.split(r"[\\/]", arg0)[-1].lower()
+    for suffix in (".exe", ".cmd", ".bat"):
+        if name.endswith(suffix):
+            return name.removesuffix(suffix)
+    return name
+
+
 def _is_denied(argv: list[str]) -> bool:
-    if argv[0] not in _RISKY_PROGRAMS:
+    if _program_name(argv[0]) not in _RISKY_PROGRAMS:
         return False
     return any(arg.startswith(_RISKY_PREFIXES) or arg in _RISKY_EXACT for arg in argv[1:])
 
@@ -578,21 +594,27 @@ def _partial_text(data: bytes | str | None) -> str:
 
 def _output_after_kill(proc: subprocess.Popen) -> tuple[str, str]:
     """(stdout, stderr) of a command whose tree was just killed, waiting at most
-    POST_KILL_WAIT_S. If something still holds the pipes open after that, kill whatever is
-    left of the tree, close the pipes and keep the output read so far."""
+    POST_KILL_WAIT_S. If something still holds the pipes open after that, give up on it and
+    keep the output read so far."""
     try:
         return proc.communicate(timeout=POST_KILL_WAIT_S)
     except subprocess.TimeoutExpired as exc:
         stdout, stderr = _partial_text(exc.output), _partial_text(exc.stderr)
-    # A holder outside the root's tree and process group can't be found portably: once the
-    # pipes are closed it can no longer hold up Phil, and it dies on its next write (SIGPIPE).
+    # Best effort: the root is already dead, so this only catches anything it spawned since.
+    # A holder outside the root's tree (and, on POSIX, its process group) can't be found
+    # portably.
     platform.kill_tree(proc.pid)
-    for pipe in (proc.stdout, proc.stderr):
-        try:
-            if pipe is not None:
-                pipe.close()
-        except OSError:
-            pass
+    # On POSIX, once closed the pipes can't hold up Phil; the holder dies on its next write
+    # (SIGPIPE). On Windows they are left open: communicate()'s reader threads are blocked in
+    # read() holding each pipe's lock, so close() would wait on them forever. They're daemon
+    # threads, so abandoning them is safe. TimeoutExpired carries no partial output there.
+    if not platform.IS_WINDOWS:
+        for pipe in (proc.stdout, proc.stderr):
+            try:
+                if pipe is not None:
+                    pipe.close()
+            except OSError:
+                pass
     try:
         proc.wait(timeout=POST_KILL_WAIT_S)
     except subprocess.TimeoutExpired:

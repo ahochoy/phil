@@ -1,6 +1,7 @@
 import os
 import shlex
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -756,6 +757,61 @@ def test_on_windows_a_backslash_path_matches_either_extra_allow_style(monkeypatc
 def test_on_windows_a_backslash_path_matches_either_approved_style(monkeypatch, approved):
     monkeypatch.setattr(platform, "IS_WINDOWS", True)
     assert ShellPolicy([], approved=(approved,)).is_allowed(WINDOWS_COMMAND)
+
+
+@pytest.mark.parametrize("command", [r"cat '..\secret.txt'", r"cat '-f..\secret.txt'", r"ls 'sub\..\..\x'"])
+def test_on_windows_a_backslash_path_outside_the_worktree_is_refused(tmp_path, monkeypatch, command):
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    policy = ShellPolicy([], root=tmp_path / "worktree")
+    assert policy.refusal_detail(command) == "stay inside the worktree"
+
+
+def test_on_windows_a_backslash_path_inside_the_worktree_is_allowed(tmp_path, monkeypatch):
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    assert ShellPolicy([], root=tmp_path).is_allowed(r"cat 'src\a.py'")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "C:/x/python3.exe -c 'print(1)'",
+        r"'C:\x\Python.EXE' -c 'print(1)'",
+        "python.exe -c 'print(1)'",
+        "npm.cmd --prefix=/tmp install",
+        "git.exe -c core.pager=x log",
+    ],
+)
+def test_on_windows_risky_programs_are_matched_by_basename(monkeypatch, command):
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    assert ShellPolicy(["* *"]).denial_reason(command) == "forbidden"
+
+
+def test_on_posix_risky_program_matching_is_unchanged(monkeypatch):
+    monkeypatch.setattr(platform, "IS_WINDOWS", False)
+    assert ShellPolicy(["python.exe *"]).is_allowed("python.exe -c x")
+
+
+def test_on_windows_the_pipes_are_not_closed_after_the_bound(monkeypatch):
+    # communicate()'s reader threads hold each pipe's lock on Windows, so close() would hang.
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform, "kill_tree", lambda pid: None)
+    closed = []
+
+    class Pipe:
+        def close(self):
+            closed.append(self)
+
+    class Proc:
+        pid, stdout, stderr = 4242, Pipe(), Pipe()
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired("cmd", timeout)
+
+        def wait(self, timeout=None):
+            return -9
+
+    assert shell_module._output_after_kill(Proc()) == ("", "")
+    assert closed == []
 
 
 def test_on_posix_backslashes_are_not_normalised_for_matching(monkeypatch):
