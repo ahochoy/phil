@@ -13,3 +13,6 @@ wheels/
 .env
 .DS_Store
 .ipynb_checkpoints/
+
+# Superpowers working files (brainstorm mockups, SDD ledgers and briefs)
+.superpowers/
