@@ -113,12 +113,17 @@ def _violation_detail(exc: ContractViolation) -> str:
     return f"returned invalid structured output: {'; '.join(exc.problems)}"
 
 
+# How a decision-model provider is named in a check's failure message.
+PROVIDER_LABELS = {"typesafe": "TypeSafe", "openrouter_decisions": "OpenRouter"}
+
+
 def _jev_detail(provider: ProviderSpec, exc: JevError) -> str:
+    label = PROVIDER_LABELS.get(provider.name, provider.name)
     if exc.reason == "missing key":
         return missing_key_message(provider.name, provider.api_key_env or "", ["classifier"])
     if exc.reason in ("http 401", "http 403"):
-        return f"TypeSafe refused the request ({exc.reason}): check {provider.api_key_env}."
-    return f"TypeSafe didn't answer ({exc.reason})."
+        return f"{label} refused the request ({exc.reason}): check {provider.api_key_env}."
+    return f"{label} didn't answer ({exc.reason})."
 
 
 def _check_one(

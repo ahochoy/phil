@@ -51,7 +51,9 @@ def test_builtins_resolve():
     assert resolve_provider(config, "ollama") == ProviderSpec(
         "ollama", "openai", "http://localhost:11434/v1", None, 0.0, 0.0
     )
-    assert set(BUILTIN_PROVIDERS) == {"openrouter", "openai", "anthropic", "google", "ollama", "typesafe"}
+    assert set(BUILTIN_PROVIDERS) == {
+        "openrouter", "openai", "anthropic", "google", "ollama", "typesafe", "openrouter_decisions",
+    }
 
 
 def test_google_genai_is_an_alias_of_google():
@@ -269,3 +271,19 @@ def test_a_users_typesafe_entry_can_override_the_built_in_jev_price(tmp_path):
 def test_systemone_never_builds_a_chat_model():
     with pytest.raises(ConfigError, match="classifier"):
         build_chat_model(BUILTIN_PROVIDERS["typesafe"], "jev-latest", 5, {"TYPESAFE_API_KEY": "x"})
+
+
+def test_openrouter_decisions_is_a_builtin_systemone_provider_sharing_the_openrouter_key():
+    from phil.agents.providers import SYSTEMONE
+
+    spec = BUILTIN_PROVIDERS["openrouter_decisions"]
+    assert (spec.kind, spec.base_url, spec.api_key_env) == (SYSTEMONE, "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY")
+    assert (spec.input_per_mtok, spec.output_per_mtok) == (None, None)  # cost comes from the response
+
+
+def test_openrouter_decisions_is_allowed_only_as_the_classifier():
+    from phil.config import PhilConfig
+
+    assert PhilConfig(models={"classifier": "openrouter_decisions:typesafe/jev-1.13"}).is_systemone("classifier")
+    with pytest.raises(ValueError):
+        PhilConfig(models={"low": "openrouter_decisions:typesafe/jev-1.13"})

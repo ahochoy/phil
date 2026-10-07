@@ -41,6 +41,11 @@ BUILTIN_PROVIDERS: dict[str, ProviderSpec] = {
     "typesafe": ProviderSpec(
         "typesafe", SYSTEMONE, "https://api.typesafe.ai/v1", "TYPESAFE_API_KEY", 0.042, 0.0
     ),
+    # OpenRouter's TypeSafe-compatible System One endpoint: Jev and other decision models with the
+    # OpenRouter key. No built-in price: the response reports each call's cost.
+    "openrouter_decisions": ProviderSpec(
+        "openrouter_decisions", SYSTEMONE, "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", None, None
+    ),
 }
 # Older names kept working for existing configs.
 ALIASES = {"google_genai": "google"}

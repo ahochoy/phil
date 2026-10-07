@@ -110,6 +110,52 @@ def test_keys_remove_prints_both_messages(git_repo, monkeypatch):
     assert result.output == "Removed OPENAI_API_KEY from the keychain.\n"
 
 
+def _keys_list_with_only_the_openrouter_key(git_repo, monkeypatch, toml):
+    wide(monkeypatch)
+    (git_repo / "phil.toml").write_text(toml)
+    for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "TYPESAFE_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-TESTSECRET-123")
+    result = runner.invoke(cli.app, ["--repo", str(git_repo), "keys", "list"])
+    assert result.exit_code == 0, result.output
+    assert "sk-TESTSECRET-123" not in result.output
+    return result.output.splitlines()
+
+
+def test_keys_list_shows_no_unused_provider_sharing_a_listed_key(git_repo, monkeypatch):
+    lines = _keys_list_with_only_the_openrouter_key(
+        git_repo, monkeypatch, '[models]\nhigh = "openai:gpt"\nlow = "openai:gpt"\n'
+    )
+    assert lines == [
+        "openai  OPENAI_API_KEY  missing",
+        "openrouter  OPENROUTER_API_KEY  env",
+    ]
+
+
+def test_keys_list_says_a_used_decisions_provider_shares_the_openrouter_key(git_repo, monkeypatch):
+    lines = _keys_list_with_only_the_openrouter_key(
+        git_repo, monkeypatch,
+        '[models]\nhigh = "openrouter:a/b"\nlow = "openrouter:a/c"\n'
+        'classifier = "openrouter_decisions:typesafe/jev-1.13"\n',
+    )
+    assert lines == [
+        "openrouter  OPENROUTER_API_KEY  env",
+        "openrouter_decisions  OPENROUTER_API_KEY  env  (shared with openrouter)",
+    ]
+
+
+def test_keys_remove_refuses_a_key_another_provider_shares(git_repo, monkeypatch):
+    wide(monkeypatch)
+    set_key("OPENROUTER_API_KEY", "sk-TESTSECRET-123")
+    result = runner.invoke(cli.app, ["--repo", str(git_repo), "keys", "remove", "openrouter_decisions"])
+    assert result.exit_code == 1
+    assert result.output == (
+        "openrouter_decisions uses OPENROUTER_API_KEY, which openrouter shares; "
+        "remove it with `phil keys remove openrouter`.\n"
+    )
+    assert get_key("OPENROUTER_API_KEY") == "sk-TESTSECRET-123"
+
+
 def test_keys_set_strips_the_value(git_repo, monkeypatch):
     wide(monkeypatch)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

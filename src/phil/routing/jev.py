@@ -72,12 +72,12 @@ def parse_response(body: object) -> tuple[str, dict[str, float], float, float, U
     usage = None
     raw_usage = body.get("usage") if isinstance(body, dict) else None
     if isinstance(raw_usage, dict):
-        try:
-            input_tokens = _token_count(raw_usage.get("input_tokens", 0))
-            output_tokens = _token_count(raw_usage.get("output_tokens", 0))
-            usage = Usage(input_tokens, output_tokens)
-        except JevError:
-            raise
+        input_tokens = _token_count(raw_usage.get("input_tokens", 0))
+        output_tokens = _token_count(raw_usage.get("output_tokens", 0))
+        cost = raw_usage.get("cost")
+        # Cost is metadata: one that can't be read is unknown, and the decision still stands.
+        readable = not isinstance(cost, bool) and isinstance(cost, int | float) and cost >= 0
+        usage = Usage(input_tokens, output_tokens, float(cost) if readable else None)
     return choice, probs, _probability(confidence), _probability(noul), usage
 
 

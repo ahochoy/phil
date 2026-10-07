@@ -25,7 +25,16 @@ from phil.setup.suggestions import SUGGESTIONS
 from phil.setup.write import write_global_config
 
 SETUP_TIERS = ("high", "low")
-CLASSIFIER_MODEL = "typesafe:jev-latest"
+JEV_TYPESAFE = "typesafe:jev-latest"
+JEV_OPENROUTER = "openrouter_decisions:typesafe/jev-1.13"
+D1_OPENROUTER = "openrouter_decisions:liquid/d1"
+# The classifier step's sources (spec 2026-10-06 §3.2): (label, model, key var, key provider name).
+CLASSIFIER_SOURCES: list[tuple[str, str, str, str]] = [
+    ("Jev through OpenRouter (recommended; uses your OpenRouter key)", JEV_OPENROUTER, "OPENROUTER_API_KEY", "openrouter"),
+    ("Jev through TypeSafe (recommended without OpenRouter; needs TYPESAFE_API_KEY)", JEV_TYPESAFE, "TYPESAFE_API_KEY", "typesafe"),
+    ("d1 through OpenRouter (experimental: routing thresholds were tuned for Jev)", D1_OPENROUTER, "OPENROUTER_API_KEY", "openrouter"),
+]
+LOW_MODEL = "Your low model"
 CUSTOM = "custom"
 PROVIDER_CHOICES: list[tuple[str, str]] = [
     ("openrouter", "OpenRouter (recommended: one key for many models)"),
@@ -72,11 +81,12 @@ def _check_models(config: PhilConfig):
     return check_models(config, repo_root=Path.cwd())
 
 
-def _default_classifier_check(config: PhilConfig) -> str | None:
-    """Pings the typesafe classifier model with `ping_jev`; `None` if it answered, else the reason."""
-    provider = resolve_provider(config, "typesafe")
+def _default_classifier_check(config: PhilConfig, model: str) -> str | None:
+    """Pings the chosen decision model through its own provider with `ping_jev`; `None` if it
+    answered, else the reason."""
+    provider = resolve_provider(config, split_model(model)[0])
     try:
-        ping_jev(provider, split_model(CLASSIFIER_MODEL)[1], timeout_s=config.routing.jev_timeout_s)
+        ping_jev(provider, split_model(model)[1], timeout_s=config.routing.jev_timeout_s)
     except JevError as exc:
         return exc.reason
     return None
@@ -91,7 +101,7 @@ def run_setup(
     ollama: Callable[[str], list[str] | None] = ollama_models,
     write: Callable[..., None] = write_global_config,
     path: Path | None = None,
-    classifier_check: Callable[[], str | None] | None = None,
+    classifier_check: Callable[[str], str | None] | None = None,
 ) -> bool:
     """Walk through setup and write the global config. True if it wrote the file; False if the
     user cancelled (Ctrl-C or end of input, at a prompt or not) or the file couldn't be written.
@@ -120,7 +130,7 @@ def run_setup(
         models = {tier: _model_step(io, saved, provider, tier, models_catalog) for tier in SETUP_TIERS}
         with pending_keys(pending):
             models = _check_step(io, config, saved, provider, models, check, models_catalog)
-        models = models | _classifier_step(io, config, target, run_classifier_check, pending, to_save)
+        models = models | _classifier_step(io, config, target, provider, run_classifier_check, pending, to_save)
     except (SetupCancelled, KeyboardInterrupt):
         io.say("Setup cancelled; nothing was saved.")
         return False
@@ -248,10 +258,11 @@ def _custom_provider(io: SetupIO, config: PhilConfig, current: str | None) -> _P
 # 2. Key
 
 
-def _key_step(io: SetupIO, provider: _Provider) -> str | None:
+def _key_step(io: SetupIO, provider: _Provider, *, hint_if_empty: bool = True) -> str | None:
     """Make sure the provider's key can be found. Returns the entered key (held in memory,
     saved to the keychain only once setup finishes), or None if none was entered, the key was
-    kept, or it comes from the environment."""
+    kept, or it comes from the environment. `hint_if_empty=False` leaves the "No key entered"
+    advice to the caller (the classifier step offers its own choice instead)."""
     var = provider.api_key_env
     if var is None:
         return None
@@ -267,7 +278,8 @@ def _key_step(io: SetupIO, provider: _Provider) -> str | None:
         return None
     value = io.secret(f"{var} (input hidden)")
     if not value:
-        io.say(f"No key entered. Export {var}, or run `phil keys set {provider.name}` later.")
+        if hint_if_empty:
+            io.say(f"No key entered. Export {var}, or run `phil keys set {provider.name}` later.")
         return None
     io.say(f"Got it: {var} will be saved to the keychain when setup finishes.")
     return value
@@ -458,37 +470,59 @@ def _classifier_step(
     io: SetupIO,
     config: PhilConfig,
     target: Path,
-    classifier_check: Callable[[], str | None],
+    provider: _Provider,
+    classifier_check: Callable[[str], str | None],
     pending: dict[str, str],
     to_save: list[tuple[str, str]],
 ) -> dict[str, str]:
-    """Offer a fast TypeSafe classifier for routing. Empty when the user keeps using the low
-    model (the default); `{"classifier": CLASSIFIER_MODEL}` when TypeSafe Jev is chosen and kept.
-    A TypeSafe key entered here is added to `pending`/`to_save`, held in memory like every other
-    key, and saved only once setup finishes."""
+    """Offer a decision model for routing (spec 2026-10-06 §3.2). Jev is recommended: through
+    OpenRouter when that's the main provider (its key is reused), else through TypeSafe. Empty
+    when the user keeps routing with the low model; `{"classifier": <model>}` when one is chosen
+    and kept. A key entered here is held in memory like every other key, saved only at the end."""
     current = config.models.get("classifier") if config.sources.get("models.classifier") == str(target) else None
-    options = ([f"Keep {current}"] if current else []) + [
-        "Your low model (default)", "TypeSafe Jev (fast routing; needs TYPESAFE_API_KEY)",
-    ]
-    choice = options[io.choose("Route requests with a fast classifier?", options)]
-    if choice.startswith("Keep ") or choice.startswith("Your low model"):
-        if current and choice.startswith("Your low model"):
+    labels = ([f"Keep {current}"] if current else []) + [label for label, *_ in CLASSIFIER_SOURCES] + [LOW_MODEL]
+    offset = 1 if current else 0
+    default = 0 if current else (0 if provider.name == "openrouter" else 1)
+    index = io.choose("Route requests with a fast classifier?", labels, default=default)
+    choice = labels[index]
+    if current and index == 0:
+        # Keeping it writes nothing: write_global_config leaves the file's other keys as they are.
+        return {}
+
+    def use_low_model() -> dict[str, str]:
+        # On a rerun, writing no classifier leaves the current one in the file: say so.
+        if current:
             io.say(f"models.classifier = {current} stays in {target}; remove it there to route with your low model.")
         return {}
-    key = _key_step(io, _Provider("typesafe", "TYPESAFE_API_KEY"))
-    if key is not None:
-        pending["TYPESAFE_API_KEY"] = key
-        to_save.append(("TYPESAFE_API_KEY", "typesafe"))
+
+    if choice == LOW_MODEL:
+        return use_low_model()
+    _, model, var, key_provider = CLASSIFIER_SOURCES[index - offset]
+    # A key already entered, stored or exported is reused (spec §3.2): ask only when there's none.
+    if var not in pending:
+        source = key_source(var)
+        if source is not None:
+            io.say(f"Using {var} from {source}.")
+        else:
+            key = _key_step(io, _Provider(key_provider, var), hint_if_empty=False)
+            if key is not None:
+                pending[var] = key
+                to_save.append((var, key_provider))
+    if var not in pending and key_source(var) is None:
+        # Nothing to check with: a ping could only fail for want of the key.
+        if io.choose(f"No {var} yet.", ["Use your low model for now", f"Keep {model} and set the key later"]) == 0:
+            return use_low_model()
+        io.say(f"Set {var} with `phil keys set {key_provider}` or export it; routing uses your low model until then.")
+        return {"classifier": model}
     with pending_keys(pending):
-        reason = classifier_check()
+        reason = classifier_check(model)
     if reason is not None:
-        io.say(f"✗ classifier  {CLASSIFIER_MODEL}  {reason}")
-        if io.choose("TypeSafe Jev failed the check.",
-                     ["Use your low model instead", "Keep TypeSafe Jev anyway"]) == 0:
-            return {}
+        io.say(f"✗ classifier  {model}  {reason}")
+        if io.choose(f"{model} failed the check.", ["Use your low model instead", f"Keep {model} anyway"]) == 0:
+            return use_low_model()
     else:
-        io.say(f"✓ classifier  {CLASSIFIER_MODEL}")
-    return {"classifier": CLASSIFIER_MODEL}
+        io.say(f"✓ classifier  {model}")
+    return {"classifier": model}
 
 
 # 5. Summary

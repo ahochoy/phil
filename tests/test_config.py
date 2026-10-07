@@ -461,6 +461,11 @@ def test_typesafe_on_any_other_role_is_a_config_error(models):
         PhilConfig(models=models)
 
 
+def test_the_systemone_role_error_names_the_actual_provider():
+    with pytest.raises(ValueError, match="the openrouter_decisions provider \\(kind systemone\\)"):
+        PhilConfig(models={"low": "openrouter_decisions:typesafe/jev-1.13"})
+
+
 def test_jev_gets_its_own_detail_threshold_when_set():
     routing = PhilConfig.model_validate({"routing": {"jev_detail_threshold": 0.5}}).routing
     assert routing.detail_threshold_for("jev") == 0.5

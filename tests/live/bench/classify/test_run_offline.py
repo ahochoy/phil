@@ -271,3 +271,17 @@ def test_error_value_keeps_jeverrors_reason():
 def test_error_value_drops_a_generic_exceptions_text_which_could_carry_anything():
     exc = RuntimeError("secret sk-proj-abcdefg")
     assert run._error_value(exc) == "RuntimeError"
+
+
+def test_the_jev_backend_prefers_a_reported_cost(monkeypatch):
+    from phil.config import PhilConfig
+
+    body = {**JEV_FIXTURE, "usage": {"input_tokens": 412, "output_tokens": 3, "cost": 0.000123}}
+    _jev_transport(monkeypatch, body)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-TESTSECRET0123456789")
+    monkeypatch.setattr(run, "phil_sha", lambda: "test")
+    config = PhilConfig(models={"classifier": "openrouter_decisions:typesafe/jev-1.13"})
+
+    [record] = run.run_backend("jev", [CASE], config)
+
+    assert record["cost_usd"] == pytest.approx(0.000123)

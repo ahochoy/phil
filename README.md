@@ -18,8 +18,9 @@ starts automatically:
 
 It walks you through choosing a provider, saving its API key, picking a `high` and `low`
 model (with suggestions, where there are any — see below), and checking that each model
-actually answers, then writes `~/.phil/config.toml` and starts the chat. Run it again any
-time to change providers or models:
+actually answers. It ends by offering a fast classifier to route your requests, with Jev
+recommended (see Routing below), then writes `~/.phil/config.toml` and starts the chat. Run
+it again any time to change providers or models:
 
     phil setup
 
@@ -32,8 +33,7 @@ A key pasted by mistake at any other prompt is refused without being shown or sa
 
 Suggested `high`/`low` models exist for OpenRouter, OpenAI and Anthropic; Google has none yet
 — setup asks you to type a model id by hand. Ollama offers whatever you have installed, and a
-custom OpenAI-compatible provider offers whatever it serves. The `classifier` tier isn't part
-of setup yet and has no suggestion; set it by hand under `[models]` until it's wired up in M3.
+custom OpenAI-compatible provider offers whatever it serves.
 
     phil keys set <provider>      # store a provider's API key in the OS keychain
     phil keys list                # where each provider's key would come from: env or keychain
@@ -110,7 +110,7 @@ unchanged — each role's own `[models]` key always wins over any tier.
 
 ### Providers
 
-A model is `provider:model`, e.g. `openrouter:openai/gpt-6-luna` or `ollama:qwen3:32b`. Five
+A model is `provider:model`, e.g. `openrouter:openai/gpt-6-luna` or `ollama:qwen3:32b`. These
 providers are built in:
 
 | Provider | Kind | Base URL | Key |
@@ -120,6 +120,8 @@ providers are built in:
 | `anthropic` | anthropic | Anthropic's own | `ANTHROPIC_API_KEY` |
 | `google` (alias `google_genai`) | google | Google's own | `GOOGLE_API_KEY` |
 | `ollama` | openai | `http://localhost:11434/v1` | none |
+| `typesafe` | systemone | `https://api.typesafe.ai/v1` | `TYPESAFE_API_KEY` |
+| `openrouter_decisions` | systemone | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
 
 `kind` picks the SDK: `openai` for any OpenAI-compatible server (including a custom endpoint
 or a local one), plus `anthropic`, `google` and `openrouter`. Add a new provider, or override
@@ -274,9 +276,11 @@ no way to tell what done means), Phil asks first instead of guessing.
 Every run's `phil show <run-id>` header names its depth (`quick` or `full`; blank for a run
 from before M3b), right after the keyword: `Run <id> · CALC · quick · completed · ...`.
 
-Routing is decided by a classifier, not by the model doing the work. By default it's your
-`low` model, called the same way the chat's other agents are. For faster, cheaper routing,
-configure TypeSafe's Jev instead:
+Routing is decided by a classifier, not by the model doing the work. We recommend TypeSafe's
+Jev, a decision model built for this: faster and cheaper than a chat model. `phil setup`
+offers it through OpenRouter (`openrouter_decisions:typesafe/jev-1.13`, using your OpenRouter
+key), or through TypeSafe (`typesafe:jev-latest`, with a `TYPESAFE_API_KEY`). Or set it by
+hand:
 
 ```toml
 [models]
@@ -287,11 +291,16 @@ classifier = "typesafe:jev-latest"
 
 Jev costs $0.042 per million input tokens; output is free (TypeSafe pricing, Oct 2026).
 
-If Jev errors (a timeout, an auth or rate-limit response, or a malformed reply), that one
+Setup also offers Liquid's `d1` through OpenRouter as an experimental option: the routing
+thresholds were tuned for Jev. With no classifier set, routing uses your `low` model, called
+the same way the chat's other agents are.
+
+If Jev, or any other decision model such as d1, errors (a timeout, an auth or rate-limit
+response, or a malformed reply), that one
 message falls back to your `low` model automatically — Phil prints a dim `Router
 unavailable ({reason}); using your low model.` note and carries on; routing never blocks the
 chat. If the low model fails too, or there is none, the note reads `Router unavailable
-({reason}); intake decides.` instead. `phil models check` pings a configured `typesafe` classifier the same way it checks
+({reason}); intake decides.` instead. `phil models check` pings a configured `typesafe` or `openrouter_decisions` classifier the same way it checks
 every other model.
 
 Two thresholds under `[routing]` (defaults shown) control how readily routing defers to
