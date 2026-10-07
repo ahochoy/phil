@@ -105,6 +105,7 @@ class ShellConfig(_Section):
     timeout_s: int = 300
     max_output_lines: int = 200
     pass_env: list[str] = []
+    bash: str | None = None  # Windows only: Git Bash's bash.exe, when Phil can't find it
 
 
 class GitConfig(_Section):
