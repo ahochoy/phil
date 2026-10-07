@@ -66,8 +66,15 @@ quick.
 
 ### M5 — Terminal experience and visibility
 
-- A live event stream from the worker: tool calls and results, file changes, retries, and failures.
-- An activity feed: conversation plus execution, with summaries first, expandable details, and raw output on demand.
+- **A live event stream from the worker (done).** Tool calls and results, file changes, retries,
+  and failures, each tagged with the task and role, recorded to `activity.jsonl` and streamed to
+  the chat and `phil attach`. [Plan](plans/2026-10-07-phil-activity-feed.md) ·
+  [spec](specs/2026-10-07-phil-activity-feed-design.md).
+- **An activity feed (done).** Conversation plus execution, with summaries first (compact tool
+  lines under highlighted milestone bands), expandable details on demand (`/more #n` in the chat,
+  `phil show <run> --step N` outside it), and a live row for the step in progress.
+  [Plan](plans/2026-10-07-phil-activity-feed.md) ·
+  [spec](specs/2026-10-07-phil-activity-feed-design.md).
 - A welcome banner, a persistent input, a status bar, and a sub-agent bar that can later select one agent's feed.
 - Bordered question and approval callouts with keyboard choices and explicit scope.
 - Failure categories: provider, auth or quota, network, tool, command, permission, config, orchestration, internal. Each shows what changed, whether Phil will retry, and whether the user must act.

@@ -5,6 +5,7 @@ from phil.cli import main as cli
 from phil.repo import resolve_repo
 from phil.run.launch import prepare_run
 from phil.run.worker import run_worker
+from phil.store.activity import activity_log
 from phil.store.paths import ProjectPaths
 from tests.run.conftest import calc_plan, review, tester_report, write_green, write_red
 
@@ -56,6 +57,25 @@ def test_show_unknown_detail_number_fails(calc_repo):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "show", record.run_id, "99"])
     assert result.exit_code == 1
     assert f"No detail #99 for {record.run_id}." in result.output
+
+
+def test_show_step_prints_an_activity_detail(calc_repo):
+    info, record, paths = finished_run(calc_repo)
+    log = activity_log(paths, record.run_id)
+    log.end(
+        14, task="CALC-001", role="implementer", tool="run_shell", summary="run pytest -q",
+        result="→ 2 failed", ok=False, detail="2 failed\n", duration_ms=1200,
+    )
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "show", record.run_id, "--step", "14"])
+    assert result.exit_code == 0, result.output
+    assert "2 failed" in result.output
+
+    # A second, never-started run has no activity log at all: step 14 is unknown there.
+    other_info = resolve_repo(calc_repo)
+    other_record = prepare_run(other_info, calc_plan(), other_info.head_sha)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "show", other_record.run_id, "--step", "14"])
+    assert result.exit_code == 1
+    assert "#14 has no details." in result.output
 
 
 def test_show_unknown_run_fails(calc_repo):

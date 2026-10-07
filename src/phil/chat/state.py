@@ -13,6 +13,14 @@ class RunView:
 
 
 @dataclass(frozen=True)
+class LiveStep:
+    task: str | None
+    role: str
+    summary: str
+    started: float  # epoch seconds
+
+
+@dataclass(frozen=True)
 class ToolbarView:
     stage: str = "idle"
     step: str | None = None
@@ -23,6 +31,7 @@ class ToolbarView:
     cancelling: bool = False
     cost: tuple[float, str] | None = None  # (cost_usd, cost_source): the chat's running cost
     parked: int = 0  # open parked items
+    live: LiveStep | None = None  # the running tool, shown on the live row above the input
 
 
 class ChatState:
@@ -44,6 +53,9 @@ class ChatState:
 
     def set_run(self, run: RunView | None) -> None:
         self._update(run=run)
+
+    def set_live(self, live: LiveStep | None) -> None:
+        self._update(live=live)
 
     def set_paused(self, paused: bool) -> None:
         self._update(paused=paused)

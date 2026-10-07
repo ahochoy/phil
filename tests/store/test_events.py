@@ -15,6 +15,22 @@ def test_append_and_read_with_offsets(tmp_path):
     assert log.read(offset2) == ([], offset2)
 
 
+def test_read_skips_lines_that_are_not_objects(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'[1, 2]\n"text"\n7\n{"ts": "t", "kind": "node", "node": "setup"}\n')
+    events, offset = EventLog(path).read()
+    assert [e["kind"] for e in events] == ["node"]
+    assert offset == path.stat().st_size
+
+
+def test_end_offset_is_the_log_size_or_zero(tmp_path):
+    log = EventLog(tmp_path / "events.jsonl")
+    assert log.end_offset() == 0
+    log.append("node", node="setup")
+    assert log.end_offset() == log.path.stat().st_size
+    assert log.read(log.end_offset()) == ([], log.end_offset())
+
+
 def test_partial_lines_are_not_returned(tmp_path):
     path = tmp_path / "events.jsonl"
     # Bytes, not write_text: on Windows text mode would write "\r\n" and shift the offset.
@@ -22,6 +38,14 @@ def test_partial_lines_are_not_returned(tmp_path):
     events, offset = EventLog(path).read()
     assert [e["node"] for e in events] == ["a"]
     assert offset == len('{"ts": "t", "kind": "node", "node": "a"}\n')
+
+
+def test_malformed_complete_lines_are_skipped(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"ts": "t", "kind": "node", "node": "a"}\nnot json\n{"ts": "t", "kind": "node", "node": "b"}\n')
+    events, offset = EventLog(path).read()
+    assert [e["node"] for e in events] == ["a", "b"]
+    assert offset == path.stat().st_size
 
 
 def test_latest_by_kind(tmp_path):

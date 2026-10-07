@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
@@ -51,15 +52,19 @@ class TerminalIO:
     so an event posted between the controller's drain and the next prompt still wakes it.
     """
 
-    def __init__(self, toolbar: Callable[[], str], *, input=None, output=None) -> None:
+    def __init__(
+        self, toolbar: Callable[[], str], live_row: Callable[[], str] | None = None, *, input=None, output=None
+    ) -> None:
         self._toolbar = toolbar
+        self._live_row = live_row  # the running step, shown on its own line above the input
         self.session: PromptSession = PromptSession(
             bottom_toolbar=self._render_toolbar, refresh_interval=0.5, input=input, output=output
         )
         self._lock = threading.Lock()
         self._active = False  # a prompt is running (between its pre_run and its return)
         self._wake_pending = False
-        self._carried = ""  # the text typed into a prompt that a wake interrupted
+        # What was typed into a prompt that a wake interrupted, with its cursor position.
+        self._carried = Document()
         # Jobs run on daemon threads, at most MAX_JOBS at once: they only post events and the chat is
         # saved as it goes, so one still waiting on a model call can be abandoned when the chat exits.
         self._slots = threading.Semaphore(MAX_JOBS)
@@ -91,17 +96,31 @@ class TerminalIO:
             if self._wake_pending:
                 self._wake_pending = False
                 return WAKE
-        default, self._carried = self._carried, ""
+        default, self._carried = self._carried, Document()
         try:
-            return self.session.prompt(
-                FormattedText([("bold", prompt)]), default=default, pre_run=self._started
-            )
+            return self.session.prompt(self._message(prompt), default=default, pre_run=self._started)
         except EOFError:
             return None
         finally:
             with self._lock:
                 self._active = False
             self.session.app.erase_when_done = False  # a submitted line stays in the scrollback
+
+    def _message(self, prompt: str) -> Callable[[], FormattedText]:
+        """The prompt's message, re-rendered on every redraw: the live row (if any) above the prompt.
+
+        The final redraw of a finished prompt leaves the live row out, so a submitted line stays in
+        the scrollback without a frozen copy of the row above it."""
+
+        def message() -> FormattedText:
+            try:
+                row = self._live_row() if self._live_row and not self.session.app.is_done else ""
+            except Exception:  # a redraw must never take the prompt down
+                row = ""
+            parts = [("class:live", row + "\n")] if row else []
+            return FormattedText([*parts, ("bold", prompt)])
+
+        return message
 
     def _started(self) -> None:
         # Runs on the prompt's event loop once the app is running (its future is set).
@@ -115,7 +134,7 @@ class TerminalIO:
         app = self.session.app
         if app.future is None or app.future.done():
             return  # the prompt already finished (the user pressed Enter first)
-        self._carried = app.current_buffer.text
+        self._carried = app.current_buffer.document  # text and cursor position
         app.erase_when_done = True  # the prompt comes straight back; leave no stale line behind
         app.exit(result=WAKE)
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
+from rich.panel import Panel
 from rich.text import Text
 
 from phil.agents.invoke import AgentContext
@@ -33,7 +34,7 @@ from phil.chat.overview import repo_overview
 from phil.chat.planning import Planner, PlanDraft, PlanningBudgetExceeded, intake, quick_plan
 from phil.chat.session import ChatSession
 from phil.chat.snapshot import export_tree, export_worktree
-from phil.chat.state import ChatState, RunView
+from phil.chat.state import ChatState, LiveStep, RunView
 from phil.chat.watcher import RunWatcher
 from phil.config import ConfigError, PhilConfig, load_config
 from phil.contracts import Approach, Approaches, Goal, Plan, PlanCritique, Question, Ref, RunStatus
@@ -48,8 +49,9 @@ from phil.routing.classify import classify
 from phil.git import GitError, commits_ahead
 from phil.run.launch import is_worker_alive, prepare_run, worker_starting
 from phil.run.state import blocking_count
+from phil.store.activity import activity_log
 from phil.store.db import connect
-from phil.store.events import run_events, test_cmd_changed_line
+from phil.store.events import MILESTONE_KINDS, run_events, test_cmd_changed_line
 from phil.store.paths import ProjectPaths
 from phil.store.parked import open_count, park
 from phil.store.runs import get_run, list_runs
@@ -57,6 +59,7 @@ from phil.store.telemetry import budget_warning_line, chat_cost_since, chat_usag
 from phil.tomlw import toml_value
 from phil.ui.answer_view import render_answer
 from phil.ui.brief_view import render_brief
+from phil.ui.feed_view import FeedRenderer
 from phil.ui.plan_view import _clip, render_goal, render_plan
 from phil.ui.runs_view import render_runs
 from phil.ui.show_view import detail_text, render_show, show_refs
@@ -72,7 +75,8 @@ HELP = (
     "(/full! plans fully without design proposals). "
     "Commands: /runs, /btw <question> (ask while work continues), "
     "/answer (a paused run's question), /resume (a failed or stopped run), /show (the chat's run: usage "
-    "and numbered details), /more <n> (print detail n), /park <note> (set an idea aside), /help, "
+    "and numbered details), /more <n> (print detail n), /more #<step> (a feed step's detail), "
+    "/park <note> (set an idea aside), /help, "
     "/quit (or Ctrl-D)."
 )
 PROMPTS = {
@@ -100,7 +104,7 @@ GOAL_JOB_STAGES = ("routing", "intake", "planning", "answering", "designing")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
 RUN_EVENTS = (
     "run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning",
-    "test_cmd_changed",
+    "test_cmd_changed", "activity", "milestone", "live_step",
 )
 RECENT_EVENTS = 10  # run events a /btw answer sees
 NOTICE_REFS = 3  # details a completion notice lists
@@ -198,6 +202,7 @@ class ChatController:
         self._shown_setup_cmd: str | None = None  # the setup command in the last plan render, pinned into its run
         self._revising = False
         self._run_id: str | None = None
+        self._feed = FeedRenderer()  # the run's tool lines and milestone bands
         self._base_sha: str | None = None
         self._done_seen = False
         self._replacement = ""
@@ -1295,6 +1300,8 @@ class ChatController:
         self._stop_watcher()
         self._run_id, self._lost, self._pause, self._answer_sent = None, False, None, False
         self.state.set_run(None)
+        self.state.set_live(None)
+        self._feed = FeedRenderer()  # no task timings carried into the next run
         self.state.set_paused(False)
 
     def _closing(self) -> None:
@@ -1326,6 +1333,22 @@ class ChatController:
 
     def _on_test_cmd_changed(self, data: dict) -> None:
         self.console.print(f"[phil.warn]{escape(test_cmd_changed_line(str(data.get('cmd'))))}[/]")
+
+    def _on_activity(self, data: dict) -> None:
+        for line in self._feed.tool_lines(data.get("records", []), self.console.width):
+            self.console.print(line, soft_wrap=True)
+
+    def _on_milestone(self, data: dict) -> None:
+        self.console.print(self._feed.milestone(data, self.console.width))
+
+    def _on_live_step(self, data: dict) -> None:
+        if not data:
+            self.state.set_live(None)
+            return
+        self.state.set_live(LiveStep(
+            task=data.get("task"), role=str(data.get("role", "")), summary=str(data.get("summary", "")),
+            started=float(data.get("started", time.time())),
+        ))
 
     def _on_run_paused(self, data: dict) -> None:
         escalation = data["escalation"]
@@ -1407,6 +1430,7 @@ class ChatController:
 
     def _on_run_done(self, data: dict) -> None:
         # Settle the chat first, so a notice that fails to print can't leave it following a finished run.
+        self.state.set_live(None)
         self._stop_watcher()
         self.state.set_run(None)
         self.state.set_paused(False)
@@ -1510,6 +1534,7 @@ class ChatController:
 
     def _on_worker_lost(self, data: dict) -> None:
         self._lost = True
+        self.state.set_live(None)  # the step it was running isn't running any more
         self.console.print(
             f"[phil.warn]The worker for {escape(self._run_id)} stopped responding. Continue it with /resume.[/]"
         )
@@ -1571,12 +1596,15 @@ class ChatController:
         self._set_refs(render_show(self.console, self.conn, ProjectPaths(self.info.slug), run_id))
 
     def _more_command(self, arg: str) -> None:
+        if arg.startswith("#") and arg[1:].isdigit():
+            self._more_step(int(arg[1:]))
+            return
         if not arg.isdigit():
-            self.console.print("Usage: /more <n>")
+            self.console.print("Usage: /more <n> or /more #<step>")
             return
         n = int(arg)
         if not 1 <= n <= len(self._last_refs):
-            self.console.print(f"No detail #{n}. Use /show to list them.")
+            self.console.print(f"No detail {n}. Use /show to list them.")
             return
         ref = self._last_refs[n - 1]
         if self._refs_from_btw:
@@ -1592,6 +1620,26 @@ class ChatController:
             self.console.print(f"[phil.error]Couldn't read {escape(str(path))}: {escape(type(exc).__name__)}[/]")
             return
         self.console.print(Text(text))  # plain text: never markup
+
+    def _more_step(self, seq: int) -> None:
+        """`/more #n`: a feed step's detail, in a panel. Looks in the run this chat follows, else the
+        most recent run it followed (so details keep working after a run ends and is forgotten)."""
+        run_id = self._chat_run()
+        if run_id is None:
+            self.console.print("No run to look in.")
+            return
+        log = activity_log(ProjectPaths(self.info.slug), run_id)
+        path = log.detail_for(seq)
+        if path is None:
+            self.console.print(f"#{seq} has no details.")
+            return
+        try:
+            text = detail_text(path)
+        except (OSError, UnicodeDecodeError) as exc:
+            self.console.print(f"[phil.error]Couldn't read {escape(str(path))}: {escape(type(exc).__name__)}[/]")
+            return
+        record = log.find(seq) or {}
+        self.console.print(Panel(Text(text), title=Text(str(record.get("summary", f"#{seq}"))), title_align="left"))
 
     def _park_command(self, note: str) -> None:
         if not note:
@@ -1938,4 +1986,6 @@ def _short_event(event: dict) -> str:
         return f"{kind} {event.get('mode')}"
     if kind == "outcome":
         return f"outcome {event.get('status')}"
+    if kind in MILESTONE_KINDS:
+        return FeedRenderer().milestone(event, 200).plain
     return str(kind)

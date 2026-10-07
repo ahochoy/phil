@@ -18,6 +18,7 @@ from phil.run import runner
 from phil.run.checkpoint import open_checkpointer
 from phil.run.engine import RunDeps, RunEngine
 from phil.run.launch import is_worker_alive
+from phil.store.activity import activity_log
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect, utcnow
 from phil.store.events import run_events
@@ -180,6 +181,7 @@ def run_worker(
         factory=factory,
         sleep=sleep,
         events=events,
+        activity=activity_log(paths, run_id),
     )
     engine = RunEngine(deps)
     saver = open_checkpointer(paths.db_path)
