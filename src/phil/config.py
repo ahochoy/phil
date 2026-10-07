@@ -160,11 +160,14 @@ class ProviderConfig(_Section):
 
 
 class RoutingConfig(_Section):
-    confidence_threshold: float = 0.5  # below it, intake decides the depth (spec §3.5)
+    # Below it, intake decides the depth (spec §3.5). 0.7 from the 2026-10-06 benchmark rerun:
+    # it suited Jev, and the low-model fallback made fewer mistakes on new cases at 0.7 than 0.5.
+    confidence_threshold: float = 0.7
     detail_threshold: float = 0.6  # at or above it, intake asks the user first
     jev_timeout_s: float = 5.0
-    # Jev scores "is this vague?" on its own scale (journal part 3): it gets its own threshold.
-    jev_detail_threshold: float | None = None
+    # Jev scores "is this vague?" on its own scale (journal part 3): it gets its own threshold,
+    # chosen in the 2026-10-06 rerun. None means Jev uses detail_threshold too.
+    jev_detail_threshold: float | None = 0.9
 
     @field_validator("confidence_threshold", "detail_threshold", "jev_detail_threshold")
     @classmethod

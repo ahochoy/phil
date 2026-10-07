@@ -299,11 +299,13 @@ intake instead of guessing:
 
 ```toml
 [routing]
-confidence_threshold = 0.5   # below it, intake decides the depth instead of the classifier
+confidence_threshold = 0.7   # below it, intake decides the depth instead of the classifier
 detail_threshold = 0.6       # at or above it, intake asks you something first
-jev_detail_threshold = 0.6   # Jev only; unset = detail_threshold
+jev_detail_threshold = 0.9   # Jev only (Jev scores vagueness on its own scale)
 jev_timeout_s = 5.0          # Jev's connect/read timeout; no retries inside the adapter
 ```
+
+**Jev is the recommended classifier.** In the 2026-10-06 benchmark rerun ([journal part 5](docs/journey/05-a-rule-written-first.md)), it made no wrong-path or unsafe routing mistakes on 50 cases. It was about 12× faster than the low model at p95 and about 4× cheaper. The defaults above are the thresholds that run chose. Without Jev, the low model routes with the same `confidence_threshold`.
 
 A classifier benchmark (`tests/live/bench/classify/`) compares the Jev and low-model
 backends on 40 `tune` cases and 10 `check` cases — class and depth accuracy, the worst error
