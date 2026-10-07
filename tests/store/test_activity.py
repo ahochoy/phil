@@ -74,3 +74,13 @@ def test_a_write_failure_disables_the_log_and_never_raises(tmp_path, monkeypatch
     assert log.start(task=None, role="r", tool="t", summary="s") is None
     assert log.start(task=None, role="r", tool="t", summary="s") is None
     assert sum("activity log disabled" in r.message for r in caplog.records) == 1
+
+
+def test_a_corrupted_seq_does_not_raise(tmp_path):
+    log = ActivityLog(tmp_path)
+    log.path.parent.mkdir(parents=True, exist_ok=True)
+    log.path.write_text(json.dumps({"seq": "x", "phase": "start"}) + "\n", encoding="utf-8", newline="\n")
+    assert ActivityLog(tmp_path).start(task=None, role="r", tool="t", summary="s") is None
+    assert ActivityLog(tmp_path).record(task=None, role="r", tool="t", summary="s", result="",
+                                        ok=True, detail=None, duration_ms=1) is None
+    assert ActivityLog(tmp_path).last_seq == 0

@@ -46,13 +46,27 @@ class ActivityLog:
     @property
     def last_seq(self) -> int:
         with self._lock:
-            return self._current_seq()
+            if self.disabled:
+                return 0
+            try:
+                return self._current_seq()
+            except Exception:
+                self._disable()
+                return 0
 
     def _current_seq(self) -> int:
         if self._seq is None:
             records, _ = self.read()
             self._seq = max((int(r.get("seq", 0)) for r in records), default=0)
         return self._seq
+
+    def _disable(self) -> None:
+        """Turn off recording for the rest of this process, with exactly one warning (R1:
+        recording must never fail a run)."""
+        if self.disabled:
+            return
+        self.disabled = True
+        logger.warning("activity log disabled for %s: a write failed", self.run_dir, exc_info=True)
 
     def _append(self, record: dict) -> bool:
         if self.disabled:
@@ -63,8 +77,7 @@ class ActivityLog:
                 handle.write(json.dumps(record, default=str) + "\n")
             return True
         except Exception:
-            self.disabled = True
-            logger.warning("activity log disabled for %s: a write failed", self.run_dir, exc_info=True)
+            self._disable()
             return False
 
     def start(self, *, task: str | None, role: str, tool: str, summary: str) -> int | None:
@@ -73,26 +86,30 @@ class ActivityLog:
                 return None
             try:
                 seq = self._current_seq() + 1
+                record = {"seq": seq, "ts": utcnow(), "phase": "start", "task": task, "role": role,
+                          "tool": tool, "summary": summary}
+                if not self._append(record):
+                    return None
+                self._seq = seq
+                return seq
             except Exception:
-                self.disabled = True
-                logger.warning("activity log disabled for %s: a read failed", self.run_dir, exc_info=True)
+                self._disable()
                 return None
-            record = {"seq": seq, "ts": utcnow(), "phase": "start", "task": task, "role": role,
-                      "tool": tool, "summary": summary}
-            if not self._append(record):
-                return None
-            self._seq = seq
-            return seq
 
     def end(self, seq: int | None, *, task: str | None, role: str, tool: str, summary: str, result: str,
             ok: bool, detail: str | None, duration_ms: int) -> None:
         if seq is None:
             return
         with self._lock:
-            name = self._write_detail(seq, detail) if detail else None
-            self._append({"seq": seq, "ts": utcnow(), "phase": "end", "task": task, "role": role, "tool": tool,
-                          "summary": summary, "duration_ms": duration_ms, "result": result, "ok": ok,
-                          "detail": name})
+            if self.disabled:
+                return
+            try:
+                name = self._write_detail(seq, detail) if detail else None
+                self._append({"seq": seq, "ts": utcnow(), "phase": "end", "task": task, "role": role, "tool": tool,
+                              "summary": summary, "duration_ms": duration_ms, "result": result, "ok": ok,
+                              "detail": name})
+            except Exception:
+                self._disable()
 
     def record(self, *, task: str | None, role: str, tool: str, summary: str, result: str, ok: bool,
                detail: str | None, duration_ms: int) -> int | None:
@@ -113,8 +130,7 @@ class ActivityLog:
             path.write_text(text, encoding="utf-8", newline="\n")
             return path.name
         except Exception:
-            self.disabled = True
-            logger.warning("activity log disabled for %s: a write failed", self.run_dir, exc_info=True)
+            self._disable()
             return None
 
     # --- reading ---------------------------------------------------------------------------
