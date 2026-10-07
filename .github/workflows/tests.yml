@@ -22,8 +22,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Windows runs the suite about five times slower (process start-up through Git Bash).
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 30 }}
-    # Windows is being ported: its failures are reported but don't fail the run until it passes.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
