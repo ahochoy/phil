@@ -54,6 +54,19 @@ def test_callback_records_a_tool_error(tmp_path):
     assert (end["ok"], end["result"]) == (False, "old_string not found")
 
 
+def test_callback_records_an_error_tool_message_as_a_failure(tmp_path):
+    from langchain_core.messages import ToolMessage
+
+    log = ActivityLog(tmp_path)
+    callback = ActivityCallback(log, task="T1", role="implementer")
+    run = uuid.uuid4()
+    callback.on_tool_start({"name": "edit_file"}, "", run_id=run, inputs={"file_path": "a.py"})
+    callback.on_tool_end(
+        ToolMessage(content="Error: String not found in file", status="error", tool_call_id="x"), run_id=run)
+    end = log.read()[0][-1]
+    assert (end["ok"], end["result"]) == (False, "Error: String not found in file")
+
+
 def test_ignored_tools_are_not_recorded(tmp_path):
     log = ActivityLog(tmp_path)
     callback = ActivityCallback(log, task=None, role="architect", ignore_tools={"PlanOutput"})

@@ -54,7 +54,7 @@ from phil.run.state import (
     run_depth,
     with_task_status,
 )
-from phil.store.activity import ActivityLog
+from phil.store.activity import MAX_DETAIL_CHARS, ActivityLog
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.events import EventLog
 from phil.store.runs import get_run, update_run
@@ -121,6 +121,7 @@ class RunEngine:
     def __init__(self, deps: RunDeps) -> None:
         self.deps = deps
         self.worktrees = WorktreeManager(deps.repo_root)
+        self._milestone_warned = False
 
     # --- graph -------------------------------------------------------------
 
@@ -183,7 +184,10 @@ class RunEngine:
         try:
             events.append(kind, seq=seq, **data)
         except Exception:
-            logger.warning("couldn't record the %s milestone", kind, exc_info=True)
+            # Keep trying later milestones (events.jsonl matters beyond the feed), but warn only once.
+            if not self._milestone_warned:
+                self._milestone_warned = True
+                logger.warning("couldn't record the %s milestone", kind, exc_info=True)
 
     @staticmethod
     def _current_task(state: RunState) -> str | None:
@@ -204,19 +208,29 @@ class RunEngine:
             name=name,
             baseline=state.get("baseline_failures", []),
         )
-        activity = self.deps.activity
-        if activity is not None:
-            detail = None
-            if report.log_path:
-                try:
-                    detail = Path(report.log_path).read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    detail = None
-            counts = "passed" if report.passed else f"{len(report.failures)} failed"
-            activity.record(task=self._current_task(state), role="engine", tool="gate",
-                            summary=f"gate {report.command}", result=f"→ {counts}", ok=report.passed,
-                            detail=detail, duration_ms=0)
+        if self.deps.activity is not None:
+            try:
+                self._record_test_gate(self.deps.activity, state, report)
+            except Exception:
+                logger.warning("couldn't record the gate line for %s", report.command, exc_info=True)
         return report
+
+    def _record_test_gate(self, activity: ActivityLog, state: RunState, report: TestReport) -> None:
+        detail = None
+        if report.log_path:
+            with open(report.log_path, encoding="utf-8", errors="replace") as handle:
+                detail = handle.read(MAX_DETAIL_CHARS + 1)  # the activity log keeps no more than this
+        if report.passed:
+            result = "→ passed"
+        elif report.failures:
+            result = f"→ {len(report.failures)} failed"
+        elif report.exit_code is not None:
+            result = f"→ failed (exit {report.exit_code})"
+        else:
+            result = "→ failed"
+        activity.record(task=self._current_task(state), role="engine", tool="gate",
+                        summary=f"gate {report.command}", result=result, ok=report.passed,
+                        detail=detail, duration_ms=0)
 
     def _rebaseline(self, state: RunState) -> dict:
         """After a resume switched the test command, re-capture the baseline with it (once).
@@ -708,7 +722,7 @@ class RunEngine:
             if self.deps.activity is not None:
                 self.deps.activity.record(
                     task=task.id, role="engine", tool="gate", summary=f"gate {check.command}",
-                    result=f"→ exit {check.exit_code}", ok=check.exit_code == 0,
+                    result=f"→ exit {check.exit_code}", ok=check.ok,
                     detail=check.stdout + (f"\n{check.stderr}" if check.stderr else ""), duration_ms=check.duration_ms)
             if check.exit_code == COMMAND_NOT_FOUND:
                 output = check.stdout + (f"\n{check.stderr}" if check.stderr else "")
@@ -772,10 +786,14 @@ class RunEngine:
                 "summary": summary,
                 "log": (report or {}).get("log_path") or None,
             }
-        task = load_plan(state).tasks[state["task_index"]]
-        self._milestone("attempt_failed", task=task.id, attempt=attempts, limit=self._attempt_limit(state),
-                        problem=(problems[0] if problems else "the gate failed"),
-                        retrying=update["verdict"] == "retry")
+        try:
+            task_id = load_plan(state).tasks[state["task_index"]].id
+        except Exception:
+            logger.warning("couldn't find the task for the attempt_failed milestone", exc_info=True)
+        else:
+            self._milestone("attempt_failed", task=task_id, attempt=attempts, limit=self._attempt_limit(state),
+                            problem=(problems[0] if problems else "the gate failed"),
+                            retrying=update["verdict"] == "retry")
         return update
 
     def escalate(self, state: RunState) -> dict:
@@ -840,10 +858,14 @@ class RunEngine:
         worktree = self.deps.worktree
         patching = bool(state.get("patching"))
         message = f"{task.id}: fix after review" if patching else f"{task.id}: {task.description}"
-        # What the task changed, for its task_done milestone: read before the commit below moves HEAD.
-        # A fix after review may have no task_base_sha: count what's uncommitted instead.
-        since = state.get("task_base_sha") or self.worktrees.head(worktree)
-        changed = self.worktrees.changed_files(worktree, since=since)
+        # How many files the task changed, for its task_done milestone: read before the commit below
+        # moves HEAD. Recording only, so a failure leaves it unknown (None) rather than failing the commit.
+        files: int | None
+        try:
+            files = len(self.worktrees.changed_files(worktree, since=state["task_base_sha"]))
+        except Exception:
+            logger.warning("couldn't count the files %s changed", task.id, exc_info=True)
+            files = None
         if self.worktrees.changed_files(worktree, since=self.worktrees.head(worktree)):
             try:
                 self._commit(message, bypass=state.get("commit_bypass", False))
@@ -866,7 +888,7 @@ class RunEngine:
         plan = with_task_status(plan, index, "DONE")
         done = sum(1 for item in plan.tasks if item.status == "DONE")
         self._update_run(current_node="commit", tasks_done=done, tasks_total=len(plan.tasks))
-        self._milestone("task_done", task=task.id, files=len(changed))
+        self._milestone("task_done", task=task.id, files=files)
         passed = TestReport.model_validate(state["last_report"])
         return {
             "plan": plan.model_dump(),

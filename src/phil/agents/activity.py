@@ -109,7 +109,12 @@ class ActivityCallback(BaseCallbackHandler):
             if opened is None:
                 return
             text = getattr(output, "content", output)
-            result, ok, detail = summarize_result(opened[2], opened[3], text if isinstance(text, str) else str(text))
+            text = text if isinstance(text, str) else str(text)
+            if getattr(output, "status", None) == "error":
+                # deepagents' file tools report a failure as a ToolMessage(status="error"), not by raising.
+                self._finish(run_id, _first_line(text) or "error", False, text)
+                return
+            result, ok, detail = summarize_result(opened[2], opened[3], text)
             self._finish(run_id, result, ok, detail)
         except Exception:
             logger.debug("activity: on_tool_end failed", exc_info=True)
