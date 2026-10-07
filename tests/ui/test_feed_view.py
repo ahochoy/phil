@@ -186,3 +186,20 @@ def test_two_reads_with_task_none_fold_into_one_line():
     r2 = end(2, "read_file", "read b.py", task=None, role="tester")
     lines = FeedRenderer().tool_lines([r1, r2], 120)
     assert plain(lines) == ["    read  a.py · b.py"]
+
+
+def test_a_failed_look_keeps_its_own_line_and_ref():
+    failed = {**end(2, "grep", 'grep "x" src', "Error: no such dir", "2.txt"), "ok": False}
+    lines = FeedRenderer().tool_lines(
+        [end(1, "read_file", "read a.py"), failed, end(3, "read_file", "read b.py")], 120
+    )
+    assert plain(lines) == [
+        "    read  a.py",
+        '    grep  "x" src  Error: no such dir  #2',
+        "    read  b.py",
+    ]
+
+
+def test_a_bare_ls_leaves_no_empty_part_in_a_fold():
+    lines = FeedRenderer().tool_lines([end(1, "read_file", "read a.py"), end(2, "ls", "ls")], 120)
+    assert plain(lines) == ["    look  a.py"]

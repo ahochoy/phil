@@ -108,7 +108,9 @@ class FeedRenderer:
         groups: list[list[dict]] = []
         for record in ends:
             last = groups[-1] if groups else None
+            # A failed look keeps its own line, so its result and #ref are never hidden inside a fold.
             if (last and record.get("tool") in _LOOKS and last[-1].get("tool") in _LOOKS
+                    and record.get("ok") is not False and last[-1].get("ok") is not False
                     and last[-1].get("task") == record.get("task") and last[-1].get("role") == record.get("role")):
                 last.append(record)
             else:
@@ -116,7 +118,9 @@ class FeedRenderer:
         lines: list[Text] = []
         for group in groups[:BURST_LINES]:
             if len(group) > 1:
-                parts = " · ".join(str(r.get("summary", "")).partition(" ")[2] for r in group)
+                parts = " · ".join(
+                    part for r in group if (part := str(r.get("summary", "")).partition(" ")[2])
+                )
                 verb = "read" if all(r.get("tool") in _READS for r in group) else "look"
                 lines.append(self._line(group[-1], width, summary=f"{verb} {parts}"))
             else:
