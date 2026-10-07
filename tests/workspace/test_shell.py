@@ -610,6 +610,52 @@ class SignalReceived(BaseException):
     pass
 
 
+def _double_forks_a_sleeper(pid_file, *, new_session: bool) -> str:
+    """A command that prints, then double-forks a sleeper that inherits (so holds open) its
+    stdout and is reparented to init; the sleeper writes its pid. With `new_session` the
+    sleeper also leaves the command's process group."""
+    code = "\n".join([
+        "import os, sys, time",
+        "print('started', flush=True)",
+        "if os.fork() == 0:",
+        "    if os.fork() == 0:",
+        f"        {'os.setsid()' if new_session else 'pass'}",
+        f"        open({str(pid_file)!r}, 'w').write(str(os.getpid()))",
+        "        time.sleep(60)",
+        "    os._exit(0)",
+        "time.sleep(60)",
+    ])
+    return f"{PY} -c {shlex.quote(code)}"
+
+
+@pytest.mark.skipif(platform.IS_WINDOWS, reason="os.fork is POSIX-only")
+def test_a_timeout_kills_a_double_forked_sleeper_in_the_group(tmp_path):
+    pid_file = tmp_path / "sleeper_pid.txt"
+    started = time.monotonic()
+    result = run_command(_double_forks_a_sleeper(pid_file, new_session=False), cwd=tmp_path, timeout_s=2)
+    assert time.monotonic() - started < 2 + shell_module.POST_KILL_WAIT_S
+    assert result.timed_out
+    assert result.exit_code == -9
+    assert "started" in result.stdout
+    assert not platform.pid_alive(_wait_for_pid(pid_file))
+
+
+@pytest.mark.skipif(platform.IS_WINDOWS, reason="os.fork is POSIX-only")
+def test_a_timeout_returns_even_if_an_escaped_sleeper_holds_the_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(shell_module, "POST_KILL_WAIT_S", 1.0)
+    pid_file = tmp_path / "sleeper_pid.txt"
+    started = time.monotonic()
+    try:
+        result = run_command(_double_forks_a_sleeper(pid_file, new_session=True), cwd=tmp_path, timeout_s=2)
+        assert time.monotonic() - started < 10
+        assert result.timed_out
+        assert result.exit_code == -9
+        assert "started" in result.stdout
+    finally:
+        if pid_file.exists() and pid_file.read_text():
+            platform.kill_tree(int(pid_file.read_text()))
+
+
 @pytest.mark.skipif(platform.IS_WINDOWS, reason="SIGALRM is POSIX-only")
 def test_run_command_kills_child_on_sigalrm(tmp_path):
     """Test that child processes are killed even if a BaseException interrupts run_command."""
@@ -679,10 +725,25 @@ def test_normalise_path_text_turns_backslashes_into_slashes():
 WINDOWS_COMMAND = r"'C:\x\python.exe' a.py"
 
 
-@pytest.mark.parametrize("pattern", [r"C:\x\python.exe *", "C:/x/python.exe *"])
+@pytest.mark.parametrize("pattern", [r"'C:\x\python.exe' *", "C:/x/python.exe *"])
 def test_on_windows_a_backslash_path_matches_either_allow_pattern_style(monkeypatch, pattern):
     monkeypatch.setattr(platform, "IS_WINDOWS", True)
     assert ShellPolicy([pattern]).is_allowed(WINDOWS_COMMAND)
+
+
+@pytest.mark.parametrize(
+    ("command", "allow"),
+    [
+        (r"find . \-delete", []),
+        (r"python3 \-c x", ["python3 *"]),
+        (r"git \-c a=b log", ["git *"]),
+    ],
+)
+def test_on_windows_an_escaped_flag_is_checked_as_it_runs(monkeypatch, command, allow):
+    # shlex turns `\-delete` into `-delete` for the command that runs: the checks must see that,
+    # not a normalised `/-delete`.
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    assert ShellPolicy(allow).denial_reason(command) == "forbidden"
 
 
 @pytest.mark.parametrize("plan_command", [r"'C:\x\python.exe' a.py", "C:/x/python.exe a.py"])

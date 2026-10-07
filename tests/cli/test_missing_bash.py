@@ -40,6 +40,3 @@ def test_config_keys_and_help_still_work_without_bash(calc_repo, windows_without
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), *args])
     assert result.exit_code == 0, result.output
     assert platform.MISSING_BASH not in result.output
-
-
-from tests.run.conftest import calc_repo  # noqa: F401

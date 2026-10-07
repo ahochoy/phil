@@ -47,12 +47,23 @@ def kill_tree(pid: int) -> None:
     kill, are skipped. Waits only for the descendants, never the root: reaping the root is its
     parent's job (Popen.wait in shell.py), and waiting here would take its exit status away
     from Popen. A caller whose root isn't its own child (e.g. `phil stop` on a worker) polls
-    `pid_alive` instead."""
+    `pid_alive` instead.
+
+    On POSIX, when `pid` leads its own process group (as `start_new_session=True` makes it), the
+    whole group is also sent SIGKILL. psutil only finds descendants through parent links, and a
+    double-forked grandchild that was reparented to init has none: it would survive, holding the
+    command's output pipes open. The group still holds it."""
     try:
         root = psutil.Process(pid)
         children = root.children(recursive=True)
     except psutil.NoSuchProcess:
         return
+    if not IS_WINDOWS:
+        try:
+            if os.getpgid(pid) == pid:
+                os.killpg(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
     for proc in [*children, root]:
         try:
             proc.kill()

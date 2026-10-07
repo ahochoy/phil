@@ -448,8 +448,12 @@ def _matches_pattern(argv: list[str], pattern_tokens: list[str]) -> bool:
     return all(fnmatch.fnmatchcase(a, p) for a, p in zip(rest, pattern_rest))
 
 
-def _unchanged(text: str) -> str:
-    return text
+def _for_matching(tokens: list[str]) -> list[str]:
+    """Tokens as allowlist matching compares them: on Windows each token's backslashes become
+    forward slashes, so either path style matches the other. Never used for safety checks."""
+    if platform.IS_WINDOWS:
+        return [normalise_path_text(token) for token in tokens]
+    return tokens
 
 
 def _is_denied(argv: list[str]) -> bool:
@@ -481,14 +485,15 @@ class ShellPolicy:
         safe, or "not_allowed" if only off the allowlist. detail is set only when reason is
         "forbidden", and is the one-line reason why.
 
-        On Windows, the command and every allow pattern are matched with backslashes turned into
-        forward slashes (`normalise_path_text`), so either path style matches the other."""
+        The command is tokenised once, exactly as `run_command` tokenises it, and every safety
+        check runs on those tokens: what is checked is what runs. Only the allowlist comparison
+        differs by OS: on Windows the command's and each pattern's tokens have backslashes turned
+        into forward slashes (`_for_matching`), so either path style matches the other."""
         command = command.strip()
         if _FORBIDDEN & set(command):
             return "forbidden", _GENERIC_FORBIDDEN_DETAIL
-        normalise = normalise_path_text if platform.IS_WINDOWS else _unchanged
         try:
-            argv = shlex.split(normalise(command))
+            argv = shlex.split(command)
         except ValueError:
             return "forbidden", _GENERIC_FORBIDDEN_DETAIL
         if not argv or _is_denied(argv):
@@ -508,26 +513,27 @@ class ShellPolicy:
                         if _needs_containment_check(candidate, root) and _outside_root(candidate, root):
                             return "forbidden", CONTAINMENT_DETAIL
             return None, None
+        match_argv = _for_matching(argv)
         for pattern in self.approved:
             try:
-                pattern_tokens = shlex.split(literal_pattern(normalise(pattern)))
+                pattern_tokens = _for_matching(shlex.split(literal_pattern(pattern)))
             except ValueError:
                 continue
-            if _matches_pattern(argv, pattern_tokens):
+            if _matches_pattern(match_argv, pattern_tokens):
                 return None, None
         for pattern in self.extra_allow:
             try:
-                pattern_tokens = [*shlex.split(literal_pattern(normalise(pattern))), "*"]
+                pattern_tokens = [*_for_matching(shlex.split(literal_pattern(pattern))), "*"]
             except ValueError:
                 continue
-            if _matches_pattern(argv, pattern_tokens):
+            if _matches_pattern(match_argv, pattern_tokens):
                 return None, None
         for pattern in self.allow:
             try:
-                pattern_tokens = shlex.split(normalise(pattern))
+                pattern_tokens = _for_matching(shlex.split(pattern))
             except ValueError:
                 continue
-            if _matches_pattern(argv, pattern_tokens):
+            if _matches_pattern(match_argv, pattern_tokens):
                 return None, None
         return "not_allowed", None
 
@@ -559,8 +565,44 @@ class ShellResult:
         return self.exit_code == 0 and not self.timed_out
 
 
+# How long a killed command's output may take to finish arriving. Only a process that escaped
+# the kill (one that started a session of its own, say) can keep the pipes open longer.
+POST_KILL_WAIT_S = 5.0
+
+
+def _partial_text(data: bytes | str | None) -> str:
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return data or ""
+
+
+def _output_after_kill(proc: subprocess.Popen) -> tuple[str, str]:
+    """(stdout, stderr) of a command whose tree was just killed, waiting at most
+    POST_KILL_WAIT_S. If something still holds the pipes open after that, kill whatever is
+    left of the tree, close the pipes and keep the output read so far."""
+    try:
+        return proc.communicate(timeout=POST_KILL_WAIT_S)
+    except subprocess.TimeoutExpired as exc:
+        stdout, stderr = _partial_text(exc.output), _partial_text(exc.stderr)
+    # A holder outside the root's tree and process group can't be found portably: once the
+    # pipes are closed it can no longer hold up Phil, and it dies on its next write (SIGPIPE).
+    platform.kill_tree(proc.pid)
+    for pipe in (proc.stdout, proc.stderr):
+        try:
+            if pipe is not None:
+                pipe.close()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=POST_KILL_WAIT_S)
+    except subprocess.TimeoutExpired:
+        pass
+    return stdout, stderr
+
+
 def kill_active_groups() -> list[int]:
-    """Kill every running command's whole process tree; returns the root pids killed."""
+    """Kill every running command's whole process tree; returns the root pids it attempted
+    (a root that had already exited is listed too)."""
     killed: list[int] = []
     for root in list(_ACTIVE_ROOTS):
         platform.kill_tree(root)
@@ -623,7 +665,7 @@ def run_command(
             return ShellResult(command, proc.returncode, stdout, stderr, False, elapsed())
         except subprocess.TimeoutExpired:
             platform.kill_tree(proc.pid)
-            stdout, stderr = proc.communicate()
+            stdout, stderr = _output_after_kill(proc)
             return ShellResult(command, -9, stdout, stderr, True, elapsed())
         except BaseException:
             platform.kill_tree(proc.pid)
