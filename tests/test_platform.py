@@ -104,6 +104,15 @@ def test_find_bash_walks_up_from_a_mingw64_git():
     assert str(platform.find_bash(None, which=which, environ={}, exists=lambda p: str(p) == bash)) == bash
 
 
+def test_find_bash_caps_the_git_derived_walk_at_three_parents():
+    git = r"C:\a\b\c\d\git.exe"
+    bash = str(PureWindowsPath(r"C:\bin", "bash.exe"))
+    found = platform.find_bash(
+        None, which=lambda n: git if n == "git" else None, environ={}, exists=lambda p: str(p) == bash
+    )
+    assert found is None
+
+
 def test_find_bash_falls_back_to_program_files():
     bash = str(PureWindowsPath(r"C:\Program Files", "Git", "bin", "bash.exe"))
     found = platform.find_bash(None, which=lambda n: None, environ={"ProgramFiles": r"C:\Program Files"},
@@ -131,10 +140,27 @@ def test_lock_file_round_trip(tmp_path):
         platform.unlock_file(handle)
 
 
+def test_lock_file_retries_past_msvcrt_lk_lock_giving_up():
+    # msvcrt.locking(LK_LOCK) gives up with OSError after ~10 one-second retries of its own;
+    # lock_file must retry past that to block the way fcntl.flock does. Not observable on
+    # macOS (no msvcrt) beyond the round trip above, so this only runs on Windows.
+    if not platform.IS_WINDOWS:
+        pytest.skip("msvcrt behaviour isn't observable on macOS")
+
+
 def test_detach_kwargs_on_posix():
     if platform.IS_WINDOWS:
         pytest.skip("POSIX shape")
     assert platform.detach_kwargs() == {"start_new_session": True}
+
+
+def test_detach_kwargs_on_windows_uses_create_no_window_not_detached_process(monkeypatch):
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    kwargs = platform.detach_kwargs()
+    # Exactly these two flags: DETACHED_PROCESS (0x8) is not one of them.
+    assert kwargs == {"creationflags": 0x200 | 0x08000000}
 
 
 def test_request_stop_sends_sigterm_on_posix(tmp_path):

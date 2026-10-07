@@ -3,10 +3,17 @@ behaviour Phil always had; Windows runs agent commands through Git Bash and cont
 processes with psutil. Never use os.kill(pid, 0) to probe a process: on Windows signal 0 is
 CTRL_C_EVENT, which interrupts the whole console.
 
+A Windows worker is started with CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW rather than
+DETACHED_PROCESS: a DETACHED_PROCESS worker has no console at all, so every console child it
+spawns (git, python) pops up its own visible console window. CREATE_NO_WINDOW gives the
+worker a hidden console of its own, which its children inherit, so none of them flash a
+window. The worker is still unreachable from the terminal's Ctrl-C, and still survives the
+terminal closing.
+
 Stopping a worker also differs by OS. On POSIX, `request_stop` sends SIGTERM and the
 worker's existing SIGTERM handler runs as always. On Windows there is no safe console
 control event to send a detached worker (CTRL_BREAK_EVENT only reaches processes sharing
-the sender's console, which a DETACHED_PROCESS worker never does), so `request_stop`
+the sender's console, which this worker never does), so `request_stop`
 instead writes a stop-request file next to the run. The worker's heartbeat thread polls
 for that file on every beat and, on finding it, calls `_thread.interrupt_main(signal.SIGTERM)`
 to run its SIGTERM handler in the main thread (Task 3 implements that polling)."""
@@ -73,9 +80,16 @@ def kill_tree(pid: int) -> None:
 
 
 def detach_kwargs() -> dict:
-    """Popen keyword arguments that detach a child from Phil's console and process group."""
+    """Popen keyword arguments that detach a child from Phil's console and process group.
+
+    On Windows this is CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW, not DETACHED_PROCESS:
+    DETACHED_PROCESS leaves the child with no console, so every console program it spawns
+    (git, python, ...) opens its own visible console window. CREATE_NO_WINDOW instead gives
+    the child a hidden console that its own children inherit, so nothing flashes on screen.
+    The worker is still unreachable from the terminal's Ctrl-C, and still survives the
+    terminal closing."""
     if IS_WINDOWS:
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS}
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
     return {"start_new_session": True}
 
 
@@ -91,11 +105,20 @@ def request_stop(pid: int, stop_file: Path) -> None:
 
 
 def lock_file(handle) -> None:
+    """Block until an exclusive lock on `handle` is held. On Windows, msvcrt.locking(LK_LOCK)
+    gives up with an OSError after about 10 one-second retries of its own, so this retries the
+    call itself in a loop until it succeeds — the same indefinite blocking fcntl.flock gives on
+    POSIX."""
     if IS_WINDOWS:
         import msvcrt
 
         handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        while True:
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                return
+            except OSError:
+                continue
     else:
         import fcntl
 
@@ -134,7 +157,8 @@ def find_bash(
         candidates.append(PureWindowsPath(configured))
     git = which("git")
     if git:
-        for parent in PureWindowsPath(git).parents:
+        # Covers <Git>\cmd\git.exe, <Git>\bin\git.exe and <Git>\mingw64\bin\git.exe; no further.
+        for parent in list(PureWindowsPath(git).parents)[:3]:
             candidates.append(parent / "bin" / "bash.exe")
     if environ.get("ProgramFiles"):
         candidates.append(PureWindowsPath(environ["ProgramFiles"], "Git", "bin", "bash.exe"))
