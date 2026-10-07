@@ -15,6 +15,11 @@ PHIL_THEME = Theme(
         "phil.gate.pass": "green",
         "phil.gate.fail": "red",
         "phil.cost": "magenta",
+        "phil.band.start": "bold cyan on grey15",
+        "phil.band.pass": "green on grey15",
+        "phil.band.fail": "red on grey15",
+        "phil.band.wait": "yellow on grey15",
+        "phil.ref": "blue",
     }
 )
 

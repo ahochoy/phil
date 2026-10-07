@@ -1,5 +1,5 @@
-from phil.chat.state import RunView, ToolbarView
-from phil.ui.toolbar import SPINNER, render_toolbar
+from phil.chat.state import LiveStep, RunView, ToolbarView
+from phil.ui.toolbar import SPINNER, render_live_row, render_toolbar
 
 
 def test_idle():
@@ -70,3 +70,21 @@ def test_parked_count_is_shown_and_dropped_before_the_cost():
     assert full == "Phil · type a goal, or /help  │  $0.50  │  2 parked"
     narrow = render_toolbar(view, now=0.0, width=cell_len(full))
     assert "parked" not in narrow and "$0.50" in narrow
+
+
+def test_live_row_shows_the_running_tool():
+    run = RunView(run_id="r-1", keyword="calc", node="implement", tasks_done=0, tasks_total=2, started=0.0)
+    view = ToolbarView(run=run, live=LiveStep(task="CALC-002", role="reviewer", summary="read README.md", started=100.0))
+    assert render_live_row(view, now=108.0)[2:] == "CALC-002 · reviewer · read README.md · 8s"
+
+
+def test_live_row_falls_back_to_the_stage_and_is_empty_without_a_run():
+    run = RunView(run_id="r-1", keyword="calc", node="pick_task", tasks_done=0, tasks_total=2, started=0.0)
+    assert render_live_row(ToolbarView(run=run), now=5.0)[2:] == "Picking the next task"
+    assert render_live_row(ToolbarView(), now=5.0) == ""
+
+
+def test_live_row_fits_the_width():
+    run = RunView(run_id="r-1", keyword="calc", node="implement", tasks_done=0, tasks_total=2, started=0.0)
+    view = ToolbarView(run=run, live=LiveStep(task="T1", role="implementer", summary="run " + "x" * 300, started=0.0))
+    assert len(render_live_row(view, now=1.0, width=40)) <= 39

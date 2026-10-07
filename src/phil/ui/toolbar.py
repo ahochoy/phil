@@ -13,6 +13,11 @@ STEP_LABELS = {
     "critic": "Critic reviewing",
     "designing": "Proposing approaches",
 }  # /btw has no step: in-flight /btw questions show as `/btw ×N`
+NODE_LABELS = {
+    "setup": "Setting up", "pick_task": "Picking the next task", "implement": "Implementing",
+    "verify": "Verifying", "commit": "Committing", "tester": "Testing", "tester_task": "Testing",
+    "review": "Reviewing", "finish": "Finishing", "escalate": "Waiting for you",
+}
 
 
 def elapsed(seconds: float) -> str:
@@ -58,6 +63,21 @@ def render_toolbar(view: ToolbarView, now: float, width: int | None = None) -> s
         while len(parts) > 1 and cell_len(SEPARATOR.join(text for _, text in parts)) > limit:
             parts.remove(min(parts, key=lambda part: part[0]))
     return _fit(SEPARATOR.join(text for _, text in parts), width)
+
+
+def render_live_row(view: ToolbarView, now: float, width: int | None = None) -> str:
+    """The live row above the input: the running tool, else the run's stage; empty without a run."""
+    if view.run is None:
+        return ""
+    if view.live is not None:
+        live = view.live
+        frame = SPINNER[int((now - live.started) * 8) % len(SPINNER)]
+        parts = [p for p in (live.task, live.role, live.summary, elapsed(now - live.started)) if p]
+        text = f"{frame} " + " · ".join(parts)
+    else:
+        node = view.run.node or "starting"
+        text = "  " + NODE_LABELS.get(node, node)
+    return _fit(text, width)
 
 
 def _fit(text: str, width: int | None) -> str:
