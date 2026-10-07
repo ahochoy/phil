@@ -372,6 +372,26 @@ def test_ending_an_older_call_with_the_same_summary_keeps_the_newer_live(calc_re
     assert len(live) == 2 and live[1].data == {}
 
 
+def test_when_the_live_call_ends_the_newest_open_call_becomes_live(calc_repo):
+    """Start 1 (an outer sub-agent), start 2, end 2: the live step falls back to seq 1, not empty."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    outer = log.start(task="CALC-001", role="implementer", tool="task", summary="agent explore the repo")
+    watcher.poll_once()
+    inner = _shell(log, end=False)
+    watcher.poll_once()
+    live = [e for e in posted if e.kind == "live_step"]
+    assert [step.data["seq"] for step in live] == [outer, inner]
+
+    log.end(inner, task="CALC-001", role="implementer", tool="run_shell", summary="run pytest -q",
+            result="→ 7 passed", ok=True, detail=None, duration_ms=900)
+    watcher.poll_once()
+    live = [e for e in posted if e.kind == "live_step"]
+    assert len(live) == 3
+    assert (live[2].data["seq"], live[2].data["summary"]) == (outer, "agent explore the repo")
+
+
 def test_a_watcher_for_a_run_without_a_live_worker_does_not_seed_the_live_step(calc_repo):
     paths, run_id, conn, events, _, _, now = setup(calc_repo)
     update_run(conn, run_id, state="running")

@@ -12,6 +12,7 @@ from phil.store.events import MILESTONE_KINDS, run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
 from phil.store.telemetry import run_totals, run_usage
+from phil.ui.feed_view import _int_seq, _seconds, interleave
 
 logger = logging.getLogger(__name__)
 
@@ -26,20 +27,6 @@ CONSECUTIVE_FAILURES_BEFORE_REPORT = 5
 NOTICES = ("budget_warning", "test_cmd_changed")
 
 
-def _size(path) -> int:
-    try:
-        return path.stat().st_size
-    except OSError:
-        return 0
-
-
-def _seconds(ts: object) -> float | None:
-    try:
-        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
-    except (TypeError, ValueError):
-        return None
-
-
 def _live_of(record: dict) -> dict:
     """The live row's step for a tool call's start record; `started` falls back to now on a bad `ts`.
     `seq` says which call it is, so only that call's end clears it (the chat ignores it)."""
@@ -48,11 +35,6 @@ def _live_of(record: dict) -> dict:
         started = time.time()
     return {"task": record.get("task"), "role": record.get("role"), "summary": record.get("summary", ""),
             "started": started, "seq": record.get("seq")}
-
-
-def _int_seq(item: dict) -> int | None:
-    seq = item.get("seq")
-    return seq if isinstance(seq, int) and not isinstance(seq, bool) else None
 
 
 class RunWatcher:
@@ -77,9 +59,10 @@ class RunWatcher:
         # The feed starts at the current end of both logs: a reopened chat shows only what's new,
         # except a tool call still running, which can seed the live row at the first poll (_seed_live).
         self.activity = activity_log(paths, run_id)
-        self._event_offset = _size(self.events.path)
+        self._event_offset = self.events.end_offset()
         self._activity_offset = self.activity.end_offset()
         self._seed: dict | None = self.activity.pending()
+        self._open: dict[int, dict] = {}  # calls started and not yet ended, by seq, across polls
         self._live: dict = {}
         self._live_posted: dict = {}  # the chat starts with no live step
         self.done = False
@@ -170,20 +153,12 @@ class RunWatcher:
         """
         new_events, self._event_offset = self.events.read(self._event_offset)
         records, self._activity_offset = self.activity.read(self._activity_offset)
-        unposted = list(records)
-        for event in new_events:
-            if event.get("kind") not in MILESTONE_KINDS:
-                continue
-            upto = _int_seq(event)
-            if upto is not None:
-                before, after = [], []
-                for record in unposted:
-                    seq = _int_seq(record)
-                    (before if seq is not None and seq <= upto else after).append(record)
-                unposted = after
-                self._post_records(before)
-            self.post(ChatEvent("milestone", event))
-        self._post_records(unposted)
+        milestones = [event for event in new_events if event.get("kind") in MILESTONE_KINDS]
+        for item, value in interleave(milestones, records):
+            if item == "records":
+                self._post_records(value)
+            else:
+                self.post(ChatEvent("milestone", value))
         self._follow_live(records)
         if self._live != self._live_posted:
             self._live_posted = dict(self._live)
@@ -207,23 +182,26 @@ class RunWatcher:
         if spawned is not None and (started is None or started <= spawned):
             return
         self._live = _live_of(seed)
+        if _int_seq(seed) is not None:
+            self._open[_int_seq(seed)] = seed
 
     def _follow_live(self, records: list[dict]) -> None:
-        """The live step is the newest call started in `records` and not ended there; otherwise it's
-        kept until the end record with its own seq arrives."""
-        open_starts: dict[int, dict] = {}
+        """The live step is the newest call started and not yet ended, kept across polls: when it
+        ends, the newest call still open (an outer sub-agent, say) takes its place, or none."""
         for record in records:
             seq = _int_seq(record)
             if seq is None:
                 continue
             if record.get("phase") == "start":
-                open_starts[seq] = record
+                self._open[seq] = record
             elif record.get("phase") == "end":
-                open_starts.pop(seq, None)
-                if self._live and seq == self._live.get("seq"):
-                    self._live = {}
-        if open_starts:
-            self._live = _live_of(open_starts[max(open_starts)])
+                self._open.pop(seq, None)
+        if not self._open:
+            self._live = {}
+            return
+        newest = max(self._open)
+        if self._live.get("seq") != newest:  # unchanged: keep its `started`, so it isn't reposted
+            self._live = _live_of(self._open[newest])
 
     def rearm(self) -> None:
         """Re-post the current escalation if the run is still paused with no worker at the next poll.

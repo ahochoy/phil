@@ -3,7 +3,7 @@
 import pytest
 
 from phil.agents.fake import ScriptedAgentFactory, Turn, fire_tool
-from phil.chat.controller import WAKE
+from phil.chat.controller import WAKE, _short_event
 from phil.chat.events import ChatEvent
 from phil.chat.state import LiveStep
 from phil.run.worker import run_worker
@@ -150,6 +150,14 @@ def test_more_plain_number_keeps_its_meaning(controller_with_run):
     assert "No detail 2. Use /show to list them." in controller.console.export_text()
     controller._more_command("x")
     assert "Usage: /more <n> or /more #<step>" in controller.console.export_text()
+
+
+def test_btw_sees_milestones_as_their_readable_bands():
+    assert _short_event({"kind": "gate", "task": "CALC-001", "name": "green", "seq": 3}) == "✓ CALC-001 green: tests pass"
+    assert _short_event({"kind": "attempt_failed", "task": "CALC-001", "attempt": 1, "limit": 3,
+                         "problem": "2 tests failed", "retrying": True, "seq": 4}) == (
+        "✗ CALC-001 attempt 1 failed: 2 tests failed · retrying (2 of 3)")
+    assert _short_event({"kind": "node", "node": "verify"}) == "node verify"
 
 
 def _green_with_tests(turn: Turn):

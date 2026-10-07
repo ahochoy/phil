@@ -11,14 +11,46 @@ from phil.ui.toolbar import elapsed
 BURST_LINES = 20
 INDENT = "    "
 _READS = ("read_file",)
+# Look-only tools: consecutive calls of these by one task and role fold into one line.
+_LOOKS = ("read_file", "ls", "glob", "grep")
 _TIMED = ("run_shell", "gate")
 
 
-def _seconds(ts: str | None) -> float | None:
+def _seconds(ts: object) -> float | None:
+    """An ISO timestamp as epoch seconds, or None if it doesn't parse."""
     try:
         return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
     except (TypeError, ValueError):
         return None
+
+
+def _int_seq(item: dict) -> int | None:
+    seq = item.get("seq")
+    return seq if isinstance(seq, int) and not isinstance(seq, bool) else None
+
+
+def interleave(events: list[dict], records: list[dict]) -> list[tuple[str, object]]:
+    """`events` and activity `records` read in one poll, in display order: `("records", [...])` and
+    `("event", e)` items. An event carrying an int `seq` (a milestone: the activity log's last seq
+    when it was written) comes after the records up to that seq; an event without one keeps its
+    place in file order. Records left after the last event come last. Empty record groups are
+    left out."""
+    out: list[tuple[str, object]] = []
+    unplaced = list(records)
+    for event in events:
+        upto = _int_seq(event)
+        if upto is not None:
+            before, after = [], []
+            for record in unplaced:
+                seq = _int_seq(record)
+                (before if seq is not None and seq <= upto else after).append(record)
+            unplaced = after
+            if before:
+                out.append(("records", before))
+        out.append(("event", event))
+    if unplaced:
+        out.append(("records", unplaced))
+    return out
 
 
 def _cut(text: str, cells: int) -> str:
@@ -76,7 +108,7 @@ class FeedRenderer:
         groups: list[list[dict]] = []
         for record in ends:
             last = groups[-1] if groups else None
-            if (last and record.get("tool") in _READS and last[-1].get("tool") in _READS
+            if (last and record.get("tool") in _LOOKS and last[-1].get("tool") in _LOOKS
                     and last[-1].get("task") == record.get("task") and last[-1].get("role") == record.get("role")):
                 last.append(record)
             else:
@@ -84,14 +116,15 @@ class FeedRenderer:
         lines: list[Text] = []
         for group in groups[:BURST_LINES]:
             if len(group) > 1:
-                paths = " · ".join(str(r.get("summary", "")).partition(" ")[2] for r in group)
-                lines.append(self._line(group[-1], width, summary=f"read {paths}"))
+                parts = " · ".join(str(r.get("summary", "")).partition(" ")[2] for r in group)
+                verb = "read" if all(r.get("tool") in _READS for r in group) else "look"
+                lines.append(self._line(group[-1], width, summary=f"{verb} {parts}"))
             else:
                 lines.append(self._line(group[0], width))
         extra = groups[BURST_LINES:]
         if extra:
             count = sum(len(g) for g in extra)
-            noun = "reads" if all(r.get("tool") in _READS for g in extra for r in g) else "steps"
+            noun = "reads" if all(r.get("tool") in _LOOKS for g in extra for r in g) else "steps"
             lines.append(Text(f"{INDENT}… {count} more {noun}", style="phil.muted"))
         return lines
 
@@ -108,8 +141,10 @@ class FeedRenderer:
             return Text(f"✓ {task} {words}", style="phil.band.pass")
         if kind == "attempt_failed":
             attempt, limit = event.get("attempt", 1), event.get("limit", 1)
-            then = f"retrying ({attempt + 1} of {limit})" if event.get("retrying") else "needs you"
-            return Text(f"✗ {task} attempt {attempt} failed: {event.get('problem', '')} · {then}", style="phil.band.fail")
+            retrying = bool(event.get("retrying"))
+            then = f"retrying ({attempt + 1} of {limit})" if retrying else "needs you"
+            return Text(f"✗ {task} attempt {attempt} failed: {event.get('problem', '')} · {then}",
+                        style="phil.band.fail" if retrying else "phil.band.wait")
         if kind == "task_done":
             files = event.get("files")
             text = f"✓ {task} done" if files is None else f"✓ {task} done · {files} file{'s' if files != 1 else ''}"

@@ -51,7 +51,7 @@ from phil.run.launch import is_worker_alive, prepare_run, worker_starting
 from phil.run.state import blocking_count
 from phil.store.activity import activity_log
 from phil.store.db import connect
-from phil.store.events import run_events, test_cmd_changed_line
+from phil.store.events import MILESTONE_KINDS, run_events, test_cmd_changed_line
 from phil.store.paths import ProjectPaths
 from phil.store.parked import open_count, park
 from phil.store.runs import get_run, list_runs
@@ -1986,4 +1986,6 @@ def _short_event(event: dict) -> str:
         return f"{kind} {event.get('mode')}"
     if kind == "outcome":
         return f"outcome {event.get('status')}"
+    if kind in MILESTONE_KINDS:
+        return FeedRenderer().milestone(event, 200).plain
     return str(kind)

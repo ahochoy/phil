@@ -210,6 +210,37 @@ def test_attach_prints_milestones_and_new_tool_lines(calc_repo):
     assert "→ old" not in text
 
 
+def test_attach_prints_a_gate_line_before_the_milestones_that_follow_it(calc_repo):
+    """One poll whose activity holds a gate record with seq 5 and whose events hold gate green,
+    task_done and task_started CALC-002 (all seq 5): the gate tool line prints before '✓ … green'."""
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha)
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    update_run(conn, record.run_id, state="running")
+    events = run_events(paths, record.run_id)
+    activity = ActivityLog(paths.run_dir(record.run_id))
+    wrote = []
+
+    def sleep(_):
+        if wrote:
+            return
+        wrote.append(True)
+        activity.end(5, task="CALC-001", role="engine", tool="gate", summary="gate pytest -q",
+                     result="→ passed", ok=True, detail=None, duration_ms=1500)
+        events.append("gate", task="CALC-001", name="green", seq=5)
+        events.append("task_done", task="CALC-001", files=1, seq=5)
+        events.append("task_started", task="CALC-002", title="Add multiply", seq=5)
+        update_run(conn, record.run_id, state="completed")
+
+    io = AttachIO(choose=lambda p, o: "abort", ask_hint=lambda: None, spawn=lambda m, d: None, sleep=sleep)
+    console = make_console(record=True, width=120)
+    assert attach(conn, record.run_id, events, console, io, poll_s=0) == "completed"
+    text = console.export_text()
+    assert "gate  pytest -q  → passed" in text
+    assert text.index("gate  pytest -q") < text.index("✓ CALC-001 green") < text.index("▸ CALC-002")
+
+
 def test_attach_waits_instead_of_prompting_while_a_spawned_worker_is_starting(calc_repo):
     info, record = escalated_run(calc_repo)
     paths = ProjectPaths(info.slug)

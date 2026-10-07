@@ -11,7 +11,7 @@ from phil.store.activity import ActivityLog
 from phil.store.events import EventLog, MILESTONE_KINDS, test_cmd_changed_line
 from phil.store.runs import RunRecord, get_run
 from phil.store.telemetry import budget_warning_line
-from phil.ui.feed_view import FeedRenderer
+from phil.ui.feed_view import FeedRenderer, interleave
 
 TERMINAL = ("completed", "incomplete", "aborted", "cleaned")
 
@@ -95,11 +95,13 @@ def attach(
 
     while True:
         new, offset = events.read(offset)
-        for event in new:
-            render_event(console, event, run_id, feed)
         records, activity_offset = activity.read(activity_offset)
-        for line in feed.tool_lines(records, console.width):
-            console.print(line, soft_wrap=True)
+        for item, value in interleave(new, records):
+            if item == "event":
+                render_event(console, value, run_id, feed)
+            else:
+                for line in feed.tool_lines(value, console.width):
+                    console.print(line, soft_wrap=True)
         record = get_run(conn, run_id)
         assert record is not None
         if record.state in TERMINAL:

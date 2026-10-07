@@ -18,6 +18,13 @@ class EventLog:
         with self.path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(line + "\n")
 
+    def end_offset(self) -> int:
+        """The log's current size: where a reader that wants only what's new starts."""
+        try:
+            return self.path.stat().st_size
+        except OSError:
+            return 0
+
     def read(self, offset: int = 0) -> tuple[list[dict], int]:
         if not self.path.exists():
             return [], offset
@@ -30,9 +37,11 @@ class EventLog:
             if not line:
                 continue
             try:
-                events.append(json.loads(line))
+                event = json.loads(line)
             except json.JSONDecodeError:
                 continue  # a malformed complete line: skip it, keep reading
+            if isinstance(event, dict):  # a line that parses to a list or a scalar isn't an event
+                events.append(event)
         return events, offset + end
 
     def latest(self, kind: str) -> dict | None:

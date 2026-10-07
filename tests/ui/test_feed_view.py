@@ -1,7 +1,7 @@
 import pytest
 from rich.cells import cell_len
 
-from phil.ui.feed_view import BURST_LINES, FeedRenderer
+from phil.ui.feed_view import BURST_LINES, FeedRenderer, interleave
 
 
 def end(seq, tool, summary, result="", detail=None, task="CALC-001", role="implementer", ms=10):
@@ -47,9 +47,50 @@ def test_a_burst_collapses_past_the_limit():
     assert len(lines) == BURST_LINES + 1 and lines[-1] == "    … 7 more steps"
 
 
-def test_a_burst_of_searches_says_steps():
+def test_a_burst_of_searches_says_reads():
+    """grep is look-only, so a burst made only of searches counts as reads (ruling F1)."""
     records = [end(i, "grep", f'grep "x" f{i}', task=f"T{i}") for i in range(1, BURST_LINES + 4)]
+    assert plain(FeedRenderer().tool_lines(records, 120))[-1] == "    … 3 more reads"
+
+
+def test_a_burst_with_an_edit_among_the_extra_says_steps():
+    records = [end(i, "grep", f'grep "x" f{i}', task=f"T{i}") for i in range(1, BURST_LINES + 3)]
+    records.append(end(99, "edit_file", "edit a.py", task="T99"))
     assert plain(FeedRenderer().tool_lines(records, 120))[-1] == "    … 3 more steps"
+
+
+def test_mixed_look_only_tools_fold_into_one_look_line():
+    lines = FeedRenderer().tool_lines([
+        end(1, "read_file", "read calc.py"), end(2, "ls", "ls src"), end(3, "glob", "glob *.py"),
+        end(4, "grep", 'grep "divide"'),
+    ], 120)
+    assert plain(lines) == ['    look  calc.py · src · *.py · "divide"']
+
+
+def test_a_fold_of_reads_only_still_says_read():
+    lines = FeedRenderer().tool_lines([
+        end(1, "read_file", "read calc.py"), end(2, "read_file", "read a.py"), end(3, "read_file", "read b.py"),
+    ], 120)
+    assert plain(lines) == ["    read  calc.py · a.py · b.py"]
+
+
+def test_a_single_read_and_a_single_search_are_not_folded():
+    assert plain(FeedRenderer().tool_lines([end(1, "read_file", "read calc.py")], 120)) == ["    read  calc.py"]
+    lines = FeedRenderer().tool_lines([end(1, "grep", 'grep "x"'), end(2, "edit_file", "edit a.py")], 120)
+    assert plain(lines) == ['    grep  "x"', "    edit  a.py"]
+
+
+def test_interleave_puts_records_up_to_a_milestones_seq_before_it():
+    records = [{"seq": n, "phase": "end"} for n in (1, 2, 3)]
+    events = [{"kind": "node"}, {"kind": "gate", "seq": 2}, {"kind": "task_done", "seq": 2}]
+    assert interleave(events, records) == [
+        ("event", {"kind": "node"}),
+        ("records", records[:2]),
+        ("event", {"kind": "gate", "seq": 2}),
+        ("event", {"kind": "task_done", "seq": 2}),
+        ("records", records[2:]),
+    ]
+    assert interleave([], []) == []
 
 
 def test_a_burst_of_reads_says_reads():
@@ -68,6 +109,14 @@ def test_milestones():
     assert feed.milestone({"kind": "verdict", "role": "reviewer", "outcome": "passed", "issues": 0, "blocking": 0}, 120).plain == "✓ reviewer approved"
     assert feed.milestone({"kind": "verdict", "role": "reviewer", "outcome": "changes", "issues": 3, "blocking": 1}, 120).plain == "✗ reviewer asked for changes: 3 issues (1 blocking)"
     assert feed.milestone({"kind": "verdict", "role": "tester", "outcome": "passed", "issues": 0, "blocking": 0}, 120).plain == "✓ tester: no issues"
+
+
+def test_attempt_failed_needs_you_uses_the_wait_band_and_retrying_the_fail_band():
+    feed = FeedRenderer()
+    retrying = feed.milestone({"kind": "attempt_failed", "task": "T", "attempt": 1, "limit": 3, "problem": "x", "retrying": True}, 120)
+    needs_you = feed.milestone({"kind": "attempt_failed", "task": "T", "attempt": 3, "limit": 3, "problem": "x", "retrying": False}, 120)
+    assert retrying.style == "phil.band.fail"
+    assert needs_you.style == "phil.band.wait"
 
 
 def test_task_done_without_a_known_start_omits_the_elapsed_time():
