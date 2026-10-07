@@ -35,7 +35,7 @@ from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
-from phil.store.runs import get_run, update_run
+from phil.store.runs import RunRecord, get_run, update_run
 from phil.tomlw import toml_value
 from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
@@ -59,6 +59,7 @@ _read_secret = getpass.getpass
 # (its worker process hasn't written a pid/heartbeat yet); older than this, treat it as a worker
 # that never started and let `phil resume` continue it from scratch.
 PENDING_STALE_AFTER_S = 30.0
+FORCE_STOP_WAIT_S = 5.0  # how long `phil stop` waits for a killed worker to exit
 FULL_FROM_TERMINAL = "full is only available in the chat that started this run; answer retry or abort."
 
 SET_HELP = "Override a setting for this command, e.g. --set run.max_cost_usd=5 (repeatable)."
@@ -830,13 +831,16 @@ def stop(
     _finish_stop(run_id, current)
 
 
-def _force_stop(conn: sqlite3.Connection, run_id: str, pid: int):
+def _force_stop(conn: sqlite3.Connection, run_id: str, pid: int) -> RunRecord | None:
     """Kill a worker that ignored the stop request, then mark its run stopped ourselves."""
     console.print("[phil.warn]the worker did not stop in time; stopping it by force[/]")
     platform.kill_tree(pid)
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + FORCE_STOP_WAIT_S
     while platform.pid_alive(pid) and time.monotonic() < deadline:
         time.sleep(0.1)
+    if platform.pid_alive(pid):
+        console.print(f"[phil.error]could not stop the worker (pid {pid})[/]")
+        raise typer.Exit(1)
     current = get_run(conn, run_id)
     if current is not None and current.state in ("running", "pending"):
         current = update_run(conn, run_id, state="stopped", needs_attention="stopped by user (forced)")

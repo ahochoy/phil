@@ -81,11 +81,11 @@ def detach_kwargs() -> dict:
 
 def request_stop(pid: int, stop_file: Path) -> None:
     """Ask a worker to stop cleanly. On POSIX, sends SIGTERM to `pid` (stop_file is
-    ignored). On Windows, writes `stop_file` so the worker's heartbeat thread notices it
-    on its next poll and interrupts itself; no signal is sent."""
+    ignored). On Windows, writes `pid` to `stop_file`: the worker's heartbeat thread notices
+    it naming its own pid on its next poll and interrupts itself; no signal is sent."""
     if IS_WINDOWS:
         stop_file.parent.mkdir(parents=True, exist_ok=True)
-        stop_file.write_text("stop\n", encoding="utf-8")
+        stop_file.write_text(f"{pid}\n", encoding="utf-8")
     else:
         os.kill(pid, signal.SIGTERM)
 

@@ -127,7 +127,7 @@ def _no_os_kill(*args):
 
 
 def test_is_worker_alive_never_signals(calc_repo, monkeypatch):
-    info, record = new_run(calc_repo)
+    _, record = new_run(calc_repo)
     done = subprocess.Popen([sys.executable, "-c", "pass"])
     done.wait()
     monkeypatch.setattr(os, "kill", _no_os_kill)
@@ -163,7 +163,7 @@ def test_worker_starting_on_windows_does_not_reap(calc_repo, monkeypatch):
 
 
 def test_spawn_worker_detaches_the_worker(calc_repo, monkeypatch):
-    info, record = new_run(calc_repo)
+    _, record = new_run(calc_repo)
     real_popen = subprocess.Popen
     captured = []
 

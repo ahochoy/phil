@@ -157,4 +157,4 @@ def test_request_stop_writes_a_file_on_windows_and_never_signals(monkeypatch, tm
     monkeypatch.setattr(os, "kill", lambda *a: (_ for _ in ()).throw(AssertionError("os.kill called")))
     stop_file = tmp_path / "run" / "stop-requested"
     platform.request_stop(4242, stop_file)
-    assert stop_file.read_text(encoding="utf-8") == "stop\n"
+    assert stop_file.read_text(encoding="utf-8") == "4242\n"

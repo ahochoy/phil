@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import time
@@ -117,6 +118,19 @@ def test_stop_asks_first_then_kills_a_worker_that_does_not_stop(calc_repo, monke
         if stubborn.poll() is None:
             stubborn.kill()
             stubborn.wait()
+
+
+def test_stop_reports_a_worker_it_could_not_kill_and_leaves_the_row(calc_repo, monkeypatch):
+    _, record, conn = new_run(calc_repo)
+    update_run(conn, record.run_id, state="running", pid=os.getpid())
+    monkeypatch.setattr(cli, "is_worker_alive", lambda record: True)
+    monkeypatch.setattr(cli, "FORCE_STOP_WAIT_S", 0.2)
+    monkeypatch.setattr(platform, "request_stop", lambda pid, stop_file: None)
+    monkeypatch.setattr(platform, "kill_tree", lambda pid: None)  # the kill doesn't take
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "stop", record.run_id, "--timeout", "0.2"])
+    assert result.exit_code == 1
+    assert f"could not stop the worker (pid {os.getpid()})" in result.output
+    assert get_run(conn, record.run_id).state == "running"
 
 
 def test_stop_on_windows_writes_the_stop_file_instead_of_signalling(calc_repo, monkeypatch):

@@ -4,11 +4,14 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
 import phil.run.worker as worker_module
+import phil.workspace.shell as shell_module
 from phil import platform
 from phil.agents.fake import ScriptedAgentFactory
 from phil.config import PhilConfig
@@ -372,6 +375,99 @@ def test_a_worker_that_cannot_claim_the_run_leaves_its_stop_file_alone(calc_repo
     with pytest.raises(WorkerError, match="already being run by another worker"):
         run_worker(calc_repo, record.run_id, "continue", factory=finishing())
     assert stop_file.exists()
+
+
+def wait_for(condition, seconds: float = 10.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return condition()
+
+
+def spy_interrupts(monkeypatch) -> list[int]:
+    interrupts: list[int] = []
+    monkeypatch.setattr(worker_module, "_thread", SimpleNamespace(interrupt_main=interrupts.append))
+    return interrupts
+
+
+def test_on_windows_a_stop_request_also_kills_the_running_commands(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    paths = ProjectPaths(info.slug)
+    stop_file = paths.stop_request(record.run_id)
+    command = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        monkeypatch.setattr(platform, "IS_WINDOWS", True)
+        monkeypatch.setattr(shell_module, "_ACTIVE_ROOTS", {command.pid})
+        interrupts = spy_interrupts(monkeypatch)
+        killed = []
+        real_kill_active_groups = worker_module.kill_active_groups
+
+        def spy_kill_active_groups():
+            killed.append(real_kill_active_groups())
+            return killed[-1]
+
+        monkeypatch.setattr(worker_module, "kill_active_groups", spy_kill_active_groups)
+        stop_file.write_text(f"{os.getpid()}\n")
+        beat = Heartbeat(paths.db_path, record.run_id, 0.02, stop_file)
+        beat.start()
+        try:
+            assert wait_for(lambda: killed)
+            time.sleep(0.1)  # more beats: the stop is acted on once
+        finally:
+            beat.stop()
+        assert interrupts == [signal.SIGTERM]
+        assert killed == [[command.pid]]
+        assert command.wait(timeout=10) != 0
+    finally:
+        if command.poll() is None:
+            command.kill()
+            command.wait()
+
+
+def test_on_windows_a_stop_file_naming_another_pid_is_ignored(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    paths = ProjectPaths(info.slug)
+    stop_file = paths.stop_request(record.run_id)
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    interrupts = spy_interrupts(monkeypatch)
+    stop_file.write_text(f"{os.getpid() + 1}\n")
+    beat = Heartbeat(paths.db_path, record.run_id, 0.02, stop_file)
+    beat.start()
+    time.sleep(0.2)
+    stop_file.write_text(f"{os.getpid()}\n")
+    try:
+        assert wait_for(lambda: interrupts)  # the same heartbeat acts once the file names it
+    finally:
+        beat.stop()
+    assert interrupts == [signal.SIGTERM]
+
+
+def test_heartbeat_survives_a_failing_stop_check(calc_repo, monkeypatch):
+    info, record = new_run(calc_repo)
+    db_path = ProjectPaths(info.slug).db_path
+    checks = {"n": 0}
+    beats = []
+    original_update_run = worker_module.update_run
+
+    def failing_once(self):
+        checks["n"] += 1
+        if checks["n"] == 1:
+            raise PermissionError("sharing violation")
+        return False
+
+    def counting_update_run(conn, run_id, **fields):
+        beats.append(fields)
+        return original_update_run(conn, run_id, **fields)
+
+    monkeypatch.setattr(Heartbeat, "_stop_requested", failing_once)
+    monkeypatch.setattr(worker_module, "update_run", counting_update_run)
+    beat = Heartbeat(db_path, record.run_id, 0.02)
+    beat.start()
+    try:
+        assert wait_for(lambda: len(beats) >= 3)
+    finally:
+        beat.stop()
+    assert checks["n"] >= 2
 
 
 def test_heartbeat_survives_a_transient_update_failure(calc_repo, monkeypatch):
