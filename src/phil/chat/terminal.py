@@ -34,6 +34,15 @@ def prompt_style() -> Style:
     return Style.from_dict(prompt_toolkit_styles())
 
 
+def _row_fragments(row: str | list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The live row's value, as the fragments shown above the prompt: a non-empty string keeps
+    its old single, muted-styled line; a non-empty list of fragments (from `render_live_rows`)
+    is used as-is, with a trailing newline; either way, nothing shows when there's no row."""
+    if isinstance(row, list):
+        return [*row, ("", "\n")] if row else []
+    return [("class:live", row + "\n")] if row else []
+
+
 class LineIO:
     """Non-TTY chat IO (piped input, CI): read lines with the console, run jobs inline, never wake."""
 
@@ -78,7 +87,8 @@ class TerminalIO:
     """
 
     def __init__(
-        self, toolbar: Callable[[], list[tuple[str, str]]], live_row: Callable[[], str] | None = None, *,
+        self, toolbar: Callable[[], list[tuple[str, str]]],
+        live_row: Callable[[], str | list[tuple[str, str]]] | None = None, *,
         input=None, output=None,
     ) -> None:
         self._toolbar = toolbar
@@ -156,7 +166,7 @@ class TerminalIO:
                 row = self._live_row() if self._live_row and not self.session.app.is_done else ""
             except Exception:  # a redraw must never take the prompt down
                 row = ""
-            parts = [("class:live", row + "\n")] if row else []
+            parts = _row_fragments(row)
             return FormattedText([*parts, ("bold", prompt)])
 
         return message
@@ -236,7 +246,7 @@ class TerminalIO:
                 row = self._live_row() if self._live_row else ""
             except Exception:  # a redraw must never take the prompt down
                 row = ""
-            parts = [("class:live", row + "\n")] if row else []
+            parts = _row_fragments(row)
             try:
                 box = to_fragments(callout_lines(decision, self._choice, self.width(), live=True))
             except Exception:  # a redraw must never take the prompt down

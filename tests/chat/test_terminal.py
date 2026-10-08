@@ -299,6 +299,19 @@ def test_prompt_message_puts_the_live_row_above_the_input():
         assert to_plain_text(quiet._message("you › ")()) == "you › "
 
 
+def test_prompt_message_accepts_fragments_for_the_live_row():
+    """When the live row callable returns fragments (a list), `_message` uses them as-is, with a
+    newline after the last one; an empty list shows no row at all."""
+    from prompt_toolkit.formatted_text import to_plain_text
+
+    with create_pipe_input() as pipe:
+        rows = [("class:phil.agent", "⠋"), ("", " CALC-002 · implementer · 3s")]
+        terminal = TerminalIO(lambda: "", live_row=lambda: rows, input=pipe, output=DummyOutput())
+        assert to_plain_text(terminal._message("you › ")()) == "⠋ CALC-002 · implementer · 3s\nyou › "
+        empty = TerminalIO(lambda: "", live_row=lambda: [], input=pipe, output=DummyOutput())
+        assert to_plain_text(empty._message("you › ")()) == "you › "
+
+
 def test_a_finished_prompt_leaves_the_live_row_out():
     """The final redraw of a submitted prompt has no live row, so none is left in the scrollback."""
     from prompt_toolkit.formatted_text import to_plain_text
@@ -597,7 +610,9 @@ def test_prompt_toolkit_styles_cover_the_real_theme():
     from phil.ui.theme import PHIL_THEME, prompt_toolkit_styles
 
     rules = prompt_toolkit_styles()  # raises if the theme has a style the prompt can't show
-    toolbar_styles = {"phil.muted", "phil.warn", "phil.error", "phil.gate.pass", "phil.id", "phil.cost"}
+    toolbar_styles = {
+        "phil.muted", "phil.warn", "phil.error", "phil.gate.pass", "phil.id", "phil.cost", "phil.agent", "phil.sub",
+    }
     assert {n for n in PHIL_THEME.styles if n.startswith("phil.callout.")} | {"live"} | toolbar_styles == set(rules)
 
 

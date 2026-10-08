@@ -21,6 +21,20 @@ class LiveStep:
 
 
 @dataclass(frozen=True)
+class SubAgent:
+    seq: int
+    description: str
+    summary: str | None
+    started: float  # epoch seconds
+
+
+@dataclass(frozen=True)
+class SideJob:
+    label: str
+    started: float  # epoch seconds
+
+
+@dataclass(frozen=True)
 class ToolbarView:
     stage: str = "idle"
     step: str | None = None
@@ -38,6 +52,9 @@ class ToolbarView:
     tokens: int | None = None
     run_cost: tuple[float, str] | None = None  # (cost_usd, cost_source): the run's cost
     budget_usd: float = 0.0
+    subs: tuple[SubAgent, ...] = ()  # active sub-agents, shown indented under the live row
+    side: tuple[SideJob, ...] = ()  # in-flight /btw questions, shown as their own line
+    feed_filter: str | None = None  # the agent the feed is filtered to, if any
 
 
 class ChatState:
@@ -90,6 +107,23 @@ class ChatState:
     def add_btw(self, delta: int) -> None:
         with self._lock:
             self._view = replace(self._view, btw_pending=max(0, self._view.btw_pending + delta))
+
+    def set_subs(self, subs: tuple[SubAgent, ...]) -> None:
+        self._update(subs=subs)
+
+    def add_side(self, job: SideJob) -> None:
+        with self._lock:
+            self._view = replace(self._view, side=(*self._view.side, job))
+
+    def remove_side(self, job: SideJob) -> None:
+        with self._lock:
+            side = list(self._view.side)
+            if job in side:
+                side.remove(job)
+            self._view = replace(self._view, side=tuple(side))
+
+    def set_feed_filter(self, agent: str | None) -> None:
+        self._update(feed_filter=agent)
 
     def view(self) -> ToolbarView:
         with self._lock:

@@ -1,8 +1,8 @@
 from rich.cells import cell_len
 
-from phil.chat.state import LiveStep, RunView, ToolbarView
+from phil.chat.state import LiveStep, RunView, SideJob, SubAgent, ToolbarView
 from phil.ui.toolbar import (
-    budget_style, format_tokens, render_live_row, render_toolbar, short_model, task_dots, toolbar_text,
+    budget_style, format_tokens, render_live_rows, render_toolbar, short_model, task_dots, toolbar_text,
 )
 
 RUN = RunView(run_id="r-4f2a", keyword="calc", node="implement", tasks_done=1, tasks_total=3, started=0.0)
@@ -140,19 +140,59 @@ def test_toolbar_styles_are_in_the_prompt_toolkit_rules():
         assert name in rules
 
 
-def test_live_row_shows_the_running_tool():
-    run = RunView(run_id="r-1", keyword="calc", node="implement", tasks_done=0, tasks_total=2, started=0.0)
-    view = ToolbarView(run=run, live=LiveStep(task="CALC-002", role="reviewer", summary="read README.md", started=100.0))
-    assert render_live_row(view, now=108.0)[2:] == "CALC-002 · reviewer · read README.md · 8s"
+RUN2 = RunView(run_id="r-1", keyword="calc", node="implement", tasks_done=0, tasks_total=2, started=0.0)
+MAIN = LiveStep(task="CALC-002", role="implementer", summary="run pytest -q", started=98.0)
 
 
-def test_live_row_falls_back_to_the_stage_and_is_empty_without_a_run():
-    run = RunView(run_id="r-1", keyword="calc", node="pick_task", tasks_done=0, tasks_total=2, started=0.0)
-    assert render_live_row(ToolbarView(run=run), now=5.0)[2:] == "Picking the next task"
-    assert render_live_row(ToolbarView(), now=5.0) == ""
+def lines(view, now=100.0, width=None):
+    return toolbar_text(render_live_rows(view, now, width)).split("\n") if render_live_rows(view, now, width) else []
 
 
-def test_live_row_fits_the_width():
-    run = RunView(run_id="r-1", keyword="calc", node="implement", tasks_done=0, tasks_total=2, started=0.0)
-    view = ToolbarView(run=run, live=LiveStep(task="T1", role="implementer", summary="run " + "x" * 300, started=0.0))
-    assert len(render_live_row(view, now=1.0, width=40)) <= 39
+def test_one_agent_is_exactly_todays_row():
+    out = lines(ToolbarView(run=RUN2, live=MAIN))
+    assert len(out) == 1 and out[0][2:] == "CALC-002 · implementer · run pytest -q · 2s"
+
+
+def test_main_plus_a_sub_agent():
+    view = ToolbarView(run=RUN2, live=MAIN, subs=(SubAgent(7, "explore tests", "read t.py", 94.0),))
+    out = lines(view)
+    assert out[1][2:] == " └ sub-agent · read t.py · explore tests · 6s"
+
+
+def test_a_sub_agent_between_calls_says_working():
+    view = ToolbarView(run=RUN2, live=MAIN, subs=(SubAgent(7, "explore tests", None, 94.0),))
+    assert lines(view)[1][2:] == " └ sub-agent · working · explore tests · 6s"
+
+
+def test_a_btw_line():
+    view = ToolbarView(run=RUN2, live=MAIN, side=(SideJob('"why 3 tries?"', 96.0),))
+    assert lines(view)[1][2:] == '/btw · "why 3 tries?" · 4s'
+
+
+def test_more_than_three_collapses_and_nothing_wraps():
+    subs = tuple(SubAgent(i, f"job {i}", None, 90.0) for i in range(4))
+    view = ToolbarView(run=RUN2, live=MAIN, subs=subs, side=(SideJob("q", 99.0),))
+    out = lines(view, width=40)
+    assert len(out) == 4 and out[-1].strip() == "+3 more"
+    assert all(cell_len(line) <= 39 for line in out)
+
+
+def test_goal_step_without_a_run():
+    view = ToolbarView(step="architect", step_started=88.0)
+    assert lines(view)[0][2:] == "Architect drafting · 12s"
+
+
+def test_feed_tag_ends_the_first_line():
+    view = ToolbarView(run=RUN2, live=MAIN, feed_filter="tester")
+    assert lines(view)[0].endswith("[feed: tester]")
+
+
+def test_spinner_styles():
+    view = ToolbarView(run=RUN2, live=MAIN, subs=(SubAgent(7, "x", None, 94.0),), side=(SideJob("q", 96.0),))
+    frags = render_live_rows(view, 100.0)
+    spinner_styles = [s for s, t in frags if t and t[0] in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"]
+    assert spinner_styles == ["class:phil.agent", "class:phil.sub", "class:phil.warn"]
+
+
+def test_nothing_running_is_empty():
+    assert render_live_rows(ToolbarView(), 0.0) == []

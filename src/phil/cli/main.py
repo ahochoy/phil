@@ -291,7 +291,7 @@ def _run_chat(
 ) -> None:
     from phil.chat.controller import ChatController
     from phil.chat.terminal import LineIO
-    from phil.ui.toolbar import render_live_row, render_toolbar
+    from phil.ui.toolbar import render_live_rows, render_toolbar
 
     controller = None
 
@@ -300,10 +300,10 @@ def _run_chat(
             return []
         return render_toolbar(controller.state.view(), time.time(), width=terminal.width())
 
-    def live_row() -> str:
+    def live_row() -> list[tuple[str, str]]:
         if controller is None:
-            return ""
-        return render_live_row(controller.state.view(), time.time(), width=terminal.width())
+            return []
+        return render_live_rows(controller.state.view(), time.time(), width=terminal.width())
 
     terminal = _terminal(toolbar, live_row) if tty else LineIO(out)
     try:
