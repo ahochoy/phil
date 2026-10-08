@@ -63,7 +63,7 @@ One line per active agent, in this order, up to 3 lines and then `+N more` on a 
   - Sub-agent lines belong to the agent that started them, so `/feed implementer` includes them, and `/feed sub-agent` shows only lines with a `sub_id`.
   - It prints `Showing only the <agent>'s lines. /feed to show everything.`
 - **Lines being hidden.** While a filter is on, the live row's first line ends with `[feed: <agent>]`. Other agents still show in the live row, because it describes what's running.
-- **`/feed` with no agent.** It clears the filter and prints `Showing everything again. <n> lines from other agents were hidden: /show <run> to see them.` (`1 line` when there's one). If nothing was hidden, it prints `Showing everything again.` Hidden lines are counted, not replayed.
+- **`/feed` with no agent.** It clears the filter and prints `Showing everything again. <n> steps from other agents were hidden.` (`1 step … was hidden` when there's one). If nothing was hidden, it prints `Showing everything again.` Hidden steps are counted, not replayed. Switching straight to another agent prints the count for the old filter first. With no run being followed, `/feed <agent>` prints `No run to filter yet.`
 - **An unknown agent.** It prints `Pick one of: implementer, tester, reviewer, architect, sub-agent, engine.`
 - **Scope.** The filter belongs to this chat window and is cleared when the run ends. It isn't saved when a chat is reopened.
 - **Folding.** Filtering happens before folding and the burst cap, in `_on_activity`, so folded reads and `… N more` count only shown lines.
