@@ -78,7 +78,7 @@ The session's mockups are in `.superpowers/brainstorm/` (not committed): `callou
 
 | Reason | Title ends | Body |
 |---|---|---|
-| `attempts` | `<task> failed <n> attempts (<phase> phase)` | the first 3 problems, then `Details: /more` |
+| `attempts` | the engine's own summary (for example `CALC-001 failed 3 attempts in the green phase`) | the first 3 problems, then `Details: /more 1` (the run's log, or every problem) |
 | `approval` | `approve a command` | the exact commands, each on its own line, then `Approving allows these exact commands for the rest of this run only.` |
 | `cmd_not_found` | `a command isn't installed` | the command and the last line of its output |
 | `setup_failed` | `setup failed` | the setup command and the last lines of its output |
