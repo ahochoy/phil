@@ -3,11 +3,23 @@ import httpx
 import openai
 import openrouter.components.serviceunavailableresponseerrordata as openrouter_serviceunavailable_data
 import openrouter.errors.serviceunavailableresponse_error as openrouter_serviceunavailable_error
-from langchain_google_genai.chat_models import GoogleAuthenticationError, GoogleRateLimitError
+from langchain_core.exceptions import ModelAuthenticationError, ModelRateLimitError
 
 from phil.agents.failures import Failure, classify_failure
 from phil.agents.invoke import ContractViolation
 from phil.config import ConfigError
+
+
+# Mirrors langchain_google_genai/chat_models.py's GoogleAuthenticationError/GoogleRateLimitError
+# (subclassing the same langchain_core base classes, constructed the same way: a message only,
+# no status) without importing langchain_google_genai itself, which pulls in google.genai and
+# its own import-time DeprecationWarning ('_UnionGenericAlias' deprecated).
+class GoogleAuthenticationError(ModelAuthenticationError):
+    pass
+
+
+class GoogleRateLimitError(ModelRateLimitError):
+    pass
 
 
 class HTTPError(Exception):
@@ -88,9 +100,10 @@ def test_round_trip():
 
 
 def test_google_errors_carry_no_status():
-    # langchain_google_genai raises these with no status/response attribute at all; the
-    # classifier falls back to matching langchain_core's provider-neutral model-error names
-    # along the exception's MRO (ruling: fix round 1, item 1).
+    # langchain_google_genai raises these with no status/response attribute at all (see the
+    # GoogleAuthenticationError/GoogleRateLimitError stand-ins above); the classifier falls back
+    # to matching langchain_core's provider-neutral model-error names along the exception's MRO
+    # (ruling: fix round 1, item 1).
     assert classify_failure(GoogleAuthenticationError("bad key"), provider="google").category == "auth"
     f = classify_failure(GoogleRateLimitError("slow down"), provider="google", attempts=2)
     assert f.category == "busy"
