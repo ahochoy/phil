@@ -194,6 +194,153 @@ def test_btw_sees_milestones_as_their_readable_bands():
     assert _short_event({"kind": "node", "node": "verify"}) == "node verify"
 
 
+def _end(seq: int, role: str, command: str, **extra) -> dict:
+    """An activity end record for a `run_shell` call; `extra` adds fields such as `sub_id`."""
+    return {"seq": seq, "ts": "2026-10-07T10:00:05Z", "phase": "end", "task": "CALC-001", "role": role,
+            "tool": "run_shell", "summary": f"run {command}", "result": "→ ok", "ok": True, **extra}
+
+
+def _activity(controller, *records: dict) -> str:
+    controller._handle(ChatEvent("activity", {"records": list(records)}))
+    return controller.console.export_text()
+
+
+def test_feed_filter_shows_only_that_agent(controller_with_run):
+    """/feed tester prints the 'Showing only the tester's lines…' line and sets state.view().feed_filter;
+    an activity batch with an implementer end record and a tester end record prints only the tester's tool
+    line; a milestone still prints; /feed then prints 'Showing everything again. 1 line from other agents
+    was hidden: /show <run> to see them.' and clears feed_filter."""
+    controller = controller_with_run
+    controller._command("/feed tester")
+    assert controller.console.export_text().strip() == "Showing only the tester's lines. /feed to show everything."
+    assert controller.state.view().feed_filter == "tester"
+
+    text = _activity(controller, _end(3, "implementer", "impl-cmd"), _end(4, "tester", "tester-cmd"))
+    assert "tester-cmd" in text
+    assert "impl-cmd" not in text
+
+    controller._handle(ChatEvent("milestone", {
+        "kind": "task_started", "task": "CALC-001", "title": "Add multiply", "ts": "2026-10-07T10:00:00Z", "seq": 5,
+    }))
+    assert "▸ CALC-001 Add multiply" in controller.console.export_text()
+
+    controller._command("/feed")
+    assert controller.console.export_text().strip() == (
+        f"Showing everything again. 1 line from other agents was hidden: /show {controller._run_id} to see them."
+    )
+    assert controller.state.view().feed_filter is None
+
+
+def test_feed_counts_several_hidden_lines(controller_with_run):
+    controller = controller_with_run
+    controller._command("/feed reviewer")
+    controller.console.export_text()
+    text = _activity(controller, _end(3, "implementer", "a"), _end(4, "tester", "b"), _end(5, "reviewer", "c"))
+    assert "run   c" in text and "run   a" not in text and "run   b" not in text
+    controller._command("/feed")
+    assert controller.console.export_text().strip() == (
+        f"Showing everything again. 2 lines from other agents were hidden: /show {controller._run_id} to see them."
+    )
+
+
+def test_feed_sub_agent_and_engine(controller_with_run):
+    """/feed sub-agent shows only records with a sub_id; /feed engine shows only role engine; /feed implementer
+    includes the implementer's sub-agent lines (role implementer, with sub_id)."""
+    controller = controller_with_run
+    records = (
+        _end(3, "implementer", "own-cmd"),
+        _end(4, "implementer", "sub-cmd", sub_id=2, sub="explore tests"),
+        _end(5, "engine", "gate-cmd"),
+        _end(6, "tester", "tester-cmd"),
+    )
+
+    controller._command("/feed sub-agent")
+    controller.console.export_text()
+    text = _activity(controller, *records)
+    assert "sub-cmd" in text
+    assert not any(other in text for other in ("own-cmd", "gate-cmd", "tester-cmd"))
+
+    controller._command("/feed engine")
+    controller.console.export_text()
+    text = _activity(controller, *records)
+    assert "gate-cmd" in text
+    assert not any(other in text for other in ("own-cmd", "sub-cmd", "tester-cmd"))
+
+    controller._command("/feed implementer")
+    controller.console.export_text()
+    text = _activity(controller, *records)
+    assert "own-cmd" in text and "sub-cmd" in text
+    assert "gate-cmd" not in text and "tester-cmd" not in text
+
+
+def test_feed_filter_applies_before_folding_and_keeps_start_records(controller_with_run):
+    controller = controller_with_run
+    controller._command("/feed tester")
+    controller.console.export_text()
+    read = {"phase": "end", "task": "CALC-001", "tool": "read_file", "ok": True}
+    text = _activity(
+        controller,
+        {**read, "seq": 3, "role": "tester", "summary": "read a.py"},
+        {**read, "seq": 4, "role": "implementer", "summary": "read b.py"},
+        {**read, "seq": 5, "role": "tester", "summary": "read c.py"},
+        {"seq": 6, "phase": "start", "task": "CALC-001", "role": "implementer", "tool": "run_shell", "summary": "x"},
+    )
+    assert "read  a.py · c.py" in text  # the hidden read doesn't split the tester's fold
+    assert "b.py" not in text
+    controller._command("/feed")
+    assert "1 line from other agents was hidden" in controller.console.export_text()  # start records aren't lines
+
+
+def test_feed_unknown_and_nothing_hidden(controller_with_run):
+    """/feed bogus prints 'Pick one of: implementer, tester, reviewer, architect, sub-agent, engine.' and sets
+    no filter; /feed with nothing hidden prints 'Showing everything again.'"""
+    controller = controller_with_run
+    controller._command("/feed bogus")
+    assert controller.console.export_text().strip() == (
+        "Pick one of: implementer, tester, reviewer, architect, sub-agent, engine."
+    )
+    assert controller.state.view().feed_filter is None
+    assert controller._feed_filter is None
+
+    controller._command("/feed")
+    assert controller.console.export_text().strip() == "Showing everything again."
+
+    controller._command("/feed tester")
+    controller.console.export_text()
+    _activity(controller, _end(3, "tester", "tester-cmd"))
+    controller._command("/feed")
+    assert controller.console.export_text().strip() == "Showing everything again."
+
+
+def test_the_filter_resets_when_the_run_ends(controller_with_run):
+    """With /feed tester on, run_done clears the filter (state.view().feed_filter is None), and the next
+    activity batch prints every line."""
+    controller = controller_with_run
+    controller._command("/feed tester")
+    assert controller.state.view().feed_filter == "tester"
+    controller._handle(ChatEvent("run_done", {"state": "failed", "needs_attention": "boom"}))
+    assert controller.state.view().feed_filter is None
+    assert controller._feed_filter is None
+    controller.console.export_text()
+
+    text = _activity(controller, _end(3, "implementer", "impl-cmd"), _end(4, "tester", "tester-cmd"))
+    assert "impl-cmd" in text and "tester-cmd" in text
+
+
+def test_forgetting_the_run_clears_the_filter(controller_with_run):
+    controller = controller_with_run
+    controller._command("/feed tester")
+    controller._forget_run()
+    assert controller.state.view().feed_filter is None
+    assert controller._feed_filter is None and controller._hidden == 0
+
+
+def test_help_lists_feed(controller_with_run):
+    controller = controller_with_run
+    controller._command("/help")
+    assert "/feed <agent> (show one agent's lines; /feed to show all)" in controller.console.export_text()
+
+
 def _green_with_tests(turn: Turn):
     fire_tool(turn, "run_shell", {"command": "pytest -q"}, "exit_code: 0\n7 passed")
     return write_green(turn)
