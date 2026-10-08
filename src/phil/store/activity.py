@@ -80,13 +80,14 @@ class ActivityLog:
             self._disable()
             return False
 
-    def start(self, *, task: str | None, role: str, tool: str, summary: str) -> int | None:
+    def start(self, *, task: str | None, role: str, tool: str, summary: str, extra: dict | None = None) -> int | None:
+        """`extra` adds fields to the record (e.g. `sub_id`/`sub`); the standard keys always win."""
         with self._lock:
             if self.disabled:
                 return None
             try:
                 seq = self._current_seq() + 1
-                record = {"seq": seq, "ts": utcnow(), "phase": "start", "task": task, "role": role,
+                record = {**(extra or {}), "seq": seq, "ts": utcnow(), "phase": "start", "task": task, "role": role,
                           "tool": tool, "summary": summary}
                 if not self._append(record):
                     return None
@@ -97,7 +98,7 @@ class ActivityLog:
                 return None
 
     def end(self, seq: int | None, *, task: str | None, role: str, tool: str, summary: str, result: str,
-            ok: bool, detail: str | None, duration_ms: int) -> None:
+            ok: bool, detail: str | None, duration_ms: int, extra: dict | None = None) -> None:
         if seq is None:
             return
         with self._lock:
@@ -105,18 +106,18 @@ class ActivityLog:
                 return
             try:
                 name = self._write_detail(seq, detail) if detail else None
-                self._append({"seq": seq, "ts": utcnow(), "phase": "end", "task": task, "role": role, "tool": tool,
-                              "summary": summary, "duration_ms": duration_ms, "result": result, "ok": ok,
+                self._append({**(extra or {}), "seq": seq, "ts": utcnow(), "phase": "end", "task": task, "role": role,
+                              "tool": tool, "summary": summary, "duration_ms": duration_ms, "result": result, "ok": ok,
                               "detail": name})
             except Exception:
                 self._disable()
 
     def record(self, *, task: str | None, role: str, tool: str, summary: str, result: str, ok: bool,
-               detail: str | None, duration_ms: int) -> int | None:
+               detail: str | None, duration_ms: int, extra: dict | None = None) -> int | None:
         """A call that already finished (the engine's own test runs): start and end together."""
-        seq = self.start(task=task, role=role, tool=tool, summary=summary)
+        seq = self.start(task=task, role=role, tool=tool, summary=summary, extra=extra)
         self.end(seq, task=task, role=role, tool=tool, summary=summary, result=result, ok=ok,
-                 detail=detail, duration_ms=duration_ms)
+                 detail=detail, duration_ms=duration_ms, extra=extra)
         return seq
 
     def _write_detail(self, seq: int, text: str) -> str | None:

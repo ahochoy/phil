@@ -70,15 +70,23 @@ class Turn:
     config: dict | None = None  # the invoke config, e.g. its LangChain callbacks
 
 
-def fire_tool(turn: "Turn", name: str, args: dict, output: str) -> None:
+def fire_tool(turn: "Turn", name: str, args: dict, output: str, *, run_id=None, parent_run_id=None) -> None:
     """Make a scripted turn's tool call visible to the invoke config's callbacks, the way a real
     agent's tool call is (start, then end)."""
     import uuid
 
-    run_id = uuid.uuid4()
+    run_id = run_id or uuid.uuid4()
     for callback in (turn.config or {}).get("callbacks", []):
-        callback.on_tool_start({"name": name}, "", run_id=run_id, inputs=args)
-        callback.on_tool_end(output, run_id=run_id)
+        callback.on_tool_start({"name": name}, "", run_id=run_id, parent_run_id=parent_run_id, inputs=args)
+        callback.on_tool_end(output, run_id=run_id, parent_run_id=parent_run_id)
+
+
+def fire_chain(turn: "Turn", run_id, parent_run_id=None) -> None:
+    """Make a scripted turn's chain run (e.g. a sub-agent's graph) visible to the invoke config's
+    callbacks, so tool calls fired under it have a parent chain."""
+    for callback in (turn.config or {}).get("callbacks", []):
+        if hasattr(callback, "on_chain_start"):
+            callback.on_chain_start({}, {}, run_id=run_id, parent_run_id=parent_run_id)
 
 
 class _ScriptedAgent:

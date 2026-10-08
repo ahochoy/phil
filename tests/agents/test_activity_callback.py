@@ -84,3 +84,60 @@ def test_a_broken_log_never_breaks_the_callback(tmp_path):
     run = uuid.uuid4()
     callback.on_tool_start({"name": "read_file"}, "", run_id=run, inputs={"file_path": "a"})
     callback.on_tool_end("x", run_id=run)  # no exception
+
+
+def ids(n):
+    return [uuid.uuid4() for _ in range(n)]
+
+
+def test_a_call_inside_a_task_call_is_tagged_with_it(tmp_path):
+    log = ActivityLog(tmp_path)
+    cb = ActivityCallback(log, task="T1", role="implementer")
+    agent, task_call, sub_chain, sub_model, inner = ids(5)
+    cb.on_chain_start({}, {}, run_id=agent)
+    cb.on_tool_start({"name": "task"}, "", run_id=task_call, parent_run_id=agent, inputs={"description": "explore tests"})
+    cb.on_chain_start({}, {}, run_id=sub_chain, parent_run_id=task_call)
+    cb.on_chat_model_start({}, [], run_id=sub_model, parent_run_id=sub_chain)
+    cb.on_tool_start({"name": "read_file"}, "", run_id=inner, parent_run_id=sub_chain, inputs={"file_path": "t.py"})
+    cb.on_tool_end("x", run_id=inner, parent_run_id=sub_chain)
+    cb.on_tool_end("done", run_id=task_call, parent_run_id=agent)
+    records, _ = log.read()
+    task_seq = next(r["seq"] for r in records if r["tool"] == "task")
+    inner_records = [r for r in records if r["tool"] == "read_file"]
+    assert all(r["sub_id"] == task_seq and r["sub"] == "explore tests" for r in inner_records)
+    assert all("sub_id" not in r for r in records if r["tool"] == "task")
+
+
+def test_a_call_outside_any_task_call_is_not_tagged(tmp_path):
+    log = ActivityLog(tmp_path)
+    cb = ActivityCallback(log, task=None, role="implementer")
+    agent, call = ids(2)
+    cb.on_chain_start({}, {}, run_id=agent)
+    cb.on_tool_start({"name": "read_file"}, "", run_id=call, parent_run_id=agent, inputs={"file_path": "a"})
+    cb.on_tool_end("x", run_id=call)
+    assert all("sub_id" not in r for r in log.read()[0])
+
+
+def test_nested_task_calls_credit_the_nearest(tmp_path):
+    log = ActivityLog(tmp_path)
+    cb = ActivityCallback(log, task=None, role="implementer")
+    outer, inner_task, call = ids(3)
+    cb.on_tool_start({"name": "task"}, "", run_id=outer, inputs={"description": "outer"})
+    cb.on_tool_start({"name": "task"}, "", run_id=inner_task, parent_run_id=outer, inputs={"description": "inner"})
+    cb.on_tool_start({"name": "grep"}, "", run_id=call, parent_run_id=inner_task, inputs={"pattern": "x"})
+    start = [r for r in log.read()[0] if r["tool"] == "grep"][0]
+    assert start["sub"] == "inner"
+
+
+def test_reset_empties_the_parent_map(tmp_path):
+    cb = ActivityCallback(ActivityLog(tmp_path), task=None, role="r")
+    a, b = ids(2)
+    cb.on_chain_start({}, {}, run_id=b, parent_run_id=a)
+    cb.reset()
+    assert cb._parents == {} and cb._subs == {}
+
+
+def test_bookkeeping_never_raises(tmp_path):
+    cb = ActivityCallback(ActivityLog(tmp_path), task=None, role="r")
+    cb.on_chain_start(None, None, run_id=None, parent_run_id=object())  # nonsense input
+    cb.on_llm_start(None, None, run_id=uuid.uuid4())

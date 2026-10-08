@@ -100,3 +100,12 @@ def test_a_corrupted_seq_does_not_raise(tmp_path):
     assert ActivityLog(tmp_path).record(task=None, role="r", tool="t", summary="s", result="",
                                         ok=True, detail=None, duration_ms=1) is None
     assert ActivityLog(tmp_path).last_seq == 0
+
+
+def test_extra_fields_are_merged_but_never_override(tmp_path):
+    log = ActivityLog(tmp_path)
+    seq = log.start(task="T", role="r", tool="t", summary="s", extra={"sub_id": 3, "sub": "x", "seq": 99})
+    log.end(seq, task="T", role="r", tool="t", summary="s", result="", ok=True, detail=None, duration_ms=1,
+            extra={"sub_id": 3, "sub": "x"})
+    start, end = log.read()[0]
+    assert start["seq"] == seq and start["sub_id"] == 3 and end["sub"] == "x"

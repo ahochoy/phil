@@ -363,21 +363,27 @@ def invoke_agent(
         # again for one the middleware already handled.
         tracker = ModelRetryTracker(sleep=counting_sleep, attempts=retry_attempts)
         callbacks: list = [collector]
+        activity_callback = None
         if ctx.activity is not None:
             from phil.agents.activity import ActivityCallback
 
-            callbacks.append(
-                ActivityCallback(ctx.activity, task=task_id, role=spec.role, ignore_tools={spec.out_contract.__name__})
+            activity_callback = ActivityCallback(
+                ctx.activity, task=task_id, role=spec.role, ignore_tools={spec.out_contract.__name__}
             )
+            callbacks.append(activity_callback)
         try:
-            result, _ = call_with_retry(
-                agent,
-                {"messages": payload_messages},
-                sleep=counting_sleep,
-                attempts=retry_attempts,
-                config={"callbacks": callbacks, "configurable": {TRACKER_KEY: tracker}},
-                retryable=lambda exc: not model_call_retried(exc),
-            )
+            try:
+                result, _ = call_with_retry(
+                    agent,
+                    {"messages": payload_messages},
+                    sleep=counting_sleep,
+                    attempts=retry_attempts,
+                    config={"callbacks": callbacks, "configurable": {TRACKER_KEY: tracker}},
+                    retryable=lambda exc: not model_call_retried(exc),
+                )
+            finally:
+                if activity_callback is not None:
+                    activity_callback.reset()  # the run tree is only needed while the agent runs
             retries = len(sleeps)  # each retry — per model call or whole agent — sleeps exactly once
         except Exception as exc:
             retries = len(sleeps)
