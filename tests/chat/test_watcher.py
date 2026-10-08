@@ -159,6 +159,26 @@ def test_run_progress_carries_tokens_cost_and_cost_source(calc_repo):
     assert (progress.data["tokens"], progress.data["cost_usd"], progress.data["cost_source"]) == (0, 0.0, "reported")
 
 
+def test_run_progress_is_reposted_when_usage_grows_within_a_node(calc_repo):
+    """Two polls with the same node and state but higher usage post two run_progress events, and the
+    second carries the new totals."""
+    from phil.store.telemetry import TelemetryRow, record
+
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo, alive=lambda r: True)
+    update_run(conn, run_id, state="running", current_node="implement")
+    watcher.poll_once()
+    record(conn, TelemetryRow(
+        run_id=run_id, layer="run", node="implement", role="implementer", model="m", attempt=1,
+        packet_tokens=0, input_tokens=1000, output_tokens=500, latency_ms=1, cost_usd=0.25, outcome="ok",
+    ))
+    conn.commit()
+    watcher.poll_once()
+    progress = [e for e in posted if e.kind == "run_progress"]
+    assert len(progress) == 2
+    assert (progress[0].data["node"], progress[0].data["state"]) == (progress[1].data["node"], progress[1].data["state"])
+    assert (progress[1].data["tokens"], progress[1].data["cost_usd"]) == (1500, 0.25)
+
+
 def test_thread_start_and_stop(calc_repo):
     paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo, interval_s=0.01)
     watcher.start()

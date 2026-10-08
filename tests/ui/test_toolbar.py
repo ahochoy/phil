@@ -95,6 +95,27 @@ def test_never_wraps_and_pause_survives():
         assert "⏸ r-4f2a needs you" in text(paused, width=max(width, 24))
 
 
+def test_twelve_tasks_show_twelve_dots():
+    """Exactly MAX_DOTS (12) tasks: 12 dots, no ellipsis and no count."""
+    dots = toolbar_text(task_dots(4, 12, now=0.0, paused=False))
+    assert dots == "●●●●◉○○○○○○○"
+    assert len(dots) == 12 and "…" not in dots and "/" not in dots
+
+
+def test_full_line_fits_at_120():
+    """At width 120 the full run line drops nothing."""
+    assert text(FULL, width=120) == text(FULL)
+
+
+def test_a_cut_pause_notice_keeps_its_warning_style():
+    """When only the pause notice is left and it still has to be cut, it's cut with … and stays phil.warn."""
+    paused = ToolbarView(repo="calc", branch="b", run=RUN, paused=True, run_cost=(0.41, "reported"), budget_usd=1.0)
+    frags = render_toolbar(paused, 64.0, 12)
+    assert toolbar_text(frags).endswith("…") and cell_len(toolbar_text(frags)) <= 11
+    assert toolbar_text(frags).startswith("⏸ r-4f2a")
+    assert all(style == "class:phil.warn" for style, _ in frags)
+
+
 def test_dropping_progress_drops_its_orphaned_elapsed(monkeypatch):
     """The plan's ruling: an elapsed segment (glued with ' · ') means nothing without the
     progress segment it's attached to. Dropping priorities (P_ELAPSED < P_PROGRESS) already keep

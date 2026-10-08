@@ -164,7 +164,9 @@ def render_toolbar(view: ToolbarView, now: float, width: int | None = None) -> F
                 segs[0].glue = SEP
     frags = _join(segs)
     if width is not None and cell_len(toolbar_text(frags)) > width - 1:
-        frags = [("", _fit(toolbar_text(frags), width))]
+        # The pause notice alone keeps its warning style when it's cut.
+        style = "class:phil.warn" if len(segs) == 1 and segs[0].priority == P_PAUSE else ""
+        frags = [(style, _fit(toolbar_text(frags), width))]
     return frags
 
 

@@ -33,6 +33,7 @@ def controller(calc_repo):
     run_chat(calc_repo, ["add subtract", "y", grab], SCRIPTS)
     controller = box["controller"]
     assert controller._run_id is not None
+    controller._follow()  # closing the chat stopped its watcher: follow the run again
     controller.console.export_text()  # clear
     return controller
 
@@ -124,16 +125,126 @@ def test_model_follows_the_working_role(controller):
     - clearing the step with no run sets None."""
     controller.config = PhilConfig(models={"high": HIGH, "low": LOW})
     generation = controller._generation
-    controller._step("architect", generation)
-    assert controller.state.view().model == ("high", "claude-sonnet-5")
     controller._handle(ChatEvent("live_step", {"task": "CALC-001", "role": "implementer", "summary": "edit"}))
     assert controller.state.view().model == ("low", "gemini-3.8-flash")
-    controller._step(None, generation)  # while the run is followed, its live step's model stays
+    controller._step("architect", generation)  # while the run is followed, its model stays
+    assert controller.state.view().model == ("low", "gemini-3.8-flash")
+    controller._step(None, generation)
     assert controller.state.view().model == ("low", "gemini-3.8-flash")
     controller._forget_run()
     controller._step("architect", generation)
+    assert controller.state.view().model == ("high", "claude-sonnet-5")
     controller._step(None, generation)
     assert controller.state.view().model is None
+
+
+RUN_MODELS = {"high": HIGH, "low": LOW, "tester": "ollama:tester-model", "reviewer": "ollama:reviewer-model"}
+
+
+def progress(node: str) -> ChatEvent:
+    return ChatEvent("run_progress", {
+        "node": node, "state": "running", "tasks_done": 0, "tasks_total": 1, "keyword": "CALC",
+        "started": time.time(), "tokens": 0, "cost_usd": 0.0, "cost_source": "reported",
+    })
+
+
+def live(role: str) -> ChatEvent:
+    return ChatEvent("live_step", {"task": "CALC-001", "role": role, "summary": "edit", "started": time.time()})
+
+
+def test_run_model_comes_from_its_node(controller):
+    """No role known yet: None. At node implement with no live step: the implementer's model; a live step
+    with role tester shows the tester's; an engine live step is ignored; at commit the last role is kept;
+    after run_done the model is None."""
+    controller.config = PhilConfig(models=RUN_MODELS)
+    implementer, tester = controller._model_for("implementer"), controller._model_for("tester")
+    assert implementer == ("low", "gemini-3.8-flash") and tester[1] == "tester-model"
+    controller._handle(progress("setup"))
+    assert controller.state.view().model is None  # no role seen yet for this run
+    controller._handle(progress("implement"))
+    assert controller.state.view().model == implementer
+    controller._handle(live("tester"))
+    assert controller.state.view().model == tester
+    controller._handle(ChatEvent("live_step", {}))
+    assert controller.state.view().model == implementer
+    controller._handle(live("engine"))
+    assert controller.state.view().model == implementer
+    controller._handle(ChatEvent("live_step", {}))
+    controller._handle(progress("review"))
+    assert controller.state.view().model == controller._model_for("reviewer")
+    controller._handle(progress("commit"))
+    assert controller.state.view().model == controller._model_for("reviewer")  # the last role is kept
+    controller._handle(ChatEvent("run_done", {"state": "completed", "tasks_done": 1, "tasks_total": 1}))
+    assert controller.state.view().model is None
+
+
+def test_a_goal_step_does_not_hide_the_runs_model(controller):
+    """A goal step (the architect's, say) that overlaps the run leaves the run's model shown."""
+    controller.config = PhilConfig(models=RUN_MODELS)
+    controller._handle(progress("implement"))
+    controller._step("architect", controller._generation)
+    assert controller.state.view().model == controller._model_for("implementer")
+    controller._step(None, controller._generation)
+    assert controller.state.view().model == controller._model_for("implementer")
+
+
+def test_routing_and_answering_steps_show_their_models(controller):
+    """With no run: routing shows the classifier's model and answering the answerer's."""
+    controller._forget_run()
+    controller.config = PhilConfig(models={"high": HIGH, "low": LOW, "classifier": "ollama:tiny"})
+    controller._step("routing", controller._generation)
+    assert controller.state.view().model == controller._model_for("classifier") == ("classifier", "tiny")
+    controller._step("answering", controller._generation)
+    assert controller.state.view().model == controller._model_for("answerer") == ("low", "gemini-3.8-flash")
+
+
+def test_current_branch_times_out(git_repo, monkeypatch):
+    """current_branch gives git a 5 second timeout, and a git that times out gives "?"."""
+    import subprocess
+
+    seen = []
+
+    def hangs(cmd, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr("phil.git.subprocess.run", hangs)
+    assert current_branch(git_repo) == "?"
+    assert seen == [5]
+
+
+def test_branch_is_unknown_when_the_run_cant_be_read(controller, monkeypatch):
+    """When get_run raises, the branch shows "?" and the repo name stays."""
+    def broken(conn, run_id):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr("phil.chat.controller.get_run", broken)
+    controller._refresh_place()
+    assert controller.state.view().branch == "?"
+    assert controller.state.view().repo == controller.info.root.name
+
+
+def test_a_chat_outside_a_repo_starts_with_an_unknown_branch(calc_repo, tmp_path, monkeypatch):
+    """A chat whose root isn't a git repo starts normally (it asks for a goal) and shows the branch as "?"."""
+    import dataclasses
+
+    import tests.chat.test_controller as harness
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    real = harness.resolve_repo
+    monkeypatch.setattr(harness, "resolve_repo", lambda repo: dataclasses.replace(real(repo), root=plain))
+    monkeypatch.setattr("phil.chat.controller.repo_overview", lambda root: "")
+    seen = {}
+
+    def at_start(controller):
+        seen["view"] = controller.state.view()
+        return None
+
+    *_, prompts = run_chat(calc_repo, [at_start], SCRIPTS)
+    assert prompts  # the chat asked for its first goal
+    assert seen["view"].branch == "?"
+    assert seen["view"].repo == "plain"
 
 
 def test_model_for_intake_and_unknown_roles(controller):

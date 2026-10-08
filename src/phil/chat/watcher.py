@@ -113,11 +113,13 @@ class RunWatcher:
             self._poll_feed()
             if record is None:
                 return
-            snapshot = (record.current_node, record.state, record.tasks_done, record.tasks_total)
+            # The usage totals are part of the check, so tokens and cost keep moving during a long node.
+            totals = run_usage(conn, self.run_id)
+            snapshot = (record.current_node, record.state, record.tasks_done, record.tasks_total,
+                        totals.tokens, totals.cost_usd)
             if snapshot != self._last:
                 self._last = snapshot
                 started = datetime.fromisoformat(record.created_at).timestamp()
-                totals = run_usage(conn, self.run_id)
                 self.post(ChatEvent("run_progress", {
                     "node": record.current_node, "state": record.state, "tasks_done": record.tasks_done,
                     "tasks_total": record.tasks_total, "keyword": record.keyword, "started": started,
