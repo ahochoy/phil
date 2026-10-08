@@ -45,9 +45,9 @@
   - `Phil v{version} · deterministic orchestration, token-efficient`
   - `budget ${x:.2f} a run`
   - `no run budget`
-  - `⏸ {run} is waiting for you ({summary}) · /answer`
-  - `{run} failed · /resume`
-  - `{run} was stopped · /resume`
+  - `⏸ {run} is waiting for you ({summary}) · phil attach {run}` (`⏸ {run} is waiting for you · phil attach {run}` when the summary is empty)
+  - `{run} failed · phil resume {run}`
+  - `{run} was stopped · phil resume {run}`
   - `{run} is running · phil attach {run}`
   - `{n} other open chat · phil --resume {id}` (`chats` when n > 1)
   - `Type a goal to start · /btw ask while it works · /feed filter the feed · /help everything else`

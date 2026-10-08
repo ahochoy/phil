@@ -54,10 +54,10 @@ This sketch shows content only. The real box pads every row so the right edges a
 
 **Pick up where you left off.** This is left out entirely when there's nothing to pick up.
 
-- **The newest unfinished run in this repo** (state pending, running, escalated, failed or stopped), with its next step:
-  - escalated: `⏸ <run> is waiting for you (<summary>) · /answer`. The summary is the run's last escalation summary, cut to 60 characters.
-  - failed: `<run> failed · /resume`.
-  - stopped: `<run> was stopped · /resume`.
+- **The newest unfinished run in this repo** (state pending, running, escalated, failed or stopped), with its next step. The banner prints before you know which chat will open, and `/answer` and `/resume` act only on the chat's own run, so every hint is a CLI command that works from any chat:
+  - escalated: `⏸ <run> is waiting for you (<summary>) · phil attach <run>`. The summary is the run's last escalation summary, with all whitespace (newlines included) collapsed to single spaces. Longer than 60 characters, it's cut to 59 and ends in `…`. Empty, the ` (<summary>)` part is left out: `⏸ <run> is waiting for you · phil attach <run>`.
+  - failed: `<run> failed · phil resume <run>`.
+  - stopped: `<run> was stopped · phil resume <run>`. A run still in `running` whose worker is dead (after a crash or a reboot) is shown as stopped.
   - running or pending: `<run> is running · phil attach <run>`.
 - **Other open chats in this repo:** `N other open chat(s) · phil --resume <id>`, showing the newest one's id. The open-chat picker that runs after the banner is unchanged; this line is only a reminder.
 

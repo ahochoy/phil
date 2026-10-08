@@ -261,13 +261,19 @@ def _banner_facts(info, config, conn, paths, base_label, header_sha, base, sessi
         record = None
     run = None
     if record is not None:
+        state = record.state
+        try:  # left `running` by a crash or a reboot: `phil resume` takes a run whose worker is dead
+            if state == "running" and not is_worker_alive(record):
+                state = "stopped"
+        except Exception:
+            pass
         summary = None
         if record.state == "escalated":
             try:
                 summary = run_events(paths, record.run_id).latest("escalation")["escalation"]["summary"]
             except Exception:
                 summary = record.needs_attention  # what `phil attach` falls back to
-        run = (record.run_id, record.state, summary)
+        run = (record.run_id, state, summary)
     try:
         other_chats = tuple(c.id for c in list_open_chats(paths, conn) if session is None or c.id != session.id)
     except Exception:
@@ -333,8 +339,12 @@ def _chat(ctx: typer.Context) -> None:
     # Under patch_stdout, stdout is a proxy; force colour so Rich keeps emitting it.
     out = make_console(force_terminal=True) if tty else console
     facts = _banner_facts(info, config, conn, paths, base_label, header_sha, base, session)
-    if tty:
-        for line in render_banner(facts, out.width):
+    try:  # the mascot is hand-edited; a card that can't be drawn falls back to the plain lines
+        card = render_banner(facts, out.width) if tty else None
+    except Exception:
+        card = None
+    if card is not None:
+        for line in card:
             out.print(line, soft_wrap=True)
     else:
         for line in banner_plain(facts):
