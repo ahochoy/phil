@@ -76,18 +76,24 @@ quick.
   [Plan](plans/2026-10-07-phil-activity-feed.md) ·
   [spec](specs/2026-10-07-phil-activity-feed-design.md).
 - A welcome banner, a persistent input, a status bar, and a sub-agent bar that can later select one agent's feed.
-- Bordered question and approval callouts with keyboard choices and explicit scope.
-- Failure categories: provider, auth or quota, network, tool, command, permission, config, orchestration, internal. Each shows what changed, whether Phil will retry, and whether the user must act.
+- **Bordered question and approval callouts (done).** Arrow-key choices, with the approval's
+  scope stated ("for the rest of this run"). [Plan](plans/2026-10-07-phil-callouts.md) ·
+  [spec](specs/2026-10-07-phil-callouts-design.md).
+- **Failure categories (done).** Auth, quota, busy, server, network, refused, output, config and
+  internal. Each callout says what happened, whether Phil retries, and what to do.
+  [Plan](plans/2026-10-07-phil-callouts.md) · [spec](specs/2026-10-07-phil-callouts-design.md).
 - Full-screen app versus a richer inline UI is decided at M5, from mockups.
-- **Visual proposals for UI work** (user request, 2026-10-02):
-  - For changes with a visual element (a new page section, a CTA, a layout), Phil shows what it intends before building it: a quick mockup, a sketch, or references.
-  - The user confirms or redirects at that point.
-  - This isn't a full design agent. It's a way to say "this is what we're thinking".
-  - Prompted by a live run that added a CTA section with no shared picture of placement, content or visuals.
 
 ### M6 — Extensibility and learning
 
 Each item is its own design: file explorer and diff views, diagrams (ASCII and Mermaid), skills, plugins, UI extensions, snippets, memory and self-learning (formerly "spec #2"), and Herdr agent support.
+
+- **Visual proposals for UI work** (user request, 2026-10-02; moved from M5 on 2026-10-07, because it
+  builds on M6's diagrams and UI extensions):
+  - For changes with a visual element (a new page section, a CTA, a layout), Phil shows what it intends before building it: a quick mockup, a sketch, or references.
+  - The user confirms or redirects at that point.
+  - This isn't a full design agent. It's a way to say "this is what we're thinking".
+  - Prompted by a live run that added a CTA section with no shared picture of placement, content or visuals.
 
 Core capabilities, built-in optional modules, plugins, UI extensions, and skills are kept distinct. Configuration, permissions, and learned memory stay separate on disk.
 
