@@ -82,7 +82,10 @@ quick.
 - **Failure categories (done).** Auth, quota, busy, server, network, refused, output, config and
   internal. Each callout says what happened, whether Phil retries, and what to do.
   [Plan](plans/2026-10-07-phil-callouts.md) · [spec](specs/2026-10-07-phil-callouts-design.md).
-- Full-screen app versus a richer inline UI is decided at M5, from mockups.
+- **Full-screen app versus a richer inline UI: decided, inline** (user, 2026-10-08, from mockups).
+  The chat stays part of the terminal's scrollback, keeping its own scroll, search and copy. A
+  full-screen mode (fixed header, switchable sub-agent feeds, a details pane, mouse support) can
+  come later as an option such as `phil --full-screen`, if there's usage or interest.
 
 ### M6 — Extensibility and learning
 
