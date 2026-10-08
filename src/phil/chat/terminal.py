@@ -78,7 +78,8 @@ class TerminalIO:
     """
 
     def __init__(
-        self, toolbar: Callable[[], str], live_row: Callable[[], str] | None = None, *, input=None, output=None
+        self, toolbar: Callable[[], list[tuple[str, str]]], live_row: Callable[[], str] | None = None, *,
+        input=None, output=None,
     ) -> None:
         self._toolbar = toolbar
         self._live_row = live_row  # the running step, shown on its own line above the input
@@ -119,11 +120,11 @@ class TerminalIO:
         except Exception:
             return 80
 
-    def _render_toolbar(self) -> str:
+    def _render_toolbar(self) -> list[tuple[str, str]]:
         try:
             return self._toolbar()
         except Exception:  # a redraw must never take the prompt down
-            return ""
+            return []
 
     def chat_io(self, spawn: Spawn) -> ChatIO:
         return ChatIO(ask=self.ask, spawn=spawn, wake=self.wake, submit=self.submit, choose=self.choose)

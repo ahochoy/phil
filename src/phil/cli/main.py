@@ -295,9 +295,9 @@ def _run_chat(
 
     controller = None
 
-    def toolbar() -> str:
+    def toolbar() -> list[tuple[str, str]]:
         if controller is None:
-            return ""
+            return []
         return render_toolbar(controller.state.view(), time.time(), width=terminal.width())
 
     def live_row() -> str:

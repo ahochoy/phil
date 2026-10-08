@@ -180,8 +180,10 @@ class _FakeTerminal:
         return self.line.chat_io(spawn)
 
     def run(self, fn):
+        from phil.ui.toolbar import toolbar_text
+
         fn()
-        self.toolbar_text = self.toolbar()
+        self.toolbar_text = toolbar_text(self.toolbar())
 
     def close(self):
         self.closed = True

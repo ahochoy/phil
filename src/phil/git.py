@@ -20,9 +20,14 @@ class GitNotFound(GitError):
     pass
 
 
-def git(cwd: Path, *args: str) -> str:
+def git(cwd: Path, *args: str, timeout: float | None = None) -> str:
+    """Run git in `cwd` and return its stdout. With `timeout` (seconds), a git that takes longer
+    raises `subprocess.TimeoutExpired`."""
     try:
-        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        proc = subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout,
+        )
     except FileNotFoundError as exc:
         if exc.filename == "git":
             raise GitNotFound(list(args), 127, str(exc)) from exc
@@ -30,6 +35,21 @@ def git(cwd: Path, *args: str) -> str:
     if proc.returncode != 0:
         raise GitError(list(args), proc.returncode, proc.stderr)
     return proc.stdout
+
+
+BRANCH_TIMEOUT_S = 5.0
+
+
+def current_branch(root: Path) -> str:
+    """The branch checked out in `root`, the short SHA on a detached HEAD, or "?" on any error (a git
+    that hangs past BRANCH_TIMEOUT_S included). Never raises."""
+    try:
+        branch = git(root, "rev-parse", "--abbrev-ref", "HEAD", timeout=BRANCH_TIMEOUT_S).strip()
+        if branch == "HEAD":
+            return git(root, "rev-parse", "--short", "HEAD", timeout=BRANCH_TIMEOUT_S).strip()
+        return branch or "?"
+    except Exception:
+        return "?"
 
 
 def commits_ahead(repo: Path, base: str, branch: str) -> int:

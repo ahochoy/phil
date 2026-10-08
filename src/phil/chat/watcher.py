@@ -59,7 +59,14 @@ class RunWatcher:
         # The feed starts at the current end of both logs: a reopened chat shows only what's new,
         # except a tool call still running, which can seed the live row at the first poll (_seed_live).
         self.activity = activity_log(paths, run_id)
-        self._event_offset = self.events.end_offset()
+        # One read gives both the offset and the events it covers, so a budget_raised appended between
+        # two separate calls (end_offset() then latest()) can't be both seeded below and re-read as new
+        # on the first poll.
+        try:
+            events_so_far, self._event_offset = self.events.read()
+        except Exception:
+            logger.debug("couldn't read the event log for %s", run_id, exc_info=True)
+            events_so_far, self._event_offset = [], self.events.end_offset()
         self._activity_offset = self.activity.end_offset()
         self._seed: dict | None = self.activity.pending()
         self._open: dict[int, dict] = {}  # calls started and not yet ended, by seq, across polls
@@ -74,6 +81,14 @@ class RunWatcher:
         # Seeded from the log so a reopened/resumed chat's new watcher posts only the notices
         # (budget warnings, test command switches) written after it started, not ones already shown.
         self._notice_ts: dict[str, str | None] = {kind: self._latest_ts(kind) for kind in NOTICES}
+        # Unlike the notices above, a raised budget is shown even if it's already in the log when
+        # the chat reopens, so the user still sees the limit that's in effect. Taken from
+        # `events_so_far` above (not a separate `latest()` call) so it can't race with `_event_offset`.
+        self._budget_pending: dict | None = None
+        for event in reversed(events_so_far):
+            if event.get("kind") == "budget_raised":
+                self._budget_pending = event
+                break
         self._consecutive_failures = 0
         self._error_posted = False
         self._stop = threading.Event()
@@ -98,11 +113,13 @@ class RunWatcher:
             self._poll_feed()
             if record is None:
                 return
-            snapshot = (record.current_node, record.state, record.tasks_done, record.tasks_total)
+            # The usage totals are part of the check, so tokens and cost keep moving during a long node.
+            totals = run_usage(conn, self.run_id)
+            snapshot = (record.current_node, record.state, record.tasks_done, record.tasks_total,
+                        totals.tokens, totals.cost_usd)
             if snapshot != self._last:
                 self._last = snapshot
                 started = datetime.fromisoformat(record.created_at).timestamp()
-                totals = run_usage(conn, self.run_id)
                 self.post(ChatEvent("run_progress", {
                     "node": record.current_node, "state": record.state, "tasks_done": record.tasks_done,
                     "tasks_total": record.tasks_total, "keyword": record.keyword, "started": started,
@@ -151,7 +168,13 @@ class RunWatcher:
         A milestone carries the activity log's last seq when it was written: the tool records up to that
         seq are posted before it, the rest after it (a milestone without one goes in its file position).
         """
+        if self._budget_pending is not None:
+            self._post_budget_raised(self._budget_pending)
+            self._budget_pending = None
         new_events, self._event_offset = self.events.read(self._event_offset)
+        for event in new_events:
+            if event.get("kind") == "budget_raised":
+                self._post_budget_raised(event)
         records, self._activity_offset = self.activity.read(self._activity_offset)
         milestones = [event for event in new_events if event.get("kind") in MILESTONE_KINDS]
         for item, value in interleave(milestones, records):
@@ -170,6 +193,10 @@ class RunWatcher:
         if self._live != self._live_posted:
             self._live_posted = dict(self._live)
             self.post(ChatEvent("live_step", dict(self._live)))
+
+    def _post_budget_raised(self, event: dict) -> None:
+        data = {k: v for k, v in event.items() if k not in ("kind", "ts")}
+        self.post(ChatEvent("budget_raised", data))
 
     def _post_records(self, records: list[dict]) -> None:
         # Only end records make tool lines: a batch of starts alone would print nothing, and posting

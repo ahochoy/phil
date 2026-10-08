@@ -861,10 +861,17 @@ class RunEngine:
         if action == "continue":
             totals = run_usage(self.deps.conn, self.deps.run_id)
             limits = self.deps.config.run
+            new_tokens = totals.tokens + limits.max_tokens
+            new_cost = totals.cost_usd + limits.max_cost_usd
+            if self.deps.events is not None:
+                try:
+                    self.deps.events.append("budget_raised", max_cost_usd=new_cost, max_tokens=new_tokens)
+                except Exception:
+                    logger.warning("couldn't record the raised budget", exc_info=True)
             return {
                 **cleared,
-                "budget_limit_tokens": totals.tokens + limits.max_tokens,
-                "budget_limit_cost": totals.cost_usd + limits.max_cost_usd,
+                "budget_limit_tokens": new_tokens,
+                "budget_limit_cost": new_cost,
                 "budget_warned": False,
                 "next": escalation["resume_to"],
             }
