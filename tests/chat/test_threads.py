@@ -30,7 +30,7 @@ def test_goal_plan_approve_on_real_threads(calc_repo):
         {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
         submit=thread_submit(threads),
     )
-    assert "Phil couldn't finish that" not in text, text
+    assert "Details: /more 1" not in text, text  # no failure callout
     assert len(threads) == 3  # routing, intake, then the plan
     assert "Plan CALC v1" in text
     assert [r.run_id for r in runs] == [spawned[0][0]]
@@ -45,7 +45,7 @@ def test_revision_on_a_real_thread(calc_repo):
         {"intake": [goal()], "architect": [plan(), plan(n=2)], "critic": [critique(), critique()]},
         submit=thread_submit(threads),
     )
-    assert "Phil couldn't finish that" not in text, text
+    assert "Details: /more 1" not in text, text  # no failure callout
     assert "Plan CALC v2" in text
     assert len(runs) == 1
 

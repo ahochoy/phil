@@ -283,7 +283,7 @@ def test_a_chat_runs_real_jobs_through_submit_post_and_wake(calc_repo):
     if "error" in box:
         raise box["error"]
     text = console.export_text()
-    assert "Phil couldn't finish that" not in text, text
+    assert "Details: /more 1" not in text, text  # no failure callout
     assert "Plan CALC v1" in text
     assert spawned and spawned[0][1] == "start"
 

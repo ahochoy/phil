@@ -119,6 +119,33 @@ def test_incomplete_runs_are_finished_too(calc_repo):
         run_worker(calc_repo, record.run_id, "continue", factory=happy())
 
 
+def test_a_crash_records_its_failure_before_the_failed_state(calc_repo):
+    info, record = new_run(calc_repo)
+    crashing = ScriptedAgentFactory({"implementer": [write_red, RuntimeError("model went away")]})
+    with pytest.raises(RuntimeError):
+        run_worker(calc_repo, record.run_id, "start", factory=crashing)
+    events, _ = run_events(ProjectPaths(info.slug), record.run_id).read()
+    kinds = [event["kind"] for event in events]
+    failure = events[kinds.index("failure")]
+    assert {k: failure[k] for k in ("category", "headline", "retries", "action")} == {
+        "category": "internal", "headline": "Something went wrong inside Phil (RuntimeError).",
+        "retries": "Phil won't retry this.", "action": "Details: /more 1",
+    }
+    assert kinds.index("failure") < len(kinds) - 1 - kinds[::-1].index("state")  # before the failed state
+
+
+def test_a_failure_that_cant_be_classified_still_marks_the_run_failed(calc_repo, monkeypatch):
+    def broken(exc, **kw):
+        raise RuntimeError("classifier broke")
+
+    monkeypatch.setattr(worker_module, "classify_failure", broken)
+    info, record = new_run(calc_repo)
+    crashing = ScriptedAgentFactory({"implementer": [write_red, RuntimeError("model went away")]})
+    with pytest.raises(RuntimeError, match="model went away"):
+        run_worker(calc_repo, record.run_id, "start", factory=crashing)
+    assert row(info, record.run_id).state == "failed"
+
+
 def test_crash_marks_failed_and_continue_recovers(calc_repo):
     info, record = new_run(calc_repo)
     crashing = ScriptedAgentFactory({"implementer": [write_red, RuntimeError("model went away")]})

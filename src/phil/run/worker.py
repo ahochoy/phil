@@ -10,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from phil import platform
+from phil.agents.failures import classify_failure
 from phil.agents.invoke import AgentFactory
 from phil.config import PhilConfig, load_config
 from phil.repo import resolve_repo
@@ -260,6 +261,12 @@ def run_worker(
             _logger.warning("kill_active_groups failed while handling a worker exception", exc_info=True)
         message = f"worker failed: {type(exc).__name__}: {exc}"[:500]
         if claimed:
+            # What failed, in plain words, for the chat's failure callout. Written before the state,
+            # so a chat that sees the run fail finds it; it never gets in the way of recording that.
+            try:
+                events.append("failure", **classify_failure(exc).as_dict())
+            except BaseException:
+                _logger.warning("failed to record the failure of run %s", run_id, exc_info=True)
             try:
                 final_state = _record_terminal_state(conn, run_id, "failed", message)
                 if final_state == "failed":

@@ -27,23 +27,38 @@ class ManualWatcher(RunWatcher):
         super().stop()
 
 
-def run_chat(repo, answers, scripts, config=None, submit=None, wake=None, **kw):
-    """Drive a chat. Script items are strings, None (EOF), or callables `(controller) -> str | None | WAKE`."""
+def run_chat(repo, answers, scripts, config=None, submit=None, wake=None, choose=False, calls=None, **kw):
+    """Drive a chat. Script items are strings, None (EOF), or callables `(controller) -> str | None | WAKE`.
+
+    `choose=True` gives the fake ChatIO a `choose` that takes its answers from the same script (a
+    script item may then also be TYPE). `calls`, if given, records every io call in order:
+    `("ask", prompt)` or `("choose", prompt, decision)`."""
     info = resolve_repo(repo)
     conn = connect(ProjectPaths(info.slug).db_path)
     console = make_console(record=True, width=120)
     queue = list(answers)
     spawned = []
     holder = {}
+    calls = calls if calls is not None else []
 
-    def ask(prompt):
-        holder.setdefault("prompts", []).append(prompt)
+    def next_item():
         if not queue:
             return None
         item = queue.pop(0)
         return item(holder["controller"]) if callable(item) else item
 
+    def ask(prompt):
+        holder.setdefault("prompts", []).append(prompt)
+        calls.append(("ask", prompt))
+        return next_item()
+
+    def choose_one(prompt, decision):
+        calls.append(("choose", prompt, decision))
+        return next_item()
+
     io = ChatIO(ask=ask, spawn=lambda root, run_id, mode, decision=None: spawned.append((run_id, mode, decision)))
+    if choose:
+        io.choose = choose_one
     if submit is not None:
         io.submit = submit
     if wake is not None:
@@ -169,10 +184,11 @@ def test_bad_test_command_blocks_approval(calc_repo):
 
 def test_agent_failure_returns_to_the_prompt(calc_repo):
     text, spawned, runs, *_ = run_chat(
-        calc_repo, ["add subtract", "/help"],
+        calc_repo, ["add subtract", "/more 1", "/help"],
         {"intake": [RuntimeError("provider down")]},
     )
-    assert "couldn't finish that" in text and "provider down" in text
+    assert "✗ Something went wrong inside Phil (RuntimeError)." in text
+    assert "RuntimeError: provider down" in text  # the raw error, behind /more 1
     assert "/runs" in text  # help printed after the failure: the loop kept going
 
 
@@ -236,9 +252,9 @@ def test_slash_command_failure_does_not_crash_the_repl(calc_repo, monkeypatch):
         raise RuntimeError("db exploded")
 
     monkeypatch.setattr(controller_mod, "render_runs", boom)
-    text, spawned, runs, *_ = run_chat(calc_repo, ["/runs", "/help"], {})
-    assert "couldn't finish that" in text
-    assert "db exploded" in text
+    text, spawned, runs, *_ = run_chat(calc_repo, ["/runs", "/more 1", "/help"], {})
+    assert "✗ Something went wrong inside Phil (RuntimeError)." in text
+    assert "db exploded" in text  # the raw error, behind /more 1
     assert "Commands: /runs" in text  # /help printed after recovering: the loop kept going
 
 
@@ -355,6 +371,11 @@ def session_dir(repo):
     return directory
 
 
+def last_error(repo):
+    """The raw error of the chat's last failure callout (its /more 1)."""
+    return (session_dir(repo) / "last_error.txt").read_text(encoding="utf-8")
+
+
 def transcript(repo):
     return [json.loads(line) for line in (session_dir(repo) / "transcript.jsonl").read_text().splitlines()]
 
@@ -425,7 +446,8 @@ def test_prepare_failure_is_noted_and_reported(calc_repo, monkeypatch):
     text, spawned, runs, *_ = run_chat(
         calc_repo, ["add subtract", "y", "/help"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}
     )
-    assert "disk full" in text
+    assert "Details: /more 1" in text  # a failure callout
+    assert "RuntimeError: disk full" in last_error(calc_repo)
     assert "Commands: /runs" in text
     kinds = [e["kind"] for e in transcript(calc_repo)]
     assert "start_failed" in kinds and "approved" not in kinds
@@ -662,7 +684,8 @@ def test_failed_revise_keeps_the_draft(calc_repo):
         ["add subtract", "edit", "make it two tasks", "y"],
         {"intake": [goal()], "architect": [plan(), RuntimeError("provider down")], "critic": [critique()]},
     )
-    assert "couldn't finish that" in text and "provider down" in text
+    assert "✗ Something went wrong inside Phil (RuntimeError)." in text
+    assert "provider down" in last_error(calc_repo)
     assert prompts[3] == "Approve? [y / edit / n] › "
     assert len(runs) == 1 and runs[0].tasks_total == 1
 
@@ -762,7 +785,8 @@ def test_a_failing_event_handler_does_not_strand_the_stage(calc_repo, monkeypatc
         calc_repo, ["add subtract", "add multiply", "/quit"],
         {"intake": [goal(), goal("Add multiply")], "architect": [plan()] * 2, "critic": [critique()] * 2},
     )
-    assert "transcript unwritable" in text
+    assert "Details: /more 1" in text  # a failure callout
+    assert "transcript unwritable" in last_error(calc_repo)
     assert prompts == ["you › ", "you › ", "you › "]  # back at idle: the next goal starts, no replace question
 
 
@@ -784,7 +808,8 @@ def test_a_failing_revise_handler_returns_to_approval(calc_repo, monkeypatch):
         calc_repo, ["add subtract", "edit", "two tasks", "y"],
         {"intake": [goal()], "architect": [plan(), plan(n=2)], "critic": [critique()] * 2},
     )
-    assert "transcript unwritable" in text
+    assert "Details: /more 1" in text  # a failure callout
+    assert "transcript unwritable" in last_error(calc_repo)
     assert prompts[3] == "Approve? [y / edit / n] › "
     assert len(runs) == 1 and runs[0].tasks_total == 1
 

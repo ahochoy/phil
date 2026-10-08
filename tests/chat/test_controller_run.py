@@ -18,7 +18,7 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
 from phil.store.telemetry import budget_warning_line
 from tests.chat.conftest import critique, goal, plan
-from tests.chat.test_controller import FULL_SCRIPT, deferred, run_chat, session_dir
+from tests.chat.test_controller import FULL_SCRIPT, deferred, last_error, run_chat, session_dir
 
 PAUSE_PROMPT = "CALC-001 failed 3 attempts — retry / skip / abort › "
 HINT_PROMPT = "Hint for the retry (optional) › "
@@ -402,7 +402,8 @@ def test_a_failing_btw_render_keeps_the_approval_stage(calc_repo, monkeypatch):
         ["add subtract", "/btw hi", peek(seen, "btw", lambda c: c.state.view().btw_pending), "y"],
         {**FULL_SCRIPT, "btw": [Brief(headline="x")]},
     )
-    assert "render broke" in text
+    assert "✗ Something went wrong inside Phil (RuntimeError)." in text
+    assert "render broke" in last_error(calc_repo)
     assert prompts[1:4] == ["Approve? [y / edit / n] › "] * 3
     assert seen["btw"] == 0 and len(runs) == 1
 
@@ -427,7 +428,8 @@ def test_recover_to_idle_bumps_the_generation(calc_repo, monkeypatch):
         FULL_SCRIPT,
         submit=submit,
     )
-    assert "transcript unwritable" in text
+    assert "Details: /more 1" in text  # a failure callout
+    assert "transcript unwritable" in last_error(calc_repo)
     assert seen["after"] == (seen["before"] + 1, "idle")
 
 
@@ -576,7 +578,9 @@ def test_a_failing_completion_notice_still_ends_the_run(calc_repo):
          peek(seen, "after", lambda c: (c.stage, c._run_id, c._done_seen))],
         FULL_SCRIPT,
     )
-    assert "couldn't finish that" in text
+    assert "Details: /more 1" in text  # a failure callout
+    assert "✗ Something went wrong inside Phil (ValueError)." in text
+    assert last_error(calc_repo).startswith("ValueError: ")  # "lots" can't be formatted as a number
     assert seen["w"].stopped and seen["after"] == ("idle", None, True)
 
 
