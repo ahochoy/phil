@@ -95,7 +95,11 @@ class TerminalIO:
         # interrupted, carried into the next menu.
         self._decision: Decision | None = None
         self._choice = 0
-        self._carried_choice: int | None = None
+        # (decision, highlight) a wake interrupted; reused only when the same decision comes back.
+        self._carried_choice: tuple[Decision, int] | None = None
+        # A lone Esc picks "type instead" in the menu; prompt_toolkit's default 0.5s wait for a
+        # longer escape sequence would make it feel stuck, and real sequences arrive far faster.
+        self.session.app.ttimeoutlen = 0.05
         # The menu takes no typed text (pasted or yanked text included).
         self.session.default_buffer.read_only = Condition(lambda: self._decision is not None)
         # Jobs run on daemon threads, at most MAX_JOBS at once: they only post events and the chat is
@@ -130,6 +134,7 @@ class TerminalIO:
                 self._wake_pending = False
                 return WAKE
         default, self._carried = self._carried, Document()
+        self._carried_choice = None  # a menu's highlight doesn't survive a typed prompt
         try:
             return self.session.prompt(self._message(prompt), default=default, pre_run=self._started)
         except EOFError:
@@ -159,16 +164,24 @@ class TerminalIO:
         """Dock `decision`'s callout above the input and answer it from the keyboard: ↑/↓ move the
         highlight (wrapping), Enter picks it, 1-9 pick at once, Esc returns `TYPE` (the user wants
         to type instead). Returns the picked option's answer, `TYPE`, `WAKE` (keeping the
-        highlight for the next menu) or None (EOF). Typed text never reaches the buffer."""
+        highlight for the next menu of the same decision) or None (EOF). Typed text never reaches
+        the buffer. `prompt` isn't shown: the callout's title says what is being asked."""
         with self._lock:
             if self._wake_pending:
                 self._wake_pending = False
                 return WAKE
-        self._choice = self._carried_choice if self._carried_choice is not None else decision.default
-        self._carried_choice = None
+        n = len(decision.options)
+
+        def in_range(index: int) -> bool:
+            return 0 <= index < n
+
+        carried, self._carried_choice = self._carried_choice, None
+        start = decision.default if in_range(decision.default) else 0
+        if carried is not None and carried[0] == decision and in_range(carried[1]):
+            start = carried[1]
+        self._choice = start
         self._decision = decision
         bindings = KeyBindings()
-        n = len(decision.options)
 
         @bindings.add("up")
         def _up(event) -> None:
@@ -180,7 +193,8 @@ class TerminalIO:
 
         @bindings.add("enter")
         def _enter(event) -> None:
-            event.app.exit(result=decision.options[self._choice].answer)
+            if in_range(self._choice):  # never index out of range inside a key handler
+                event.app.exit(result=decision.options[self._choice].answer)
 
         for digit in range(1, min(n, 9) + 1):
 
@@ -197,6 +211,7 @@ class TerminalIO:
             pass  # the menu takes no typed text
 
         self.session.app.erase_when_done = True  # the docked box never stays in the scrollback
+        previous_bindings = self.session.key_bindings
         try:
             return self.session.prompt(self._decision_message(decision), key_bindings=bindings,
                                        pre_run=self._started)
@@ -206,7 +221,7 @@ class TerminalIO:
             with self._lock:
                 self._active = False
             self._decision = None
-            self.session.key_bindings = None  # prompt() keeps the bindings it's given; ask has none
+            self.session.key_bindings = previous_bindings  # prompt() keeps the bindings it's given
             self.session.app.erase_when_done = False  # as ask expects: a submitted line stays
 
     def _decision_message(self, decision: Decision) -> Callable[[], FormattedText]:
@@ -242,7 +257,8 @@ class TerminalIO:
         if app.future is None or app.future.done():
             return  # the prompt already finished (the user pressed Enter first)
         if self._decision is not None:
-            self._carried_choice = self._choice  # the next menu opens on the same highlight
+            # the next menu of the same decision opens on the same highlight
+            self._carried_choice = (self._decision, self._choice)
         else:
             self._carried = app.current_buffer.document  # text and cursor position
         app.erase_when_done = True  # the prompt comes straight back; leave no stale line behind

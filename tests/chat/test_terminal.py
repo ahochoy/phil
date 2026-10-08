@@ -405,7 +405,6 @@ def pipe():
 @pytest.fixture
 def terminal_io(pipe):
     terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
-    terminal.session.app.ttimeoutlen = 0.05  # a lone Esc is flushed quickly instead of after 0.5s
     yield terminal
     terminal.close()
 
@@ -458,6 +457,24 @@ def test_escape_returns_type(terminal_io, pipe):
     begin = time.monotonic()
     assert _choose(terminal_io, D) is TYPE
     assert time.monotonic() - begin < 2.0
+
+
+def test_a_lone_escape_is_flushed_quickly():
+    """A production-built TerminalIO doesn't wait prompt_toolkit's default 0.5s for a longer sequence."""
+    with create_pipe_input() as pipe_input:
+        terminal = TerminalIO(lambda: "", input=pipe_input, output=DummyOutput())
+        assert terminal.session.app.ttimeoutlen <= 0.1
+
+
+def test_ctrl_c_in_the_menu_leaves_a_normal_prompt(terminal_io, pipe):
+    pipe.send_text("\x03")
+    with pytest.raises(KeyboardInterrupt):
+        _choose(terminal_io, D)
+    assert terminal_io.session.key_bindings is None  # no menu bindings left behind
+    assert not terminal_io.session.default_buffer.read_only()
+    io_ = terminal_io.chat_io(lambda *a: None)
+    pipe.send_text("abc\n")
+    assert _ask(io_) == "abc"
 
 
 def test_ask_still_takes_typed_text_after_a_menu(terminal_io, pipe):
@@ -527,6 +544,60 @@ def test_a_wake_keeps_the_highlight(terminal_io, pipe):
     assert _choose(terminal_io, D) == "abort"  # the highlight was kept
     pipe.send_text("\r")
     assert _choose(terminal_io, D) == "retry"  # and only carried into the one next menu
+
+
+def _wake_on_highlight(terminal: TerminalIO, index: int) -> threading.Thread:
+    def poke() -> None:
+        deadline = time.monotonic() + TIMEOUT
+        while time.monotonic() < deadline:
+            if terminal.prompting and terminal._choice == index:
+                break
+            time.sleep(0.01)
+        terminal.wake()
+
+    thread = threading.Thread(target=poke, daemon=True)
+    thread.start()
+    return thread
+
+
+def test_a_carried_highlight_only_applies_to_the_same_decision(terminal_io, pipe):
+    pipe.send_text("\x1b[B\x1b[B")  # highlight 2 of D3's three options
+    thread = _wake_on_highlight(terminal_io, 2)
+    assert _choose(terminal_io, D3) is WAKE
+    thread.join(TIMEOUT)
+    pipe.send_text("\r")
+    assert _choose(terminal_io, D) == "retry"  # a different, shorter menu opens on its own default
+    pipe.send_text("\r")
+    assert _choose(terminal_io, D) == "retry"  # and the prompt still works
+    pipe.send_text("\x1b[B")  # highlight 1 of D3: in range for D too, but D is another decision
+    thread = _wake_on_highlight(terminal_io, 1)
+    assert _choose(terminal_io, D3) is WAKE
+    thread.join(TIMEOUT)
+    pipe.send_text("\r")
+    assert _choose(terminal_io, D) == "retry"
+
+
+def test_a_typed_prompt_clears_a_carried_highlight(terminal_io, pipe):
+    pipe.send_text("\x1b[B")
+    thread = _wake_on_highlight(terminal_io, 1)
+    assert _choose(terminal_io, D) is WAKE
+    thread.join(TIMEOUT)
+    pipe.send_text("x\n")
+    assert _ask(terminal_io.chat_io(lambda *a: None)) == "x"
+    pipe.send_text("\r")
+    assert _choose(terminal_io, D) == "retry"
+
+
+def test_an_out_of_range_default_falls_back_to_the_first_option(terminal_io, pipe):
+    pipe.send_text("\r")
+    assert _choose(terminal_io, Decision("confirm", "t", (), D.options, default=5)) == "retry"
+
+
+def test_prompt_toolkit_styles_cover_the_real_theme():
+    from phil.ui.theme import PHIL_THEME, prompt_toolkit_styles
+
+    rules = prompt_toolkit_styles()  # raises if the theme has a style the prompt can't show
+    assert {n for n in PHIL_THEME.styles if n.startswith("phil.callout.")} | {"live"} == set(rules)
 
 
 def test_the_menu_message_docks_the_callout_under_the_live_row():
