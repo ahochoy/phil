@@ -49,7 +49,7 @@ from phil.chat.overview import repo_overview
 from phil.chat.planning import Planner, PlanDraft, PlanningBudgetExceeded, intake, quick_plan
 from phil.chat.session import ChatSession
 from phil.chat.snapshot import export_tree, export_worktree
-from phil.chat.state import ChatState, LiveStep, RunView
+from phil.chat.state import ChatState, LiveStep, RunView, SideJob, SubAgent
 from phil.chat.watcher import RunWatcher
 from phil.config import ConfigError, PhilConfig, load_config
 from phil.contracts import Approach, Approaches, Goal, Plan, PlanCritique, Question, Ref, RunStatus
@@ -79,7 +79,7 @@ from phil.ui.feed_view import FeedRenderer
 from phil.ui.plan_view import _clip, render_goal, render_plan
 from phil.ui.runs_view import render_runs
 from phil.ui.show_view import detail_text, render_show, show_refs
-from phil.ui.toolbar import short_model
+from phil.ui.toolbar import _fit, short_model
 
 logger = logging.getLogger(__name__)  # the chat sends `phil` loggers to its phil.log, never the console
 
@@ -94,9 +94,11 @@ HELP = (
     "Commands: /runs, /btw <question> (ask while work continues), "
     "/answer (a paused run's question), /resume (a failed or stopped run), /show (the chat's run: usage "
     "and numbered details), /more <n> (print detail n), /more #<step> (a feed step's detail), "
-    "/park <note> (set an idea aside), /help, "
+    "/feed <agent> (show one agent's lines; /feed to show all), /park <note> (set an idea aside), /help, "
     "/quit (or Ctrl-D)."
 )
+FEED_AGENTS = ("implementer", "tester", "reviewer", "architect", "sub-agent", "engine")
+SIDE_LABEL_CHARS = 60  # a /btw question's live-row label, quotes included
 PROMPTS = {
     "questions": "answers (or 'go' to plan anyway) › ",
     "approval": "Approve? [y / edit / n] › ",
@@ -122,7 +124,7 @@ GOAL_JOB_STAGES = ("routing", "intake", "planning", "answering", "designing")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
 RUN_EVENTS = (
     "run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning",
-    "budget_raised", "test_cmd_changed", "activity", "milestone", "live_step",
+    "budget_raised", "test_cmd_changed", "activity", "milestone", "live_step", "live_agents",
 )
 RECENT_EVENTS = 10  # run events a /btw answer sees
 NOTICE_REFS = 3  # details a completion notice lists
@@ -245,6 +247,8 @@ class ChatController:
         self._shown_setup_cmd: str | None = None  # the setup command in the last plan render, pinned into its run
         self._revising = False
         self._feed = FeedRenderer()  # the run's tool lines and milestone bands
+        self._feed_filter: str | None = None  # /feed <agent>: only that agent's tool lines print
+        self._hidden = 0  # tool steps (end records) the filter has hidden since it was set
         self._base_sha: str | None = None
         self._done_seen = False
         self._replacement = ""
@@ -762,6 +766,8 @@ class ChatController:
             self._show_command()
         elif command == "/more":
             self._more_command(text[len(command):].strip())
+        elif command == "/feed":
+            self._feed_command(text[len(command):].strip())
         elif command == "/park":
             self._park_command(text[len(command):].strip())
         else:
@@ -1543,8 +1549,11 @@ class ChatController:
         self._clear_run()
 
     def _clear_run(self) -> None:
-        """The watcher is stopped: drop the run's toolbar state (its progress, live step and pause)."""
+        """The watcher is stopped: drop the run's toolbar state (its progress, live step, sub-agents
+        and pause) and the feed filter."""
         self.state.set_live(None)
+        self.state.set_subs(())
+        self._set_feed_filter(None)
         self.state.set_run(None)
         self.state.set_paused(False)
         self._clear_run_status()
@@ -1595,7 +1604,15 @@ class ChatController:
         self.console.print(f"[phil.warn]{escape(test_cmd_changed_line(str(data.get('cmd'))))}[/]")
 
     def _on_activity(self, data: dict) -> None:
-        for line in self._feed.tool_lines(data.get("records", []), self.console.width):
+        records = data.get("records", [])
+        agent = self._feed_filter
+        if agent is not None:
+            # Before folding and the burst cap, so they count only shown lines. Start records pass:
+            # the renderer draws only end records.
+            shown = [r for r in records if r.get("phase") != "end" or _shows(r, agent)]
+            self._hidden += len(records) - len(shown)
+            records = shown
+        for line in self._feed.tool_lines(records, self.console.width):
             self.console.print(line, soft_wrap=True)
 
     def _on_milestone(self, data: dict) -> None:
@@ -1610,6 +1627,15 @@ class ChatController:
                 started=float(data.get("started", time.time())),
             ))
         self._refresh_model()
+
+    def _on_live_agents(self, data: dict) -> None:
+        # `main` is the live step, which arrives as its own `live_step` event.
+        self.state.set_subs(tuple(
+            SubAgent(seq=int(sub.get("seq", 0)), description=str(sub.get("description", "")),
+                     summary=None if sub.get("summary") is None else str(sub["summary"]),
+                     started=float(sub.get("started", time.time())))
+            for sub in data.get("subs") or ()
+        ))
 
     def _on_run_paused(self, data: dict) -> None:
         escalation = data["escalation"]
@@ -1829,6 +1855,7 @@ class ChatController:
     def _on_worker_lost(self, data: dict) -> None:
         self._lost = True
         self.state.set_live(None)  # the step it was running isn't running any more
+        self.state.set_subs(())  # nor its sub-agents
         self.console.print(
             f"[phil.warn]The worker for {escape(self._run_id)} stopped responding. Continue it with /resume.[/]"
         )
@@ -1959,6 +1986,35 @@ class ChatController:
         self._refresh_parked()
         self.console.print(f"Parked [phil.id]{escape(item.id)}[/].")
 
+    # --- /feed -----------------------------------------------------------------------------------
+
+    def _set_feed_filter(self, agent: str | None) -> None:
+        self._feed_filter, self._hidden = agent, 0
+        self.state.set_feed_filter(agent)
+
+    def _feed_command(self, arg: str) -> None:
+        if arg:
+            if arg not in FEED_AGENTS:
+                self.console.print(f"Pick one of: {', '.join(FEED_AGENTS)}.")
+                return
+            if self._run_id is None:
+                self.console.print("No run to filter yet.")
+                return
+            if self._hidden:  # switching filters: report what the old one hid first
+                self.console.print(self._hidden_line(), soft_wrap=True)
+            self._set_feed_filter(arg)
+            self.console.print(f"Showing only the {arg}'s lines. /feed to show everything.")
+            return
+        line = self._hidden_line() if self._hidden else "Showing everything again."
+        self._set_feed_filter(None)
+        self.console.print(line, soft_wrap=True)
+
+    def _hidden_line(self) -> str:
+        """What the filter hid, in steps (records, which a fold may draw as one line)."""
+        n = self._hidden
+        steps = "1 step from other agents was" if n == 1 else f"{n} steps from other agents were"
+        return f"Showing everything again. {steps} hidden."
+
     # --- /btw ------------------------------------------------------------------------------------
 
     def _btw(self, question: str) -> None:
@@ -1974,6 +2030,8 @@ class ChatController:
         self._btw_calls += 1
         call = self._btw_calls
         self.state.add_btw(1)
+        job = SideJob(_quoted(question), time.time())
+        self.state.add_side(job)  # its own live-row line until the answer or failure lands
 
         def fn(ctx: AgentContext) -> dict:
             tree = None
@@ -1984,9 +2042,9 @@ class ChatController:
                 ctx, question, goal=goal, plan=plan, run=run, recent_events=recent,
                 pending_question=pending, tree=tree, call=call,
             )
-            return {"brief": brief, "question": question, "tree": tree}
+            return {"brief": brief, "question": question, "tree": tree, "side": job}
 
-        self._job("btw_answer", fn, generation=-1, failed="btw_failed")
+        self._job("btw_answer", fn, generation=-1, failed="btw_failed", failed_data={"side": job})
 
     def _run_context(self) -> tuple[RunStatus | None, list[str]]:
         if self._run_id is None:
@@ -2007,6 +2065,7 @@ class ChatController:
 
     def _on_btw_answer(self, data: dict) -> None:
         self.state.add_btw(-1)
+        self._end_side(data)
         brief = data["brief"]
         self._safe_note("btw", question=data.get("question"), brief=brief.model_dump(mode="json"))
         self.console.print("[phil.muted]btw ›[/]")
@@ -2016,7 +2075,13 @@ class ChatController:
 
     def _on_btw_failed(self, data: dict) -> None:
         self.state.add_btw(-1)
+        self._end_side(data)
         self._failed(data["error"], data.get("failure"), note="btw_failed")
+
+    def _end_side(self, data: dict) -> None:
+        job = data.get("side")
+        if isinstance(job, SideJob):
+            self.state.remove_side(job)
 
     # --- pull requests ---------------------------------------------------------------------------
 
@@ -2278,6 +2343,19 @@ def _count(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
+
+
+def _shows(record: dict, agent: str) -> bool:
+    """Whether the feed filtered to `agent` shows this tool record. A sub-agent's records keep the
+    role of the agent that started it, so they show under that agent too."""
+    if agent == "sub-agent":
+        return "sub_id" in record
+    return record.get("role") == agent
+
+
+def _quoted(question: str) -> str:
+    """A /btw question as its live-row label: in quotes, cut with … to `SIDE_LABEL_CHARS` cells."""
+    return f'"{_fit(" ".join(question.split()), SIDE_LABEL_CHARS - 1)}"'
 
 
 def _short_event(event: dict) -> str:

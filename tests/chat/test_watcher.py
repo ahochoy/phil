@@ -9,6 +9,7 @@ from phil.store.db import connect
 from phil.store.events import EventLog, run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import update_run
+from phil.ui.feed_view import _seconds
 from tests.run.conftest import calc_plan
 
 
@@ -454,11 +455,11 @@ def test_ending_an_older_call_with_the_same_summary_keeps_the_newer_live(calc_re
 
 
 def test_when_the_live_call_ends_the_newest_open_call_becomes_live(calc_repo):
-    """Start 1 (an outer sub-agent), start 2, end 2: the live step falls back to seq 1, not empty."""
+    """Start 1, start 2, end 2: the live step falls back to seq 1, not empty."""
     paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
     update_run(conn, run_id, state="running")
     log = activity_log(paths, run_id)
-    outer = log.start(task="CALC-001", role="implementer", tool="task", summary="agent explore the repo")
+    outer = _shell(log, "pytest -q tests/slow", end=False)
     watcher.poll_once()
     inner = _shell(log, end=False)
     watcher.poll_once()
@@ -470,7 +471,202 @@ def test_when_the_live_call_ends_the_newest_open_call_becomes_live(calc_repo):
     watcher.poll_once()
     live = [e for e in posted if e.kind == "live_step"]
     assert len(live) == 3
-    assert (live[2].data["seq"], live[2].data["summary"]) == (outer, "agent explore the repo")
+    assert (live[2].data["seq"], live[2].data["summary"]) == (outer, "run pytest -q tests/slow")
+
+
+def test_a_sub_agent_is_not_the_live_step(calc_repo):
+    """An open `task` call is a sub-agent (live_agents' subs), not the main agent's live step: with
+    only it open there is no live step, and the main agent's own call is live while it runs."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    log.start(task="CALC-001", role="implementer", tool="task", summary="sub-agent: explore the repo")
+    watcher.poll_once()
+    assert "live_step" not in kinds(posted)
+    own = _shell(log, end=False)
+    watcher.poll_once()
+    log.end(own, task="CALC-001", role="implementer", tool="run_shell", summary="run pytest -q",
+            result="→ 7 passed", ok=True, detail=None, duration_ms=900)
+    watcher.poll_once()
+    assert [e.data.get("seq") for e in posted if e.kind == "live_step"] == [own, None]
+
+
+# --- every active agent ----------------------------------------------------------------------------
+
+
+def _agents(posted):
+    return [e.data for e in posted if e.kind == "live_agents"]
+
+
+def _start_ts(log, seq):
+    return _seconds(next(r for r in log.read()[0] if r["seq"] == seq and r["phase"] == "start")["ts"])
+
+
+def test_watcher_posts_main_and_subs(calc_repo):
+    """Open records: a `task` start (seq 5, role implementer, summary 'sub-agent: explore'), an inner
+    read_file start with sub_id=5 and sub='explore' (seq 6), and an implementer run_shell start (seq 7,
+    no sub_id). One poll posts live_agents with main.seq == 7 and subs == [{seq: 5, description: 'explore',
+    summary: 'read <path>', started: <the task start's time>}]. After an end record for 6, subs[0].summary
+    is None. After an end for 5, subs == []."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    for _ in range(4):
+        _shell(log)
+    watcher.poll_once()
+    task = log.start(task="CALC-001", role="implementer", tool="task", summary="sub-agent: explore")
+    inner = log.start(task="CALC-001", role="implementer", tool="read_file", summary="read calc.py",
+                      extra={"sub_id": 5, "sub": "explore"})
+    own = _shell(log, end=False)
+    assert (task, inner, own) == (5, 6, 7)
+    watcher.poll_once()
+    agents = _agents(posted)
+    assert len(agents) == 1
+    assert agents[0]["main"]["seq"] == 7
+    assert agents[0]["subs"] == [
+        {"seq": 5, "description": "explore", "summary": "read calc.py", "started": _start_ts(log, 5)}
+    ]
+
+    log.end(inner, task="CALC-001", role="implementer", tool="read_file", summary="read calc.py", result="",
+            ok=True, detail=None, duration_ms=3, extra={"sub_id": 5, "sub": "explore"})
+    watcher.poll_once()
+    agents = _agents(posted)
+    assert len(agents) == 2 and agents[1]["subs"][0]["summary"] is None
+    assert agents[1]["main"]["seq"] == 7
+
+    log.end(task, task="CALC-001", role="implementer", tool="task", summary="sub-agent: explore", result="",
+            ok=True, detail=None, duration_ms=30)
+    watcher.poll_once()
+    agents = _agents(posted)
+    assert len(agents) == 3 and agents[2]["subs"] == []
+    assert agents[2]["main"]["seq"] == 7
+
+
+def test_a_nested_task_is_its_own_sub_not_its_parents_current_call(calc_repo):
+    """Outer task 5, nested task 6 (sub_id=5), inner read 7 (sub_id=6): two subs, the outer one with
+    no current call, the nested one with the read."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    for _ in range(4):
+        _shell(log)
+    watcher.poll_once()
+    outer = log.start(task="CALC-001", role="implementer", tool="task", summary="sub-agent: explore")
+    nested = log.start(task="CALC-001", role="implementer", tool="task", summary="sub-agent: dig",
+                       extra={"sub_id": outer, "sub": "explore"})
+    read = log.start(task="CALC-001", role="implementer", tool="read_file", summary="read calc.py",
+                     extra={"sub_id": nested, "sub": "dig"})
+    assert (outer, nested, read) == (5, 6, 7)
+    watcher.poll_once()
+    subs = _agents(posted)[-1]["subs"]
+    assert [(sub["seq"], sub["description"], sub["summary"]) for sub in subs] == [
+        (5, "explore", None), (6, "dig", "read calc.py"),
+    ]
+    assert _agents(posted)[-1]["main"] is None
+
+
+def test_an_orphan_sub_keeps_the_start_of_its_oldest_inner_call(calc_repo):
+    """Inner calls whose `task` start wasn't seen: the sub's `started` is the oldest inner call seen,
+    and stays so after that call ends."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    first = log.start(task="CALC-001", role="implementer", tool="read_file", summary="read a.py",
+                      extra={"sub_id": 99, "sub": "explore"})
+    watcher.poll_once()
+    second = log.start(task="CALC-001", role="implementer", tool="read_file", summary="read b.py",
+                       extra={"sub_id": 99, "sub": "explore"})
+    log.end(first, task="CALC-001", role="implementer", tool="read_file", summary="read a.py", result="",
+            ok=True, detail=None, duration_ms=3, extra={"sub_id": 99, "sub": "explore"})
+    watcher.poll_once()
+    agents = _agents(posted)
+    assert [a["subs"] for a in agents] == [
+        [{"seq": 99, "description": "explore", "summary": "read a.py", "started": _start_ts(log, first)}],
+        [{"seq": 99, "description": "explore", "summary": "read b.py", "started": _start_ts(log, first)}],
+    ]
+    assert _start_ts(log, second) >= _start_ts(log, first)
+
+
+def test_an_old_runs_task_and_engine_records_render_as_sub_and_fallback(calc_repo):
+    """An old run (no sub fields) with an open `task` and an open engine call: the task is a sub-agent,
+    not the live step; the engine call is main only while the main agent has no call of its own.
+    (Before live_agents, the newest open call, whatever it was, was the live step.)"""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    task = log.start(task="CALC-001", role="implementer", tool="task", summary="agent explore the repo")
+    gate = log.start(task="CALC-001", role="engine", tool="run_tests", summary="gate green")
+    watcher.poll_once()
+    agents = _agents(posted)
+    assert agents[-1]["main"]["seq"] == gate
+    assert [(s["seq"], s["description"], s["summary"]) for s in agents[-1]["subs"]] == [
+        (task, "agent explore the repo", None)
+    ]
+    own = _shell(log, end=False)
+    watcher.poll_once()
+    assert _agents(posted)[-1]["main"]["seq"] == own
+    assert [e.data.get("seq") for e in posted if e.kind == "live_step"] == [gate, own]
+
+
+def test_an_engine_record_is_main_only_when_nothing_else_is_open(calc_repo):
+    """Open: an engine gate start, plus an implementer start: main is the implementer's. After the
+    implementer ends, main is the gate."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    gate = log.start(task="CALC-001", role="engine", tool="run_tests", summary="gate green")
+    own = _shell(log, end=False)
+    watcher.poll_once()
+    assert _agents(posted)[-1]["main"]["seq"] == own
+
+    log.end(own, task="CALC-001", role="implementer", tool="run_shell", summary="run pytest -q",
+            result="→ 7 passed", ok=True, detail=None, duration_ms=900)
+    watcher.poll_once()
+    assert _agents(posted)[-1]["main"]["seq"] == gate
+    assert [e.data.get("seq") for e in posted if e.kind == "live_step"] == [own, gate]
+
+
+def test_spawn_clears_every_agent(calc_repo):
+    """With a sub open, a spawn event read in the next poll posts live_agents with main None and subs []."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    task = log.start(task="CALC-001", role="implementer", tool="task", summary="sub-agent: explore")
+    log.start(task="CALC-001", role="implementer", tool="read_file", summary="read calc.py",
+              extra={"sub_id": task, "sub": "explore"})
+    own = _shell(log, end=False)
+    watcher.poll_once()
+    agents = _agents(posted)
+    assert [sub["seq"] for sub in agents[-1]["subs"]] == [task]
+    assert agents[-1]["main"]["seq"] == own
+
+    events.append("spawn", pid=12345, mode="resume")
+    watcher.poll_once()
+    agents = _agents(posted)
+    assert agents[-1] == {"main": None, "subs": []}
+
+
+def test_old_records_without_sub_fields_track_as_before(calc_repo):
+    """Records with no sub_id (an old run): live_step and live_agents.main match today's newest-open
+    rule, and subs is []."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    first = _shell(log, "pytest -q tests/slow", end=False)
+    second = _shell(log, end=False)
+    watcher.poll_once()
+    log.end(second, task="CALC-001", role="implementer", tool="run_shell", summary="run pytest -q",
+            result="→ 7 passed", ok=True, detail=None, duration_ms=900)
+    watcher.poll_once()
+    log.end(first, task="CALC-001", role="implementer", tool="run_shell", summary="run pytest -q tests/slow",
+            result="→ 7 passed", ok=True, detail=None, duration_ms=900)
+    watcher.poll_once()
+    live = [e.data for e in posted if e.kind == "live_step"]
+    agents = _agents(posted)
+    assert [step.get("seq") for step in live] == [second, first, None]
+    assert [a["main"]["seq"] if a["main"] else None for a in agents] == [second, first, None]
+    assert all(a["subs"] == [] for a in agents)
+    assert [a["main"] for a in agents[:2]] == live[:2]
 
 
 def test_a_spawn_clears_the_previous_workers_unfinished_calls(calc_repo):

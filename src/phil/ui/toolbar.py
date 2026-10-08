@@ -170,19 +170,119 @@ def render_toolbar(view: ToolbarView, now: float, width: int | None = None) -> F
     return frags
 
 
-def render_live_row(view: ToolbarView, now: float, width: int | None = None) -> str:
-    """The live row above the input: the running tool, else the run's stage; empty without a run."""
-    if view.run is None:
-        return ""
-    if view.live is not None:
-        live = view.live
-        frame = SPINNER[int((now - live.started) * 8) % len(SPINNER)]
-        parts = [p for p in (live.task, live.role, live.summary, elapsed(now - live.started)) if p]
-        text = f"{frame} " + " · ".join(parts)
-    else:
-        node = view.run.node or "starting"
-        text = "  " + NODE_LABELS.get(node, node)
-    return _fit(text, width)
+MAX_LIVE_LINES = 3
+
+
+def _spin(style: str, started: float, now: float) -> tuple[str, str]:
+    return (style, SPINNER[int((now - started) * 8) % len(SPINNER)])
+
+
+def render_live_rows(
+    view: ToolbarView, now: float, width: int | None = None, max_lines: int | None = None
+) -> Fragments:
+    """The live row(s) above the input: one line per active agent (the main agent, each sub-agent
+    indented with `└`), a goal step and in-flight `/btw` questions as their own lines; at most
+    `MAX_LIVE_LINES` lines plus a `+N more` line. Fragments, with `"\\n"` between lines and none
+    after the last. An empty list means no live row.
+
+    `max_lines=1` collapses everything to the first row alone, with ` +N more` appended inside
+    it (still fitted to `width`) when other agents are active — the decision callout's budget."""
+    rows: list[list[_Part]] = []
+    if view.run is not None:
+        if view.live is not None:
+            live = view.live
+            parts = [p for p in (live.task, live.role, live.summary, elapsed(now - live.started)) if p]
+            rows.append([_Part(*_spin("class:phil.agent", live.started, now)), _Part("", " " + " · ".join(parts), 0)])
+        else:
+            node = view.run.node or "starting"
+            rows.append([_Part("", "  " + NODE_LABELS.get(node, node), 0)])
+        for sub in view.subs:
+            rows.append([
+                _Part(*_spin("class:phil.sub", sub.started, now)),
+                _Part("", "  └ sub-agent · "),
+                _Part("", sub.summary or "working", 1, floor=1),  # cut second
+                _Part("", " · "),
+                _Part("", sub.description, 0, floor=8),  # cut first, down to 8 cells
+                _Part("", f" · {elapsed(now - sub.started)}"),  # the time always survives a cut
+            ])
+    if view.step:
+        label = STEP_LABELS.get(view.step, view.step)
+        rows.append([_Part(*_spin("class:phil.warn" if view.run else "class:phil.agent", view.step_started, now)),
+                     _Part("", f" {label} · {elapsed(now - view.step_started)}", 0)])
+    for job in view.side:
+        rows.append([_Part(*_spin("class:phil.warn", job.started, now)),
+                     _Part("", f" /btw · {job.label} · {elapsed(now - job.started)}", 0)])
+    if not rows:
+        return []
+    if max_lines == 1:
+        extra = len(rows) - 1
+        rows = [[*rows[0], _Part("class:phil.muted", f" +{extra} more")] if extra > 0 else rows[0]]
+    elif len(rows) > MAX_LIVE_LINES + 1:
+        rows = [*rows[:MAX_LIVE_LINES], [_Part("class:phil.muted", f"  +{len(rows) - MAX_LIVE_LINES} more", 0)]]
+    if view.feed_filter:
+        rows[0] = [*rows[0], _Part("class:phil.muted", f"   [feed: {view.feed_filter}]")]
+    out: Fragments = []
+    for i, row in enumerate(rows):
+        if i:
+            out.append(("", "\n"))
+        out += _fit_row(row, width)
+    return out
+
+
+@dataclass
+class _Part:
+    """One styled piece of a live row. `order` is None for a piece a cut keeps whole (the spinner,
+    separators, the time, the `+N more` and `[feed: x]` suffixes); otherwise pieces are cut lowest
+    `order` first, each down to `floor` cells."""
+
+    style: str
+    text: str
+    order: int | None = None
+    floor: int = 0
+
+
+def _cut_cells(text: str, cells: int) -> str:
+    """`text` in at most `cells` cells, ending with … when cut."""
+    if cell_len(text) <= cells:
+        return text
+    if cells <= 1:
+        return "…" if cells == 1 else ""
+    return set_cell_size(text, cells - 1) + "…"
+
+
+def _fit_row(row: list[_Part], width: int | None) -> Fragments:
+    """`row` as fragments, cut to fit in `width - 1` cells if needed. Each piece keeps its own
+    style. The cuttable pieces give way first (down to their floors, then to nothing), so the
+    suffixes and a sub-agent's time survive; only if those alone don't fit is the row cut from
+    its end, so nothing this returns ever exceeds `width - 1` cells."""
+    if width is None or sum(cell_len(p.text) for p in row) <= width - 1:
+        return [(p.style, p.text) for p in row]
+    limit = width - 1
+    texts = [p.text for p in row]
+    cuttable = sorted((i for i, p in enumerate(row) if p.order is not None), key=lambda i: row[i].order)
+    for use_floor in (True, False):
+        for i in cuttable:
+            excess = sum(cell_len(t) for t in texts) - limit
+            if excess <= 0:
+                break
+            cells = cell_len(texts[i])
+            floor = min(row[i].floor, cells) if use_floor else 0
+            texts[i] = _cut_cells(texts[i], max(floor, cells - excess))
+    excess = sum(cell_len(t) for t in texts) - limit
+    if excess > 0:  # the kept pieces alone are too wide: cut from the end, keeping each piece's style
+        out: Fragments = []
+        room = limit
+        for part, text in zip(row, texts, strict=True):
+            if room <= 0:
+                break
+            piece = _cut_cells(text, room)
+            room -= cell_len(piece)
+            if piece:
+                out.append((part.style, piece))
+            if piece != text:
+                break
+        return out
+    return [(p.style, t) for p, t in zip(row, texts, strict=True) if t]
 
 
 def _fit(text: str, width: int | None) -> str:

@@ -7,6 +7,7 @@ PHIL_THEME = Theme(
     {
         "phil.brand": "bold cyan",
         "phil.agent": "cyan",
+        "phil.sub": "magenta",
         "phil.user": "bold white",
         "phil.muted": "dim",
         "phil.id": "bold blue",
@@ -54,7 +55,9 @@ def prompt_toolkit_style(rich_style: str) -> str:
 
 
 # The toolbar's own styles, shown under their own `phil.*` names (besides the callout styles).
-_TOOLBAR_STYLES = ("phil.muted", "phil.warn", "phil.error", "phil.gate.pass", "phil.id", "phil.cost")
+_TOOLBAR_STYLES = (
+    "phil.muted", "phil.warn", "phil.error", "phil.gate.pass", "phil.id", "phil.cost", "phil.agent", "phil.sub",
+)
 
 
 def prompt_toolkit_styles() -> dict[str, str]:

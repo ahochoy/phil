@@ -16,6 +16,7 @@ from phil.store.activity import ActivityLog
 logger = logging.getLogger(__name__)
 
 IGNORED_TOOLS = frozenset({"write_todos"})
+SUB_TOOL = "task"  # deepagents' tool that runs a sub-agent
 _SHORT = 60  # a result is at most this many characters
 
 
@@ -72,35 +73,87 @@ def summarize_result(tool: str, args: dict | None, output: str) -> tuple[str, bo
 
 class ActivityCallback(BaseCallbackHandler):
     """Writes a start record on `on_tool_start` and an end record on `on_tool_end`/`on_tool_error`,
-    for every tool call in the agent's run tree. Never raises."""
+    for every tool call in the agent's run tree. Never raises.
+
+    A call made inside a sub-agent (a `task` call) is tagged with that task call's `sub_id` (its
+    seq) and `sub` (its description). To find it, the callback remembers the parent of every run it
+    sees (chains, models and tools), and walks up from a tool call to the nearest open task call."""
 
     def __init__(self, log: ActivityLog, *, task: str | None, role: str, ignore_tools: Iterable[str] = ()) -> None:
         self._log, self._task, self._role = log, task, role
         self._ignore = IGNORED_TOOLS | set(ignore_tools)
-        self._open: dict[object, tuple[int | None, float, str, dict | None, str]] = {}
+        self._open: dict[object, tuple[int | None, float, str, dict | None, str, dict | None]] = {}
+        self._parents: dict[object, object] = {}  # LangChain run id -> parent run id
+        self._subs: dict[object, tuple[int | None, str]] = {}  # an open task call's run id -> (seq, description)
         self._lock = threading.Lock()
 
-    def on_tool_start(self, serialized: dict, input_str: str, *, run_id, inputs=None, **kwargs) -> None:
+    # --- the run tree ----------------------------------------------------------------------
+
+    def _note_parent(self, run_id, parent_run_id) -> None:
         try:
+            if run_id is not None and parent_run_id is not None:
+                with self._lock:
+                    self._parents[run_id] = parent_run_id
+        except Exception:
+            logger.debug("activity: parent bookkeeping failed", exc_info=True)
+
+    def on_chain_start(self, serialized, inputs, *, run_id=None, parent_run_id=None, **kwargs) -> None:
+        self._note_parent(run_id, parent_run_id)
+
+    def on_chat_model_start(self, serialized, messages, *, run_id=None, parent_run_id=None, **kwargs) -> None:
+        self._note_parent(run_id, parent_run_id)
+
+    def on_llm_start(self, serialized, prompts, *, run_id=None, parent_run_id=None, **kwargs) -> None:
+        self._note_parent(run_id, parent_run_id)
+
+    def _sub_for(self, parent_run_id) -> dict:
+        """The nearest open task call above `parent_run_id`, as record fields; {} if none."""
+        seen, node = set(), parent_run_id
+        with self._lock:
+            while node is not None and node not in seen:
+                if node in self._subs:
+                    seq, description = self._subs[node]
+                    return {"sub_id": seq, "sub": description} if seq is not None else {}
+                seen.add(node)
+                node = self._parents.get(node)
+        return {}
+
+    def reset(self) -> None:
+        """Forget the run tree (call when the agent call finishes)."""
+        with self._lock:
+            self._parents.clear()
+            self._subs.clear()
+
+    # --- tool calls ------------------------------------------------------------------------
+
+    def on_tool_start(self, serialized: dict, input_str: str, *, run_id, parent_run_id=None, inputs=None,
+                      **kwargs) -> None:
+        try:
+            self._note_parent(run_id, parent_run_id)
             name = (serialized or {}).get("name") or kwargs.get("name") or "tool"
             if name in self._ignore:
                 return
             args = _tool_args(input_str, inputs)
             summary = summarize_call(name, args)
-            seq = self._log.start(task=self._task, role=self._role, tool=name, summary=summary)
+            extra = self._sub_for(parent_run_id) or None  # a task call is never inside itself
+            seq = self._log.start(task=self._task, role=self._role, tool=name, summary=summary, extra=extra)
             with self._lock:
-                self._open[run_id] = (seq, time.monotonic(), name, args, summary)
+                self._open[run_id] = (seq, time.monotonic(), name, args, summary, extra)
+                if name == SUB_TOOL:
+                    self._subs[run_id] = (seq, _first_line(args.get("description", "")) if args else "")
         except Exception:
             logger.debug("activity: on_tool_start failed", exc_info=True)
 
     def _finish(self, run_id, result: str, ok: bool, detail: str | None) -> None:
         with self._lock:
             opened = self._open.pop(run_id, None)
+            self._subs.pop(run_id, None)
+            self._parents.pop(run_id, None)
         if opened is None:
             return
-        seq, started, name, _args, summary = opened
+        seq, started, name, _args, summary, extra = opened
         self._log.end(seq, task=self._task, role=self._role, tool=name, summary=summary, result=result, ok=ok,
-                      detail=detail, duration_ms=int((time.monotonic() - started) * 1000))
+                      detail=detail, duration_ms=int((time.monotonic() - started) * 1000), extra=extra)
 
     def on_tool_end(self, output, *, run_id, **kwargs) -> None:
         try:

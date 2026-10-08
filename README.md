@@ -270,6 +270,11 @@ step in progress. A tool line's trailing `#n` is a feed step: `/more #n` prints 
 full command output, diff, or agent text) in a panel, and it keeps working after the run ends.
 `phil show <run> --step N` prints the same detail outside the chat. `phil attach <run>` shows
 the same milestone bands and tool lines too, picking up from when you attach.
+The live row has one line per active agent: the main agent, each sub-agent it started (indented
+under it with `└ sub-agent`), and each `/btw` question still being answered. `/feed <agent>`
+(`implementer`, `tester`, `reviewer`, `architect`, `sub-agent` or `engine`) shows only that
+agent's tool lines, with milestones still shown; `/feed` shows everything again and says how many
+steps were hidden. The filter is cleared when the run ends.
 
 Reopen a chat later:
 

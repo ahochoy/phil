@@ -299,6 +299,19 @@ def test_prompt_message_puts_the_live_row_above_the_input():
         assert to_plain_text(quiet._message("you › ")()) == "you › "
 
 
+def test_prompt_message_accepts_fragments_for_the_live_row():
+    """When the live row callable returns fragments (a list), `_message` uses them as-is, with a
+    newline after the last one; an empty list shows no row at all."""
+    from prompt_toolkit.formatted_text import to_plain_text
+
+    with create_pipe_input() as pipe:
+        rows = [("class:phil.agent", "⠋"), ("", " CALC-002 · implementer · 3s")]
+        terminal = TerminalIO(lambda: "", live_row=lambda: rows, input=pipe, output=DummyOutput())
+        assert to_plain_text(terminal._message("you › ")()) == "⠋ CALC-002 · implementer · 3s\nyou › "
+        empty = TerminalIO(lambda: "", live_row=lambda: [], input=pipe, output=DummyOutput())
+        assert to_plain_text(empty._message("you › ")()) == "you › "
+
+
 def test_a_finished_prompt_leaves_the_live_row_out():
     """The final redraw of a submitted prompt has no live row, so none is left in the scrollback."""
     from prompt_toolkit.formatted_text import to_plain_text
@@ -597,7 +610,9 @@ def test_prompt_toolkit_styles_cover_the_real_theme():
     from phil.ui.theme import PHIL_THEME, prompt_toolkit_styles
 
     rules = prompt_toolkit_styles()  # raises if the theme has a style the prompt can't show
-    toolbar_styles = {"phil.muted", "phil.warn", "phil.error", "phil.gate.pass", "phil.id", "phil.cost"}
+    toolbar_styles = {
+        "phil.muted", "phil.warn", "phil.error", "phil.gate.pass", "phil.id", "phil.cost", "phil.agent", "phil.sub",
+    }
     assert {n for n in PHIL_THEME.styles if n.startswith("phil.callout.")} | {"live"} | toolbar_styles == set(rules)
 
 
@@ -605,7 +620,7 @@ def test_the_menu_message_docks_the_callout_under_the_live_row():
     from prompt_toolkit.formatted_text import to_plain_text
 
     with create_pipe_input() as pipe_input:
-        terminal = TerminalIO(lambda: "", live_row=lambda: "⠋ T1 · working", input=pipe_input,
+        terminal = TerminalIO(lambda: "", live_row=lambda max_lines=None: "⠋ T1 · working", input=pipe_input,
                               output=DummyOutput())
         terminal._choice = 1
         text = to_plain_text(terminal._decision_message(D)())
@@ -614,6 +629,30 @@ def test_the_menu_message_docks_the_callout_under_the_live_row():
         assert lines[1].startswith("╭")
         assert any("› 2 Abort the run" in line for line in lines)
         assert any("Retry the task" in line and "›" not in line for line in lines)
+
+
+def test_decision_mode_collapses_the_live_row_to_one_line():
+    """The ruling: while a decision callout is open, the live row is collapsed to one line (its
+    first line), so a long callout plus several active agents can't overflow a small terminal."""
+    from prompt_toolkit.formatted_text import to_plain_text
+
+    from phil.chat.state import LiveStep, RunView, SubAgent, ToolbarView
+    from phil.ui.toolbar import render_live_rows
+
+    run = RunView(run_id="r-1", keyword="calc", node="implement", tasks_done=0, tasks_total=2, started=0.0)
+    live = LiveStep(task="T1", role="implementer", summary="run pytest", started=0.0)
+    subs = (SubAgent(1, "a", None, 0.0), SubAgent(2, "b", None, 0.0))  # 3 active agents: main + 2 subs
+    view = ToolbarView(run=run, live=live, subs=subs)
+
+    def live_row(max_lines=None):
+        return render_live_rows(view, 5.0, max_lines=max_lines)
+
+    with create_pipe_input() as pipe_input:
+        terminal = TerminalIO(lambda: "", live_row=live_row, input=pipe_input, output=DummyOutput())
+        text = to_plain_text(terminal._decision_message(D)())
+        lines = text.splitlines()
+        assert lines[1].startswith("╭")  # exactly one live line before the callout box
+        assert lines[0].endswith("+2 more")
 
 
 def test_prompt_style_colours_the_callout_and_the_live_row():

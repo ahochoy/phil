@@ -70,8 +70,11 @@ class RunWatcher:
         self._activity_offset = self.activity.end_offset()
         self._seed: dict | None = self.activity.pending()
         self._open: dict[int, dict] = {}  # calls started and not yet ended, by seq, across polls
-        self._live: dict = {}
+        self._live: dict = {}  # the main agent's open call (`main`), as a live step
         self._live_posted: dict = {}  # the chat starts with no live step
+        self._subs: list[dict] = []  # the open sub-agents, each with its newest open inner call
+        self._orphan_started: dict[int, dict] = {}  # a sub-agent seen only by its inner calls: the oldest
+        self._agents_posted: tuple = (None, ())  # (main seq, ((sub seq, its summary), ...)) last posted
         self.done = False
         self._last: tuple | None = None
         self._paused_ts: str | None = None
@@ -193,6 +196,12 @@ class RunWatcher:
         if self._live != self._live_posted:
             self._live_posted = dict(self._live)
             self.post(ChatEvent("live_step", dict(self._live)))
+        agents = (self._live.get("seq"), tuple((sub["seq"], sub["summary"]) for sub in self._subs))
+        if agents != self._agents_posted:
+            self._agents_posted = agents
+            self.post(ChatEvent("live_agents", {
+                "main": dict(self._live) if self._live else None, "subs": [dict(sub) for sub in self._subs],
+            }))
 
     def _post_budget_raised(self, event: dict) -> None:
         data = {k: v for k, v in event.items() if k not in ("kind", "ts")}
@@ -215,14 +224,14 @@ class RunWatcher:
         started, spawned = _seconds(seed.get("ts")), _seconds(spawn.get("ts")) if spawn else None
         if spawned is not None and (started is None or started <= spawned):
             return
-        self._live = _live_of(seed)
         if _int_seq(seed) is not None:
-            self._open[_int_seq(seed)] = seed
+            self._open[_int_seq(seed)] = seed  # _follow_live, in this poll, makes it live
 
     def _follow_live(self, records: list[dict], spawned: float | None = None) -> None:
-        """The live step is the newest call started and not yet ended, kept across polls: when it
-        ends, the newest call still open (an outer sub-agent, say) takes its place, or none. With
-        `spawned` (a spawn read in this poll), a start from before it belongs to the dead worker."""
+        """Track the calls started and not yet ended, across polls, and from them every active agent:
+        the main agent's newest open call (the live step) and each open sub-agent. When the live call
+        ends, the newest call still open takes its place, or none. With `spawned` (a spawn read in
+        this poll), a start from before it belongs to the dead worker."""
         for record in records:
             seq = _int_seq(record)
             if seq is None:
@@ -234,12 +243,48 @@ class RunWatcher:
                 self._open[seq] = record
             elif record.get("phase") == "end":
                 self._open.pop(seq, None)
-        if not self._open:
+        self._subs = self._open_subs()
+        main = self._main_seq()
+        if main is None:
             self._live = {}
-            return
-        newest = max(self._open)
-        if self._live.get("seq") != newest:  # unchanged: keep its `started`, so it isn't reposted
-            self._live = _live_of(self._open[newest])
+        elif self._live.get("seq") != main:  # unchanged: keep its `started`, so it isn't reposted
+            self._live = _live_of(self._open[main])
+
+    def _main_seq(self) -> int | None:
+        """The main agent's newest open call: one made outside any sub-agent that isn't a sub-agent
+        (`task`) itself or the engine's own; the engine's newest open call only when there's none."""
+        own = [seq for seq, record in self._open.items()
+               if record.get("sub_id") is None and record.get("tool") != "task" and record.get("role") != "engine"]
+        engine = [seq for seq, record in self._open.items() if record.get("role") == "engine"]
+        return max(own or engine, default=None)
+
+    def _open_subs(self) -> list[dict]:
+        """Each open sub-agent, by seq: an open `task` call, or the `sub_id` of open inner calls whose
+        `task` start wasn't seen (that one's description comes from its inner calls, and its start from
+        the oldest inner call seen, kept as inner calls end). A `task` call is a sub-agent of its own,
+        never another sub-agent's current call."""
+        inner: dict[int, list[int]] = {}
+        for seq, record in self._open.items():
+            sub_id = record.get("sub_id")
+            if isinstance(sub_id, int) and not isinstance(sub_id, bool) and record.get("tool") != "task":
+                inner.setdefault(sub_id, []).append(seq)
+        subs = {}
+        for seq, record in self._open.items():
+            if record.get("tool") == "task":
+                description = str(record.get("summary", "")).removeprefix("sub-agent: ")
+                subs[seq] = (description, record)
+        orphans = {}
+        for sub_id, seqs in inner.items():
+            if sub_id not in subs:
+                orphans[sub_id] = self._orphan_started.get(sub_id) or self._open[min(seqs)]
+                subs[sub_id] = (str(self._open[max(seqs)].get("sub", "")), orphans[sub_id])
+        self._orphan_started = orphans
+        return [
+            {"seq": seq, "description": description,
+             "summary": self._open[max(inner[seq])].get("summary", "") if seq in inner else None,
+             "started": _live_of(started_by)["started"]}
+            for seq, (description, started_by) in sorted(subs.items())
+        ]
 
     def rearm(self) -> None:
         """Re-post the current escalation if the run is still paused with no worker at the next poll.
