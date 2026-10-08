@@ -96,7 +96,7 @@ def test_current_branch(tmp_path, git_repo, monkeypatch):
     assert current_branch(plain) == "?"
     assert current_branch(tmp_path / "missing") == "?"
 
-    def no_git(cwd, *args):
+    def no_git(cwd, *args, **kwargs):  # current_branch passes timeout=
         raise GitNotFound(list(args), 127, "git not found")
 
     monkeypatch.setattr("phil.git.git", no_git)

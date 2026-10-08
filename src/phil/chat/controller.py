@@ -1511,6 +1511,7 @@ class ChatController:
                 f"[phil.warn]Couldn't follow run {escape(run_id)} here ({escape(f'{type(exc).__name__}: {exc}')}); "
                 f"use `phil attach {escape(run_id)}`.[/]"
             )
+            self._refresh_model()  # the stopped watcher's run no longer shows its model
             return
         self._watcher = watcher
         self._refresh_model()  # a followed run's model replaces a goal step's
