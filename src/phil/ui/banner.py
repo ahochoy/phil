@@ -43,7 +43,7 @@ def _pad(text: Text, cells: int) -> Text:
     return out
 
 
-def _facts(f: BannerFacts) -> list[Text]:
+def _facts(f: BannerFacts, plain: bool = False) -> list[Text]:
     ident = Text()
     ident.append("Phil", "phil.brand")
     ident.append(f" v{f.version} · deterministic orchestration, token-efficient", "phil.muted")
@@ -58,6 +58,8 @@ def _facts(f: BannerFacts) -> list[Text]:
         if f.dirty:
             where.append(" · ", "phil.muted")
             where.append(f"⚠ {f.dirty} uncommitted", "phil.warn")
+            if plain:  # ruling R1: piped output says why they matter; the card stays short
+                where.append(" (not included in runs)", "phil.warn")
     if f.parked:
         where.append(f" · {f.parked} parked", "phil.muted")
     models = Text()
@@ -126,4 +128,4 @@ def render_banner(facts: BannerFacts, width: int, mascot=MASCOT) -> list[Text]:
 
 
 def banner_plain(facts: BannerFacts) -> list[str]:
-    return [t.plain for t in [*_facts(facts), *_below(facts)] if t.plain]
+    return [t.plain for t in [*_facts(facts, plain=True), *_below(facts)] if t.plain]

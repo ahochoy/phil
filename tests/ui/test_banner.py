@@ -90,3 +90,9 @@ def test_plain_has_no_box_and_no_escape_codes():
     lines = banner_plain(FACTS)
     assert not any(ch in "".join(lines) for ch in "╭╮╰╯│") and "\x1b" not in "".join(lines)
     assert any("calc @ main a1b2c3d" in line for line in lines)
+
+
+def test_plain_says_uncommitted_files_stay_out_of_runs():
+    assert "calc @ main a1b2c3d · ⚠ 2 uncommitted (not included in runs) · 3 parked" in banner_plain(FACTS)
+    card = "\n".join(t.plain for t in render_banner(FACTS, 140))
+    assert "not included in runs" not in card
