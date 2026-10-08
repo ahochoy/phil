@@ -146,7 +146,7 @@ Abort is never the default.
 | `refused` | any other 4xx, with the provider detail | <provider> refused the request: <detail>. | Check the model with `phil models check` |
 | `output` | `ContractViolation` | The <role> didn't return a usable answer. | Try again, or use a stronger model for <role> |
 | `config` | `ConfigError` | <the error's message> | Fix the setting it names |
-| `internal` | anything else | Something went wrong inside Phil (<ExceptionClass>). | Details: /more 1 |
+| `internal` | anything else | Something went wrong inside Phil (<ExceptionClass>). | Try again. |
 
 - **Where they appear.** `_failed` (a failed intake, plan, revision or `/btw` job) and a run ending as `failed` print a red `Decision`-styled box with no options. It shows the headline, whether Phil retries, the action, and `Details: /more 1`.
 - **The raw exception** goes to the session's error log, and becomes `/more 1`. Exception class names never appear in a headline, except for `internal`.
