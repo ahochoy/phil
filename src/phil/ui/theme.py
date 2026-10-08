@@ -53,13 +53,16 @@ def prompt_toolkit_style(rich_style: str) -> str:
     return " ".join(parts)
 
 
+# The toolbar's own styles, shown under their own `phil.*` names (besides the callout styles).
+_TOOLBAR_STYLES = ("phil.muted", "phil.warn", "phil.error", "phil.gate.pass", "phil.id", "phil.cost")
+
+
 def prompt_toolkit_styles() -> dict[str, str]:
-    """The prompt's style rules: every `phil.callout.*` style, and `live` (the muted live row)."""
-    rules = {
-        name: prompt_toolkit_style(str(style))
-        for name, style in PHIL_THEME.styles.items()
-        if name.startswith("phil.callout.")
-    }
+    """The prompt's style rules: every `phil.callout.*` style, the toolbar's styles, and `live`
+    (the muted live row, kept for the message above the input)."""
+    names = [name for name in PHIL_THEME.styles if name.startswith("phil.callout.")]
+    names += [name for name in _TOOLBAR_STYLES if name not in names]
+    rules = {name: prompt_toolkit_style(str(PHIL_THEME.styles[name])) for name in names}
     rules["live"] = prompt_toolkit_style(str(PHIL_THEME.styles["phil.muted"]))
     return rules
 

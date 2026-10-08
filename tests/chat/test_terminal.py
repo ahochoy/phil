@@ -597,7 +597,8 @@ def test_prompt_toolkit_styles_cover_the_real_theme():
     from phil.ui.theme import PHIL_THEME, prompt_toolkit_styles
 
     rules = prompt_toolkit_styles()  # raises if the theme has a style the prompt can't show
-    assert {n for n in PHIL_THEME.styles if n.startswith("phil.callout.")} | {"live"} == set(rules)
+    toolbar_styles = {"phil.muted", "phil.warn", "phil.error", "phil.gate.pass", "phil.id", "phil.cost"}
+    assert {n for n in PHIL_THEME.styles if n.startswith("phil.callout.")} | {"live"} | toolbar_styles == set(rules)
 
 
 def test_the_menu_message_docks_the_callout_under_the_live_row():

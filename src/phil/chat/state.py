@@ -32,6 +32,12 @@ class ToolbarView:
     cost: tuple[float, str] | None = None  # (cost_usd, cost_source): the chat's running cost
     parked: int = 0  # open parked items
     live: LiveStep | None = None  # the running tool, shown on the live row above the input
+    repo: str = ""
+    branch: str = ""
+    model: tuple[str, str] | None = None  # (tier label, short name)
+    tokens: int | None = None
+    run_cost: tuple[float, str] | None = None  # (cost_usd, cost_source): the run's cost
+    budget_usd: float = 0.0
 
 
 class ChatState:
@@ -68,6 +74,18 @@ class ChatState:
 
     def set_parked(self, parked: int) -> None:
         self._update(parked=parked)
+
+    def set_place(self, repo: str, branch: str) -> None:
+        self._update(repo=repo, branch=branch)
+
+    def set_model(self, model: tuple[str, str] | None) -> None:
+        self._update(model=model)
+
+    def set_run_usage(self, tokens: int | None, run_cost: tuple[float, str] | None) -> None:
+        self._update(tokens=tokens, run_cost=run_cost)
+
+    def set_budget(self, budget_usd: float) -> None:
+        self._update(budget_usd=budget_usd)
 
     def add_btw(self, delta: int) -> None:
         with self._lock:
