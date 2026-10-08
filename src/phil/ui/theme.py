@@ -20,6 +20,12 @@ PHIL_THEME = Theme(
         "phil.band.fail": "red on grey15",
         "phil.band.wait": "yellow on grey15",
         "phil.ref": "blue",
+        "phil.callout.border.question": "cyan", "phil.callout.border.confirm": "cyan",
+        "phil.callout.border.approval": "yellow", "phil.callout.border.pause": "yellow", "phil.callout.border.failure": "red",
+        "phil.callout.title.question": "bold cyan", "phil.callout.title.confirm": "bold cyan",
+        "phil.callout.title.approval": "bold yellow", "phil.callout.title.pause": "bold yellow", "phil.callout.title.failure": "bold red",
+        "phil.callout.body": "default", "phil.callout.option": "default", "phil.callout.selected": "bold reverse",
+        "phil.callout.hint": "dim", "phil.callout.key": "blue",
     }
 )
 
