@@ -5,7 +5,7 @@ import pytest
 from phil.agents.fake import ScriptedAgentFactory, Turn, fire_tool
 from phil.chat.controller import WAKE, _short_event
 from phil.chat.events import ChatEvent
-from phil.chat.state import LiveStep
+from phil.chat.state import LiveStep, SubAgent
 from phil.run.worker import run_worker
 from phil.store.activity import ActivityLog
 from phil.store.paths import ProjectPaths
@@ -82,6 +82,39 @@ def test_forgetting_the_run_clears_the_live_step_and_the_feed(controller_with_ru
     controller._forget_run()
     assert controller.state.view().live is None
     assert controller._feed is not feed and controller._feed._task_started == {}
+
+
+AGENTS = {"main": STEP, "subs": [
+    {"seq": 5, "description": "explore", "summary": "read calc.py", "started": 2.0},
+    {"seq": 8, "description": "check tests", "summary": None, "started": 3.0},
+]}
+
+
+def test_controller_keeps_subs_and_clears_them(controller_with_run):
+    """A live_agents event sets state.view().subs to SubAgent tuples; worker_lost, run_done and
+    _forget_run clear them to ()."""
+    controller = controller_with_run
+    subs = (SubAgent(5, "explore", "read calc.py", 2.0), SubAgent(8, "check tests", None, 3.0))
+    controller._handle(ChatEvent("live_agents", AGENTS))
+    assert controller.state.view().subs == subs
+    controller._handle(ChatEvent("worker_lost", {}))
+    assert controller.state.view().subs == ()
+
+    controller._handle(ChatEvent("live_agents", AGENTS))
+    assert controller.state.view().subs == subs
+    controller._handle(ChatEvent("run_done", {"state": "failed", "needs_attention": "boom"}))
+    assert controller.state.view().subs == ()
+
+    controller._handle(ChatEvent("live_agents", AGENTS))  # a failed run is still followed
+    assert controller.state.view().subs == subs
+    controller._forget_run()
+    assert controller.state.view().subs == ()
+
+
+def test_live_agents_leaves_the_live_row_to_live_step(controller_with_run):
+    controller = controller_with_run
+    controller._handle(ChatEvent("live_agents", AGENTS))
+    assert controller.state.view().live is None
 
 
 @pytest.fixture

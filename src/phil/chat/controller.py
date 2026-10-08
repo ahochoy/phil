@@ -49,7 +49,7 @@ from phil.chat.overview import repo_overview
 from phil.chat.planning import Planner, PlanDraft, PlanningBudgetExceeded, intake, quick_plan
 from phil.chat.session import ChatSession
 from phil.chat.snapshot import export_tree, export_worktree
-from phil.chat.state import ChatState, LiveStep, RunView
+from phil.chat.state import ChatState, LiveStep, RunView, SubAgent
 from phil.chat.watcher import RunWatcher
 from phil.config import ConfigError, PhilConfig, load_config
 from phil.contracts import Approach, Approaches, Goal, Plan, PlanCritique, Question, Ref, RunStatus
@@ -122,7 +122,7 @@ GOAL_JOB_STAGES = ("routing", "intake", "planning", "answering", "designing")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
 RUN_EVENTS = (
     "run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning",
-    "budget_raised", "test_cmd_changed", "activity", "milestone", "live_step",
+    "budget_raised", "test_cmd_changed", "activity", "milestone", "live_step", "live_agents",
 )
 RECENT_EVENTS = 10  # run events a /btw answer sees
 NOTICE_REFS = 3  # details a completion notice lists
@@ -1543,8 +1543,10 @@ class ChatController:
         self._clear_run()
 
     def _clear_run(self) -> None:
-        """The watcher is stopped: drop the run's toolbar state (its progress, live step and pause)."""
+        """The watcher is stopped: drop the run's toolbar state (its progress, live step, sub-agents
+        and pause)."""
         self.state.set_live(None)
+        self.state.set_subs(())
         self.state.set_run(None)
         self.state.set_paused(False)
         self._clear_run_status()
@@ -1610,6 +1612,15 @@ class ChatController:
                 started=float(data.get("started", time.time())),
             ))
         self._refresh_model()
+
+    def _on_live_agents(self, data: dict) -> None:
+        # `main` is the live step, which arrives as its own `live_step` event.
+        self.state.set_subs(tuple(
+            SubAgent(seq=int(sub.get("seq", 0)), description=str(sub.get("description", "")),
+                     summary=None if sub.get("summary") is None else str(sub["summary"]),
+                     started=float(sub.get("started", time.time())))
+            for sub in data.get("subs") or ()
+        ))
 
     def _on_run_paused(self, data: dict) -> None:
         escalation = data["escalation"]
@@ -1829,6 +1840,7 @@ class ChatController:
     def _on_worker_lost(self, data: dict) -> None:
         self._lost = True
         self.state.set_live(None)  # the step it was running isn't running any more
+        self.state.set_subs(())  # nor its sub-agents
         self.console.print(
             f"[phil.warn]The worker for {escape(self._run_id)} stopped responding. Continue it with /resume.[/]"
         )
