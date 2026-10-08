@@ -74,6 +74,13 @@ class RunWatcher:
         # Seeded from the log so a reopened/resumed chat's new watcher posts only the notices
         # (budget warnings, test command switches) written after it started, not ones already shown.
         self._notice_ts: dict[str, str | None] = {kind: self._latest_ts(kind) for kind in NOTICES}
+        # Unlike the notices above, a raised budget is shown even if it's already in the log when
+        # the chat reopens, so the user still sees the limit that's in effect.
+        try:
+            self._budget_pending: dict | None = self.events.latest("budget_raised")
+        except Exception:
+            logger.debug("couldn't read the budget_raised event for %s", run_id, exc_info=True)
+            self._budget_pending = None
         self._consecutive_failures = 0
         self._error_posted = False
         self._stop = threading.Event()
@@ -151,7 +158,13 @@ class RunWatcher:
         A milestone carries the activity log's last seq when it was written: the tool records up to that
         seq are posted before it, the rest after it (a milestone without one goes in its file position).
         """
+        if self._budget_pending is not None:
+            self._post_budget_raised(self._budget_pending)
+            self._budget_pending = None
         new_events, self._event_offset = self.events.read(self._event_offset)
+        for event in new_events:
+            if event.get("kind") == "budget_raised":
+                self._post_budget_raised(event)
         records, self._activity_offset = self.activity.read(self._activity_offset)
         milestones = [event for event in new_events if event.get("kind") in MILESTONE_KINDS]
         for item, value in interleave(milestones, records):
@@ -170,6 +183,10 @@ class RunWatcher:
         if self._live != self._live_posted:
             self._live_posted = dict(self._live)
             self.post(ChatEvent("live_step", dict(self._live)))
+
+    def _post_budget_raised(self, event: dict) -> None:
+        data = {k: v for k, v in event.items() if k not in ("kind", "ts")}
+        self.post(ChatEvent("budget_raised", data))
 
     def _post_records(self, records: list[dict]) -> None:
         # Only end records make tool lines: a batch of starts alone would print nothing, and posting

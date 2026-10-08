@@ -2,6 +2,7 @@ import pytest
 
 from phil.config import PhilConfig
 from phil.run import runner
+from phil.store.telemetry import run_usage
 from tests.run.conftest import bad_green, calc_plan, review, tester_report, write_green, write_red, TEST_CMD
 
 
@@ -41,6 +42,25 @@ def test_budget_limit_escalates_and_can_continue(make_harness):
     assert paused.escalation["summary"] == "run used 120 tokens ($0.00); limit 100 tokens / $2.00"
     harness.factory.usage = (0, 0, 0.0)
     assert runner.resume(harness.engine, harness.graph, {"action": "continue"}).status == "completed"
+
+
+def test_continue_records_the_raised_limits(make_harness):
+    """Using the existing budget-escalation engine test pattern: answering a budget pause with
+    continue appends exactly one budget_raised event whose max_cost_usd == run cost at that moment +
+    config.run.max_cost_usd and max_tokens == tokens + config.run.max_tokens (the same values the
+    state's budget_limit_* get)."""
+    config = PhilConfig.model_validate({"run": {"max_tokens": 100}})
+    harness = make_harness(
+        {"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]},
+        config=config, usage=(100, 20, 0.0),
+    )
+    outcome_start(harness)
+    totals = run_usage(harness.deps.conn, harness.deps.run_id)
+    runner.resume(harness.engine, harness.graph, {"action": "continue"})
+    raised = [e for e in harness.deps.events.read()[0] if e["kind"] == "budget_raised"]
+    assert len(raised) == 1
+    assert raised[0]["max_cost_usd"] == totals.cost_usd + config.run.max_cost_usd
+    assert raised[0]["max_tokens"] == totals.tokens + config.run.max_tokens
 
 
 def test_continue_raises_the_limit_so_growing_usage_escalates_again(make_harness):

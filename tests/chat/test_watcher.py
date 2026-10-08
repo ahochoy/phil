@@ -227,6 +227,29 @@ def test_a_budget_warning_from_before_the_watcher_started_is_not_reposted(calc_r
     assert [e.data["tokens"] for e in reopened if e.kind == "budget_warning"] == [690]
 
 
+def test_watcher_posts_budget_raised_and_seeds_it_from_the_log(calc_repo):
+    """A budget_raised already in events.jsonl when the watcher starts is posted on its first poll;
+    a later one is posted when it appears; the same event is never posted twice."""
+    paths, run_id, conn, events, _, _, now = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    events.append("budget_raised", max_cost_usd=2.4, max_tokens=1600)
+    reopened = []
+    watcher = RunWatcher(paths, run_id, reopened.append, alive=lambda r: False, starting=lambda e: False,
+                         clock=lambda: now[0])
+    watcher.poll_once()
+    assert [e.data for e in reopened if e.kind == "budget_raised"] == [{"max_cost_usd": 2.4, "max_tokens": 1600}]
+    watcher.poll_once()
+    assert kinds(reopened).count("budget_raised") == 1  # not reposted
+
+    events.append("budget_raised", max_cost_usd=4.8, max_tokens=3200)
+    watcher.poll_once()
+    assert [e.data for e in reopened if e.kind == "budget_raised"] == [
+        {"max_cost_usd": 2.4, "max_tokens": 1600}, {"max_cost_usd": 4.8, "max_tokens": 3200},
+    ]
+    watcher.poll_once()
+    assert kinds(reopened).count("budget_raised") == 2  # still just the two
+
+
 def test_test_cmd_changed_is_posted_once_per_event(calc_repo):
     paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
     update_run(conn, run_id, state="running")

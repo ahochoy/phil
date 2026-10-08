@@ -121,7 +121,7 @@ GOAL_JOB_STAGES = ("routing", "intake", "planning", "answering", "designing")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
 RUN_EVENTS = (
     "run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning",
-    "test_cmd_changed", "activity", "milestone", "live_step",
+    "budget_raised", "test_cmd_changed", "activity", "milestone", "live_step",
 )
 RECENT_EVENTS = 10  # run events a /btw answer sees
 NOTICE_REFS = 3  # details a completion notice lists
@@ -1498,6 +1498,9 @@ class ChatController:
     def _on_budget_warning(self, data: dict) -> None:
         line = budget_warning_line(self._run_id, **data)
         self.console.print(f"[phil.warn]{escape(line)}[/]")
+
+    def _on_budget_raised(self, data: dict) -> None:
+        self.state.set_budget(float(data.get("max_cost_usd") or 0))
 
     def _on_test_cmd_changed(self, data: dict) -> None:
         self.console.print(f"[phil.warn]{escape(test_cmd_changed_line(str(data.get('cmd'))))}[/]")
