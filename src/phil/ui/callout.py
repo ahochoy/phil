@@ -30,27 +30,36 @@ def _take(text: str, width: int) -> tuple[str, str]:
 
 
 def _wrap(text: str, width: int) -> list[str]:
-    """Greedy word-wrap measured in cells (not characters), so wide characters never overflow."""
-    if width <= 0:
-        return [text]
+    """Greedy word-wrap measured in cells (not characters), so wide characters never overflow.
+
+    A line's leading whitespace (e.g. the two-space indent on an approval's command line) is
+    kept and repeated on every wrapped line; interior runs of whitespace may collapse to a
+    single space. `width` is always at least 1 by construction (every caller clamps it), so
+    there's no `width <= 0` branch here."""
+    indent = text[: len(text) - len(text.lstrip(" "))]
+    indent_width = cell_len(indent)
+    body = text[len(indent):]
+    inner = max(width - indent_width, 1)
     lines: list[str] = []
     current = ""
-    for word in text.split(" "):
+    for word in body.split(" "):
+        if not word:
+            continue
         candidate = f"{current} {word}" if current else word
-        if cell_len(candidate) <= width:
+        if cell_len(candidate) <= inner:
             current = candidate
             continue
         if current:
             lines.append(current)
             current = ""
-        while cell_len(word) > width:
-            head, word = _take(word, width)
+        while cell_len(word) > inner:
+            head, word = _take(word, inner)
             if not head:  # a single character wider than the whole box; take it anyway
                 head, word = word[:1], word[1:]
             lines.append(head)
         current = word
     lines.append(current)
-    return lines
+    return [indent + line for line in lines]
 
 
 def _inner_width(width: int) -> int:
@@ -58,7 +67,28 @@ def _inner_width(width: int) -> int:
     return max((width - 1 - 4) if bordered else (width - 1 - 2), 1)
 
 
+def _cut_row(row: Line, inner: int) -> Line:
+    """`row` cut to `inner` cells, as a general backstop: a row built elsewhere (e.g. an
+    option's `"› N "` prefix at a width narrower than the prefix itself) might still be too
+    wide, so this cuts the overrun off the end, with `…` on whichever segment it lands in."""
+    if sum(cell_len(t) for _, t in row) <= inner:
+        return row
+    out: Line = []
+    remaining = inner
+    for style, t in row:
+        if remaining <= 0:
+            break
+        if cell_len(t) <= remaining:
+            out.append((style, t))
+            remaining -= cell_len(t)
+        else:
+            out.append((style, _cut(t, remaining)))
+            remaining = 0
+    return out
+
+
 def _pad_row(row: Line, inner: int, border_style: str | None) -> Line:
+    row = _cut_row(row, inner)
     length = sum(cell_len(t) for _, t in row)
     pad = max(inner - length, 0)
     content = [*row, ("", " " * pad)] if pad else list(row)
@@ -126,7 +156,7 @@ def failure_lines(failure: Failure, width: int) -> list[Line]:
 
     rows: list[Line] = [[(title_style, line)] for line in _wrap(f"✗ {failure.headline}", inner)]
     rows.extend([(body_style, line)] for line in _wrap(f"{failure.retries} {failure.action}", inner))
-    rows.append([(body_style, "Details: /more 1")])
+    rows.extend([(body_style, line)] for line in _wrap("Details: /more 1", inner))
 
     return _frame(rows, width, kind)
 
