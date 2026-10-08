@@ -6,7 +6,7 @@ from phil.repo import resolve_repo
 from phil.run.launch import prepare_run
 from phil.store.activity import activity_log
 from phil.store.db import connect
-from phil.store.events import run_events
+from phil.store.events import EventLog, run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import update_run
 from tests.run.conftest import calc_plan
@@ -225,6 +225,44 @@ def test_a_budget_warning_from_before_the_watcher_started_is_not_reposted(calc_r
     )
     watcher.poll_once()
     assert [e.data["tokens"] for e in reopened if e.kind == "budget_warning"] == [690]
+
+
+def test_a_budget_raised_appended_during_construction_is_not_posted_twice(calc_repo, monkeypatch):
+    """Guards the seed race: if `_event_offset` and the pending `budget_raised` came from two
+    separate reads (`end_offset()` then `latest()`), an event appended in the window between them
+    would be captured by `latest()` as the pending event but land after the stale offset too, so
+    it would be posted once as the seed and again as a 'new' event on the first poll.
+
+    This monkeypatches `EventLog.end_offset` to append a `budget_raised` event as a side effect, right
+    after it captures the (soon-to-be-stale) offset — exactly the window the old code (offset from
+    `end_offset()`, pending from a later, separate `latest()` call) left open. Against the old code
+    this reproduces the race and the assertion below fails with count 2 (verified by hand: running
+    this test against the pre-fix watcher.py raises `AssertionError: assert 2 == 1`). The current
+    code never calls `end_offset()` on this path (both the offset and the pending event come from one
+    `events.read()`), so the hook doesn't fire; the fallback append below then still appends the event,
+    but strictly after construction, which the fixed code also only ever posts once."""
+    paths, run_id, conn, events, _, _, now = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    original_end_offset = EventLog.end_offset
+    hooked = []
+
+    def racing_end_offset(self):
+        offset = original_end_offset(self)
+        hooked.append(True)
+        events.append("budget_raised", max_cost_usd=2.4, max_tokens=1600)
+        return offset
+
+    monkeypatch.setattr(EventLog, "end_offset", racing_end_offset)
+    posted = []
+    watcher = RunWatcher(paths, run_id, posted.append, alive=lambda r: False, starting=lambda e: False,
+                         clock=lambda: now[0])
+    monkeypatch.undo()  # back to normal reads for the polls below
+    if not hooked:  # the fixed code never called end_offset(): append it here instead
+        events.append("budget_raised", max_cost_usd=2.4, max_tokens=1600)
+
+    watcher.poll_once()
+    watcher.poll_once()
+    assert kinds(posted).count("budget_raised") == 1
 
 
 def test_watcher_posts_budget_raised_and_seeds_it_from_the_log(calc_repo):

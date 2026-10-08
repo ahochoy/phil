@@ -59,7 +59,14 @@ class RunWatcher:
         # The feed starts at the current end of both logs: a reopened chat shows only what's new,
         # except a tool call still running, which can seed the live row at the first poll (_seed_live).
         self.activity = activity_log(paths, run_id)
-        self._event_offset = self.events.end_offset()
+        # One read gives both the offset and the events it covers, so a budget_raised appended between
+        # two separate calls (end_offset() then latest()) can't be both seeded below and re-read as new
+        # on the first poll.
+        try:
+            events_so_far, self._event_offset = self.events.read()
+        except Exception:
+            logger.debug("couldn't read the event log for %s", run_id, exc_info=True)
+            events_so_far, self._event_offset = [], self.events.end_offset()
         self._activity_offset = self.activity.end_offset()
         self._seed: dict | None = self.activity.pending()
         self._open: dict[int, dict] = {}  # calls started and not yet ended, by seq, across polls
@@ -75,12 +82,13 @@ class RunWatcher:
         # (budget warnings, test command switches) written after it started, not ones already shown.
         self._notice_ts: dict[str, str | None] = {kind: self._latest_ts(kind) for kind in NOTICES}
         # Unlike the notices above, a raised budget is shown even if it's already in the log when
-        # the chat reopens, so the user still sees the limit that's in effect.
-        try:
-            self._budget_pending: dict | None = self.events.latest("budget_raised")
-        except Exception:
-            logger.debug("couldn't read the budget_raised event for %s", run_id, exc_info=True)
-            self._budget_pending = None
+        # the chat reopens, so the user still sees the limit that's in effect. Taken from
+        # `events_so_far` above (not a separate `latest()` call) so it can't race with `_event_offset`.
+        self._budget_pending: dict | None = None
+        for event in reversed(events_so_far):
+            if event.get("kind") == "budget_raised":
+                self._budget_pending = event
+                break
         self._consecutive_failures = 0
         self._error_posted = False
         self._stop = threading.Event()
