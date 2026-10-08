@@ -187,36 +187,40 @@ def render_live_rows(
 
     `max_lines=1` collapses everything to the first row alone, with ` +N more` appended inside
     it (still fitted to `width`) when other agents are active — the decision callout's budget."""
-    rows: list[Fragments] = []
+    rows: list[list[_Part]] = []
     if view.run is not None:
         if view.live is not None:
             live = view.live
             parts = [p for p in (live.task, live.role, live.summary, elapsed(now - live.started)) if p]
-            rows.append([_spin("class:phil.agent", live.started, now), ("", " " + " · ".join(parts))])
+            rows.append([_Part(*_spin("class:phil.agent", live.started, now)), _Part("", " " + " · ".join(parts), 0)])
         else:
             node = view.run.node or "starting"
-            rows.append([("", "  " + NODE_LABELS.get(node, node))])
+            rows.append([_Part("", "  " + NODE_LABELS.get(node, node), 0)])
         for sub in view.subs:
-            what = sub.summary or "working"
-            rows.append([_spin("class:phil.sub", sub.started, now),
-                         ("", f"  └ sub-agent · {what} · {sub.description} · {elapsed(now - sub.started)}")])
+            rows.append([
+                _Part(*_spin("class:phil.sub", sub.started, now)),
+                _Part("", "  └ sub-agent · "),
+                _Part("", sub.summary or "working", 1, floor=1),  # cut second
+                _Part("", " · "),
+                _Part("", sub.description, 0, floor=8),  # cut first, down to 8 cells
+                _Part("", f" · {elapsed(now - sub.started)}"),  # the time always survives a cut
+            ])
     if view.step:
         label = STEP_LABELS.get(view.step, view.step)
-        rows.append([_spin("class:phil.warn" if view.run else "class:phil.agent", view.step_started, now),
-                     ("", f" {label} · {elapsed(now - view.step_started)}")])
+        rows.append([_Part(*_spin("class:phil.warn" if view.run else "class:phil.agent", view.step_started, now)),
+                     _Part("", f" {label} · {elapsed(now - view.step_started)}", 0)])
     for job in view.side:
-        rows.append([_spin("class:phil.warn", job.started, now),
-                     ("", f" /btw · {job.label} · {elapsed(now - job.started)}")])
+        rows.append([_Part(*_spin("class:phil.warn", job.started, now)),
+                     _Part("", f" /btw · {job.label} · {elapsed(now - job.started)}", 0)])
     if not rows:
         return []
     if max_lines == 1:
         extra = len(rows) - 1
-        first = [*rows[0], ("class:phil.muted", f" +{extra} more")] if extra > 0 else rows[0]
-        rows = [first]
+        rows = [[*rows[0], _Part("class:phil.muted", f" +{extra} more")] if extra > 0 else rows[0]]
     elif len(rows) > MAX_LIVE_LINES + 1:
-        rows = [*rows[:MAX_LIVE_LINES], [("class:phil.muted", f"  +{len(rows) - MAX_LIVE_LINES} more")]]
+        rows = [*rows[:MAX_LIVE_LINES], [_Part("class:phil.muted", f"  +{len(rows) - MAX_LIVE_LINES} more", 0)]]
     if view.feed_filter:
-        rows[0] = [*rows[0], ("class:phil.muted", f"   [feed: {view.feed_filter}]")]
+        rows[0] = [*rows[0], _Part("class:phil.muted", f"   [feed: {view.feed_filter}]")]
     out: Fragments = []
     for i, row in enumerate(rows):
         if i:
@@ -225,23 +229,60 @@ def render_live_rows(
     return out
 
 
-_FEED_TAG = "   [feed: "
+@dataclass
+class _Part:
+    """One styled piece of a live row. `order` is None for a piece a cut keeps whole (the spinner,
+    separators, the time, the `+N more` and `[feed: x]` suffixes); otherwise pieces are cut lowest
+    `order` first, each down to `floor` cells."""
+
+    style: str
+    text: str
+    order: int | None = None
+    floor: int = 0
 
 
-def _fit_row(row: Fragments, width: int | None) -> Fragments:
-    """`row`, cut to fit `width` if needed: the first (spinner) fragment's style survives, and the
-    body text is cut with `_fit` before a `[feed: x]` tag, so the tag survives a cut — unless the
-    tag alone doesn't fit in `width - 1`, in which case the whole row (tag included) is cut
-    instead, so nothing this returns ever exceeds `width - 1` cells."""
-    text = toolbar_text(row)
-    if width is None or cell_len(text) <= width - 1:
-        return row
-    style = row[0][0] if row else ""
-    index = text.rfind(_FEED_TAG)
-    body, tag = (text, "") if index == -1 else (text[:index], text[index:])
-    if tag and cell_len(tag) > width - 1:
-        return [(style, _fit(text, width))]
-    return [(style, _fit(body, width - cell_len(tag)) + tag)]
+def _cut_cells(text: str, cells: int) -> str:
+    """`text` in at most `cells` cells, ending with … when cut."""
+    if cell_len(text) <= cells:
+        return text
+    if cells <= 1:
+        return "…" if cells == 1 else ""
+    return set_cell_size(text, cells - 1) + "…"
+
+
+def _fit_row(row: list[_Part], width: int | None) -> Fragments:
+    """`row` as fragments, cut to fit in `width - 1` cells if needed. Each piece keeps its own
+    style. The cuttable pieces give way first (down to their floors, then to nothing), so the
+    suffixes and a sub-agent's time survive; only if those alone don't fit is the row cut from
+    its end, so nothing this returns ever exceeds `width - 1` cells."""
+    if width is None or sum(cell_len(p.text) for p in row) <= width - 1:
+        return [(p.style, p.text) for p in row]
+    limit = width - 1
+    texts = [p.text for p in row]
+    cuttable = sorted((i for i, p in enumerate(row) if p.order is not None), key=lambda i: row[i].order)
+    for use_floor in (True, False):
+        for i in cuttable:
+            excess = sum(cell_len(t) for t in texts) - limit
+            if excess <= 0:
+                break
+            cells = cell_len(texts[i])
+            floor = min(row[i].floor, cells) if use_floor else 0
+            texts[i] = _cut_cells(texts[i], max(floor, cells - excess))
+    excess = sum(cell_len(t) for t in texts) - limit
+    if excess > 0:  # the kept pieces alone are too wide: cut from the end, keeping each piece's style
+        out: Fragments = []
+        room = limit
+        for part, text in zip(row, texts, strict=True):
+            if room <= 0:
+                break
+            piece = _cut_cells(text, room)
+            room -= cell_len(piece)
+            if piece:
+                out.append((part.style, piece))
+            if piece != text:
+                break
+        return out
+    return [(p.style, t) for p, t in zip(row, texts, strict=True) if t]
 
 
 def _fit(text: str, width: int | None) -> str:

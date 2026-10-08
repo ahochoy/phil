@@ -248,7 +248,7 @@ class ChatController:
         self._revising = False
         self._feed = FeedRenderer()  # the run's tool lines and milestone bands
         self._feed_filter: str | None = None  # /feed <agent>: only that agent's tool lines print
-        self._hidden = 0  # tool lines the filter has hidden since it was set
+        self._hidden = 0  # tool steps (end records) the filter has hidden since it was set
         self._base_sha: str | None = None
         self._done_seen = False
         self._replacement = ""
@@ -1997,19 +1997,23 @@ class ChatController:
             if arg not in FEED_AGENTS:
                 self.console.print(f"Pick one of: {', '.join(FEED_AGENTS)}.")
                 return
+            if self._run_id is None:
+                self.console.print("No run to filter yet.")
+                return
+            if self._hidden:  # switching filters: report what the old one hid first
+                self.console.print(self._hidden_line(), soft_wrap=True)
             self._set_feed_filter(arg)
             self.console.print(f"Showing only the {arg}'s lines. /feed to show everything.")
             return
-        hidden = self._hidden
+        line = self._hidden_line() if self._hidden else "Showing everything again."
         self._set_feed_filter(None)
-        if not hidden:
-            self.console.print("Showing everything again.")
-            return
-        lines = "1 line from other agents was" if hidden == 1 else f"{hidden} lines from other agents were"
-        self.console.print(
-            f"Showing everything again. {lines} hidden: /show {escape(self._run_id or '')} to see them.",
-            soft_wrap=True,
-        )
+        self.console.print(line, soft_wrap=True)
+
+    def _hidden_line(self) -> str:
+        """What the filter hid, in steps (records, which a fold may draw as one line)."""
+        n = self._hidden
+        steps = "1 step from other agents was" if n == 1 else f"{n} steps from other agents were"
+        return f"Showing everything again. {steps} hidden."
 
     # --- /btw ------------------------------------------------------------------------------------
 

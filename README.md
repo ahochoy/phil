@@ -274,7 +274,7 @@ The live row has one line per active agent: the main agent, each sub-agent it st
 under it with `└ sub-agent`), and each `/btw` question still being answered. `/feed <agent>`
 (`implementer`, `tester`, `reviewer`, `architect`, `sub-agent` or `engine`) shows only that
 agent's tool lines, with milestones still shown; `/feed` shows everything again and says how many
-lines were hidden. The filter is cleared when the run ends.
+steps were hidden. The filter is cleared when the run ends.
 
 Reopen a chat later:
 

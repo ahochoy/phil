@@ -208,8 +208,8 @@ def _activity(controller, *records: dict) -> str:
 def test_feed_filter_shows_only_that_agent(controller_with_run):
     """/feed tester prints the 'Showing only the tester's lines…' line and sets state.view().feed_filter;
     an activity batch with an implementer end record and a tester end record prints only the tester's tool
-    line; a milestone still prints; /feed then prints 'Showing everything again. 1 line from other agents
-    was hidden: /show <run> to see them.' and clears feed_filter."""
+    line; a milestone still prints; /feed then prints 'Showing everything again. 1 step from other agents
+    was hidden.' and clears feed_filter."""
     controller = controller_with_run
     controller._command("/feed tester")
     assert controller.console.export_text().strip() == "Showing only the tester's lines. /feed to show everything."
@@ -225,22 +225,41 @@ def test_feed_filter_shows_only_that_agent(controller_with_run):
     assert "▸ CALC-001 Add multiply" in controller.console.export_text()
 
     controller._command("/feed")
-    assert controller.console.export_text().strip() == (
-        f"Showing everything again. 1 line from other agents was hidden: /show {controller._run_id} to see them."
-    )
+    assert controller.console.export_text().strip() == "Showing everything again. 1 step from other agents was hidden."
     assert controller.state.view().feed_filter is None
 
 
-def test_feed_counts_several_hidden_lines(controller_with_run):
+def test_feed_counts_several_hidden_steps(controller_with_run):
     controller = controller_with_run
     controller._command("/feed reviewer")
     controller.console.export_text()
     text = _activity(controller, _end(3, "implementer", "a"), _end(4, "tester", "b"), _end(5, "reviewer", "c"))
     assert "run   c" in text and "run   a" not in text and "run   b" not in text
     controller._command("/feed")
-    assert controller.console.export_text().strip() == (
-        f"Showing everything again. 2 lines from other agents were hidden: /show {controller._run_id} to see them."
-    )
+    assert controller.console.export_text().strip() == "Showing everything again. 2 steps from other agents were hidden."
+
+
+def test_switching_filters_reports_what_the_old_one_hid(controller_with_run):
+    controller = controller_with_run
+    controller._command("/feed tester")
+    _activity(controller, _end(3, "implementer", "a"), _end(4, "reviewer", "b"))
+    controller.console.export_text()
+    controller._command("/feed implementer")
+    assert controller.console.export_text().strip().splitlines() == [
+        "Showing everything again. 2 steps from other agents were hidden.",
+        "Showing only the implementer's lines. /feed to show everything.",
+    ]
+    assert controller.state.view().feed_filter == "implementer" and controller._hidden == 0
+
+    controller._command("/feed reviewer")  # nothing hidden: no count line
+    assert controller.console.export_text().strip() == "Showing only the reviewer's lines. /feed to show everything."
+
+
+def test_feed_without_a_run(controller_without_run):
+    controller = controller_without_run
+    controller._command("/feed tester")
+    assert controller.console.export_text().strip() == "No run to filter yet."
+    assert controller.state.view().feed_filter is None and controller._feed_filter is None
 
 
 def test_feed_sub_agent_and_engine(controller_with_run):
@@ -288,7 +307,7 @@ def test_feed_filter_applies_before_folding_and_keeps_start_records(controller_w
     assert "read  a.py · c.py" in text  # the hidden read doesn't split the tester's fold
     assert "b.py" not in text
     controller._command("/feed")
-    assert "1 line from other agents was hidden" in controller.console.export_text()  # start records aren't lines
+    assert "1 step from other agents was hidden." in controller.console.export_text()  # start records aren't steps
 
 
 def test_feed_unknown_and_nothing_hidden(controller_with_run):

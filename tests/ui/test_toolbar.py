@@ -231,3 +231,46 @@ def test_max_lines_one_with_a_single_agent_has_no_more_suffix():
     view = ToolbarView(run=RUN2, live=MAIN)
     frags = render_live_rows(view, 100.0, max_lines=1)
     assert "more" not in toolbar_text(frags)
+
+
+LONG_MAIN = LiveStep(task="CALC-002", role="implementer", summary="run " + "pytest -q tests/" * 10, started=98.0)
+
+
+def test_a_cut_collapsed_row_keeps_its_more_count():
+    subs = (SubAgent(1, "a", None, 90.0), SubAgent(2, "b", None, 90.0))
+    view = ToolbarView(run=RUN2, live=LONG_MAIN, subs=subs)
+    text = toolbar_text(render_live_rows(view, 100.0, 80, max_lines=1))
+    assert text.endswith("+2 more")
+    assert cell_len(text) <= 79 and "…" in text
+
+
+def test_a_cut_row_keeps_both_suffixes():
+    subs = (SubAgent(1, "a", None, 90.0), SubAgent(2, "b", None, 90.0))
+    view = ToolbarView(run=RUN2, live=LONG_MAIN, subs=subs, feed_filter="tester")
+    text = toolbar_text(render_live_rows(view, 100.0, 60, max_lines=1))
+    assert text.endswith(" +2 more   [feed: tester]")
+    assert cell_len(text) <= 59 and "…" in text
+
+
+def test_a_long_sub_agent_line_keeps_its_time():
+    sub = SubAgent(7, "explore the whole test suite for flaky timing " * 3, "read " + "deep/" * 20 + "t.py", 94.0)
+    view = ToolbarView(run=RUN2, live=MAIN, subs=(sub,))
+    for width in (80, 40):
+        line = lines(view, width=width)[1]
+        assert line.endswith(" · 6s"), line
+        assert cell_len(line) <= width - 1
+        assert "└ sub-agent · " in line
+    line = lines(view, width=80)[1]
+    summary, description = line.split(" · ")[1:3]
+    assert summary.startswith("read deep/") and description.endswith("…") and cell_len(description) >= 8
+
+
+def test_a_cut_row_keeps_each_fragments_style():
+    subs = (SubAgent(1, "a", None, 90.0), SubAgent(2, "b", None, 90.0))
+    view = ToolbarView(run=RUN2, live=LONG_MAIN, subs=subs, feed_filter="tester")
+    frags = render_live_rows(view, 100.0, 60, max_lines=1)
+    assert frags[0][0] == "class:phil.agent" and frags[0][1] in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    assert ("class:phil.muted", " +2 more") in frags
+    assert ("class:phil.muted", "   [feed: tester]") in frags
+    body = [f for f in frags if "CALC-002" in f[1]]
+    assert len(body) == 1 and body[0][0] == "" and body[0][1].endswith("…")
