@@ -236,8 +236,16 @@ One chat follows one goal at a time — intake, plan, approval, then its run —
 bottom toolbar (the current step and its elapsed time, then the run's node and task progress).
 The prompt stays usable while a goal is being planned or a run works in the background:
 
+- Questions, plan approval, a paused run's choices and the other yes/no offers appear as a callout
+  box you answer with ↑/↓ and Enter (or a number); a one-line note then records what you picked.
+  Press Esc to type instead, and `/answer` to reopen the box. Piped input gets the same box,
+  numbered, and takes a number or typed text.
 - If the run needs your input, the chat flags it right away (`⏸ <run> needs you: …`) and asks
-  at the next idle prompt; jump to it any time with `/answer`.
+  at the next idle prompt; jump to it any time with `/answer`. If it's answered elsewhere (say,
+  `phil resume` in another window), the box closes and the chat says so.
+- When something fails — a model call, or a run that crashed — the chat says what happened in
+  plain words, whether Phil retries, and what to do (for example, add credits or set an API key);
+  `/more 1` prints the raw error (for a crashed run, its worker log).
 - Ask a side question while work continues with `/btw <question>` — read-only, it never changes
   the plan or the run; its answer can reference files, opened by number with `/more <n>` (only
   from that answer's read-only repo snapshot — never the live working tree).

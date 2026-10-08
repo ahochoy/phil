@@ -11,15 +11,27 @@ from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.document import Document
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markup import escape
 
-from phil.chat.controller import WAKE, ChatIO
+from phil.chat.controller import TYPE, WAKE, ChatIO
+from phil.chat.decision import Decision
+from phil.ui.callout import callout_lines, to_fragments, to_rich
+from phil.ui.theme import prompt_toolkit_styles
 
 MAX_JOBS = 3
 Spawn = Callable[[Path, str, str, dict | None], object]
+
+
+def prompt_style() -> Style:
+    """The prompt's colours: the theme's callout styles and the muted live row."""
+    return Style.from_dict(prompt_toolkit_styles())
 
 
 class LineIO:
@@ -35,7 +47,20 @@ class LineIO:
             except EOFError:
                 return None
 
-        return ChatIO(ask=ask, spawn=spawn)
+        return ChatIO(ask=ask, spawn=spawn, choose=self.choose)
+
+    def choose(self, prompt: str, decision: Decision) -> str | None:
+        """Print the callout (numbered, no highlight) and read a line: a number in range picks
+        that option's answer; any other text is returned as typed; EOF returns None."""
+        self.console.print(to_rich(callout_lines(decision, decision.default, self.console.width, live=False)))
+        try:
+            text = self.console.input(f"[phil.user]{escape(prompt)}[/]")
+        except EOFError:
+            return None
+        stripped = text.strip()
+        if stripped.isascii() and stripped.isdigit() and 1 <= int(stripped) <= len(decision.options):
+            return decision.options[int(stripped) - 1].answer
+        return text
 
     def run(self, fn: Callable[[], Any]) -> Any:
         return fn()
@@ -58,13 +83,25 @@ class TerminalIO:
         self._toolbar = toolbar
         self._live_row = live_row  # the running step, shown on its own line above the input
         self.session: PromptSession = PromptSession(
-            bottom_toolbar=self._render_toolbar, refresh_interval=0.5, input=input, output=output
+            bottom_toolbar=self._render_toolbar, refresh_interval=0.5, input=input, output=output,
+            style=prompt_style(),
         )
         self._lock = threading.Lock()
         self._active = False  # a prompt is running (between its pre_run and its return)
         self._wake_pending = False
         # What was typed into a prompt that a wake interrupted, with its cursor position.
         self._carried = Document()
+        # Decision mode: the menu being shown, its highlighted option, and the highlight a wake
+        # interrupted, carried into the next menu.
+        self._decision: Decision | None = None
+        self._choice = 0
+        # (decision, highlight) a wake interrupted; reused only when the same decision comes back.
+        self._carried_choice: tuple[Decision, int] | None = None
+        # A lone Esc picks "type instead" in the menu; prompt_toolkit's default 0.5s wait for a
+        # longer escape sequence would make it feel stuck, and real sequences arrive far faster.
+        self.session.app.ttimeoutlen = 0.05
+        # The menu takes no typed text (pasted or yanked text included).
+        self.session.default_buffer.read_only = Condition(lambda: self._decision is not None)
         # Jobs run on daemon threads, at most MAX_JOBS at once: they only post events and the chat is
         # saved as it goes, so one still waiting on a model call can be abandoned when the chat exits.
         self._slots = threading.Semaphore(MAX_JOBS)
@@ -89,7 +126,7 @@ class TerminalIO:
             return ""
 
     def chat_io(self, spawn: Spawn) -> ChatIO:
-        return ChatIO(ask=self.ask, spawn=spawn, wake=self.wake, submit=self.submit)
+        return ChatIO(ask=self.ask, spawn=spawn, wake=self.wake, submit=self.submit, choose=self.choose)
 
     def ask(self, prompt: str) -> object:
         with self._lock:
@@ -97,6 +134,7 @@ class TerminalIO:
                 self._wake_pending = False
                 return WAKE
         default, self._carried = self._carried, Document()
+        self._carried_choice = None  # a menu's highlight doesn't survive a typed prompt
         try:
             return self.session.prompt(self._message(prompt), default=default, pre_run=self._started)
         except EOFError:
@@ -122,6 +160,90 @@ class TerminalIO:
 
         return message
 
+    def choose(self, prompt: str, decision: Decision) -> object:
+        """Dock `decision`'s callout above the input and answer it from the keyboard: ↑/↓ move the
+        highlight (wrapping), Enter picks it, 1-9 pick at once, Esc returns `TYPE` (the user wants
+        to type instead). Returns the picked option's answer, `TYPE`, `WAKE` (keeping the
+        highlight for the next menu of the same decision) or None (EOF). Typed text never reaches
+        the buffer. `prompt` isn't shown: the callout's title says what is being asked."""
+        with self._lock:
+            if self._wake_pending:
+                self._wake_pending = False
+                return WAKE
+        n = len(decision.options)
+
+        def in_range(index: int) -> bool:
+            return 0 <= index < n
+
+        carried, self._carried_choice = self._carried_choice, None
+        start = decision.default if in_range(decision.default) else 0
+        if carried is not None and carried[0] == decision and in_range(carried[1]):
+            start = carried[1]
+        self._choice = start
+        self._decision = decision
+        bindings = KeyBindings()
+
+        @bindings.add("up")
+        def _up(event) -> None:
+            self._choice = (self._choice - 1) % n
+
+        @bindings.add("down")
+        def _down(event) -> None:
+            self._choice = (self._choice + 1) % n
+
+        @bindings.add("enter")
+        def _enter(event) -> None:
+            if in_range(self._choice):  # never index out of range inside a key handler
+                event.app.exit(result=decision.options[self._choice].answer)
+
+        for digit in range(1, min(n, 9) + 1):
+
+            @bindings.add(str(digit))
+            def _digit(event, index=digit - 1) -> None:
+                event.app.exit(result=decision.options[index].answer)
+
+        @bindings.add("escape", eager=True)
+        def _escape(event) -> None:
+            event.app.exit(result=TYPE)
+
+        @bindings.add(Keys.Any)
+        def _ignore(event) -> None:
+            pass  # the menu takes no typed text
+
+        self.session.app.erase_when_done = True  # the docked box never stays in the scrollback
+        previous_bindings = self.session.key_bindings
+        try:
+            return self.session.prompt(self._decision_message(decision), key_bindings=bindings,
+                                       pre_run=self._started)
+        except EOFError:
+            return None
+        finally:
+            with self._lock:
+                self._active = False
+            self._decision = None
+            self.session.key_bindings = previous_bindings  # prompt() keeps the bindings it's given
+            self.session.app.erase_when_done = False  # as ask expects: a submitted line stays
+
+    def _decision_message(self, decision: Decision) -> Callable[[], FormattedText]:
+        """The menu's message, re-rendered on every redraw: the live row (if any), then the callout
+        with the current highlight. Its final redraw is empty (the box is erased when done)."""
+
+        def message() -> FormattedText:
+            if self.session.app.is_done:
+                return FormattedText([])
+            try:
+                row = self._live_row() if self._live_row else ""
+            except Exception:  # a redraw must never take the prompt down
+                row = ""
+            parts = [("class:live", row + "\n")] if row else []
+            try:
+                box = to_fragments(callout_lines(decision, self._choice, self.width(), live=True))
+            except Exception:  # a redraw must never take the prompt down
+                box = []
+            return FormattedText([*parts, *box])
+
+        return message
+
     def _started(self) -> None:
         # Runs on the prompt's event loop once the app is running (its future is set).
         with self._lock:
@@ -134,7 +256,11 @@ class TerminalIO:
         app = self.session.app
         if app.future is None or app.future.done():
             return  # the prompt already finished (the user pressed Enter first)
-        self._carried = app.current_buffer.document  # text and cursor position
+        if self._decision is not None:
+            # the next menu of the same decision opens on the same highlight
+            self._carried_choice = (self._decision, self._choice)
+        else:
+            self._carried = app.current_buffer.document  # text and cursor position
         app.erase_when_done = True  # the prompt comes straight back; leave no stale line behind
         app.exit(result=WAKE)
 

@@ -6,7 +6,7 @@ from phil.contracts.routing import Answer, RouteJudgement
 from phil.routing import Judgement
 from phil.routing.classify import Classification
 from tests.chat.conftest import critique, goal, plan
-from tests.chat.test_controller import FULL_SCRIPT, deferred, run_chat, transcript
+from tests.chat.test_controller import FULL_SCRIPT, deferred, last_error, run_chat, transcript
 from tests.helpers import TEST_MODEL, TEST_MODELS
 
 FIX_PROMPT = "Fix it? [Enter = quick fix / full = plan it / n] › "
@@ -224,7 +224,8 @@ def test_a_failed_answer_returns_to_idle(calc_repo):
         ["what does calc do?", peek(seen)],
         {"route": [route("question")], "answer": [RuntimeError("model down"), RuntimeError("model down")]},
     )
-    assert "Phil couldn't answer that:" in text and "model down" in text
+    assert "✗ Something went wrong inside Phil (RuntimeError)." in text  # a failure callout
+    assert "model down" not in text and "model down" in last_error(calc_repo)
     assert seen["stage"] == "idle"
 
 

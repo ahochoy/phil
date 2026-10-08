@@ -12,7 +12,7 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
 from phil.repo import resolve_repo
 from tests.chat.conftest import critique, goal, plan
-from tests.chat.test_controller import FULL_SCRIPT, run_chat, transcript
+from tests.chat.test_controller import FULL_SCRIPT, last_error, run_chat, transcript
 from tests.chat.test_controller_run import escalate, set_state
 from tests.chat.test_routing_flow import FIX_PROMPT, payloads, peek, route
 from tests.helpers import run_git
@@ -295,7 +295,8 @@ def test_a_failed_quick_start_is_noted_and_returns_to_idle(calc_repo, monkeypatc
     text, spawned, runs, *_ = run_chat(
         calc_repo, ["fix the typo in calc", peek(seen)], {"route": [route("simple_change")], "intake": [quick_goal()]}
     )
-    assert "disk full" in text
+    assert "✗ Something went wrong inside Phil (RuntimeError)." in text
+    assert "disk full" in last_error(calc_repo)
     assert seen["stage"] == "idle"
     [failed] = notes(calc_repo, "start_failed")
     assert (failed["depth"], failed["task_id"]) == ("quick", "FIX-001")
@@ -445,7 +446,8 @@ def test_full_at_a_quick_runs_pause_resumes_it_with_full(calc_repo):
     assert [(m, d) for _, m, d in spawned] == [("start", None), ("resume", {"action": "full"})]
     assert prompts[2] == "FIX-001 failed 2 attempts — full / retry / abort › "
     assert MOVING in text
-    assert text.index(MOVING) < text.index(f"Resuming {run.run_id} with full.")
+    # Said only once the resume was sent, so after "Resuming".
+    assert text.index(f"Resuming {run.run_id} with full.") < text.index(MOVING)
 
 
 def test_the_aborted_quick_run_is_planned_fully_with_its_worklogs(calc_repo):
