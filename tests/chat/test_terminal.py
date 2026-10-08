@@ -9,10 +9,16 @@ from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.console import Console
 
-from phil.chat.controller import WAKE
+from phil.chat.controller import TYPE, WAKE
+from phil.chat.decision import Decision, Option
 from phil.chat.terminal import LineIO, TerminalIO
 
 TIMEOUT = 5.0
+
+D = Decision("pause", "⏸ r-1 needs you · setup failed", ("x",),
+             (Option("Retry the task", "retry"), Option("Abort the run", "abort")))
+D3 = Decision("question", "Pick one", (),
+              (Option("First", "1"), Option("Second", "2"), Option("Third", "3")))
 
 
 def _ask(io_, prompt: str = "you › "):
@@ -365,3 +371,230 @@ def test_a_failing_live_row_never_takes_the_prompt_down():
         assert to_plain_text(terminal._message("you › ")()) == "you › "
         plain = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
         assert to_plain_text(plain._message("you › ")()) == "you › "
+
+
+# --- decision mode -------------------------------------------------------------------------------
+
+
+def _choose(terminal: TerminalIO, decision: Decision, prompt: str = ""):
+    """Call `choose` on a helper thread and fail (instead of hanging) if it never returns."""
+    box: dict = {}
+
+    def target() -> None:
+        try:
+            box["result"] = terminal.choose(prompt, decision)
+        except BaseException as exc:  # surfaced below
+            box["error"] = exc
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(TIMEOUT)
+    if thread.is_alive():
+        pytest.fail("choose did not return")
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+
+
+@pytest.fixture
+def pipe():
+    with create_pipe_input() as pipe_input:
+        yield pipe_input
+
+
+@pytest.fixture
+def terminal_io(pipe):
+    terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
+    terminal.session.app.ttimeoutlen = 0.05  # a lone Esc is flushed quickly instead of after 0.5s
+    yield terminal
+    terminal.close()
+
+
+def test_chat_io_offers_choose(terminal_io):
+    assert terminal_io.chat_io(lambda *a: None).choose == terminal_io.choose
+
+
+def test_enter_picks_the_default(terminal_io, pipe):
+    pipe.send_text("\r")
+    assert _choose(terminal_io, D) == "retry"
+    pipe.send_text("\r")
+    assert _choose(terminal_io, Decision("confirm", "t", (), D.options, default=1)) == "abort"
+
+
+def test_down_then_enter_picks_the_next_and_up_wraps(terminal_io, pipe):
+    pipe.send_text("\x1b[B\r")
+    assert _choose(terminal_io, D) == "abort"
+    pipe.send_text("\x1b[A\x1b[A\r")
+    assert _choose(terminal_io, D) == "retry"  # 2 options: up twice from 0 goes 0 -> 1 -> 0
+    pipe.send_text("\x1b[A\r")
+    assert _choose(terminal_io, D3) == "3"  # up from 0 wraps to the last (index 2)
+    pipe.send_text("\x1b[B\x1b[B\x1b[B\r")
+    assert _choose(terminal_io, D3) == "1"  # down past the last wraps to the first
+
+
+def test_a_number_picks_at_once(terminal_io, pipe):
+    pipe.send_text("2")
+    assert _choose(terminal_io, D) == "abort"
+    pipe.send_text("3")
+    assert _choose(terminal_io, D3) == "3"
+
+
+def test_a_number_past_the_options_is_ignored(terminal_io, pipe):
+    pipe.send_text("9\r")
+    assert _choose(terminal_io, D) == "retry"
+
+
+def test_typed_letters_are_ignored_in_the_menu(terminal_io, pipe):
+    pipe.send_text("zz\r")
+    assert _choose(terminal_io, D) == "retry"
+    assert terminal_io.session.default_buffer.text == ""  # nothing reached the input buffer
+    pipe.send_text("\x1b[200~pasted\x1b[201~\x1b[B\r")  # a bracketed paste
+    assert _choose(terminal_io, D) == "abort"
+    assert terminal_io.session.default_buffer.text == ""
+
+
+def test_escape_returns_type(terminal_io, pipe):
+    pipe.send_text("\x1b")
+    begin = time.monotonic()
+    assert _choose(terminal_io, D) is TYPE
+    assert time.monotonic() - begin < 2.0
+
+
+def test_ask_still_takes_typed_text_after_a_menu(terminal_io, pipe):
+    pipe.send_text("\x1b")
+    assert _choose(terminal_io, D) is TYPE
+    io_ = terminal_io.chat_io(lambda *a: None)
+    pipe.send_text("abc\n")
+    assert _ask(io_) == "abc"
+
+
+def test_the_menu_is_erased_but_a_later_submitted_line_stays():
+    buffer = io.StringIO()
+    output = Vt100_Output(buffer, lambda: Size(rows=24, columns=80), term="xterm", enable_cpr=False)
+    with create_pipe_input() as pipe_input:
+        terminal = TerminalIO(lambda: "", input=pipe_input, output=output)
+        io_ = terminal.chat_io(lambda *a: None)
+        erased: list[bool] = []
+        renderer = terminal.session.app.renderer
+        original = renderer.erase
+
+        def recording_erase(*args, **kwargs):
+            erased.append(True)
+            return original(*args, **kwargs)
+
+        renderer.erase = recording_erase
+        try:
+            pipe_input.send_text("\r")
+            assert _choose(terminal, D) == "retry"
+            assert erased == [True]  # the docked box is erased, not left in the scrollback
+            before = len(buffer.getvalue())
+            pipe_input.send_text("kept\n")
+            assert _ask(io_) == "kept"
+            assert erased == [True]  # the submitted line is not erased
+            assert "\r\n" in buffer.getvalue()[before:]
+        finally:
+            terminal.close()
+
+
+def test_ctrl_d_in_the_menu_returns_none(terminal_io, pipe):
+    pipe.send_text("\x04")
+    assert _choose(terminal_io, D) is None
+
+
+def test_a_pending_wake_returns_wake_before_the_menu(terminal_io, pipe):
+    terminal_io.wake()
+    assert _choose(terminal_io, D) is WAKE
+    pipe.send_text("\r")
+    assert _choose(terminal_io, D) == "retry"
+
+
+def test_a_wake_keeps_the_highlight(terminal_io, pipe):
+    pipe.send_text("\x1b[B")
+
+    def poke() -> None:
+        deadline = time.monotonic() + TIMEOUT
+        while time.monotonic() < deadline:
+            if terminal_io.prompting and terminal_io._choice == 1:
+                break
+            time.sleep(0.01)
+        terminal_io.wake()
+
+    thread = threading.Thread(target=poke, daemon=True)
+    thread.start()
+    assert _choose(terminal_io, D) is WAKE
+    thread.join(TIMEOUT)
+    pipe.send_text("\r")
+    assert _choose(terminal_io, D) == "abort"  # the highlight was kept
+    pipe.send_text("\r")
+    assert _choose(terminal_io, D) == "retry"  # and only carried into the one next menu
+
+
+def test_the_menu_message_docks_the_callout_under_the_live_row():
+    from prompt_toolkit.formatted_text import to_plain_text
+
+    with create_pipe_input() as pipe_input:
+        terminal = TerminalIO(lambda: "", live_row=lambda: "⠋ T1 · working", input=pipe_input,
+                              output=DummyOutput())
+        terminal._choice = 1
+        text = to_plain_text(terminal._decision_message(D)())
+        lines = text.splitlines()
+        assert lines[0] == "⠋ T1 · working"
+        assert lines[1].startswith("╭")
+        assert any("› 2 Abort the run" in line for line in lines)
+        assert any("Retry the task" in line and "›" not in line for line in lines)
+
+
+def test_prompt_style_colours_the_callout_and_the_live_row():
+    from phil.chat.terminal import prompt_style
+
+    style = prompt_style()
+    pause = style.get_attrs_for_style_str("class:phil.callout.title.pause")
+    assert pause.bold and pause.color == "ansiyellow"
+    assert style.get_attrs_for_style_str("class:phil.callout.border.failure").color == "ansired"
+    selected = style.get_attrs_for_style_str("class:phil.callout.selected")
+    assert selected.bold and selected.reverse
+    assert style.get_attrs_for_style_str("class:phil.callout.hint").dim
+    assert style.get_attrs_for_style_str("class:live").dim
+
+
+def test_rich_styles_translate_to_prompt_toolkit():
+    from phil.ui.theme import prompt_toolkit_style
+
+    assert prompt_toolkit_style("bold yellow") == "bold ansiyellow"
+    assert prompt_toolkit_style("bold cyan") == "bold ansicyan"
+    assert prompt_toolkit_style("red") == "ansired"
+    assert prompt_toolkit_style("bold reverse") == "bold reverse"
+    assert prompt_toolkit_style("dim") == "dim"
+    assert prompt_toolkit_style("default") == ""
+
+
+def _line_io(monkeypatch, *answers: str) -> tuple[LineIO, Console]:
+    console = Console(record=True, width=80)
+    pending = iter(answers)
+
+    def fake_input(prompt: str = "") -> str:
+        try:
+            return next(pending)
+        except StopIteration:
+            raise EOFError from None
+
+    monkeypatch.setattr(console, "input", fake_input)
+    return LineIO(console), console
+
+
+def test_line_io_choose_prints_numbered_and_maps_numbers(monkeypatch):
+    line, console = _line_io(monkeypatch, "2", "abort", "anything")
+    io_ = line.chat_io(lambda *a: None)
+    assert io_.choose("› ", D) == "abort"
+    text = console.export_text()
+    assert "1 Retry the task" in text
+    assert "2 Abort the run" in text
+    assert io_.choose("› ", D) == "abort"
+    assert io_.choose("› ", D) == "anything"
+    assert io_.choose("› ", D) is None  # EOF
+
+
+def test_line_io_choose_leaves_out_of_range_numbers_as_text(monkeypatch):
+    line, _ = _line_io(monkeypatch, "3", "0")
+    assert line.choose("› ", D) == "3"
+    assert line.choose("› ", D) == "0"

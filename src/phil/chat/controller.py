@@ -28,6 +28,7 @@ from phil.chat.approval import (
     test_cmd_problem,
 )
 from phil.chat.btw import ask_btw
+from phil.chat.decision import Decision
 from phil.chat.design import propose_approaches
 from phil.chat.events import ChatEvent
 from phil.chat.overview import repo_overview
@@ -67,6 +68,7 @@ from phil.ui.show_view import detail_text, render_show, show_refs
 logger = logging.getLogger(__name__)  # the chat sends `phil` loggers to its phil.log, never the console
 
 WAKE = object()  # ChatIO.ask returns this when a background event interrupted the prompt
+TYPE = object()  # ChatIO.choose returns this when the user left the menu to type (Esc)
 MAX_QUESTION_ROUNDS = 2
 SOMETHING_ELSE = "Something else (type it)"
 OTHER_PROMPT = "Your answer › "  # after picking "Something else"
@@ -128,6 +130,8 @@ class ChatIO:
     spawn: Callable[[Path, str, str, dict | None], object]  # (repo_root, run_id, mode, decision)
     wake: Callable[[], None] = lambda: None  # interrupt a blocked ask (keeps typed text)
     submit: Callable[[Callable[[], None]], object] = lambda job: job()  # run a job; inline by default
+    # (prompt, decision) -> the picked option's answer | TYPE | WAKE | None (EOF); None: no menu
+    choose: Callable[[str, Decision], object] | None = None
 
 
 class ChatController:
