@@ -1,0 +1,92 @@
+import pytest
+from rich.cells import cell_len
+
+from phil.ui.banner import NARROW_BOX, NARROW_MASCOT, BannerFacts, banner_plain, render_banner
+
+FACTS = BannerFacts(
+    version="0.9.0", repo="calc", branch="main", sha="a1b2c3d", base=None, dirty=2, parked=3,
+    models=(("high", "claude-sonnet-5"), ("low", "gemini-3.8-flash"), ("classifier", "jev-1.13")),
+    budget_usd=1.0, run=("r-4f2a", "escalated", "CALC-002 needs approval"), other_chats=("7c1e",),
+    first_time=False,
+)
+
+
+def box_lines(lines):
+    return [line.plain for line in lines if line.plain[:1] in "╭│╰"]
+
+
+@pytest.mark.parametrize("width", [60, 80, 120])
+@pytest.mark.parametrize("facts", [
+    FACTS,
+    BannerFacts(**{**FACTS.__dict__, "repo": "計算器プロジェクト", "branch": "feat/🚀-launch"}),
+    BannerFacts(**{**FACTS.__dict__, "models": (("high", "an-extremely-long-model-name-" * 4),)}),
+])
+def test_every_box_line_has_the_same_width(width, facts):
+    lines = box_lines(render_banner(facts, width))
+    assert lines and len({cell_len(line) for line in lines}) == 1
+    assert all(cell_len(line) <= width - 1 for line in lines)
+
+
+def test_uneven_and_wider_mascots_still_line_up():
+    mascot = ((("", "  ^^  "),), (("", "(o_o)  wide one"),), (("", "/"),))
+    lines = box_lines(render_banner(FACTS, 100, mascot=mascot))
+    assert len({cell_len(line) for line in lines}) == 1
+    first_fact_col = {line.index("Phil") for line in lines if "Phil v" in line}
+    assert first_fact_col  # identity row is present
+
+
+def test_tier_edges():
+    assert any("◠" in t.plain or "╭─────╮" in t.plain for t in render_banner(FACTS, NARROW_MASCOT))
+    assert not any("◠" in t.plain for t in render_banner(FACTS, NARROW_MASCOT - 1))
+    assert box_lines(render_banner(FACTS, NARROW_BOX))
+    plain = render_banner(FACTS, NARROW_BOX - 1)
+    assert not box_lines(plain) and all(cell_len(t.plain) <= NARROW_BOX - 2 for t in plain)
+
+
+def test_facts_content():
+    text = "\n".join(t.plain for t in render_banner(FACTS, 140))
+    assert "Phil v0.9.0 · deterministic orchestration, token-efficient" in text
+    assert "calc @ main a1b2c3d · ⚠ 2 uncommitted · 3 parked" in text
+    assert "high claude-sonnet-5 · low gemini-3.8-flash · classifier jev-1.13" in text
+    assert "budget $1.00 a run" in text
+
+
+def test_base_no_classifier_no_budget():
+    facts = BannerFacts(**{**FACTS.__dict__, "base": "release", "models": (("high", "a"), ("low", "b")),
+                           "budget_usd": 0.0})
+    text = "\n".join(t.plain for t in render_banner(facts, 140))
+    assert "calc · base release a1b2c3d" in text and "uncommitted" not in text
+    assert "classifier" not in text and "no run budget" in text
+
+
+@pytest.mark.parametrize("run,expected", [
+    (("r-1", "escalated", "CALC-002 needs approval"), "⏸ r-1 is waiting for you (CALC-002 needs approval) · /answer"),
+    (("r-1", "failed", None), "r-1 failed · /resume"),
+    (("r-1", "stopped", None), "r-1 was stopped · /resume"),
+    (("r-1", "running", None), "r-1 is running · phil attach r-1"),
+    (("r-1", "pending", None), "r-1 is running · phil attach r-1"),
+])
+def test_pick_up_states(run, expected):
+    facts = BannerFacts(**{**FACTS.__dict__, "run": run})
+    assert expected in [t.plain for t in render_banner(facts, 140)]
+
+
+def test_other_chats_and_nothing_to_pick_up():
+    two = BannerFacts(**{**FACTS.__dict__, "other_chats": ("7c1e", "9a0b"), "run": None})
+    assert "2 other open chats · phil --resume 7c1e" in [t.plain for t in render_banner(two, 140)]
+    none = BannerFacts(**{**FACTS.__dict__, "other_chats": (), "run": None})
+    text = "\n".join(t.plain for t in render_banner(none, 140))
+    assert "/answer" not in text and "other open chat" not in text
+
+
+def test_tips_first_time_and_returning():
+    returning = [t.plain for t in render_banner(FACTS, 140)]
+    assert "Type a goal to start · /btw ask while it works · /feed filter the feed · /help everything else" in returning
+    first = BannerFacts(**{**FACTS.__dict__, "first_time": True})
+    assert any(t.plain.startswith("Describe what you want built.") for t in render_banner(first, 140))
+
+
+def test_plain_has_no_box_and_no_escape_codes():
+    lines = banner_plain(FACTS)
+    assert not any(ch in "".join(lines) for ch in "╭╮╰╯│") and "\x1b" not in "".join(lines)
+    assert any("calc @ main a1b2c3d" in line for line in lines)
