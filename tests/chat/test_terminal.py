@@ -620,7 +620,7 @@ def test_the_menu_message_docks_the_callout_under_the_live_row():
     from prompt_toolkit.formatted_text import to_plain_text
 
     with create_pipe_input() as pipe_input:
-        terminal = TerminalIO(lambda: "", live_row=lambda: "⠋ T1 · working", input=pipe_input,
+        terminal = TerminalIO(lambda: "", live_row=lambda max_lines=None: "⠋ T1 · working", input=pipe_input,
                               output=DummyOutput())
         terminal._choice = 1
         text = to_plain_text(terminal._decision_message(D)())
@@ -629,6 +629,30 @@ def test_the_menu_message_docks_the_callout_under_the_live_row():
         assert lines[1].startswith("╭")
         assert any("› 2 Abort the run" in line for line in lines)
         assert any("Retry the task" in line and "›" not in line for line in lines)
+
+
+def test_decision_mode_collapses_the_live_row_to_one_line():
+    """The ruling: while a decision callout is open, the live row is collapsed to one line (its
+    first line), so a long callout plus several active agents can't overflow a small terminal."""
+    from prompt_toolkit.formatted_text import to_plain_text
+
+    from phil.chat.state import LiveStep, RunView, SubAgent, ToolbarView
+    from phil.ui.toolbar import render_live_rows
+
+    run = RunView(run_id="r-1", keyword="calc", node="implement", tasks_done=0, tasks_total=2, started=0.0)
+    live = LiveStep(task="T1", role="implementer", summary="run pytest", started=0.0)
+    subs = (SubAgent(1, "a", None, 0.0), SubAgent(2, "b", None, 0.0))  # 3 active agents: main + 2 subs
+    view = ToolbarView(run=run, live=live, subs=subs)
+
+    def live_row(max_lines=None):
+        return render_live_rows(view, 5.0, max_lines=max_lines)
+
+    with create_pipe_input() as pipe_input:
+        terminal = TerminalIO(lambda: "", live_row=live_row, input=pipe_input, output=DummyOutput())
+        text = to_plain_text(terminal._decision_message(D)())
+        lines = text.splitlines()
+        assert lines[1].startswith("╭")  # exactly one live line before the callout box
+        assert lines[0].endswith("+2 more")
 
 
 def test_prompt_style_colours_the_callout_and_the_live_row():

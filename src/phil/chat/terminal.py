@@ -88,11 +88,13 @@ class TerminalIO:
 
     def __init__(
         self, toolbar: Callable[[], list[tuple[str, str]]],
-        live_row: Callable[[], str | list[tuple[str, str]]] | None = None, *,
+        live_row: Callable[..., str | list[tuple[str, str]]] | None = None, *,
         input=None, output=None,
     ) -> None:
         self._toolbar = toolbar
-        self._live_row = live_row  # the running step, shown on its own line above the input
+        # The running step(s), shown above the input. Called with no arguments for the prompt's
+        # own message; called with `max_lines=1` for a decision callout, which asks for one line.
+        self._live_row = live_row
         self.session: PromptSession = PromptSession(
             bottom_toolbar=self._render_toolbar, refresh_interval=0.5, input=input, output=output,
             style=prompt_style(),
@@ -236,14 +238,16 @@ class TerminalIO:
             self.session.app.erase_when_done = False  # as ask expects: a submitted line stays
 
     def _decision_message(self, decision: Decision) -> Callable[[], FormattedText]:
-        """The menu's message, re-rendered on every redraw: the live row (if any), then the callout
-        with the current highlight. Its final redraw is empty (the box is erased when done)."""
+        """The menu's message, re-rendered on every redraw: the live row (if any), collapsed to one
+        line (`max_lines=1`) so a long callout plus several active agents can't overflow a small
+        terminal, then the callout with the current highlight. Its final redraw is empty (the box
+        is erased when done)."""
 
         def message() -> FormattedText:
             if self.session.app.is_done:
                 return FormattedText([])
             try:
-                row = self._live_row() if self._live_row else ""
+                row = self._live_row(max_lines=1) if self._live_row else ""
             except Exception:  # a redraw must never take the prompt down
                 row = ""
             parts = _row_fragments(row)

@@ -300,10 +300,12 @@ def _run_chat(
             return []
         return render_toolbar(controller.state.view(), time.time(), width=terminal.width())
 
-    def live_row() -> list[tuple[str, str]]:
+    def live_row(max_lines: int | None = None) -> list[tuple[str, str]]:
         if controller is None:
             return []
-        return render_live_rows(controller.state.view(), time.time(), width=terminal.width())
+        return render_live_rows(
+            controller.state.view(), time.time(), width=terminal.width(), max_lines=max_lines
+        )
 
     terminal = _terminal(toolbar, live_row) if tty else LineIO(out)
     try:

@@ -177,11 +177,16 @@ def _spin(style: str, started: float, now: float) -> tuple[str, str]:
     return (style, SPINNER[int((now - started) * 8) % len(SPINNER)])
 
 
-def render_live_rows(view: ToolbarView, now: float, width: int | None = None) -> Fragments:
+def render_live_rows(
+    view: ToolbarView, now: float, width: int | None = None, max_lines: int | None = None
+) -> Fragments:
     """The live row(s) above the input: one line per active agent (the main agent, each sub-agent
     indented with `└`), a goal step and in-flight `/btw` questions as their own lines; at most
     `MAX_LIVE_LINES` lines plus a `+N more` line. Fragments, with `"\\n"` between lines and none
-    after the last. An empty list means no live row."""
+    after the last. An empty list means no live row.
+
+    `max_lines=1` collapses everything to the first row alone, with ` +N more` appended inside
+    it (still fitted to `width`) when other agents are active — the decision callout's budget."""
     rows: list[Fragments] = []
     if view.run is not None:
         if view.live is not None:
@@ -204,7 +209,11 @@ def render_live_rows(view: ToolbarView, now: float, width: int | None = None) ->
                      ("", f" /btw · {job.label} · {elapsed(now - job.started)}")])
     if not rows:
         return []
-    if len(rows) > MAX_LIVE_LINES + 1:
+    if max_lines == 1:
+        extra = len(rows) - 1
+        first = [*rows[0], ("class:phil.muted", f" +{extra} more")] if extra > 0 else rows[0]
+        rows = [first]
+    elif len(rows) > MAX_LIVE_LINES + 1:
         rows = [*rows[:MAX_LIVE_LINES], [("class:phil.muted", f"  +{len(rows) - MAX_LIVE_LINES} more")]]
     if view.feed_filter:
         rows[0] = [*rows[0], ("class:phil.muted", f"   [feed: {view.feed_filter}]")]
@@ -221,13 +230,17 @@ _FEED_TAG = "   [feed: "
 
 def _fit_row(row: Fragments, width: int | None) -> Fragments:
     """`row`, cut to fit `width` if needed: the first (spinner) fragment's style survives, and the
-    body text is cut with `_fit` before a `[feed: x]` tag, so the tag always survives a cut."""
+    body text is cut with `_fit` before a `[feed: x]` tag, so the tag survives a cut — unless the
+    tag alone doesn't fit in `width - 1`, in which case the whole row (tag included) is cut
+    instead, so nothing this returns ever exceeds `width - 1` cells."""
     text = toolbar_text(row)
     if width is None or cell_len(text) <= width - 1:
         return row
     style = row[0][0] if row else ""
     index = text.rfind(_FEED_TAG)
     body, tag = (text, "") if index == -1 else (text[:index], text[index:])
+    if tag and cell_len(tag) > width - 1:
+        return [(style, _fit(text, width))]
     return [(style, _fit(body, width - cell_len(tag)) + tag)]
 
 

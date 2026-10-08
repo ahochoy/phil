@@ -196,3 +196,38 @@ def test_spinner_styles():
 
 def test_nothing_running_is_empty():
     assert render_live_rows(ToolbarView(), 0.0) == []
+
+
+def test_a_run_with_no_live_step_shows_the_stage_label():
+    """The old behaviour: a run with no running tool (`live is None`) falls back to its node's
+    stage label, not an empty row."""
+    out = lines(ToolbarView(run=RUN))
+    assert out[0][2:] == "Implementing"
+
+
+def test_feed_tag_never_overflows_at_any_width():
+    """Even when the `[feed: x]` tag alone wouldn't fit in `width - 1`, the whole row (tag
+    included) is cut, so no line this returns ever exceeds `width - 1` cells."""
+    subs = tuple(SubAgent(i, f"job {i}", None, 90.0) for i in range(2))
+    view = ToolbarView(run=RUN2, live=MAIN, subs=subs, side=(SideJob("日本語テスト", 99.0),),
+                       feed_filter="implementer")
+    for width in range(1, 121):
+        out = lines(view, width=width)
+        assert all(cell_len(line) <= width - 1 for line in out)
+
+
+def test_max_lines_one_collapses_to_a_single_line_with_a_more_count():
+    """`max_lines=1` is the decision callout's budget: everything collapses to the first row,
+    with ` +N more` for the agents that no longer get their own line."""
+    subs = (SubAgent(1, "a", None, 90.0), SubAgent(2, "b", None, 90.0))
+    view = ToolbarView(run=RUN2, live=MAIN, subs=subs)
+    frags = render_live_rows(view, 100.0, max_lines=1)
+    text = toolbar_text(frags)
+    assert "\n" not in text
+    assert text.endswith(" +2 more")
+
+
+def test_max_lines_one_with_a_single_agent_has_no_more_suffix():
+    view = ToolbarView(run=RUN2, live=MAIN)
+    frags = render_live_rows(view, 100.0, max_lines=1)
+    assert "more" not in toolbar_text(frags)
