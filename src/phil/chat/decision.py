@@ -52,15 +52,21 @@ class Decision:
 
 
 def _capped(lines: list[str]) -> tuple[str, ...]:
-    if len(lines) <= BODY_LINES:
-        return tuple(lines)
-    return (*lines[: BODY_LINES - 1], "… see /more 1")
+    rendered = [line for entry in lines for line in str(entry).splitlines()]
+    if len(rendered) <= BODY_LINES:
+        return tuple(rendered)
+    return (*rendered[: BODY_LINES - 1], "… see /more 1")
 
 
 def settled_line(decision: Decision, option: Option) -> str:
     if decision.kind == "question":
         return f"Answer: {option.label}"
-    prefix = "✗" if option.answer == "abort" else decision.settled_prefix
+    if option.answer == "abort":
+        prefix = "✗"
+    elif option.answer == "n":
+        prefix = "·"
+    else:
+        prefix = decision.settled_prefix
     text = f"{prefix} {option.label}"
     return f"{text} · {decision.note}" if decision.note else text
 
@@ -77,14 +83,14 @@ def pause_decision(run_id: str, escalation: dict) -> Decision:
     wanted = DEFAULT_FOR.get(reason)
     default = next((i for i, o in enumerate(options) if o.answer == wanted), 0)
     if options[default].answer == "abort":
+        # the engine always pairs abort with another option, so this only matters when abort is listed first
         default = 0 if options[0].answer != "abort" else default
     problems = [str(p) for p in escalation.get("problems") or []]
     summary = str(escalation.get("summary", ""))
     note = ""
     if reason == "attempts":
-        task, phase = escalation.get("task_id", ""), escalation.get("phase", "")
-        count = summary.split(" failed ")[1].split(" ")[0] if " failed " in summary else "several"
-        title_end = f"{task} failed {count} attempts ({phase} phase)"
+        task_id = escalation.get("task_id", "")
+        title_end = summary or f"{task_id} needs another attempt"
         body = [*problems[:3], "Details: /more"]
     elif reason == "approval":
         commands = [str(c) for c in escalation.get("commands") or []]
@@ -94,7 +100,7 @@ def pause_decision(run_id: str, escalation: dict) -> Decision:
         note = ", ".join(commands)
     elif reason == "no_test_cmd":
         title_end = _TITLES[reason]
-        body = ["Set [project] test_cmd in phil.toml, then retry."]
+        body = [*problems, "Set [project] test_cmd in phil.toml, then retry."]
     elif reason == "budget":
         title_end = _TITLES[reason]
         body = [summary]

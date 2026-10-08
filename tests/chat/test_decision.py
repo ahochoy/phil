@@ -32,10 +32,30 @@ def test_attempts_pause_lists_three_problems_and_defaults_to_retry():
                                "problems": ["a", "b", "c", "d"], "options": ["retry", "skip", "full", "abort"],
                                "summary": "CALC-001 failed 3 attempts in the green phase"})
     assert d.kind == "pause"
-    assert d.title == "⏸ r-1 needs you · CALC-001 failed 3 attempts (green phase)"
+    assert d.title == "⏸ r-1 needs you · CALC-001 failed 3 attempts in the green phase"
     assert d.body == ("a", "b", "c", "Details: /more")
     assert labels(d) == ["Retry the task", "Skip this task", "Plan it fully instead", "Abort the run"]
     assert d.default == 0
+
+
+def test_attempts_pause_on_the_check_task():
+    d = pause_decision("r-1", {"reason": "attempts", "task_id": "CALC-001", "problems": ["a"],
+                               "options": ["retry", "abort"],
+                               "summary": "CALC-001 failed 3 attempts on the check task"})
+    assert d.title == "⏸ r-1 needs you · CALC-001 failed 3 attempts on the check task"
+
+
+def test_attempts_pause_fix_after_review_did_not_pass_the_gate():
+    d = pause_decision("r-1", {"reason": "attempts", "task_id": "CALC-001", "problems": ["a"],
+                               "options": ["retry", "abort"],
+                               "summary": "CALC-001's fix after review didn't pass the gate"})
+    assert d.title == "⏸ r-1 needs you · CALC-001's fix after review didn't pass the gate"
+
+
+def test_attempts_pause_falls_back_without_a_summary():
+    d = pause_decision("r-1", {"reason": "attempts", "task_id": "CALC-001", "problems": ["a"],
+                               "options": ["retry", "abort"], "summary": ""})
+    assert d.title == "⏸ r-1 needs you · CALC-001 needs another attempt"
 
 
 @pytest.mark.parametrize("reason,options,title_end,default_answer", [
@@ -53,6 +73,12 @@ def test_every_pause_reason_has_a_title_and_a_safe_default(reason, options, titl
     assert d.options[-1].answer == "abort"
 
 
+def test_no_test_cmd_body_names_the_task_before_the_fix():
+    d = pause_decision("r-1", {"reason": "no_test_cmd", "problems": ["CALC-001 has no test command"],
+                               "options": ["retry", "skip", "abort"], "summary": "s"})
+    assert d.body == ("CALC-001 has no test command", "Set [project] test_cmd in phil.toml, then retry.")
+
+
 def test_abort_is_never_the_default_even_alone_first():
     d = pause_decision("r-1", {"reason": "mystery", "options": ["abort", "retry"], "summary": "Something odd"})
     assert d.options[d.default].answer != "abort"
@@ -65,6 +91,18 @@ def test_a_long_body_is_capped():
                                "problems": [f"p{i}" for i in range(20)]})
     assert len(d.body) <= BODY_LINES
     assert d.body[-1] == "… see /more 1"
+
+
+def test_a_multi_line_problem_is_capped_by_rendered_lines():
+    d = pause_decision("r-1", {"reason": "commit_failed", "options": ["retry", "abort"], "summary": "s",
+                               "problems": ["\n".join(f"l{i}" for i in range(12))]})
+    assert len(d.body) <= BODY_LINES
+    assert d.body[-1] == "… see /more 1"
+
+
+def test_settled_line_for_a_decline_uses_a_dot_not_a_check():
+    d = pr_decision("r-1", force=False)
+    assert settled_line(d, d.options[1]) == "· Not now"
 
 
 def test_question_decision():
