@@ -53,11 +53,6 @@ def controller_with_choose(calc_repo):
     return functools.partial(run_chat, calc_repo, choose=True)
 
 
-@pytest.fixture
-def controller_following_a_run(calc_repo):
-    return functools.partial(run_chat, calc_repo)
-
-
 def bare_controller(repo) -> ChatController:
     """A controller that never runs its loop: stages and state are set by hand."""
     info = resolve_repo(repo)
@@ -214,7 +209,7 @@ def test_a_job_failure_without_failure_data_still_reports(controller):
     assert "RuntimeError: boom" in text  # behind /more 1
 
 
-def test_a_crashed_run_shows_its_failure_callout(controller_following_a_run):
+def test_a_crashed_run_shows_its_failure_callout(controller):
     """run_done with state failed, and the run's events.jsonl holding a failure event: the failure
     callout is printed with its headline."""
     seen = {}
@@ -231,7 +226,8 @@ def test_a_crashed_run_shows_its_failure_callout(controller_following_a_run):
         seen["refs"] = list(c._last_refs)
         return WAKE
 
-    text, spawned, runs, *_ = controller_following_a_run(["add subtract", "y", crash, refs], FULL_SCRIPT)
+    # The chat follows its run (the harness's ManualWatcher); `crash` makes it fail as a worker would.
+    text, spawned, runs, *_ = controller(["add subtract", "y", crash, refs], FULL_SCRIPT)
     run_id = runs[0].run_id
     assert f"Run {run_id} failed." in text
     assert "✗ Your openrouter account is out of credits." in text
@@ -260,3 +256,109 @@ def test_a_capped_pause_body_is_behind_more_1(controller_with_choose):
     assert pause.body[-1] == "… see /more 1"
     for problem in problems:
         assert problem in text
+
+
+def review_failed_pause(problems):
+    def step(c):
+        paths, run_id, conn = _run(c)
+        set_state(c, "escalated", needs_attention="no valid review")
+        run_events(paths, run_id).append("escalation", escalation={
+            "reason": "review_failed", "summary": "The reviewer gave no valid review",
+            "problems": problems, "options": ["retry", "abort"],
+        })
+        c._watcher.poll_once()
+        return WAKE
+
+    return step
+
+
+def test_answer_points_more_1_back_at_a_capped_decision(controller_with_choose):
+    """While a capped pause is folded, /show replaces the details; /answer reopens it and /more 1
+    is the decision's full body again."""
+    problems = [f"problem number {n}" for n in range(1, 21)]
+    seen = {}
+
+    def refs(c):
+        seen["after_show"] = [ref.label for ref in c._last_refs]
+        return "/answer"
+
+    text, *_ = controller_with_choose(
+        ["add subtract", "y", review_failed_pause(problems), TYPE, "/show", refs, TYPE, "/more 1"], FULL_SCRIPT
+    )
+    assert "details" not in seen["after_show"]  # /show's listing replaced it
+    for problem in problems:
+        assert problem in text
+
+
+def test_the_settled_line_waits_for_the_answer_to_take_effect(controller_with_choose, calc_repo):
+    """Approval refused for a launch problem (a bad test command): the same decision is still open,
+    so no "✓ Approve and run"; the later "n" settles with "· Cancel", after the plan is dropped."""
+    text, spawned, runs, *_ = controller_with_choose(
+        ["add subtract", "y", "n"],
+        {"intake": [goal()], "architect": [plan(test_cmd="pytest; rm -rf /")], "critic": [critique()]},
+    )
+    assert "shell operators" in text
+    assert "✓ Approve and run" not in text
+    assert text.index("Plan dropped.") < text.index("· Cancel")
+    assert spawned == [] and runs == []
+
+
+def test_answered_elsewhere_while_typing_the_hint(controller_with_choose):
+    """Retry was picked (the hint prompt is open), then the run is resumed from elsewhere: the chat
+    says so and returns to the running prompt."""
+    calls = []
+    text, spawned, runs, *_ = controller_with_choose(
+        ["add subtract", "y", escalate(), "retry", to_state("running")], FULL_SCRIPT, calls=calls
+    )
+    run_id = runs[0].run_id
+    assert f"{run_id} was answered elsewhere." in text
+    assert calls[-1] == ("ask", "you › ")
+    assert [mode for _, mode, _ in spawned] == ["start"]
+
+
+def look(seen, key, fn):
+    """A script item that records `fn(controller)` under `key`, then lets the loop drain."""
+
+    def step(c):
+        seen[key] = fn(c)
+        return WAKE
+
+    return step
+
+
+def test_a_btw_failure_is_a_failure_callout_and_keeps_the_btw_count(controller):
+    seen = {}
+    text, *_ = controller(
+        ["add subtract", "/btw hi", look(seen, "pending", lambda c: c.state.view().btw_pending), "/more 1", "n"],
+        {**FULL_SCRIPT, "btw": [RuntimeError("provider down")]},
+    )
+    assert "✗ Something went wrong inside Phil (RuntimeError)." in text
+    assert "/btw failed" not in text
+    assert seen["pending"] == 0
+    assert text.count("provider down") == 1  # only behind /more 1
+
+
+def test_an_ask_failure_is_a_failure_callout_and_returns_to_idle(controller):
+    seen = {}
+    text, *_ = controller(
+        ["/ask what does calc do?", look(seen, "stage", lambda c: c.stage), "/more 1"],
+        {"answer": [RuntimeError("model down")]},
+    )
+    assert "✗ Something went wrong inside Phil (RuntimeError)." in text
+    assert "couldn't answer that" not in text
+    assert seen["stage"] == "idle"
+    assert text.count("model down") == 1  # only behind /more 1
+
+
+def test_a_failed_error_write_clears_the_details(controller, calc_repo):
+    """When last_error.txt can't be written, /more 1 doesn't open an older listing's first detail."""
+    from phil.contracts import Ref
+
+    def setup(c):
+        (c.session.dir / "last_error.txt").mkdir()  # writing the file now fails
+        c._set_refs([Ref(label="older", path=str(c.session.dir / "state.json"))])
+        return WAKE
+
+    text, *_ = controller([setup, post("job_failed", job="goal_ready", error="RuntimeError: boom"), "/more 1"], {})
+    assert "✗ Something went wrong inside Phil (RuntimeError)." in text
+    assert "No detail 1." in text

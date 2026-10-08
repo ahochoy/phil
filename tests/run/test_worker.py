@@ -129,7 +129,7 @@ def test_a_crash_records_its_failure_before_the_failed_state(calc_repo):
     failure = events[kinds.index("failure")]
     assert {k: failure[k] for k in ("category", "headline", "retries", "action")} == {
         "category": "internal", "headline": "Something went wrong inside Phil (RuntimeError).",
-        "retries": "Phil won't retry this.", "action": "Details: /more 1",
+        "retries": "Phil won't retry this.", "action": "Try again.",
     }
     assert kinds.index("failure") < len(kinds) - 1 - kinds[::-1].index("state")  # before the failed state
 

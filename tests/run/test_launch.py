@@ -105,6 +105,18 @@ def test_detached_escalation_then_resume(calc_repo):
     assert get_run(connect(paths.db_path), record.run_id).state == "completed"
 
 
+def test_a_crashed_worker_leaves_its_exception_in_the_log_and_a_failure_event(calc_repo):
+    """The chat's /more 1 for a crashed run is its worker.log: it must hold the exception."""
+    info, record = new_run(calc_repo)
+    paths = ProjectPaths(info.slug)
+    proc = spawn_worker(calc_repo, record.run_id, "start", env=worker_env("crash"))
+    assert proc.wait(timeout=180) != 0
+    assert get_run(connect(paths.db_path), record.run_id).state == "failed"
+    log = (paths.run_dir(record.run_id) / "logs" / "worker.log").read_text(encoding="utf-8", errors="replace")
+    assert "RuntimeError" in log and "boom" in log
+    assert run_events(paths, record.run_id).latest("failure")["category"] == "internal"
+
+
 def test_worker_error_exits_2(calc_repo):
     info, record = new_run(calc_repo)
     proc = spawn_worker(calc_repo, record.run_id, "resume", {"action": "retry"}, env=worker_env("happy"))

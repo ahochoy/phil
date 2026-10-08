@@ -5,7 +5,7 @@ import openrouter.components.serviceunavailableresponseerrordata as openrouter_s
 import openrouter.errors.serviceunavailableresponse_error as openrouter_serviceunavailable_error
 from langchain_core.exceptions import ModelAuthenticationError, ModelRateLimitError
 
-from phil.agents.failures import Failure, classify_failure
+from phil.agents.failures import Failure, classify_failure, internal_failure
 from phil.agents.invoke import ContractViolation
 from phil.config import ConfigError
 
@@ -91,7 +91,40 @@ def test_anything_else_is_internal_and_never_raises():
     f = classify_failure(Weird("x"))
     assert f.category == "internal"
     assert f.headline == "Something went wrong inside Phil (Weird)."
-    assert f.action == "Details: /more 1"
+    assert f.action == "Try again."  # the callout's own Details row points at the raw error
+    assert f == internal_failure("Weird")
+
+
+def test_without_a_provider_quota_reads_your_provider_account():
+    f = classify_failure(HTTPError(402))
+    assert f.headline == "Your provider account is out of credits."
+
+
+def test_without_a_provider_auth_points_at_keys_list():
+    f = classify_failure(HTTPError(401))
+    assert f.headline == "The provider rejected your API key."
+    assert f.action == "Check your API keys with `phil keys list`."
+
+
+def test_without_a_provider_busy_server_network_and_refused_start_with_the_provider():
+    class APIConnectionError(Exception):
+        pass
+    APIConnectionError.__module__ = "openai"
+    assert classify_failure(ResponseError(429), attempts=3).headline == "The provider is busy. Phil retried 3 times."
+    assert classify_failure(ResponseError(429)).headline == "The provider is busy. Phil retried."
+    assert classify_failure(HTTPError(500)).headline == "The provider had a server error. Phil retried."
+    assert classify_failure(APIConnectionError("down")).headline == "Couldn't reach the provider. Phil retried."
+    assert classify_failure(HTTPError(400, "model not found")).headline == (
+        "The provider refused the request: model not found"
+    )
+
+
+def test_no_headline_says_the_provider_mid_word_or_your_the():
+    for exc in (HTTPError(401), HTTPError(402), ResponseError(429), HTTPError(500), HTTPError(400, "nope")):
+        f = classify_failure(exc)
+        text = f"{f.headline} {f.action}"
+        assert "the provider account" not in text and "keys set the provider" not in text
+        assert not f.headline.startswith("the ")
 
 
 def test_round_trip():

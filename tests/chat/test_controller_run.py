@@ -384,7 +384,8 @@ def test_btw_usage_and_failure_keep_the_stage(calc_repo):
         {**FULL_SCRIPT, "btw": [RuntimeError("provider down")]},
     )
     assert "Usage: /btw <question>" in text
-    assert "/btw failed: RuntimeError: provider down" in text
+    assert "✗ Something went wrong inside Phil (RuntimeError)." in text  # a failure callout
+    assert "provider down" not in text and "provider down" in last_error(calc_repo)
     assert prompts[1:4] == ["Approve? [y / edit / n] › "] * 3
     assert len(runs) == 1
 

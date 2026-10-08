@@ -58,6 +58,6 @@ def test_btw_on_a_real_thread(calc_repo):
         {**FULL_SCRIPT, "btw": [Brief(headline="add lives in calc.py")]},
         submit=thread_submit(threads),
     )
-    assert "/btw failed" not in text, text
+    assert "Details: /more 1" not in text, text  # no failure callout
     assert "add lives in calc.py" in text
     assert len(threads) == 4  # routing, intake, /btw, the plan

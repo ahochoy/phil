@@ -67,30 +67,50 @@ def _status(exc: BaseException) -> int | None:
 
 def classify_failure(exc: BaseException, *, provider: str | None = None, attempts: int | None = None) -> Failure:
     try:
-        return _classify(exc, provider or "the provider", attempts)
+        return _classify(exc, provider or None, attempts)
     except Exception:
-        return Failure("internal", f"Something went wrong inside Phil ({type(exc).__name__}).",
-                       "Phil won't retry this.", "Details: /more 1")
+        return internal_failure(type(exc).__name__)
 
 
-def _auth_failure(provider: str) -> Failure:
-    env = _KEY_ENV.get(provider, f"{provider.upper()}_API_KEY")
-    return Failure("auth", "The provider rejected your API key.", "Phil won't retry this.",
-                   f"Run `phil keys set {provider}`, or set {env}.")
+def internal_failure(name: str) -> Failure:
+    """Something failed inside Phil; `name` is the exception's type (empty: not named). The
+    callout's own Details row points at the raw error, so the action doesn't repeat it."""
+    named = f" ({name})" if name else ""
+    return Failure("internal", f"Something went wrong inside Phil{named}.", "Phil won't retry this.", "Try again.")
 
 
-def _busy_failure(provider: str, attempts: int | None) -> Failure:
+def _subject(provider: str | None) -> str:
+    """The provider as a sentence's subject: its name, or "The provider" when it isn't known."""
+    return provider or "The provider"
+
+
+def _object(provider: str | None) -> str:
+    """The provider inside a sentence: its name, or "the provider" when it isn't known."""
+    return provider or "the provider"
+
+
+def _auth_failure(provider: str | None) -> Failure:
+    if provider is None:
+        action = "Check your API keys with `phil keys list`."
+    else:
+        env = _KEY_ENV.get(provider, f"{provider.upper()}_API_KEY")
+        action = f"Run `phil keys set {provider}`, or set {env}."
+    return Failure("auth", "The provider rejected your API key.", "Phil won't retry this.", action)
+
+
+def _busy_failure(provider: str | None, attempts: int | None) -> Failure:
     n = f" {attempts} times" if attempts else ""
-    return Failure("busy", f"{provider} is busy. Phil retried{n}.", "Phil already retried.",
+    return Failure("busy", f"{_subject(provider)} is busy. Phil retried{n}.", "Phil already retried.",
                    "Try again in a minute.")
 
 
-def _refused_failure(provider: str, detail: str) -> Failure:
-    return Failure("refused", f"{provider} refused the request: {detail.splitlines()[0][:160]}",
+def _refused_failure(provider: str | None, detail: str) -> Failure:
+    first = (detail.splitlines() or [""])[0][:160]
+    return Failure("refused", f"{_subject(provider)} refused the request: {first}",
                    "Phil won't retry this.", "Check the model with `phil models check`.")
 
 
-def _classify(exc: BaseException, provider: str, attempts: int | None) -> Failure:
+def _classify(exc: BaseException, provider: str | None, attempts: int | None) -> Failure:
     from phil.agents.invoke import ContractViolation
     from phil.agents.retry import is_transient, provider_detail
     from phil.config import ConfigError
@@ -113,17 +133,16 @@ def _classify(exc: BaseException, provider: str, attempts: int | None) -> Failur
     if status in (401, 403):
         return _auth_failure(provider)
     if status == 402 or (status is not None and 400 <= status < 500 and _looks_like_quota(detail)):
-        return Failure("quota", f"Your {provider} account is out of credits.", "Phil won't retry this.",
+        return Failure("quota", f"Your {provider or 'provider'} account is out of credits.", "Phil won't retry this.",
                        "Add credits, then try again.")
     if status in (429, 529):
         return _busy_failure(provider, attempts)
     if status is not None and 500 <= status < 600:
-        return Failure("server", f"{provider} had a server error. Phil retried.", "Phil already retried.",
+        return Failure("server", f"{_subject(provider)} had a server error. Phil retried.", "Phil already retried.",
                        "Try again in a few minutes.")
     if is_transient(exc):
-        return Failure("network", f"Couldn't reach {provider}. Phil retried.", "Phil already retried.",
+        return Failure("network", f"Couldn't reach {_object(provider)}. Phil retried.", "Phil already retried.",
                        "Check your connection, then try again.")
     if status is not None and 400 <= status < 500:
         return _refused_failure(provider, detail)
-    return Failure("internal", f"Something went wrong inside Phil ({type(exc).__name__}).",
-                   "Phil won't retry this.", "Details: /more 1")
+    return internal_failure(type(exc).__name__)

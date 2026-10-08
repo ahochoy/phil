@@ -16,7 +16,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
-from phil.agents.failures import Failure, classify_failure
+from phil.agents.failures import Failure, classify_failure, internal_failure
 from phil.agents.invoke import AgentContext
 from phil.chat.answer import ask_answer
 from phil.chat.approval import (
@@ -134,7 +134,10 @@ CAPPED = "… see /more 1"  # a decision body's last line when it was cut (decis
 DECISION_FILE = "decision.txt"  # a capped decision body in full, in the session dir
 ERROR_FILE = "last_error.txt"  # the last failure's raw error, in the session dir
 # The role whose model a goal job calls, so a failure can name its provider.
-JOB_ROLES = {"route_ready": "classifier", "goal_ready": "orchestrator", "plan_ready": "architect"}
+JOB_ROLES = {
+    "route_ready": "classifier", "goal_ready": "orchestrator", "plan_ready": "architect",
+    "answer_ready": "answerer", "btw_answer": "orchestrator",
+}
 CLASS_LABELS = {
     "question": "Question", "diagnosis": "Diagnosis", "small_operation": "Small operation",
     "simple_change": "Simple change", "focused_fix": "Focused fix", "feature": "Feature", "refactor": "Refactor",
@@ -443,13 +446,20 @@ class ChatController:
             self._folded = False  # a different decision opens as a menu again
         return decision
 
-    def _build_decision(self) -> Decision | None:
+    def _took_effect(self, stage: str, decision: Decision) -> bool:
+        """An answer to `decision` (asked at `stage`) was accepted: the stage moved on, or that
+        decision is no longer the one open (e.g. not when approval was refused for a launch problem)."""
+        return self.stage != stage or self._build_decision(details=False) != decision
+
+    def _build_decision(self, *, details: bool = True) -> Decision | None:
+        """The current stage's decision; with `details`, a capped body is also written out (_with_details)."""
+        with_details = self._with_details if details else (lambda decision, lines: decision)
         stage = self.stage
         if stage == "questions" and not self._typing_other and len(self._replies) < len(self._pending):
             index = len(self._replies)
             question = self._pending[index]
             decision = question_decision(index + 1, len(self._pending), question.text, question.why, question.options)
-            return self._with_details(decision, [question.why])
+            return with_details(decision, [question.why])
         if stage == "choose_approach" and not self._describing and self._approach_order:
             return approach_decision([(a.name, a.summary) for a in self._approach_order])
         if stage == "approval":
@@ -463,7 +473,7 @@ class ChatController:
         if stage == "paused" and self._pause is not None and self._run_id is not None:
             pause = self._pause
             lines = [str(pause.get("summary", "")), *(str(p) for p in pause.get("problems") or [])]
-            return self._with_details(pause_decision(self._run_id, pause), lines)
+            return with_details(pause_decision(self._run_id, pause), lines)
         return None
 
     def _with_details(self, decision: Decision | None, lines: list[str]) -> Decision | None:
@@ -568,6 +578,7 @@ class ChatController:
             try:
                 self._drain()
                 decision = self._decision() if self.io.choose is not None else None
+                settled = None
                 if decision is not None:
                     raw = self.io.choose(self._prompt(), decision)
                     if raw is TYPE:
@@ -576,14 +587,17 @@ class ChatController:
                     if isinstance(raw, str):
                         option = next((o for o in decision.options if o.answer == raw), None)
                         if option is not None and not option.typed:  # a typed option's answer comes next
-                            self.console.print(Text(settled_line(decision, option), style="phil.muted"))
+                            settled = settled_line(decision, option)
                 else:
                     raw = self.io.ask(self._folded_prompt() if self._folded else self._prompt())
                 if raw is WAKE:
                     continue
+                stage = self.stage
                 if raw is None or not self._input(raw):
                     self._closing()
                     return
+                if settled is not None and self._took_effect(stage, decision):
+                    self.console.print(Text(settled, style="phil.muted"))
             except KeyboardInterrupt:
                 self._interrupt()
             except Exception as exc:  # agent, provider, or command failure: report and keep the chat alive
@@ -602,6 +616,7 @@ class ChatController:
             path.write_text(error + "\n", encoding="utf-8", newline="\n")
         except OSError as exc:
             self._write_failed(exc)
+            self._set_refs([])  # /more 1 mustn't open an older listing's first detail
             return
         self._set_refs([Ref(label="error", path=str(path))])
 
@@ -874,8 +889,7 @@ class ChatController:
             self._set_stage("idle")
 
     def _on_answer_failed(self, data: dict) -> None:
-        self._safe_note("error", error=data["error"])
-        self.console.print(f"[phil.error]Phil couldn't answer that: {escape(data['error'])}[/]")
+        self._failed(data["error"], data.get("failure"))  # notes the error too
         self._reset_goal()
         self._set_stage("idle")
 
@@ -1498,7 +1512,7 @@ class ChatController:
 
     def _on_run_resumed(self, data: dict) -> None:
         # Answered here (the resume worker took the run) or elsewhere (drop the pending question).
-        elsewhere = self.stage == "paused" and not self._answer_sent
+        elsewhere = self.stage in ("paused", "hint") and not self._answer_sent
         self._pause, self._answer_sent = None, False
         self.state.set_paused(False)
         if elsewhere:  # the open callout closes: say why it went away
@@ -1706,6 +1720,10 @@ class ChatController:
     def _answer_command(self) -> None:
         if self._folded:  # reopen the menu Esc folded away
             self._folded = False
+            # Something typed meanwhile (/show, a failure) may have replaced the details: a capped
+            # body's "see /more 1" points back at the decision.
+            self._detailed = None
+            self._build_decision()
             return
         if self._pause is not None and not self._answer_sent and self.stage in RUN_STAGES:
             self._set_stage("paused")
@@ -1874,7 +1892,7 @@ class ChatController:
     def _on_btw_failed(self, data: dict) -> None:
         self.state.add_btw(-1)
         self._safe_note("btw_failed", error=data["error"])
-        self.console.print(f"[phil.error]/btw failed: {escape(data['error'])}[/]")
+        self._failed(data["error"], data.get("failure"))
 
     # --- pull requests ---------------------------------------------------------------------------
 
@@ -2128,8 +2146,7 @@ def _internal_failure(error: str) -> Failure:
     """A failure reported without a classification (an older event): an internal one, named by
     the error's exception type ("RuntimeError: boom" → RuntimeError)."""
     name = error.split(":", 1)[0].strip()
-    named = f" ({name})" if name and " " not in name else ""
-    return Failure("internal", f"Something went wrong inside Phil{named}.", "Phil won't retry this.", "Try again.")
+    return internal_failure(name if " " not in name else "")
 
 
 def _count(value: object) -> int | None:
