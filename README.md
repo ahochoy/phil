@@ -234,6 +234,9 @@ Configuration above):
 
 One chat follows one goal at a time — intake, plan, approval, then its run — and shows a live
 bottom toolbar (the current step and its elapsed time, then the run's node and task progress).
+That status line also shows the repo @ branch, the model at work (e.g. `low·gemini-3.8-flash`),
+a dot per task, and the run's tokens and cost against its budget (`$0.41/$2.00`, yellow from 80%
+and red at 100%); on a narrow terminal it drops the least important detail first.
 The prompt stays usable while a goal is being planned or a run works in the background:
 
 - Questions, plan approval, a paused run's choices and the other yes/no offers appear as a callout

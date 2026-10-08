@@ -32,6 +32,17 @@ def git(cwd: Path, *args: str) -> str:
     return proc.stdout
 
 
+def current_branch(root: Path) -> str:
+    """The branch checked out in `root`, the short SHA on a detached HEAD, or "?" on any error. Never raises."""
+    try:
+        branch = git(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
+        if branch == "HEAD":
+            return git(root, "rev-parse", "--short", "HEAD").strip()
+        return branch or "?"
+    except Exception:
+        return "?"
+
+
 def commits_ahead(repo: Path, base: str, branch: str) -> int:
     """How many commits `branch` has beyond `base` in `repo`; 0 when the branch doesn't exist.
     Raises `GitError` for any other git failure, so the real error surfaces."""

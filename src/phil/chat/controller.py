@@ -61,7 +61,7 @@ from phil.repo import RepoInfo, resolve_repo
 from phil.repo_detect import detect_test_cmd
 from phil.routing import Route, decide, parse_override, route_state, skips_design
 from phil.routing.classify import classify
-from phil.git import GitError, commits_ahead
+from phil.git import GitError, commits_ahead, current_branch
 from phil.run.launch import is_worker_alive, prepare_run, worker_starting
 from phil.run.state import blocking_count
 from phil.store.activity import activity_log
@@ -79,6 +79,7 @@ from phil.ui.feed_view import FeedRenderer
 from phil.ui.plan_view import _clip, render_goal, render_plan
 from phil.ui.runs_view import render_runs
 from phil.ui.show_view import detail_text, render_show, show_refs
+from phil.ui.toolbar import short_model
 
 logger = logging.getLogger(__name__)  # the chat sends `phil` loggers to its phil.log, never the console
 
@@ -139,6 +140,9 @@ JOB_ROLES = {
     "route_ready": "classifier", "goal_ready": "orchestrator", "plan_ready": "architect",
     "answer_ready": "answerer", "btw_answer": "orchestrator",
 }
+# The role whose model a toolbar step calls; None is intake (the classifier's model if one is set, else
+# the orchestrator's). Steps not listed show no model.
+STEP_ROLES = {"intake": None, "architect": "architect", "revise": "architect", "critic": "critic", "designing": "architect"}
 CLASS_LABELS = {
     "question": "Question", "diagnosis": "Diagnosis", "small_operation": "Small operation",
     "simple_change": "Simple change", "focused_fix": "Focused fix", "feature": "Feature", "refactor": "Refactor",
@@ -209,6 +213,9 @@ class ChatController:
         self._prior_turns: list[str] = []  # the chat turns before this goal's message
         self._fix_offer: tuple[str, str] | None = None  # (question, diagnosis) the confirm_fix question is about
         self.state = ChatState()
+        self._run_id: str | None = None
+        self._watcher = None  # follows the chat's run; a daemon thread (the worker is independent)
+        self._refresh_place()
         self.events: queue.Queue[ChatEvent] = queue.Queue()
         self.stage = "idle"
         self._parent_stage = "idle"  # where edit / confirm_replace return to
@@ -227,7 +234,6 @@ class ChatController:
         self._shown_test_cmd: str | None = None  # the effective test command in the last plan render
         self._shown_setup_cmd: str | None = None  # the setup command in the last plan render, pinned into its run
         self._revising = False
-        self._run_id: str | None = None
         self._feed = FeedRenderer()  # the run's tool lines and milestone bands
         self._base_sha: str | None = None
         self._done_seen = False
@@ -237,7 +243,6 @@ class ChatController:
         self._watcher_factory = watcher_factory or (
             lambda run_id: RunWatcher(ProjectPaths(info.slug), run_id, self.post)
         )
-        self._watcher = None  # follows the chat's run; a daemon thread (the worker is independent)
         self._pause: dict | None = None  # the pending escalation: {"summary", "options", ...}
         # The pause was answered and a resume worker spawned; the question comes back if the worker
         # exits without taking the run (the watcher re-posts the same escalation).
@@ -351,13 +356,40 @@ class ChatController:
         """Toolbar step for a job; a replaced or cancelled goal's job can't overwrite the current one."""
         with self._step_lock:
             if generation == self._generation:
-                self.state.set_step(step, time.time())
+                self._set_step(step)
 
     def _next_generation(self) -> None:
         """Start a new goal generation: in-flight results become stale and the step is cleared."""
         with self._step_lock:
             self._generation += 1
-            self.state.set_step(None, time.time())
+            self._set_step(None)
+
+    def _set_step(self, step: str | None) -> None:
+        """The toolbar's step and the model at work on it (the run's, once no goal step is running)."""
+        self.state.set_step(step, time.time())
+        if step is None:
+            model = self._run_model()
+        elif step in STEP_ROLES:
+            model = self._model_for(STEP_ROLES[step])
+        else:
+            model = None  # a step without a model of its own (reading the repo, opening a PR, ...)
+        self.state.set_model(model)
+
+    def _model_for(self, role: str | None) -> tuple[str, str] | None:
+        """(tier label, short model name) for `role`; None is intake. None when it has no model."""
+        try:
+            if role is None:
+                role = "classifier" if "classifier" in self.config.models else "orchestrator"
+            return self.config.model_owner(role), short_model(self.config.model_for(role))
+        except Exception:
+            return None
+
+    def _run_model(self) -> tuple[str, str] | None:
+        """The model of the followed run's live step, or None."""
+        live = self.state.view().live
+        if self._run_id is None or live is None:
+            return None
+        return self._model_for(live.role)
 
     def _drain(self) -> None:
         if self.stage != "confirm_replace" and self._held:
@@ -1445,6 +1477,9 @@ class ChatController:
         """Start a watcher for the chat's run; its events arrive through the queue."""
         self._stop_watcher()
         run_id = self._run_id
+        # The run starts at the configured budget, so a previous run's raised limit never carries over. A
+        # raise already in this run's log is seeded by the new watcher and arrives after this, so it wins.
+        self.state.set_budget(self.config.run.max_cost_usd)
         try:
             watcher = self._watcher_factory(run_id)
             watcher.start()
@@ -1455,6 +1490,18 @@ class ChatController:
             )
             return
         self._watcher = watcher
+        self._refresh_place()
+
+    def _refresh_place(self) -> None:
+        """The toolbar's repo and branch: the followed run's branch, else the repo's. Never raises."""
+        repo = self.info.root.name
+        try:
+            record = get_run(self.conn, self._run_id) if self._run_id and self._watcher is not None else None
+            branch = record.branch if record is not None else current_branch(self.info.root)
+        except Exception:
+            logger.debug("couldn't read the branch for the status line", exc_info=True)
+            branch = "?"
+        self.state.set_place(repo, branch)
 
     def _stop_watcher(self) -> None:
         watcher, self._watcher = self._watcher, None
@@ -1471,6 +1518,13 @@ class ChatController:
         self.state.set_live(None)
         self._feed = FeedRenderer()  # no task timings carried into the next run
         self.state.set_paused(False)
+        self._clear_run_status()
+
+    def _clear_run_status(self) -> None:
+        """No run is followed: drop its usage and model, and show the repo's own branch again."""
+        self.state.set_run_usage(None, None)
+        self.state.set_model(None)
+        self._refresh_place()
 
     def _closing(self) -> None:
         """EOF or /quit: the worker is independent, so say how to come back to a run still working."""
@@ -1494,6 +1548,9 @@ class ChatController:
                 started=data.get("started", 0.0),
             )
         )
+        self.state.set_run_usage(
+            data.get("tokens"), (data.get("cost_usd", 0.0), data.get("cost_source", "reported"))
+        )
 
     def _on_budget_warning(self, data: dict) -> None:
         line = budget_warning_line(self._run_id, **data)
@@ -1515,11 +1572,15 @@ class ChatController:
     def _on_live_step(self, data: dict) -> None:
         if not data:
             self.state.set_live(None)
+            if self.state.view().step is None:  # no goal step is at work either
+                self.state.set_model(None)
             return
-        self.state.set_live(LiveStep(
+        live = LiveStep(
             task=data.get("task"), role=str(data.get("role", "")), summary=str(data.get("summary", "")),
             started=float(data.get("started", time.time())),
-        ))
+        )
+        self.state.set_live(live)
+        self.state.set_model(self._model_for(live.role))
 
     def _on_run_paused(self, data: dict) -> None:
         escalation = data["escalation"]
@@ -1617,6 +1678,7 @@ class ChatController:
         self._stop_watcher()
         self.state.set_run(None)
         self.state.set_paused(False)
+        self._clear_run_status()  # the watcher is stopped: the place is the repo's again
         self._pause, self._lost, self._answer_sent = None, False, False
         run_id, state = self._run_id, data.get("state", "")
         self._safe_note("run_done", run_id=run_id, state=state)
