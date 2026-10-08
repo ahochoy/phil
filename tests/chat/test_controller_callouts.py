@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from phil.chat.controller import OTHER_PROMPT, TYPE, WAKE, ChatController, ChatIO
+from phil.chat.controller import MOVING_TO_FULL, OTHER_PROMPT, TYPE, WAKE, ChatController, ChatIO
 from phil.chat.decision import (
     approach_decision,
     approval_decision,
@@ -413,6 +413,62 @@ def test_a_render_capped_pause_body_is_behind_more_1(controller_with_choose):
         ["add subtract", "y", review_failed_pause(problems), TYPE, "/more 1"], FULL_SCRIPT
     )
     assert "omega59" in text
+
+
+def test_answer_after_ctrl_c_and_show_points_more_1_back_at_the_pause(controller_with_choose):
+    """Pause, Ctrl-C, /show, /answer, Esc, then /more 1: it shows the pause's details again."""
+    problems = ["first problem here", "second problem here", "third problem", "fourth problem"]
+    seen = {}
+
+    def refs(c):
+        seen["after_show"] = [ref.label for ref in c._last_refs]
+        return "/answer"
+
+    text, *_ = controller_with_choose(
+        ["add subtract", "y", attempts_pause(problems), interrupt, "/show", refs, TYPE, "/more 1"], FULL_SCRIPT
+    )
+    assert "details" not in seen["after_show"]  # /show's listing replaced it
+    assert "fourth problem" in text
+
+
+def test_a_details_write_that_fails_still_opens_the_pause(controller_with_choose):
+    """A problem with a lone surrogate can't be written to decision.txt: the chat still pauses,
+    and its menu answers the pause."""
+    seen = {}
+
+    def stage(c):
+        seen["stage"] = c.stage
+        return "skip"
+
+    calls = []
+    text, spawned, runs, *_ = controller_with_choose(
+        ["add subtract", "y", attempts_pause(["bad \ud800 text"]), stage], FULL_SCRIPT, calls=calls
+    )
+    assert seen["stage"] == "paused"
+    assert any(call[0] == "choose" and call[2].kind == "pause" for call in calls)
+    assert (runs[0].run_id, "resume", {"action": "skip"}) in spawned
+
+
+def test_a_full_answer_after_the_run_moved_on_prints_nothing(controller_with_choose):
+    def moved_on(c):
+        set_state(c, "running")
+        return "full"
+
+    text, spawned, *_ = controller_with_choose(
+        ["add subtract", "y", escalate(options=("retry", "full", "abort")), moved_on], FULL_SCRIPT
+    )
+    assert "The run moved on; nothing to answer." in text
+    assert MOVING_TO_FULL not in text
+    assert "Plan it fully instead" not in text
+    assert [mode for _, mode, _ in spawned] == ["start"]
+
+
+def test_a_full_answer_prints_moving_to_full_after_its_settled_line(controller_with_choose):
+    text, spawned, runs, *_ = controller_with_choose(
+        ["add subtract", "y", escalate(options=("retry", "full", "abort")), "full"], FULL_SCRIPT
+    )
+    assert text.index("✓ Plan it fully instead") < text.index(MOVING_TO_FULL)
+    assert (runs[0].run_id, "resume", {"action": "full"}) in spawned
 
 
 def test_an_approved_command_reaches_the_resumed_worker(calc_repo):

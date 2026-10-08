@@ -446,7 +446,8 @@ def test_full_at_a_quick_runs_pause_resumes_it_with_full(calc_repo):
     assert [(m, d) for _, m, d in spawned] == [("start", None), ("resume", {"action": "full"})]
     assert prompts[2] == "FIX-001 failed 2 attempts — full / retry / abort › "
     assert MOVING in text
-    assert text.index(MOVING) < text.index(f"Resuming {run.run_id} with full.")
+    # Said only once the resume was sent, so after "Resuming".
+    assert text.index(f"Resuming {run.run_id} with full.") < text.index(MOVING)
 
 
 def test_the_aborted_quick_run_is_planned_fully_with_its_worklogs(calc_repo):

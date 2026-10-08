@@ -492,7 +492,7 @@ class ChatController:
             path = self.session.dir / DECISION_FILE
             try:
                 path.write_text("\n".join(line for line in lines if line) + "\n", encoding="utf-8", newline="\n")
-            except OSError as exc:
+            except (OSError, ValueError) as exc:  # ValueError: text UTF-8 can't encode (a lone surrogate)
                 self._write_failed(exc)
                 return decision
         self._detailed = decision
@@ -1531,10 +1531,13 @@ class ChatController:
         self.console.print(
             f"[phil.warn]⏸ {escape(self._run_id)} needs you: {escape(str(escalation.get('summary', '')))}[/]"
         )
-        self._detailed = None  # a pause that opens again points /more 1 back at its details
-        self._pause_decision(escalation)
         if self.stage in RUN_STAGES:
             self._set_stage("paused")
+        self._detailed = None  # a pause that opens again points /more 1 back at its details
+        try:
+            self._pause_decision(escalation)
+        except Exception:
+            logger.debug("couldn't set the details of the pause of %s", self._run_id, exc_info=True)
 
     def _on_run_resumed(self, data: dict) -> None:
         # Answered here (the resume worker took the run) or elsewhere (drop the pending question).
@@ -1559,10 +1562,11 @@ class ChatController:
         if choice == "full":
             # The quick run ends as aborted; its run_done starts full planning of the same goal.
             self._full_handoff = (self._goal_text, self._goal)
-            self.console.print(MOVING_TO_FULL)
         self._resume_run({"action": choice})
         if not self._answer_sent:
             self._full_handoff = None  # the run moved on or the worker didn't start: nothing to hand off
+        elif choice == "full":
+            self.console.print(MOVING_TO_FULL)  # only once the resume was sent, after its settled line
 
     def _hint(self, text: str) -> None:
         self._resume_run({"action": "retry"} | ({"hint": text} if text else {}))
@@ -1755,6 +1759,7 @@ class ChatController:
             self._build_decision()
             return
         if self._pause is not None and not self._answer_sent and self.stage in RUN_STAGES:
+            self._detailed = None  # likewise after Ctrl-C: the reopened pause makes its details detail 1
             self._set_stage("paused")
         else:
             self.console.print("Nothing needs you right now.")
