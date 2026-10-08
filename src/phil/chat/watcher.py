@@ -73,6 +73,7 @@ class RunWatcher:
         self._live: dict = {}  # the main agent's open call (`main`), as a live step
         self._live_posted: dict = {}  # the chat starts with no live step
         self._subs: list[dict] = []  # the open sub-agents, each with its newest open inner call
+        self._orphan_started: dict[int, dict] = {}  # a sub-agent seen only by its inner calls: the oldest
         self._agents_posted: tuple = (None, ())  # (main seq, ((sub seq, its summary), ...)) last posted
         self.done = False
         self._last: tuple | None = None
@@ -259,20 +260,25 @@ class RunWatcher:
 
     def _open_subs(self) -> list[dict]:
         """Each open sub-agent, by seq: an open `task` call, or the `sub_id` of open inner calls whose
-        `task` start wasn't seen (that one's description and start come from its inner calls)."""
+        `task` start wasn't seen (that one's description comes from its inner calls, and its start from
+        the oldest inner call seen, kept as inner calls end). A `task` call is a sub-agent of its own,
+        never another sub-agent's current call."""
         inner: dict[int, list[int]] = {}
         for seq, record in self._open.items():
             sub_id = record.get("sub_id")
-            if isinstance(sub_id, int) and not isinstance(sub_id, bool):
+            if isinstance(sub_id, int) and not isinstance(sub_id, bool) and record.get("tool") != "task":
                 inner.setdefault(sub_id, []).append(seq)
         subs = {}
         for seq, record in self._open.items():
             if record.get("tool") == "task":
                 description = str(record.get("summary", "")).removeprefix("sub-agent: ")
                 subs[seq] = (description, record)
+        orphans = {}
         for sub_id, seqs in inner.items():
             if sub_id not in subs:
-                subs[sub_id] = (str(self._open[max(seqs)].get("sub", "")), self._open[min(seqs)])
+                orphans[sub_id] = self._orphan_started.get(sub_id) or self._open[min(seqs)]
+                subs[sub_id] = (str(self._open[max(seqs)].get("sub", "")), orphans[sub_id])
+        self._orphan_started = orphans
         return [
             {"seq": seq, "description": description,
              "summary": self._open[max(inner[seq])].get("summary", "") if seq in inner else None,

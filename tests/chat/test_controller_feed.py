@@ -114,6 +114,7 @@ def test_controller_keeps_subs_and_clears_them(controller_with_run):
 def test_live_agents_leaves_the_live_row_to_live_step(controller_with_run):
     controller = controller_with_run
     controller._handle(ChatEvent("live_agents", AGENTS))
+    assert [sub.seq for sub in controller.state.view().subs] == [5, 8]
     assert controller.state.view().live is None
 
 

@@ -542,6 +542,72 @@ def test_watcher_posts_main_and_subs(calc_repo):
     assert agents[2]["main"]["seq"] == 7
 
 
+def test_a_nested_task_is_its_own_sub_not_its_parents_current_call(calc_repo):
+    """Outer task 5, nested task 6 (sub_id=5), inner read 7 (sub_id=6): two subs, the outer one with
+    no current call, the nested one with the read."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    for _ in range(4):
+        _shell(log)
+    watcher.poll_once()
+    outer = log.start(task="CALC-001", role="implementer", tool="task", summary="sub-agent: explore")
+    nested = log.start(task="CALC-001", role="implementer", tool="task", summary="sub-agent: dig",
+                       extra={"sub_id": outer, "sub": "explore"})
+    read = log.start(task="CALC-001", role="implementer", tool="read_file", summary="read calc.py",
+                     extra={"sub_id": nested, "sub": "dig"})
+    assert (outer, nested, read) == (5, 6, 7)
+    watcher.poll_once()
+    subs = _agents(posted)[-1]["subs"]
+    assert [(sub["seq"], sub["description"], sub["summary"]) for sub in subs] == [
+        (5, "explore", None), (6, "dig", "read calc.py"),
+    ]
+    assert _agents(posted)[-1]["main"] is None
+
+
+def test_an_orphan_sub_keeps_the_start_of_its_oldest_inner_call(calc_repo):
+    """Inner calls whose `task` start wasn't seen: the sub's `started` is the oldest inner call seen,
+    and stays so after that call ends."""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    first = log.start(task="CALC-001", role="implementer", tool="read_file", summary="read a.py",
+                      extra={"sub_id": 99, "sub": "explore"})
+    watcher.poll_once()
+    second = log.start(task="CALC-001", role="implementer", tool="read_file", summary="read b.py",
+                       extra={"sub_id": 99, "sub": "explore"})
+    log.end(first, task="CALC-001", role="implementer", tool="read_file", summary="read a.py", result="",
+            ok=True, detail=None, duration_ms=3, extra={"sub_id": 99, "sub": "explore"})
+    watcher.poll_once()
+    agents = _agents(posted)
+    assert [a["subs"] for a in agents] == [
+        [{"seq": 99, "description": "explore", "summary": "read a.py", "started": _start_ts(log, first)}],
+        [{"seq": 99, "description": "explore", "summary": "read b.py", "started": _start_ts(log, first)}],
+    ]
+    assert _start_ts(log, second) >= _start_ts(log, first)
+
+
+def test_an_old_runs_task_and_engine_records_render_as_sub_and_fallback(calc_repo):
+    """An old run (no sub fields) with an open `task` and an open engine call: the task is a sub-agent,
+    not the live step; the engine call is main only while the main agent has no call of its own.
+    (Before live_agents, the newest open call, whatever it was, was the live step.)"""
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    log = activity_log(paths, run_id)
+    task = log.start(task="CALC-001", role="implementer", tool="task", summary="agent explore the repo")
+    gate = log.start(task="CALC-001", role="engine", tool="run_tests", summary="gate green")
+    watcher.poll_once()
+    agents = _agents(posted)
+    assert agents[-1]["main"]["seq"] == gate
+    assert [(s["seq"], s["description"], s["summary"]) for s in agents[-1]["subs"]] == [
+        (task, "agent explore the repo", None)
+    ]
+    own = _shell(log, end=False)
+    watcher.poll_once()
+    assert _agents(posted)[-1]["main"]["seq"] == own
+    assert [e.data.get("seq") for e in posted if e.kind == "live_step"] == [gate, own]
+
+
 def test_an_engine_record_is_main_only_when_nothing_else_is_open(calc_repo):
     """Open: an engine gate start, plus an implementer start: main is the implementer's. After the
     implementer ends, main is the gate."""
