@@ -104,6 +104,7 @@ def test_a_call_inside_a_task_call_is_tagged_with_it(tmp_path):
     records, _ = log.read()
     task_seq = next(r["seq"] for r in records if r["tool"] == "task")
     inner_records = [r for r in records if r["tool"] == "read_file"]
+    assert len(inner_records) == 2 and len([r for r in records if r["tool"] == "task"]) == 2
     assert all(r["sub_id"] == task_seq and r["sub"] == "explore tests" for r in inner_records)
     assert all("sub_id" not in r for r in records if r["tool"] == "task")
 
@@ -115,7 +116,9 @@ def test_a_call_outside_any_task_call_is_not_tagged(tmp_path):
     cb.on_chain_start({}, {}, run_id=agent)
     cb.on_tool_start({"name": "read_file"}, "", run_id=call, parent_run_id=agent, inputs={"file_path": "a"})
     cb.on_tool_end("x", run_id=call)
-    assert all("sub_id" not in r for r in log.read()[0])
+    records = log.read()[0]
+    assert len(records) == 2
+    assert all("sub_id" not in r for r in records)
 
 
 def test_nested_task_calls_credit_the_nearest(tmp_path):
@@ -135,6 +138,66 @@ def test_reset_empties_the_parent_map(tmp_path):
     cb.on_chain_start({}, {}, run_id=b, parent_run_id=a)
     cb.reset()
     assert cb._parents == {} and cb._subs == {}
+
+
+def test_a_call_after_its_task_call_ended_is_not_tagged(tmp_path):
+    log = ActivityLog(tmp_path)
+    cb = ActivityCallback(log, task=None, role="implementer")
+    task_call, sub_chain, late = ids(3)
+    cb.on_tool_start({"name": "task"}, "", run_id=task_call, inputs={"description": "explore"})
+    cb.on_chain_start({}, {}, run_id=sub_chain, parent_run_id=task_call)
+    cb.on_tool_end("done", run_id=task_call)
+    cb.on_tool_start({"name": "grep"}, "", run_id=late, parent_run_id=sub_chain, inputs={"pattern": "x"})
+    late_records = [r for r in log.read()[0] if r["tool"] == "grep"]
+    assert len(late_records) == 1 and "sub_id" not in late_records[0]
+
+
+def test_a_failed_call_inside_a_task_call_keeps_its_tag(tmp_path):
+    log = ActivityLog(tmp_path)
+    cb = ActivityCallback(log, task=None, role="implementer")
+    task_call, inner = ids(2)
+    cb.on_tool_start({"name": "task"}, "", run_id=task_call, inputs={"description": "explore"})
+    cb.on_tool_start({"name": "grep"}, "", run_id=inner, parent_run_id=task_call, inputs={"pattern": "x"})
+    cb.on_tool_error(RuntimeError("boom"), run_id=inner)
+    ends = [r for r in log.read()[0] if r["tool"] == "grep" and r["phase"] == "end"]
+    assert len(ends) == 1
+    assert ends[0]["ok"] is False and ends[0]["sub"] == "explore" and ends[0]["sub_id"] == 1
+
+
+def test_real_deep_agent_tags_subagent_tool_calls(tmp_path):
+    """Through a real deepagents graph (offline, scripted models): the sub-agent's runs descend from
+    the `task` tool's run, so its tool calls are tagged and the main agent's are not."""
+    from deepagents import create_deep_agent
+    from langchain_core.messages import AIMessage
+
+    from tests.agents.test_model_retry import ScriptedChatModel, tool_call
+
+    main = ScriptedChatModel(
+        script=[
+            tool_call("task", {"description": "look at files", "subagent_type": "helper"}, "c1"),
+            tool_call("ls", {"path": "/"}, "c3"),
+            AIMessage(content="all done"),
+        ]
+    )
+    sub = ScriptedChatModel(script=[tool_call("ls", {"path": "/"}, "c2"), AIMessage(content="sub done")])
+    helper = {"name": "helper", "description": "Looks at files.", "system_prompt": "Help.", "model": sub}
+    agent = create_deep_agent(model=main, subagents=[helper])
+    log = ActivityLog(tmp_path)
+    cb = ActivityCallback(log, task="T1", role="implementer")
+    agent.invoke({"messages": [{"role": "user", "content": "go"}]}, config={"callbacks": [cb]})
+
+    records, _ = log.read()
+    task_records = [r for r in records if r["tool"] == "task"]
+    ls_records = [r for r in records if r["tool"] == "ls"]
+    assert len(task_records) == 2 and len(ls_records) == 4
+    task_seq = task_records[0]["seq"]
+    sub_ls = [r for r in ls_records if r["seq"] == ls_records[0]["seq"]]
+    top_ls = [r for r in ls_records if r["seq"] != ls_records[0]["seq"]]
+    assert len(sub_ls) == 2 and len(top_ls) == 2
+    assert all(r["sub_id"] == task_seq and r["sub"] == "look at files" for r in sub_ls)
+    assert all("sub_id" not in r for r in task_records + top_ls)
+    assert cb._subs == {}
+    assert main.script == [] and sub.script == []
 
 
 def test_bookkeeping_never_raises(tmp_path):

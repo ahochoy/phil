@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 import threading
 import time
@@ -24,6 +25,8 @@ from phil.store.telemetry import CallRow, CostSource, TelemetryRow, record, reco
 
 if TYPE_CHECKING:
     from phil.store.activity import ActivityLog
+
+logger = logging.getLogger(__name__)
 
 # `Callable[...]` can't express the keyword-only parameters; real factories (build_agent) and
 # scripted ones (ScriptedAgentFactory/FakeAgentFactory) all accept
@@ -383,7 +386,10 @@ def invoke_agent(
                 )
             finally:
                 if activity_callback is not None:
-                    activity_callback.reset()  # the run tree is only needed while the agent runs
+                    try:
+                        activity_callback.reset()  # the run tree is only needed while the agent runs
+                    except Exception:
+                        logger.debug("activity: resetting the run tree failed", exc_info=True)
             retries = len(sleeps)  # each retry — per model call or whole agent — sleeps exactly once
         except Exception as exc:
             retries = len(sleeps)
