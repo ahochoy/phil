@@ -10,11 +10,12 @@ from rich.console import Group
 from rich.text import Text
 
 from phil.agents.failures import Failure
-from phil.chat.decision import Decision, Option
+from phil.chat.decision import BODY_LINES, DETAILS, SEE_MORE, Decision, Option
 from phil.ui.feed_view import _cut
 
 NARROW = 40
-KEY_HINT = "↑/↓ to choose · 1-{n} to pick · Enter to confirm"
+KEY_HINT = "↑/↓ choose · Enter confirm · 1–{n} · Esc type a message"
+NUMBER_KEYS = 9  # the digits that pick an option
 
 Line = list[tuple[str, str]]
 
@@ -119,17 +120,31 @@ def _option_row(option: Option, index: int, highlighted: int, inner: int, live: 
     return [(style, f"{prefix}{label}")]
 
 
+def _body_rows(decision: Decision, inner: int) -> tuple[list[str], bool]:
+    """`decision`'s body wrapped to `inner` cells and capped at BODY_LINES rows (the last one
+    then `… see /more 1`), so the docked box fits a 24-row terminal; and whether rows were cut."""
+    rows = [line for entry in decision.body for line in _wrap(entry, inner)]
+    if len(rows) <= BODY_LINES:
+        return rows, False
+    return [*rows[: BODY_LINES - 1], SEE_MORE], True
+
+
+def overflows(decision: Decision, width: int) -> bool:
+    """Whether `decision`'s body is cut in a box `width` cells wide."""
+    return _body_rows(decision, _inner_width(width))[1]
+
+
 def callout_lines(decision: Decision, highlighted: int, width: int, *, live: bool) -> list[Line]:
-    """`decision`'s box: the title, the body (wrapped), the options (numbered; `live` adds the
-    `›` highlight marker), each option's detail, and, when `live`, the key hint."""
+    """`decision`'s box: the title, the body (wrapped, at most BODY_LINES rows), the options
+    (numbered; `live` adds the `›` highlight marker), each option's detail, and, when `live`,
+    the key hint."""
     kind = decision.kind
     inner = _inner_width(width)
     title_style = f"phil.callout.title.{kind}"
     body_style = "phil.callout.body"
 
     rows: list[Line] = [[(title_style, line)] for line in _wrap(decision.title, inner)]
-    for entry in decision.body:
-        rows.extend([(body_style, line)] for line in _wrap(entry, inner))
+    rows.extend([(body_style, line)] for line in _body_rows(decision, inner)[0])
 
     if decision.options:
         rows.append([])
@@ -142,7 +157,8 @@ def callout_lines(decision: Decision, highlighted: int, width: int, *, live: boo
 
     if live:
         rows.append([])
-        rows.extend([("phil.callout.hint", line)] for line in _wrap(KEY_HINT.format(n=len(decision.options)), inner))
+        hint = KEY_HINT.format(n=min(len(decision.options), NUMBER_KEYS))
+        rows.extend([("phil.callout.hint", line)] for line in _wrap(hint, inner))
 
     return _frame(rows, width, kind)
 
@@ -156,7 +172,7 @@ def failure_lines(failure: Failure, width: int) -> list[Line]:
 
     rows: list[Line] = [[(title_style, line)] for line in _wrap(f"✗ {failure.headline}", inner)]
     rows.extend([(body_style, line)] for line in _wrap(f"{failure.retries} {failure.action}", inner))
-    rows.extend([(body_style, line)] for line in _wrap("Details: /more 1", inner))
+    rows.extend([(body_style, line)] for line in _wrap(DETAILS, inner))
 
     return _frame(rows, width, kind)
 

@@ -2,8 +2,8 @@ import pytest
 from rich.cells import cell_len
 
 from phil.agents.failures import Failure
-from phil.chat.decision import Decision, Option
-from phil.ui.callout import KEY_HINT, callout_lines, failure_lines
+from phil.chat.decision import BODY_LINES, Decision, Option, pause_decision
+from phil.ui.callout import KEY_HINT, callout_lines, failure_lines, overflows
 
 
 def text(lines):
@@ -40,6 +40,42 @@ def test_live_box_has_a_border_the_highlight_and_the_key_hint():
     assert any("  1 Approve for this run" in l for l in lines)
     assert any(KEY_HINT.format(n=3) in l for l in lines)
     assert all(cell_len(l) <= 79 for l in lines)
+
+
+def test_the_key_hint_is_the_specs_string():
+    lines = text(callout_lines(D, 0, 80, live=True))
+    assert any("↑/↓ choose · Enter confirm · 1–3 · Esc type a message" in l for l in lines)
+
+
+def test_the_key_hint_stops_at_9_number_keys():
+    many = Decision("question", "Pick", (), tuple(Option(f"option {n}", str(n)) for n in range(1, 13)))
+    lines = text(callout_lines(many, 0, 80, live=True))
+    assert any("↑/↓ choose · Enter confirm · 1–9 · Esc type a message" in l for l in lines)
+
+
+def test_the_body_cap_counts_wrapped_rows():
+    """A pause with two 400-character problems at width 60: at most BODY_LINES body rows, the
+    last one "… see /more 1", so the docked box stays short enough for a 24-row terminal."""
+    problems = [" ".join(["problem"] * 50), " ".join(["another"] * 50)]
+    pause = pause_decision("r-1", {"reason": "review_failed", "summary": "no review", "problems": problems,
+                                   "options": ["retry", "abort"]})
+    assert all(len(p) >= 399 for p in problems) and "… see /more 1" not in pause.body
+    lines = text(callout_lines(pause, 0, 60, live=True))
+    rows = [l.strip("│ ").rstrip() for l in lines[1:-1]]
+    body = rows[1:rows.index("")]  # after the title, up to the blank row before the options
+    assert len(body) == BODY_LINES
+    assert body[-1] == "… see /more 1"
+    assert overflows(pause, 60) and not overflows(D, 60)
+
+
+def test_the_see_more_line_and_the_callout_styles_have_one_source():
+    """"… see /more 1" is defined once (decision.SEE_MORE); the unused phil.callout.key style is gone."""
+    from phil.chat import controller, decision
+    from phil.ui import callout
+    from phil.ui.theme import STYLE_NAMES, prompt_toolkit_styles
+
+    assert controller.SEE_MORE is decision.SEE_MORE and callout.SEE_MORE is decision.SEE_MORE
+    assert "phil.callout.key" not in STYLE_NAMES and "phil.callout.key" not in prompt_toolkit_styles()
 
 
 def test_line_box_is_numbered_without_marker_or_hint():

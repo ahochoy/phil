@@ -33,7 +33,7 @@ def test_attempts_pause_lists_three_problems_and_defaults_to_retry():
                                "summary": "CALC-001 failed 3 attempts in the green phase"})
     assert d.kind == "pause"
     assert d.title == "⏸ r-1 needs you · CALC-001 failed 3 attempts in the green phase"
-    assert d.body == ("a", "b", "c", "Details: /more")
+    assert d.body == ("a", "b", "c", "Details: /more 1")
     assert labels(d) == ["Retry the task", "Skip this task", "Plan it fully instead", "Abort the run"]
     assert d.default == 0
 

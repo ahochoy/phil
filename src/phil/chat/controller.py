@@ -30,6 +30,8 @@ from phil.chat.approval import (
 )
 from phil.chat.btw import ask_btw
 from phil.chat.decision import (
+    DETAILS,
+    SEE_MORE,
     Decision,
     answered_elsewhere,
     approach_decision,
@@ -72,7 +74,7 @@ from phil.store.telemetry import budget_warning_line, chat_cost_since, chat_usag
 from phil.tomlw import toml_value
 from phil.ui.answer_view import render_answer
 from phil.ui.brief_view import render_brief
-from phil.ui.callout import failure_lines, to_rich
+from phil.ui.callout import failure_lines, overflows, to_rich
 from phil.ui.feed_view import FeedRenderer
 from phil.ui.plan_view import _clip, render_goal, render_plan
 from phil.ui.runs_view import render_runs
@@ -130,7 +132,6 @@ OVERRIDE_USAGE = "Usage: /ask|/quick|/full|/full! <message>"
 RECENT_TURNS = 8  # chat turns kept for the router and the answerer
 CONTEXT_TURNS = 4  # of those, the turns an answer sees
 TURN_CHARS = 400
-CAPPED = "… see /more 1"  # a decision body's last line when it was cut (decision._capped)
 DECISION_FILE = "decision.txt"  # a capped decision body in full, in the session dir
 ERROR_FILE = "last_error.txt"  # the last failure's raw error, in the session dir
 # The role whose model a goal job calls, so a failure can name its provider.
@@ -277,7 +278,10 @@ class ChatController:
         # until /answer, a stage change or a different decision.
         self._folded = False
         self._folded_on: Decision | None = None
-        self._detailed: Decision | None = None  # the capped decision whose full body is in decision.txt
+        self._detailed: Decision | None = None  # the decision whose details are detail 1
+        # A settled line that waits for its answer to take effect: an approved plan's run starting,
+        # or a pause's resume being sent (a retry's, past its hint prompt).
+        self._settled: str | None = None
 
     # --- events and jobs -------------------------------------------------------------------------
 
@@ -313,11 +317,10 @@ class ChatController:
                     conn = connect(self._db_path)
                     event = ChatEvent(kind, fn(replace(self.ctx, conn=conn)), generation)
                 except Exception as exc:
-                    data = {**(failed_data or {}), "job": kind, "error": f"{type(exc).__name__}: {exc}"}
-                    try:
-                        data["failure"] = classify_failure(exc, provider=provider).as_dict()
-                    except Exception:
-                        pass  # the chat reports it as an internal failure
+                    data = {
+                        **(failed_data or {}), "job": kind, "error": f"{type(exc).__name__}: {exc}",
+                        "failure": classify_failure(exc, provider=provider).as_dict(),  # never raises
+                    }
                     event = ChatEvent(failed, data, generation)
                 finally:
                     if conn is not None:
@@ -446,20 +449,14 @@ class ChatController:
             self._folded = False  # a different decision opens as a menu again
         return decision
 
-    def _took_effect(self, stage: str, decision: Decision) -> bool:
-        """An answer to `decision` (asked at `stage`) was accepted: the stage moved on, or that
-        decision is no longer the one open (e.g. not when approval was refused for a launch problem)."""
-        return self.stage != stage or self._build_decision(details=False) != decision
-
-    def _build_decision(self, *, details: bool = True) -> Decision | None:
-        """The current stage's decision; with `details`, a capped body is also written out (_with_details)."""
-        with_details = self._with_details if details else (lambda decision, lines: decision)
+    def _build_decision(self) -> Decision | None:
+        """The current stage's decision; a body that points at /more 1 also makes that detail (_with_details)."""
         stage = self.stage
         if stage == "questions" and not self._typing_other and len(self._replies) < len(self._pending):
             index = len(self._replies)
             question = self._pending[index]
             decision = question_decision(index + 1, len(self._pending), question.text, question.why, question.options)
-            return with_details(decision, [question.why])
+            return self._with_details(decision, [question.why])
         if stage == "choose_approach" and not self._describing and self._approach_order:
             return approach_decision([(a.name, a.summary) for a in self._approach_order])
         if stage == "approval":
@@ -471,24 +468,35 @@ class ChatController:
         if stage == "confirm_replace":
             return replace_decision()
         if stage == "paused" and self._pause is not None and self._run_id is not None:
-            pause = self._pause
-            lines = [str(pause.get("summary", "")), *(str(p) for p in pause.get("problems") or [])]
-            return with_details(pause_decision(self._run_id, pause), lines)
+            return self._pause_decision(self._pause)
         return None
 
-    def _with_details(self, decision: Decision | None, lines: list[str]) -> Decision | None:
-        """A capped decision body ends with "… see /more 1": write `lines` (the full body) to the
-        session's decision.txt and make it detail 1, once per decision."""
-        if decision is None or not decision.body or decision.body[-1] != CAPPED or decision == self._detailed:
+    def _pause_decision(self, pause: dict) -> Decision:
+        """The pause's decision, with its details as detail 1: the escalation's log when it has
+        one, else the summary and every problem."""
+        lines = [str(pause.get("summary", "")), *(str(p) for p in pause.get("problems") or [])]
+        log = pause.get("log")
+        return self._with_details(pause_decision(self._run_id, pause), lines, log=str(log) if log else None)
+
+    def _with_details(self, decision: Decision, lines: list[str], *, log: str | None = None) -> Decision:
+        """A body that ends pointing at /more 1 (cut, or an attempts pause's "Details: /more 1"),
+        or that is cut when rendered at the console's width: make detail 1 `log` when given, else
+        `lines` (the full body) written to the session's decision.txt. Once per decision."""
+        if not decision.body or decision == self._detailed:
             return decision
-        path = self.session.dir / DECISION_FILE
-        try:
-            path.write_text("\n".join(line for line in lines if line) + "\n", encoding="utf-8", newline="\n")
-        except OSError as exc:
-            self._write_failed(exc)
+        if decision.body[-1] not in (SEE_MORE, DETAILS) and not overflows(decision, self.console.width):
             return decision
+        if log is not None:
+            path = Path(log)
+        else:
+            path = self.session.dir / DECISION_FILE
+            try:
+                path.write_text("\n".join(line for line in lines if line) + "\n", encoding="utf-8", newline="\n")
+            except OSError as exc:
+                self._write_failed(exc)
+                return decision
         self._detailed = decision
-        self._set_refs([Ref(label="details", path=str(path))])
+        self._set_refs([Ref(label="log" if log is not None else "details", path=str(path))])
         return decision
 
     def _folded_prompt(self) -> str:
@@ -577,8 +585,10 @@ class ChatController:
         while True:
             try:
                 self._drain()
+                if self.stage != "hint":
+                    self._settled = None  # only a retry's settled line waits past its own answer
                 decision = self._decision() if self.io.choose is not None else None
-                settled = None
+                settled, waits = None, False
                 if decision is not None:
                     raw = self.io.choose(self._prompt(), decision)
                     if raw is TYPE:
@@ -588,27 +598,40 @@ class ChatController:
                         option = next((o for o in decision.options if o.answer == raw), None)
                         if option is not None and not option.typed:  # a typed option's answer comes next
                             settled = settled_line(decision, option)
+                            # An approved plan settles once its run starts; a pause once its resume is sent.
+                            waits = decision.kind in ("pause", "approval") or (
+                                self.stage == "approval" and option.answer == "y"
+                            )
                 else:
                     raw = self.io.ask(self._folded_prompt() if self._folded else self._prompt())
                 if raw is WAKE:
                     continue
-                stage = self.stage
+                if raw is not None and settled is not None:
+                    if waits:
+                        self._settled = settled
+                    else:
+                        self.console.print(Text(settled, style="phil.muted"))
                 if raw is None or not self._input(raw):
                     self._closing()
                     return
-                if settled is not None and self._took_effect(stage, decision):
-                    self.console.print(Text(settled, style="phil.muted"))
             except KeyboardInterrupt:
                 self._interrupt()
             except Exception as exc:  # agent, provider, or command failure: report and keep the chat alive
                 self._report(exc)
 
+    def _print_settled(self) -> None:
+        """Print the settled line that waited for its answer to take effect, if there is one."""
+        settled, self._settled = self._settled, None
+        if settled is not None:
+            self.console.print(Text(settled, style="phil.muted"))
+
     def _report(self, exc: BaseException) -> None:
         self._failed(f"{type(exc).__name__}: {exc}", classify_failure(exc).as_dict())
 
-    def _failed(self, error: str, failure: dict | None = None) -> None:
-        """Say what failed in plain words (a failure callout); the raw `error` is detail 1."""
-        self._safe_note("error", error=error)
+    def _failed(self, error: str, failure: dict | None = None, *, note: str = "error") -> None:
+        """Say what failed in plain words (a failure callout); the raw `error` is detail 1 and goes
+        in the transcript as a `note` note."""
+        self._safe_note(note, error=error)
         shown = Failure.from_dict(failure) if isinstance(failure, dict) else _internal_failure(error)
         self.console.print(to_rich(failure_lines(shown, self.console.width)))
         path = self.session.dir / ERROR_FILE
@@ -1299,6 +1322,7 @@ class ChatController:
                 self.console.print("[phil.warn]The setup command changed in your config. Review it and answer again.[/]")
                 self._show_plan(draft)
                 return
+            self._print_settled()  # "✓ Approve and run", only once the run is being started
             self._start(draft, answer, self._shown_test_cmd, self._shown_setup_cmd)
         elif choice == "edit":
             self._parent_stage = "approval"
@@ -1507,6 +1531,8 @@ class ChatController:
         self.console.print(
             f"[phil.warn]⏸ {escape(self._run_id)} needs you: {escape(str(escalation.get('summary', '')))}[/]"
         )
+        self._detailed = None  # a pause that opens again points /more 1 back at its details
+        self._pause_decision(escalation)
         if self.stage in RUN_STAGES:
             self._set_stage("paused")
 
@@ -1550,6 +1576,7 @@ class ChatController:
         run_id = self._run_id
         record = get_run(self.conn, run_id)
         if record is None or record.state != "escalated" or self._worker_active(record):
+            self._settled = None  # nothing was answered: no settled line
             self._pause, self._answer_sent = None, False
             self.state.set_paused(False)
             self._set_stage("running")
@@ -1559,6 +1586,7 @@ class ChatController:
         try:
             self.io.spawn(self.info.root, run_id, "resume", decision)
         except (Exception, KeyboardInterrupt) as exc:
+            self._settled = None  # nothing was sent: no settled line
             self._safe_note("spawn_failed", run_id=run_id, error=f"{type(exc).__name__}: {exc}")
             self._set_stage("running")  # the pause stays pending: /answer asks it again
             self.console.print(
@@ -1566,6 +1594,7 @@ class ChatController:
                 "Try /answer again.[/]"
             )
             return
+        self._print_settled()  # the answer was sent: its settled line, before "Resuming"
         # Keep the question until the worker takes the run: if it exits first, the watcher re-posts it.
         self._answer_sent = True
         self.state.set_paused(False)
@@ -1891,8 +1920,7 @@ class ChatController:
 
     def _on_btw_failed(self, data: dict) -> None:
         self.state.add_btw(-1)
-        self._safe_note("btw_failed", error=data["error"])
-        self._failed(data["error"], data.get("failure"))
+        self._failed(data["error"], data.get("failure"), note="btw_failed")
 
     # --- pull requests ---------------------------------------------------------------------------
 

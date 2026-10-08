@@ -146,6 +146,18 @@ def test_a_failure_that_cant_be_classified_still_marks_the_run_failed(calc_repo,
     assert row(info, record.run_id).state == "failed"
 
 
+def test_the_failure_event_guard_lets_a_base_exception_through(calc_repo, monkeypatch):
+    """The guard around the failure event catches Exception: a KeyboardInterrupt isn't swallowed."""
+    def interrupted(exc, **kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(worker_module, "classify_failure", interrupted)
+    info, record = new_run(calc_repo)
+    crashing = ScriptedAgentFactory({"implementer": [write_red, RuntimeError("model went away")]})
+    with pytest.raises(KeyboardInterrupt):
+        run_worker(calc_repo, record.run_id, "start", factory=crashing)
+
+
 def test_crash_marks_failed_and_continue_recovers(calc_repo):
     info, record = new_run(calc_repo)
     crashing = ScriptedAgentFactory({"implementer": [write_red, RuntimeError("model went away")]})

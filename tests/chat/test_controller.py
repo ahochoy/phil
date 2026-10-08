@@ -27,12 +27,13 @@ class ManualWatcher(RunWatcher):
         super().stop()
 
 
-def run_chat(repo, answers, scripts, config=None, submit=None, wake=None, choose=False, calls=None, **kw):
+def run_chat(repo, answers, scripts, config=None, submit=None, wake=None, choose=False, calls=None, spawn=None, **kw):
     """Drive a chat. Script items are strings, None (EOF), or callables `(controller) -> str | None | WAKE`.
 
     `choose=True` gives the fake ChatIO a `choose` that takes its answers from the same script (a
     script item may then also be TYPE). `calls`, if given, records every io call in order:
-    `("ask", prompt)` or `("choose", prompt, decision)`."""
+    `("ask", prompt)` or `("choose", prompt, decision)`. `spawn`, if given, is also called with
+    every spawn (e.g. to start a real worker)."""
     info = resolve_repo(repo)
     conn = connect(ProjectPaths(info.slug).db_path)
     console = make_console(record=True, width=120)
@@ -56,7 +57,12 @@ def run_chat(repo, answers, scripts, config=None, submit=None, wake=None, choose
         calls.append(("choose", prompt, decision))
         return next_item()
 
-    io = ChatIO(ask=ask, spawn=lambda root, run_id, mode, decision=None: spawned.append((run_id, mode, decision)))
+    def spawn_one(root, run_id, mode, decision=None):
+        spawned.append((run_id, mode, decision))
+        if spawn is not None:
+            spawn(root, run_id, mode, decision)
+
+    io = ChatIO(ask=ask, spawn=spawn_one)
     if choose:
         io.choose = choose_one
     if submit is not None:

@@ -265,7 +265,7 @@ def run_worker(
             # so a chat that sees the run fail finds it; it never gets in the way of recording that.
             try:
                 events.append("failure", **classify_failure(exc).as_dict())
-            except BaseException:
+            except Exception:
                 _logger.warning("failed to record the failure of run %s", run_id, exc_info=True)
             try:
                 final_state = _record_terminal_state(conn, run_id, "failed", message)

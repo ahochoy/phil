@@ -7,6 +7,7 @@ takes its answers from the same script as `ask`, and `calls` records which one w
 """
 
 import functools
+import json
 from pathlib import Path
 
 import pytest
@@ -24,14 +25,19 @@ from phil.chat.decision import (
 from phil.config import PhilConfig
 from phil.contracts import Approach, Question
 from phil.repo import resolve_repo
+from phil.run.launch import spawn_worker
 from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
+from phil.store.runs import get_run
 from phil.ui.theme import make_console
 from tests.chat.conftest import ChatFactory, critique, goal, plan
 from tests.chat.test_controller import FULL_SCRIPT, run_chat, transcript
 from tests.chat.test_controller_run import _run, escalate, post, set_state, to_state
-from tests.helpers import TEST_MODELS
+from tests.helpers import TEST_MODELS, run_git
+from tests.run.conftest import TEST_CMD
+from tests.run.test_launch import worker_env
+from tests.run.worker_scenarios import BUILD
 
 QUOTA = {
     "category": "quota",
@@ -290,17 +296,168 @@ def test_answer_points_more_1_back_at_a_capped_decision(controller_with_choose):
         assert problem in text
 
 
-def test_the_settled_line_waits_for_the_answer_to_take_effect(controller_with_choose, calc_repo):
-    """Approval refused for a launch problem (a bad test command): the same decision is still open,
-    so no "✓ Approve and run"; the later "n" settles with "· Cancel", after the plan is dropped."""
+def test_a_refused_approval_prints_no_settled_line(controller_with_choose, calc_repo):
+    """Approval refused for a launch problem (a bad test command): no "✓ Approve and run"; the
+    later "n" settles with "· Cancel" before its effect ("Plan dropped.")."""
     text, spawned, runs, *_ = controller_with_choose(
         ["add subtract", "y", "n"],
         {"intake": [goal()], "architect": [plan(test_cmd="pytest; rm -rf /")], "critic": [critique()]},
     )
     assert "shell operators" in text
     assert "✓ Approve and run" not in text
-    assert text.index("Plan dropped.") < text.index("· Cancel")
+    assert text.index("· Cancel") < text.index("Plan dropped.")
     assert spawned == [] and runs == []
+
+
+def test_an_approved_plan_settles_before_the_run_starts(controller_with_choose):
+    text, spawned, runs, *_ = controller_with_choose(["add subtract", "y"], FULL_SCRIPT)
+    assert text.index("✓ Approve and run") < text.index(f"Run {runs[0].run_id} started")
+
+
+def test_each_answer_follows_its_question(controller_with_choose):
+    """Two questions answered through choose: question 1, its Answer:, question 2, its Answer:."""
+    first = Question(text="Which module?", options=["calc.py", "ops.py"], why="It decides the file.")
+    second = Question(text="Which name?", options=["minus", "subtract"])
+    text, *_ = controller_with_choose(
+        ["add subtract", "1", "1", "n"],
+        {"intake": [goal(open_questions=[first, second]), goal()], "architect": [plan()], "critic": [critique()]},
+    )
+    order = [text.index(s) for s in ("1. Which module?", "Answer: calc.py", "2. Which name?", "Answer: minus")]
+    assert order == sorted(order), text
+
+
+def interrupt(c):
+    raise KeyboardInterrupt
+
+
+def test_retry_settles_when_the_resume_is_sent(controller_with_choose):
+    """Retry, then a hint: "✓ Retry the task" prints once the resume is sent (before "Resuming")."""
+    text, spawned, runs, *_ = controller_with_choose(
+        ["add subtract", "y", escalate(), "retry", "try harder"], FULL_SCRIPT
+    )
+    assert text.count("✓ Retry the task") == 1
+    assert text.index("✓ Retry the task") < text.index(f"Resuming {runs[0].run_id} with retry.")
+    assert (runs[0].run_id, "resume", {"action": "retry", "hint": "try harder"}) in spawned
+
+
+def test_retry_then_ctrl_c_at_the_hint_prints_no_settled_line(controller_with_choose):
+    text, spawned, runs, *_ = controller_with_choose(
+        ["add subtract", "y", escalate(), "retry", interrupt, "/answer", "skip"], FULL_SCRIPT
+    )
+    assert "Answer it later with /answer." in text
+    assert "✓ Retry the task" not in text
+    assert "✓ Skip this task" in text  # the later answer still settles
+    assert [mode for _, mode, _ in spawned] == ["start", "resume"]
+
+
+def test_a_pause_answered_after_the_run_moved_on_prints_no_settled_line(controller_with_choose):
+    def moved_on(c):
+        set_state(c, "running")  # the run moved on while the callout was open
+        return "skip"
+
+    text, spawned, *_ = controller_with_choose(["add subtract", "y", escalate(), moved_on], FULL_SCRIPT)
+    assert "The run moved on; nothing to answer." in text
+    assert "Skip this task" not in text
+    assert [mode for _, mode, _ in spawned] == ["start"]
+
+
+def attempts_pause(problems, log=None):
+    def step(c):
+        paths, run_id, conn = _run(c)
+        set_state(c, "escalated", needs_attention="CALC-001 failed 3 attempts")
+        run_events(paths, run_id).append("escalation", escalation={
+            "reason": "attempts", "task_id": "CALC-001", "phase": "green", "summary": "CALC-001 failed 3 attempts",
+            "problems": problems, "options": ["retry", "skip", "abort"], "log": log,
+        })
+        c._watcher.poll_once()
+        return WAKE
+
+    return step
+
+
+def test_an_attempts_pause_details_are_its_problems(controller):
+    """No log: when the pause opens, /more 1 is decision.txt with the summary and every problem."""
+    problems = ["first problem here", "second problem here", "third problem", "fourth problem"]
+    seen = {}
+
+    def before(c):
+        seen["text"] = c.console.export_text(clear=False)
+        return "/more 1"
+
+    text, *_ = controller(["add subtract", "y", attempts_pause(problems), before], FULL_SCRIPT)
+    assert "fourth problem" not in seen["text"]
+    for problem in problems:
+        assert problem in text
+    assert "CALC-001 failed 3 attempts" in text
+
+
+def test_an_attempts_pause_details_are_its_log(controller_with_choose, tmp_path):
+    """With a log path, /more 1 is the log."""
+    log = tmp_path / "green.log"
+    log.write_text("AssertionError: subtract(3, 1) == 4\n", encoding="utf-8", newline="\n")
+    calls = []
+    text, *_ = controller_with_choose(
+        ["add subtract", "y", attempts_pause(["the tests failed"], log=str(log)), TYPE, "/more 1"], FULL_SCRIPT,
+        calls=calls,
+    )
+    pause = next(call[2] for call in calls if call[0] == "choose" and call[2].kind == "pause")
+    assert pause.body[-1] == "Details: /more 1"
+    assert "AssertionError: subtract(3, 1) == 4" in text
+
+
+def test_a_render_capped_pause_body_is_behind_more_1(controller_with_choose):
+    """Two long problems fit in the body's line count but not in its rendered rows: /more 1 still
+    holds them."""
+    problems = [" ".join([f"alpha{n}" for n in range(60)]), " ".join([f"omega{n}" for n in range(60)])]
+    text, *_ = controller_with_choose(
+        ["add subtract", "y", review_failed_pause(problems), TYPE, "/more 1"], FULL_SCRIPT
+    )
+    assert "omega59" in text
+
+
+def test_an_approved_command_reaches_the_resumed_worker(calc_repo):
+    """End to end, with real workers: the run pauses for approval of a command, the chat's choose
+    returns "approve", and the resume worker it spawns runs that command (the scenario fails the
+    run if the command is still denied), so the run completes."""
+    (calc_repo / "tools").mkdir()
+    (calc_repo / "tools" / "build.py").write_text("print('built ok')\n", encoding="utf-8", newline="\n")
+    run_git(calc_repo, "add", "-A")
+    run_git(calc_repo, "commit", "-m", "add build script")
+    scenario = {"start": "needs_approval", "resume": "after_approval"}
+    procs = []
+
+    def spawn(root, run_id, mode, decision):
+        procs.append(spawn_worker(root, run_id, mode, decision, env=worker_env(scenario[mode])))
+
+    def wait_and_poll(c):
+        assert procs[-1].wait(timeout=180) == 0
+        c._watcher.poll_once()
+        return WAKE
+
+    def wait(c):
+        assert procs[-1].wait(timeout=180) == 0
+        return None
+
+    calls = []
+    text, spawned, runs, *_ = run_chat(
+        calc_repo, ["add subtract", "y", wait_and_poll, "approve", wait],
+        {"intake": [goal()], "architect": [plan(test_cmd=TEST_CMD)], "critic": [critique()]},
+        choose=True, calls=calls, spawn=spawn,
+    )
+    run_id = runs[0].run_id
+    pause = next(call[2] for call in calls if call[0] == "choose" and call[2].kind == "approval")
+    assert "  " + BUILD in pause.body
+    assert spawned[1] == (run_id, "resume", {"action": "approve"})
+    assert "✓ Approve for this run · " + BUILD in text
+    record = get_run(connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path), run_id)
+    assert record.state == "completed"
+
+
+def test_a_btw_failure_writes_one_note(controller, calc_repo):
+    controller(["add subtract", "/btw hi", look({}, "x", lambda c: None), "n"],
+               {**FULL_SCRIPT, "btw": [RuntimeError("provider down")]})
+    notes = [line for line in transcript(calc_repo) if "provider down" in json.dumps(line)]
+    assert [line["kind"] for line in notes] == ["btw_failed"]
 
 
 def test_answered_elsewhere_while_typing_the_hint(controller_with_choose):

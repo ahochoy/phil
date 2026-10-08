@@ -5,6 +5,8 @@ handlers already accept, so picking from the menu and typing are the same thing 
 from dataclasses import dataclass
 
 BODY_LINES = 8
+SEE_MORE = "… see /more 1"  # a capped body's last line: the full body is detail 1
+DETAILS = "Details: /more 1"  # a body's pointer at detail 1 when nothing was cut (an attempts pause)
 
 LABELS = {
     "retry": "Retry the task",
@@ -55,7 +57,7 @@ def _capped(lines: list[str]) -> tuple[str, ...]:
     rendered = [line for entry in lines for line in str(entry).splitlines()]
     if len(rendered) <= BODY_LINES:
         return tuple(rendered)
-    return (*rendered[: BODY_LINES - 1], "… see /more 1")
+    return (*rendered[: BODY_LINES - 1], SEE_MORE)
 
 
 def settled_line(decision: Decision, option: Option) -> str:
@@ -91,7 +93,7 @@ def pause_decision(run_id: str, escalation: dict) -> Decision:
     if reason == "attempts":
         task_id = escalation.get("task_id", "")
         title_end = summary or f"{task_id} needs another attempt"
-        body = [*problems[:3], "Details: /more"]
+        body = [*problems[:3], DETAILS]
     elif reason == "approval":
         commands = [str(c) for c in escalation.get("commands") or []]
         title_end = _TITLES[reason]

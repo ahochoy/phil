@@ -25,7 +25,7 @@ PHIL_THEME = Theme(
         "phil.callout.title.question": "bold cyan", "phil.callout.title.confirm": "bold cyan",
         "phil.callout.title.approval": "bold yellow", "phil.callout.title.pause": "bold yellow", "phil.callout.title.failure": "bold red",
         "phil.callout.body": "default", "phil.callout.option": "default", "phil.callout.selected": "bold reverse",
-        "phil.callout.hint": "dim", "phil.callout.key": "blue",
+        "phil.callout.hint": "dim",
     }
 )
 

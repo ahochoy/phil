@@ -1,4 +1,6 @@
 import os
+import shlex
+import sys
 import time
 
 from phil.agents.fake import ScriptedAgentFactory
@@ -19,12 +21,31 @@ def _crash(turn):
     raise RuntimeError("boom")
 
 
+BUILD = f"{shlex.quote(sys.executable)} tools/build.py"  # off [shell] allow: it needs approval
+
+
+def _red_with_build(turn):
+    turn.tools["run_shell"](BUILD)  # denied before it's approved: the run pauses for approval
+    return write_red(turn)
+
+
+def _red_with_approved_build(turn):
+    output = turn.tools["run_shell"](BUILD)
+    if not output.startswith("exit_code: 0") or "built ok" not in output:
+        raise RuntimeError(f"the approved command didn't run: {output}")
+    return write_red(turn)
+
+
 SCENARIOS = {
     "happy": lambda: {"implementer": [write_red, write_green], "tester": [tester_report()], "reviewer": [review()]},
     "escalate": lambda: {"implementer": [write_red, bad_green, bad_green, bad_green]},
     "finish_after_retry": lambda: {"implementer": [write_green], "tester": [tester_report()], "reviewer": [review()]},
     "slow": lambda: {"implementer": [_slow]},
     "crash": lambda: {"implementer": [_crash]},
+    "needs_approval": lambda: {"implementer": [_red_with_build]},
+    "after_approval": lambda: {
+        "implementer": [_red_with_approved_build, write_green], "tester": [tester_report()], "reviewer": [review()],
+    },
 }
 
 
