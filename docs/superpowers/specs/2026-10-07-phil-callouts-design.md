@@ -141,6 +141,7 @@ Abort is never the default.
 | `auth` | status 401 or 403, or a missing-key error | The provider rejected your API key. | `phil keys set <provider>`, or set `<ENV>` |
 | `quota` | status 402, or credit or quota wording in the provider detail | Your <provider> account is out of credits. | Add credits, then try again |
 | `busy` | 429 or 529 after Phil's retries | <provider> is busy. Phil retried <n> times. | Try again in a minute |
+| `server` | status 500–599, after Phil's retries | <provider> had a server error. Phil retried. | Try again in a few minutes |
 | `network` | the transient connection and timeout classes | Couldn't reach <provider>. Phil retried. | Check your connection |
 | `refused` | any other 4xx, with the provider detail | <provider> refused the request: <detail>. | Check the model with `phil models check` |
 | `output` | `ContractViolation` | The <role> didn't return a usable answer. | Try again, or use a stronger model for <role> |
