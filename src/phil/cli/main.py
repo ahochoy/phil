@@ -1,5 +1,6 @@
 import getpass
 import importlib
+import importlib.metadata
 import json
 import logging
 import os
@@ -35,7 +36,7 @@ from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
-from phil.store.runs import RunRecord, get_run, update_run
+from phil.store.runs import RunRecord, get_run, list_runs, update_run
 from phil.tomlw import toml_value
 from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
@@ -199,9 +200,100 @@ def _reopen_chat(session_cls, paths: ProjectPaths, chat_id: str):
         raise typer.Exit(1) from exc
 
 
+# Run states the banner offers to pick up, newest first. The store's names are used as they are:
+# a run paused for an answer is `escalated`; finished, aborted and cleaned runs aren't offered.
+_PICK_UP_STATES = ("pending", "running", "escalated", "failed", "stopped")
+
+
+def _banner_facts(info, config, conn, paths, base_label, header_sha, base, session):
+    """What the welcome banner shows. Each lookup is guarded on its own: one that fails leaves a
+    safe default for its field and never stops the chat from starting."""
+    from phil.chat.session import list_open_chats
+    from phil.ui.banner import BannerFacts
+    from phil.ui.toolbar import short_model
+
+    try:
+        version = importlib.metadata.version("phil")
+    except Exception:
+        version = "dev"
+    try:
+        repo = info.root.name
+    except Exception:
+        repo = "?"
+    try:
+        branch = info.branch or "detached"
+    except Exception:
+        branch = "?"
+    try:
+        sha = header_sha[:7]
+    except Exception:
+        sha = "?"
+    try:
+        dirty = len(info.dirty_files) if base is None else 0
+    except Exception:
+        dirty = 0
+    try:
+        parked = len(list_parked(conn))
+    except Exception:
+        parked = 0
+    models: list[tuple[str, str]] = []
+    for label, role in (("high", "architect"), ("low", "implementer")):
+        try:  # the tier's own model; a legacy per-role config has none, so its role's model stands in
+            models.append((label, short_model(config.tier_model(label) or config.model_for(role))))
+        except Exception:
+            pass
+    try:
+        if "classifier" in config.models:
+            models.append(("classifier", short_model(config.models["classifier"])))
+    except Exception:
+        pass
+    try:
+        budget_usd = float(config.run.max_cost_usd)
+    except Exception:
+        budget_usd = 0.0
+    try:
+        runs = list_runs(conn)  # the db is per project, so these are this repo's runs
+    except Exception:
+        runs = None
+    try:
+        record = next((r for r in runs or () if r.state in _PICK_UP_STATES), None)
+    except Exception:
+        record = None
+    run = None
+    if record is not None:
+        state = record.state
+        try:  # left `running` by a crash or a reboot: `phil resume` takes a run whose worker is dead
+            if state == "running" and not is_worker_alive(record):
+                state = "stopped"
+        except Exception:
+            pass
+        summary = None
+        if record.state == "escalated":
+            try:
+                summary = run_events(paths, record.run_id).latest("escalation")["escalation"]["summary"]
+            except Exception:
+                summary = record.needs_attention  # what `phil attach` falls back to
+        run = (record.run_id, state, summary)
+    try:
+        other_chats = tuple(c.id for c in list_open_chats(paths, conn) if session is None or c.id != session.id)
+    except Exception:
+        other_chats = ()
+    try:
+        chats = paths.project_dir / "chats"
+        saved = chats.is_dir() and any(d.is_dir() for d in chats.iterdir())
+        first_time = runs == [] and not saved
+    except Exception:
+        first_time = False
+    return BannerFacts(
+        version=version, repo=repo, branch=branch, sha=sha, base=base_label if base is not None else None,
+        dirty=dirty, parked=parked, models=tuple(models), budget_usd=budget_usd, run=run,
+        other_chats=other_chats, first_time=first_time,
+    )
+
+
 def _chat(ctx: typer.Context) -> None:
-    from phil.chat.controller import HELP
     from phil.chat.session import ChatLocked, ChatSession, chat_logging, list_open_chats
+    from phil.ui.banner import banner_plain, render_banner
 
     resume_id, new = ctx.obj.get("resume"), ctx.obj.get("new", False)
     if resume_id is not None and new:
@@ -246,24 +338,23 @@ def _chat(ctx: typer.Context) -> None:
     tty = _is_tty()
     # Under patch_stdout, stdout is a proxy; force colour so Rich keeps emitting it.
     out = make_console(force_terminal=True) if tty else console
-    out.print(
-        f"[phil.brand]Phil[/] · {escape(info.root.name)} · base: {escape(base_label)} @ {escape(header_sha[:7])}"
-    )
-    if base is None and info.dirty_files:
-        count = len(info.dirty_files)
-        out.print(
-            f"[phil.warn]⚠ {count} uncommitted file{'s' if count != 1 else ''} — not included in runs[/]"
-        )
-    parked_count = len(list_parked(conn))
-    if parked_count:
-        out.print(f"[phil.muted]{parked_count} parked[/]")
+    facts = _banner_facts(info, config, conn, paths, base_label, header_sha, base, session)
+    try:  # the mascot is hand-edited; a card that can't be drawn falls back to the plain lines
+        card = render_banner(facts, out.width) if tty else None
+    except Exception:
+        card = None
+    if card is not None:
+        for line in card:
+            out.print(line, soft_wrap=True)
+    else:
+        for line in banner_plain(facts):
+            out.print(line, soft_wrap=True, markup=False, highlight=False)
     if session is None and not new and tty:
         chats = list_open_chats(paths, conn)
         if chats:
             chosen = _choose_open_chat(out, chats, lambda prompt: out.input(f"[phil.user]{escape(prompt)}[/]"))
             if chosen is not None:
                 session = _reopen_chat(ChatSession, paths, chosen)
-    out.print(f"[phil.muted]{escape(HELP)}[/]")
     try:
         factory = _factory_from_env()
     except Exception as exc:

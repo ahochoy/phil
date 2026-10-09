@@ -24,6 +24,10 @@ it again any time to change providers or models:
 
     phil setup
 
+When the chat opens, it shows a welcome card with Phil's version, the repo, branch and commit
+(flagging uncommitted files, which runs don't include), your models and run budget, any run
+waiting to be picked up, other open chats, and a line of tips.
+
 Setup only ever edits `~/.phil/config.toml`, never a repo's `phil.toml`. It keeps your other
 settings and comments, prefilling what it can from the current global file. Ctrl-C or Ctrl-D
 cancel at any step and save nothing — no config, no key. Keys you enter are saved to the

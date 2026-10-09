@@ -20,7 +20,7 @@ def test_phil_opens_the_chat_and_starts_a_run(calc_repo, monkeypatch):
     monkeypatch.setattr(cli, "spawn_worker", lambda root, run_id, mode, *a, **k: spawned.append((run_id, mode)))
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="add subtract\ny\n")
     assert result.exit_code == 0, result.output
-    assert "Phil · calc · base: main @" in result.output
+    assert "calc @ main " in result.output
     [record] = list_runs(connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path))
     assert spawned == [(record.run_id, "start")]
 
@@ -57,7 +57,7 @@ def test_chat_warns_about_uncommitted_files(calc_repo):
     (calc_repo / "scratch.txt").write_text("wip")
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
     assert result.exit_code == 0
-    assert "1 uncommitted file" in result.output
+    assert "⚠ 1 uncommitted (not included in runs)" in result.output
 
 
 def test_chat_with_a_bad_base(calc_repo):
@@ -219,8 +219,10 @@ def test_tty_enter_starts_a_new_chat_and_new_skips_the_list(calc_repo, monkeypat
     assert "Reopened" not in output
     fresh = runner.invoke(cli.app, ["--repo", str(calc_repo), "--new"], input="")
     assert fresh.exit_code == 0, fresh.output
-    assert chat_id not in fresh.output
-    assert "Open chats" not in fresh.output
+    fresh_output = _plain(fresh.output)
+    assert f"1. {chat_id}" not in fresh_output  # no picker; the banner may still mention the open chat
+    assert "Reopen one?" not in fresh_output
+    assert "Open chats" not in fresh_output
 
 
 def test_root_help_documents_resume_and_new():
