@@ -227,6 +227,33 @@ def test_an_exact_deny_rule_still_needs_the_exact_words(tmp_path):
     assert policy.decide("make").outcome == "ask"
 
 
+@pytest.mark.parametrize(("rule", "command"), [
+    ("git push *", "git -C x push -f"),
+    ("git push *", "git --git-dir=y push x"),
+    ("gh pr merge *", "gh --repo o/r pr merge 1"),
+])
+def test_a_deny_rule_finds_its_words_after_global_options(tmp_path, rule, command):
+    add_rule(tmp_path / "global.toml", "deny", rule, "manual", today=TODAY)
+    decision = ShellPolicy(load(tmp_path, config_allow=["git *", "gh *"])).decide(command)
+    assert (decision.outcome, decision.reason) == ("deny", f'deny rule "{rule}" (everywhere)')
+
+
+def test_an_open_deny_rule_needs_all_its_words_in_order(tmp_path):
+    add_rule(tmp_path / "global.toml", "deny", "git push *", "manual", today=TODAY)
+    policy = ShellPolicy(load(tmp_path))
+    assert policy.decide("git log").outcome == "allow"
+
+
+def test_deny_matches_order_and_exactness():
+    from phil.permissions.rules import deny_matches, parse_rule
+
+    assert deny_matches(parse_rule("gh pr merge *"), ["gh", "--repo", "o/r", "pr", "x", "merge"])
+    assert not deny_matches(parse_rule("gh pr merge *"), ["gh", "merge", "pr"])  # out of order
+    assert not deny_matches(parse_rule("make deploy"), ["make", "deploy", "x"])
+    assert not deny_matches(parse_rule("make deploy"), ["make", "-k", "deploy"])
+    assert deny_matches(parse_rule("MAKE deploy"), ["/usr/bin/make", "deploy"])
+
+
 def test_deny_matches_unit():
     from phil.permissions.rules import deny_matches, parse_rule
 

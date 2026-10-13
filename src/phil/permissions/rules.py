@@ -210,17 +210,20 @@ def rule_matches(rule: Rule, argv: list[str]) -> bool:
 
 
 def deny_matches(rule: Rule, argv: list[str]) -> bool:
-    """A deny rule's matcher (R13), which errs toward matching because it blocks: the program is
-    compared by folded name whatever its path (`/usr/bin/git`, `GIT`), the rule's fixed words must
-    be the command's leading words, a trailing `*` covers any further words, options and
-    `NAME=value` included, and no command is exempt as exact-only."""
+    """A deny rule's matcher (R13, as amended), which errs toward matching because it blocks. The
+    program is compared by folded name whatever its path (`/usr/bin/git`, `GIT`). For an open rule,
+    its fixed words need only appear in order among the command's later words, so global options
+    (`git -C x push -f`, `gh --repo o/r pr merge 1`) don't hide the subcommand, and any other words,
+    options included, may come between and after. An exact rule is a whole-command match. No
+    command is exempt as exact-only."""
     if not argv:
         return False
     if folded_name(argv[0]) != folded_name(rule.words[0]):
         return False
     fixed, rest = rule.words[1:], [_slashed(arg) for arg in argv[1:]]
     if rule.open_end:
-        return tuple(rest[: len(fixed)]) == fixed
+        remaining = iter(rest)
+        return all(word in remaining for word in fixed)  # a subsequence: in order, gaps allowed
     return tuple(rest) == fixed
 
 
