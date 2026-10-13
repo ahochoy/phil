@@ -32,7 +32,8 @@ The live tests showed what this leads to:
 **The form of a rule.** A rule is a command written as words, for example `gh pr checks *`.
 - **The program.** The first word is compared by program name, on every platform: the basename, lowercased, with `.exe`, `.cmd` or `.bat` removed on Windows. So `/usr/bin/gh` and `gh` are the same program.
 - **The other words** must match exactly.
-- **A trailing `*`** matches any further arguments, or none. A `*` anywhere else makes the rule invalid.
+- **A trailing `*`** matches zero or more further *plain arguments*. A plain argument is a word that doesn't start with `-` and doesn't contain `=`. So `gh pr checks *` covers `gh pr checks 43` but not `gh pr checks 43 --watch`, and a command with options or `NAME=value` words asks again. (User, 2026-10-13. Four security passes found dangerous options hiding behind a `*`; this closes that class of problem in one rule.) A `*` anywhere else, or quoted or escaped, makes the rule invalid.
+- **A path-qualified program** (`./gh`, `/tmp/gh`) only matches a rule that names that exact path. A bare-name rule never covers a program run from a path, so an agent can't plant its own `gh` in the worktree.
 - **Old patterns.** `[shell] allow` patterns from config keep today's matching (`fnmatchcase` on each word after the first), so existing setups behave the same.
 
 **The order of checks.** The first match wins.
@@ -72,15 +73,17 @@ The list is a table of program, read-only subcommand, and the flags that turn th
 
 ### 3.3 What "always allow" suggests
 
+Patterns are only offered from a vetted list (amended during implementation, 2026-10-13, after security review). Every other command is saved exactly.
+
 | The command | Suggested rule |
 |---|---|
-| A program with known subcommands (`gh`, `git`, `npm`, `pnpm`, `yarn`, `uv`, `cargo`, `go`, `docker`, `kubectl`) | the program plus its subcommand words, then `*`. `gh pr checks 42` gives `gh pr checks *` |
-| Another program with an argument that isn't a flag | the program plus its first such argument, then `*`. `make test-unit --fast` gives `make test-unit *` |
-| Another program with no such argument | the exact command |
-| An interpreter (`python`, `python3`, `node`, `bash`, `sh`, `zsh`, `ruby`, `perl`) | the exact command |
-| A destructive command (`rm`, `mv`, `chmod`, `chown`, `dd`, `kill`, `git push --force`, `git push -f`) | the exact command |
+| A vetted family: `gh` (except `api`), `git`, `npm`, `pnpm`, `yarn`, `uv`, `cargo`, `go`, `docker`, `kubectl`, or the test and lint tools (`make`, `just`, `pytest`, `tox`, `nox`, `ruff`, `mypy`, `eslint`, `prettier`, `tsc`, `jest`, `vitest`), with only plain arguments after the subcommand | the program plus its subcommand words, then `*`. `gh pr checks 42` gives `gh pr checks *`, and `make test-unit` gives `make test-unit *` |
+| The same, but with an option or a `NAME=value` word after the subcommand | the exact command |
+| Anything outside the vetted families (`tar`, `ssh`, `terraform`…) | the exact command |
+| A dangerous form inside a family: launchers (`uv run`, `npm exec`, `docker run`, `kubectl exec`…), commands that run or configure other commands (`git config`, `git send-email`, `gh api`, `npm config`…), and remove verbs (`delete`, `rm`, `prune`, `uninstall`, `clean`, `reset`…) | the exact command |
+| An interpreter (any `python`, `node`, `bash`, `sh`, `ruby`, `perl`, … including versioned names), a destructive command (`rm`, `mv`, `chmod`, `chown`, `dd`, `kill`…), or a launcher (`env`, `sudo`, `xargs`…) | the exact command, and an open rule never covers it |
 
-Phil never suggests `program *` on its own.
+Phil never suggests `program *` on its own, and never suggests a pattern when any word contains `*`.
 
 ### 3.4 The approval callout
 
