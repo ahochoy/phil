@@ -9,7 +9,9 @@ atomically, so a crash or a second Phil never leaves half a file.
 """
 
 import hashlib
+import json
 import os
+import shlex
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -67,7 +69,24 @@ class _FileState:
 
 
 def repo_rules_hash(rules: list[str]) -> str:
-    return "sha256:" + hashlib.sha256("\n".join(rules).encode("utf-8")).hexdigest()
+    """Over the list as JSON, so no rule text can fake a boundary between two rules."""
+    encoded = json.dumps(rules, ensure_ascii=False, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _normal(rule: Rule) -> str:
+    """The rule with its spacing normalised: the words re-joined, plus ` *` when open-ended."""
+    return shlex.join(rule.words) + (" *" if rule.open_end else "")
+
+
+def _same_rule(stored: object, normal: str) -> bool:
+    """Whether a rule already in a file (any spacing) is the rule whose normalised text is `normal`."""
+    if not isinstance(stored, str):
+        return False
+    try:
+        return _normal(parse_rule(stored)) == normal
+    except RuleError:
+        return stored.strip() == normal
 
 
 def _line_of(text: str, needle: str) -> int | None:
@@ -225,25 +244,29 @@ def add_rule(path: Path, kind: str, rule_text: str, source: str, *, today: date,
         raise PolicyWriteError(str(exc)) from exc
     with _locked(path):
         doc = _open_for_write(path, header)
+        normal = _normal(rule)
         if kind in doc:
-            if any(item.get("rule") == rule.text for item in doc[kind]):
+            if any(_same_rule(item.get("rule"), normal) for item in doc[kind]):
                 return
         else:
             if len(doc):
                 doc.add(tomlkit.nl())
             doc.add(kind, tomlkit.aot())
         entry = tomlkit.table()
-        entry.add("rule", rule.text)
+        entry.add("rule", normal)
         entry.add("added", today)
         entry.add("from", source)
-        doc[kind].append(entry)
+        items = doc[kind]
+        if len(items) and not items[-1].as_string().endswith("\n\n"):
+            items[-1].add(tomlkit.nl())  # tomlkit puts no blank line between appended tables
+        items.append(entry)
         _write(path, doc)
 
 
 def remove_rule(path: Path, rule_text: str) -> bool:
     """Remove the entries (allow or deny) whose rule is `rule_text`. False if there were none."""
     try:
-        wanted = parse_rule(rule_text).text
+        wanted = _normal(parse_rule(rule_text))
     except RuleError:
         wanted = rule_text.strip()
     if not path.exists():
@@ -256,7 +279,7 @@ def remove_rule(path: Path, rule_text: str) -> bool:
                 continue
             items = doc[kind]
             for index in reversed(range(len(items))):
-                if items[index].get("rule") == wanted:
+                if _same_rule(items[index].get("rule"), wanted):
                     del items[index]
                     removed = True
             if not len(items):

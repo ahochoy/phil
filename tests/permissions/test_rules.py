@@ -51,6 +51,12 @@ def test_invalid_rules(text):
         parse_rule(text)
 
 
+@pytest.mark.parametrize("text", ["make test\nls", "make test\r", "make\ttest", "make\x00 test", "gh pr view\x1b[0m *"])
+def test_rules_with_control_characters_are_rejected(text):
+    with pytest.raises(RuleError):
+        parse_rule(text)
+
+
 def test_bare_program():
     assert is_bare_program(parse_rule("gh *")) and not is_bare_program(parse_rule("gh pr *"))
 

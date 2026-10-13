@@ -122,6 +122,43 @@ def test_config_allow_keeps_old_glob_patterns(tmp_path):
     assert policy.allow[0].scope == "config"
 
 
+def test_the_hash_tells_rule_lists_apart():
+    assert repo_rules_hash(["make test", "ls"]) != repo_rules_hash(["make test\nls"])
+    assert repo_rules_hash(["a *", "b *"]) != repo_rules_hash(["b *", "a *"])
+
+
+def test_spacing_variants_of_a_rule_are_one_rule_stored_normalised(tmp_path):
+    path = tmp_path / "global.toml"
+    add_rule(path, "allow", "make  test *", "manual", today=TODAY)
+    add_rule(path, "allow", "make test *", "manual", today=TODAY)
+    add_rule(path, "allow", "  make test   *  ", "manual", today=TODAY)
+    text = path.read_text(encoding="utf-8")
+    assert text.count("[[allow]]") == 1 and 'rule = "make test *"' in text
+
+
+def test_a_new_entry_in_an_existing_list_gets_a_blank_line_before_it(tmp_path):
+    path = tmp_path / "global.toml"
+    add_rule(path, "allow", "npm ls", "manual", today=TODAY)
+    add_rule(path, "allow", "make test *", "manual", today=TODAY)
+    assert '"manual"\n\n[[allow]]\nrule = "make test *"' in path.read_text(encoding="utf-8")
+
+
+def test_an_invalid_allow_entry_leaves_a_valid_deny_rule_in_force(tmp_path):
+    (tmp_path / "proj.toml").write_text(
+        '[[allow]]\nrule = "gh * view"\n\n[[deny]]\nrule = "git push *"\n', encoding="utf-8", newline="\n")
+    policy = load(tmp_path)
+    assert policy.problems and policy.allow == ()
+    assert [e.rule.text for e in policy.deny] == ["git push *"]
+
+
+def test_a_stale_tmp_file_is_overwritten(tmp_path):
+    path = tmp_path / "global.toml"
+    (tmp_path / "global.toml.tmp").write_text("garbage = [", encoding="utf-8", newline="\n")
+    add_rule(path, "allow", "npm ls", "manual", today=TODAY)
+    assert [e.rule.text for e in load(tmp_path).allow] == ["npm ls"]
+    assert not (tmp_path / "global.toml.tmp").exists()
+
+
 def test_policy_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("PHIL_HOME", str(tmp_path))
     assert global_policy_path() == tmp_path / "policy.toml"

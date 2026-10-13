@@ -169,7 +169,10 @@ def _path_key(path: str) -> str:
 def parse_rule(text: str) -> Rule:
     """Tokenised exactly as ShellPolicy tokenises a command (R6): shlex, then per-word slashes on
     Windows. The rule is open-ended only if its raw text ends in whitespace and a bare `*`; a
-    quoted or escaped `*` is an error (R4), never a wildcard."""
+    quoted or escaped `*` is an error (R4), never a wildcard. Control characters (newline, tab,
+    escape...) are an error: they have no place in a rule and could forge lines in a file."""
+    if any(unicodedata.category(char) == "Cc" for char in text):
+        raise RuleError(f"rule {text!r} contains a control character")
     try:
         words = [_slashed(word) for word in shlex.split(text)]
     except ValueError as exc:
