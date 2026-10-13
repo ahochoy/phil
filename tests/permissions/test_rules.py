@@ -73,7 +73,61 @@ def test_suggest_rule(argv, rule):
 
 def test_suggestion_never_bare_program():
     for argv in (["gh"], ["gh", "--help"], ["make"], ["cargo", "-q"]):
-        assert not is_bare_program(parse_rule(suggest_rule(argv)))
+        suggestion = suggest_rule(argv)
+        assert suggestion is not None
+        assert not is_bare_program(parse_rule(suggestion))
+
+
+@pytest.mark.parametrize("argv", [["rm", "*"], ["make", "*"], ["gh", "pr", "*"], ["ls", "a*b"], []])
+def test_unsavable_commands_have_no_suggestion(argv):
+    assert suggest_rule(argv) is None
+
+
+def test_exact_only_is_safe_on_empty_argv():
+    assert exact_only([]) is False
+
+
+@pytest.mark.parametrize("argv", [
+    ["git", "push", "--force", "origin"], ["git", "push", "--force-with-lease"], ["git", "push", "-fu", "origin"],
+    ["git", "push", "-uf", "origin"], ["git", "-C", "x", "push", "-f"], ["git", "push", "--mirror"],
+    ["git", "push", "--delete", "origin", "b"], ["git", "push", "--prune", "origin"], ["git", "push", "-d", "origin", "b"],
+    ["git", "push", "origin", "+main"], ["git", "push", "origin", ":old"],
+])
+def test_exact_only_for_forced_and_destructive_pushes(argv):
+    assert exact_only(argv) is True
+
+
+@pytest.mark.parametrize("argv", [["git", "push", "origin", "main"], ["git", "push", "-u", "origin", "main"],
+                                  ["git", "-C", "x", "push", "origin"], ["git", "commit", "-f"]])
+def test_exact_only_leaves_ordinary_pushes_alone(argv):
+    assert exact_only(argv) is False
+
+
+def test_arguments_with_spaces_round_trip():
+    argv = ["make", "my target", "x"]
+    rule = parse_rule(suggest_rule(argv))
+    assert rule_matches(rule, argv)
+    exact = parse_rule(suggest_rule(["ruff", "--config", "a b.toml"]))
+    assert rule_matches(exact, ["ruff", "--config", "a b.toml"])
+
+
+@pytest.mark.parametrize("argv0", ["./gh", "../gh", "sub/gh", "/tmp/gh"])
+def test_a_path_never_matches_a_bare_name_rule(argv0):
+    assert not rule_matches(parse_rule("gh *"), [argv0, "pr"])
+
+
+def test_windows_path_rules(monkeypatch):
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    rule = parse_rule(r"C:\x\gh.exe pr *")
+    assert rule_matches(rule, [r"C:\x\gh.exe", "pr", "1"])
+    assert rule_matches(rule, ["c:/X/GH.EXE", "pr", "1"])
+    assert not rule_matches(rule, ["gh", "pr", "1"])
+    assert not rule_matches(rule, [r"C:\y\gh.exe", "pr", "1"])
+    bare = parse_rule("gh pr *")
+    assert rule_matches(bare, ["GH.EXE", "pr", "1"])
+    assert not rule_matches(bare, [r"C:\x\gh.exe", "pr", "1"])
+    assert not rule_matches(bare, [r"..\gh", "pr", "1"])
+    assert not rule_matches(bare, [r".\gh.exe", "pr", "1"])
 
 
 @pytest.mark.parametrize("argv,expected", [

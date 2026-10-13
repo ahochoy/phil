@@ -41,9 +41,25 @@ def program_name(arg0: str) -> str:
     return arg0.rsplit("/", 1)[-1]
 
 
+def _slashed(text: str) -> str:
+    """On Windows every backslash becomes `/` (as the shell policy's allowlist does), so a path
+    rule survives shlex and either spelling of a path compares equal. Elsewhere `text` itself."""
+    return text.replace("\\", "/") if platform.IS_WINDOWS else text
+
+
+def _path_key(path: str) -> str:
+    """A path as compared for equality: on Windows case-folded without a .exe/.cmd/.bat suffix."""
+    path = _slashed(path)
+    if platform.IS_WINDOWS:
+        path = path.lower()
+        for suffix in (".exe", ".cmd", ".bat"):
+            path = path.removesuffix(suffix)
+    return path
+
+
 def parse_rule(text: str) -> Rule:
     try:
-        words = shlex.split(text)
+        words = shlex.split(_slashed(text))
     except ValueError as exc:
         raise RuleError(f"can't read rule {text!r}: {exc}") from exc
     open_end = bool(words) and words[-1] == "*"
@@ -58,7 +74,7 @@ def parse_rule(text: str) -> Rule:
 
 def has_separator(arg0: str) -> bool:
     """Whether `arg0` is a path (`./gh`, `/usr/bin/gh`) rather than a bare program name."""
-    return "/" in arg0 or (platform.IS_WINDOWS and "\\" in arg0)
+    return "/" in _slashed(arg0)
 
 
 def rule_matches(rule: Rule, argv: list[str]) -> bool:
@@ -67,11 +83,11 @@ def rule_matches(rule: Rule, argv: list[str]) -> bool:
     if not argv:
         return False
     if has_separator(argv[0]):
-        if rule.words[0] != argv[0]:
+        if not has_separator(rule.words[0]) or _path_key(rule.words[0]) != _path_key(argv[0]):
             return False
     elif program_name(argv[0]) != rule.words[0]:
         return False
-    fixed, rest = rule.words[1:], argv[1:]
+    fixed, rest = rule.words[1:], [_slashed(arg) for arg in argv[1:]]
     if rule.open_end:
         return len(rest) >= len(fixed) and tuple(rest[: len(fixed)]) == fixed
     return tuple(rest) == fixed
@@ -83,19 +99,35 @@ def is_bare_program(rule: Rule) -> bool:
 
 def exact_only(argv: list[str]) -> bool:
     """Commands only ever saved exactly: interpreters (their arguments are code), destructive
-    commands, and a forced `git push`."""
+    commands, and a forced or destructive `git push`."""
+    if not argv:
+        return False
     name = program_name(argv[0])
     if name in INTERPRETERS or name in DESTRUCTIVE:
         return True
-    return name == "git" and argv[1:2] == ["push"] and any(a in ("--force", "-f") or a.startswith("--force") for a in argv[2:])
+    if name != "git" or "push" not in argv[1:]:
+        return False
+    after_push = argv[argv.index("push", 1) + 1 :]
+    return any(_forces_push(word) for word in after_push)
+
+
+def _forces_push(word: str) -> bool:
+    """Whether a word after `git push` forces or deletes: --force*, --mirror, --delete, --prune,
+    a short-flag cluster holding f or d (`-fu`), or a `+`/`:` refspec."""
+    if word.startswith(("--force", "+", ":")) or word in ("--mirror", "--delete", "--prune"):
+        return True
+    return re.fullmatch(r"-[A-Za-z]+", word) is not None and ("f" in word or "d" in word)
 
 
 def _join(words: list[str]) -> str:
     return shlex.join(words)
 
 
-def suggest_rule(argv: list[str]) -> str:
-    """The rule "Always allow" offers for `argv` (spec §3.3). Never a bare `program *`."""
+def suggest_rule(argv: list[str]) -> str | None:
+    """The rule "Always allow" offers for `argv` (spec §3.3). Never a bare `program *`. None when
+    it can't be saved (R4): argv is empty, or a word holds `*`, which a rule can't express."""
+    if not argv or any("*" in word for word in argv):
+        return None
     if exact_only(argv):
         return _join(argv)
     name = program_name(argv[0])
