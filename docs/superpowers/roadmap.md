@@ -1,6 +1,6 @@
 # Phil Roadmap
 
-**Updated:** 2026-09-30. **Inputs:** the v1 design (`specs/2026-09-23-phil-v1-design.md`), the plan followups files, and the live-testing feedback (`../feedback/2026-09-29-live-testing-feedback.md`).
+**Updated:** 2026-10-13. **Inputs:** the v1 design (`specs/2026-09-23-phil-v1-design.md`), the plan followups files, and the live-testing feedback (`../feedback/2026-09-29-live-testing-feedback.md`).
 
 Phil is a development partner. It plans with you, does the work in its own worktree, shows what it is doing, and closes the loop through a PR and cleanup. The live tests showed that it works end to end, but it is disproportionate: a one-tag change took about 50 minutes and more than 3M tokens. The next milestones make it proportional, configurable, and visible.
 
@@ -75,7 +75,11 @@ quick.
   `phil show <run> --step N` outside it), and a live row for the step in progress.
   [Plan](plans/2026-10-07-phil-activity-feed.md) ·
   [spec](specs/2026-10-07-phil-activity-feed-design.md).
-- A welcome banner, a persistent input, a status bar, and a sub-agent bar that can later select one agent's feed.
+- **A welcome banner, a status bar, and active agents in the live row with a feed filter (done).**
+  The banner is a boxed card with a swappable mascot (`src/phil/ui/mascot.py`; the final mascot is
+  still to be chosen). [Banner spec](specs/2026-10-08-phil-welcome-banner-design.md) ·
+  [status bar spec](specs/2026-10-07-phil-status-bar-design.md) ·
+  [agent bar spec](specs/2026-10-08-phil-agent-bar-design.md).
 - **Bordered question and approval callouts (done).** Arrow-key choices, with the approval's
   scope stated ("for the rest of this run"). [Plan](plans/2026-10-07-phil-callouts.md) ·
   [spec](specs/2026-10-07-phil-callouts-design.md).
@@ -103,6 +107,28 @@ Core capabilities, built-in optional modules, plugins, UI extensions, and skills
 ## Launch gate
 
 A public release needs at least M1–M4, plus keeping internal diagnostics out of end users' terminals (see the 04a followups). M5 is what makes Phil feel finished.
+
+## Release sequence (user, 2026-10-13)
+
+The goal is to reach a publishable state first.
+
+**First public release, in this order:**
+1. M4 permissions. This also settles where config, policies and memory live on disk.
+2. Memory at the repository level: facts learned in a repo that later runs reuse, visible and editable.
+3. Skills, a basic version: Phil and its sub-agents use the `SKILL.md` skills the user already has installed, from folders the user approves.
+4. Release work:
+   - keep internal diagnostics out of users' terminals;
+   - confirm the bring-your-own-provider path (M2a);
+   - publish as `phil-agent`.
+5. A polish pass before release:
+   - finalize the mascot;
+   - clean up the status bar, the chat and the agent display, so that what's on screen is clear and relevant rather than competing for attention.
+
+**After launch, in this order:**
+1. Design workflows in the browser: a local page that shows the reasoning and the visual options, where the user's choice is sent back to the terminal. This replaces "visual proposals" in M6.
+2. A full-screen mode, as an option. Other coding agents take over the terminal once a conversation starts, and Phil has its own command set and persistent on-screen elements, so this fits. It comes after launch because it means rebuilding how the whole chat is drawn.
+3. Memory across repositories: insights about how the user works and best practices not already in the agent files.
+4. Other local customizations: hooks, MCP servers and plugins.
 
 ## Open decisions (carried from the feedback)
 
