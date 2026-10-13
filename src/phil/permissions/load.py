@@ -62,40 +62,61 @@ def repo_shell_settings(repo_root: Path) -> RepoShellSettings:
                              bash if isinstance(bash, str) else None)
 
 
-def policy_for(repo_root: Path, paths: ProjectPaths, config: PhilConfig) -> PolicySet:
-    problems: list[PolicyProblem] = []
-    phil_toml = repo_root / "phil.toml"
-    try:
-        repo_shell = repo_shell_settings(repo_root)
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        repo_shell = RepoShellSettings()  # nothing from the repo is trusted
-        problems.append(PolicyProblem(phil_toml, f"can't read phil.toml, so its [shell] allow is ignored: {exc}", None))
+def _config_allow_for(repo_root: Path, config: PhilConfig) -> list[str]:
+    """`[shell] allow` from config: defaults, `~/.phil/config.toml` and `--set`, never the repo's
+    phil.toml. Raises when the config has to be read again and can't be."""
     if _repo_set(config, "allow"):
-        try:
-            config_allow = list(load_config(repo_root, include_repo=False).shell.allow)
-        except Exception as exc:
-            config_allow = list(ShellConfig().allow)
-            problems.append(PolicyProblem(
-                phil_toml, f"can't read your config again, so the default [shell] allow applies: {exc}", None))
-    else:
-        config_allow = list(config.shell.allow)
-    policy = load_policy(
+        return list(load_config(repo_root, include_repo=False).shell.allow)
+    return list(config.shell.allow)
+
+
+def _load(repo_root: Path, paths: ProjectPaths, config_allow: list[str], repo_allow: list[str]) -> PolicySet:
+    return load_policy(
         repo_name=repo_root.name,
         project_policy=paths.policy_path,
         global_policy=global_policy_path(),
         config_allow=config_allow,
-        repo_allow=list(repo_shell.allow),
+        repo_allow=repo_allow,
     )
+
+
+def policy_for(repo_root: Path, paths: ProjectPaths, config: PhilConfig) -> PolicySet:
+    """The rules in effect. Anything that fails while reading the repo or the config only empties
+    the repo's list or falls back to the default [shell] allow, with a problem recorded: the
+    policy files, and their deny rules, always load."""
+    problems: list[PolicyProblem] = []
+    phil_toml = repo_root / "phil.toml"
+    try:
+        repo_shell = repo_shell_settings(repo_root)
+    except Exception as exc:  # RecursionError from a deeply nested file, too
+        repo_shell = RepoShellSettings()  # nothing from the repo is trusted
+        problems.append(PolicyProblem(phil_toml, f"can't read phil.toml, so its [shell] allow is ignored: {exc!r}", None))
+    try:
+        config_allow = _config_allow_for(repo_root, config)
+    except Exception as exc:
+        config_allow = list(ShellConfig().allow)
+        problems.append(PolicyProblem(
+            phil_toml, f"can't read your config again, so the default [shell] allow applies: {exc!r}", None))
+    policy = _load(repo_root, paths, config_allow, list(repo_shell.allow))
     return dataclasses.replace(policy, problems=(*policy.problems, *problems), repo_shell=repo_shell)
 
 
 def policy_or_fallback(repo_root: Path, paths: ProjectPaths, config: PhilConfig) -> PolicySet:
-    """`policy_for`, never raising. Loading is fail-safe already, but a failure here must never
-    break an agent call or a plan check: then only `[shell] allow` from config applies (none of it
-    when the repo's phil.toml set it, since that list needs trust)."""
+    """`policy_for`, never raising, and never dropping a deny rule it can still read. If
+    `policy_for` fails, the policy files are loaded again with no repo list and config's allow
+    list only. If even that fails, nothing is allowed by a rule: commands ask instead of running."""
     try:
         return policy_for(repo_root, paths, config)
-    except Exception:
-        logger.warning("couldn't load the permission rules for %s; using [shell] allow from config only",
+    except Exception as exc:
+        logger.warning("couldn't load the permission rules for %s; loading the policy files alone",
                        repo_root, exc_info=True)
-        return config_policy([] if _repo_set(config, "allow") else list(config.shell.allow))
+        problem = PolicyProblem(paths.policy_path, f"couldn't load the permission rules: {exc!r}", None)
+    try:
+        config_allow = [] if _repo_set(config, "allow") else list(config.shell.allow)
+        policy = _load(repo_root, paths, config_allow, [])
+        return dataclasses.replace(policy, problems=(*policy.problems, problem))
+    except Exception as exc:
+        logger.warning("couldn't load the permission rules for %s; no rule allows anything this call",
+                       repo_root, exc_info=True)
+        last = PolicyProblem(paths.policy_path, f"couldn't load the policy files: {exc!r}", None)
+        return dataclasses.replace(config_policy([]), problems=(problem, last))

@@ -431,6 +431,10 @@ def _read_layer(path: Path, label: str) -> dict:
         return tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"Invalid {label}: {exc}") from exc
+    except RecursionError as exc:
+        raise ConfigError(f"Invalid {label}: it is nested too deeply to read") from exc
+    except Exception as exc:  # unreadable, not UTF-8, or any other failure: never a crash
+        raise ConfigError(f"Can't read {label}: {exc}") from exc
 
 
 def _precedence(source: str) -> int:

@@ -43,8 +43,9 @@ def make_shell_tool(
     read_only: bool = False,
 ) -> Callable[[str], str]:
     """`policy` is the permission rules in effect (`permissions.load.policy_for`); None means
-    `shell.allow` alone, as config entries. `read_only` is for the read-only agents: only the
-    forbidden checks and the built-in reads apply."""
+    `shell.allow` alone, as config entries. No deny rules: production callers must pass a policy
+    (see policy_for). `read_only` is for the read-only agents: only the forbidden checks and the
+    built-in reads apply."""
     extra_allow, approved = tuple(extra_allow), tuple(approved)
     rules = policy if policy is not None else config_policy(list(shell.allow))
     shell_policy = ShellPolicy(rules, extra_allow=extra_allow, approved=approved, root=workdir, read_only=read_only)

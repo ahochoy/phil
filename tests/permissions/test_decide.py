@@ -254,6 +254,71 @@ def test_deny_matches_order_and_exactness():
     assert deny_matches(parse_rule("MAKE deploy"), ["/usr/bin/make", "deploy"])
 
 
+def _git_setup(tmp_path: Path, monkeypatch):
+    """Config allows `git *` (the global file), the everywhere policy denies `git push *`."""
+    from phil.config import load_config
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("PHIL_HOME", str(home))
+    home.mkdir()
+    (home / "config.toml").write_text('[shell]\nallow = ["git *"]\n', encoding="utf-8", newline="\n")
+    add_rule(global_policy_path(), "deny", "git push *", "manual", today=TODAY)
+    repo = _repo(tmp_path, "")
+    return repo, load_config(repo)
+
+
+def test_a_deeply_nested_phil_toml_keeps_the_deny_rules(tmp_path, monkeypatch):
+    repo, config = _git_setup(tmp_path, monkeypatch)
+    # Broken after config was loaded (a pull during a long run): tomllib raises RecursionError.
+    (repo / "phil.toml").write_text("x = " + "[" * 5000 + "]" * 5000 + "\n", encoding="utf-8", newline="\n")
+    from phil.permissions.load import policy_or_fallback
+
+    policy = policy_or_fallback(repo, ProjectPaths("calc-1"), config)
+    assert ShellPolicy(policy).decide("git push -f").outcome == "deny"
+    assert any("phil.toml" in problem.message for problem in policy.problems)
+
+
+@pytest.mark.parametrize("target", ["repo_shell_settings", "_config_allow_for"])
+def test_any_failure_reading_the_repo_or_config_keeps_the_deny_rules(tmp_path, monkeypatch, target):
+    from phil.permissions import load as load_module
+
+    repo, config = _git_setup(tmp_path, monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("injected")
+
+    monkeypatch.setattr(load_module, target, boom)
+    policy = load_module.policy_or_fallback(repo, ProjectPaths("calc-1"), config)
+    assert ShellPolicy(policy).decide("git push -f").outcome == "deny"
+    assert policy.problems
+
+
+def test_when_load_policy_itself_fails_nothing_is_allowed(tmp_path, monkeypatch, caplog):
+    from phil.permissions import load as load_module
+
+    repo, config = _git_setup(tmp_path, monkeypatch)
+
+    def boom(**kwargs):
+        raise RuntimeError("injected")
+
+    monkeypatch.setattr(load_module, "load_policy", boom)
+    policy = load_module.policy_or_fallback(repo, ProjectPaths("calc-1"), config)
+    assert policy.allow == ()
+    assert ShellPolicy(policy).decide("git push -f").outcome == "ask"  # asks rather than runs
+    assert ShellPolicy(policy).decide("gh pr view 1").outcome == "allow"  # built-in reads stay
+    assert policy.problems
+    assert "couldn't load the permission rules" in caplog.text
+
+
+def test_load_config_turns_a_recursion_error_into_a_config_error(tmp_path, monkeypatch):
+    from phil.config import ConfigError, load_config
+
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    (tmp_path / "phil.toml").write_text("x = " + "[" * 5000 + "]" * 5000 + "\n", encoding="utf-8", newline="\n")
+    with pytest.raises(ConfigError, match="phil.toml"):
+        load_config(tmp_path)
+
+
 def test_deny_matches_unit():
     from phil.permissions.rules import deny_matches, parse_rule
 

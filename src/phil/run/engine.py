@@ -664,6 +664,14 @@ class RunEngine:
             "worklogs": {**state.get("worklogs", {}), task.id: worklog.model_dump()},
             "keep_worktree": False,
         }
+        # Problems are cleared once an attempt passes, so blocked and refused commands are also
+        # kept as minor open issues: they always reach summary.md.
+        stopped = [f"{BLOCKED_PREFIX}{cmd}" for cmd in log.blocked] + [f"refused command: {cmd}" for cmd in log.refused]
+        if stopped:
+            update["open_issues"] = [
+                *state.get("open_issues", []),
+                *(Issue(task_id=task.id, severity="minor", note=note).model_dump() for note in stopped),
+            ]
         if log.denied:
             update["escalation"] = {
                 "reason": "approval",

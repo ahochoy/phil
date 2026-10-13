@@ -36,6 +36,8 @@ def effective_test_cmd(plan: Plan, config: PhilConfig, root: Path | None = None)
 
 
 def _policy(config: PhilConfig, policy: PolicySet | None, root: Path | None = None) -> ShellPolicy:
+    """With `policy=None`, `[shell] allow` alone. No deny rules: production callers must pass a
+    policy (see policy_for)."""
     return ShellPolicy(policy if policy is not None else config.shell.allow, root=root)
 
 
@@ -89,7 +91,8 @@ def check_cmd_problems(
     plan: Plan, config: PhilConfig, root: Path | None = None, *, policy: PolicySet | None = None
 ) -> list[str]:
     """Forbidden check commands, and ones a deny rule in `policy` blocks (R2). Anything merely off
-    [shell] allow is fine: the run allows each check_cmd.
+    [shell] allow is fine: the run allows each check_cmd. With `policy=None`: no deny rules, so
+    production callers must pass a policy (see policy_for).
 
     `root`, when given, is the tree the paths of a read-only check command must stay inside — the
     run's worktree is a checkout of it, and the run refuses an out-of-tree one anyway."""

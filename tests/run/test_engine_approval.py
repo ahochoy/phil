@@ -134,6 +134,24 @@ def test_a_deny_rule_blocks_without_escalating_and_reaches_the_next_attempt(make
     assert "blocked by your rule: make deploy now" in second
 
 
+def test_blocked_and_refused_commands_reach_the_summary_even_when_the_attempt_passes(make_harness):
+    add_rule(global_policy_path(), "deny", "make deploy *", "manual", today=date(2026, 10, 13))
+
+    def blocked_then_red(turn):
+        turn.tools["run_shell"]("make deploy now")
+        turn.tools["run_shell"](REFUSED_CMD)
+        return write_red(turn)
+
+    harness = make_harness(
+        {"implementer": [blocked_then_red, write_green], "tester": [tester_report()], "reviewer": [review()]}
+    )
+    final = harness.start()
+    assert final["status"] == "completed"
+    summary = (harness.deps.artifacts.run_dir / "summary.md").read_text(encoding="utf-8")
+    assert "blocked by your rule: make deploy now" in summary
+    assert f"refused command: {REFUSED_CMD}" in summary
+
+
 def build_only(turn):
     turn.tools["run_shell"](BUILD)
     return task_result("red")  # writes nothing
