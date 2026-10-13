@@ -1,0 +1,283 @@
+"""Policy files on disk (spec 2026-10-13 §3.1, §3.6): `policy.toml` holds `[[allow]]` and `[[deny]]`
+entries, each `{rule, added, from}`, plus a `[repo_rules]` table recording whether the user trusted
+the rules a repo's own phil.toml ships.
+
+Reading fails safe: a file that can't be read cleanly switches every saved allow rule off (and the
+trusted repo rules), but readable deny rules keep applying, and config rules stay. Writing keeps the
+user's comments (tomlkit), holds a lock for the whole read-modify-write, and replaces the file
+atomically, so a crash or a second Phil never leaves half a file.
+"""
+
+import hashlib
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+from typing import Any, Literal
+
+import tomlkit
+from tomlkit.exceptions import ParseError, TOMLKitError
+
+from phil import platform
+from phil.permissions.rules import Rule, RuleError, parse_rule
+
+KINDS = ("allow", "deny")
+
+
+class PolicyWriteError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class PolicyEntry:
+    """One rule in effect. `scope` is `everywhere`, `<repo name>`, `<repo name> phil.toml` or
+    `config`. A `config` entry is a `[shell] allow` glob pattern, which keeps the old glob matching:
+    its `rule` is `Rule(text=<pattern>, words=(), open_end=False)`, never parsed, so the matcher
+    must read `rule.text` as the pattern and ignore `words`."""
+
+    rule: Rule
+    kind: Literal["allow", "deny"]
+    scope: str
+    source: str
+
+
+@dataclass(frozen=True)
+class PolicyProblem:
+    path: Path
+    message: str
+    line: int | None
+
+
+@dataclass(frozen=True)
+class PolicySet:
+    deny: tuple[PolicyEntry, ...]
+    allow: tuple[PolicyEntry, ...]
+    problems: tuple[PolicyProblem, ...]
+    repo_rules_untrusted: tuple[str, ...]
+
+
+@dataclass
+class _FileState:
+    doc: Any
+    allow: list[PolicyEntry]
+    deny: list[PolicyEntry]
+    problems: list[PolicyProblem]
+
+
+def repo_rules_hash(rules: list[str]) -> str:
+    return "sha256:" + hashlib.sha256("\n".join(rules).encode("utf-8")).hexdigest()
+
+
+def _line_of(text: str, needle: str) -> int | None:
+    for number, line in enumerate(text.splitlines(), start=1):
+        if needle in line:
+            return number
+    return None
+
+
+def _read_file(path: Path, scope: str) -> _FileState:
+    """Parse one policy file. A missing or empty file is valid and empty. Every problem found is
+    collected; entries that are individually fine are still returned (the caller decides what to
+    switch off)."""
+    state = _FileState(tomlkit.document(), [], [], [])
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return state
+    except (OSError, UnicodeDecodeError) as exc:
+        state.problems.append(PolicyProblem(path, f"can't read {path.name}: {exc}", None))
+        return state
+    try:
+        state.doc = tomlkit.parse(text)
+    except ParseError as exc:
+        state.problems.append(PolicyProblem(path, f"can't parse {path.name}: {exc}", exc.line))
+        return state
+    except TOMLKitError as exc:
+        state.problems.append(PolicyProblem(path, f"can't parse {path.name}: {exc}", None))
+        return state
+    doc = state.doc
+    for kind in KINDS:
+        if kind not in doc:
+            continue
+        items = doc[kind]
+        if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+            state.problems.append(PolicyProblem(path, f"`{kind}` must be an array of tables ([[{kind}]])", None))
+            continue
+        for item in items:
+            rule_text = item.get("rule")
+            if not isinstance(rule_text, str):
+                state.problems.append(PolicyProblem(path, f"a [[{kind}]] entry needs a `rule` string", None))
+                continue
+            try:
+                rule = parse_rule(rule_text)
+            except RuleError as exc:
+                state.problems.append(PolicyProblem(path, str(exc), _line_of(text, rule_text)))
+                continue
+            source = str(item.get("from", ""))
+            (state.allow if kind == "allow" else state.deny).append(PolicyEntry(rule, kind, scope, source))
+    repo_rules = doc.get("repo_rules")
+    if repo_rules is not None:
+        decision = repo_rules.get("decision") if isinstance(repo_rules, dict) else None
+        digest = repo_rules.get("hash") if isinstance(repo_rules, dict) else None
+        if decision not in ("trust", "ignore") or not isinstance(digest, str):
+            state.problems.append(PolicyProblem(
+                path, "[repo_rules] needs decision = \"trust\" or \"ignore\" and a hash string",
+                _line_of(text, "[repo_rules]")))
+    return state
+
+
+def _recorded_decision(state: _FileState, rules_hash: str) -> str | None:
+    repo_rules = state.doc.get("repo_rules")
+    if isinstance(repo_rules, dict) and repo_rules.get("hash") == rules_hash:
+        decision = repo_rules.get("decision")
+        if decision in ("trust", "ignore"):
+            return str(decision)
+    return None
+
+
+def load_policy(*, repo_name: str, project_policy: Path, global_policy: Path, config_allow: list[str],
+                repo_allow: list[str]) -> PolicySet:
+    """Order: deny everywhere, then the repo; allow everywhere, then the repo, then the trusted
+    rules the repo's phil.toml ships, then config. Any problem in either file drops every saved allow
+    rule and the trusted repo rules (spec §3.6); readable deny rules and config rules stay."""
+    everywhere = _read_file(global_policy, "everywhere")
+    project = _read_file(project_policy, repo_name)
+    problems = tuple(everywhere.problems + project.problems)
+
+    untrusted: tuple[str, ...] = ()
+    repo_entries: list[PolicyEntry] = []
+    if repo_allow:
+        decision = _recorded_decision(project, repo_rules_hash(repo_allow))
+        if decision is None:
+            untrusted = tuple(repo_allow)
+        elif decision == "trust":
+            for text in repo_allow:
+                try:
+                    repo_entries.append(PolicyEntry(parse_rule(text), "allow", f"{repo_name} phil.toml", "phil.toml"))
+                except RuleError as exc:
+                    problems += (PolicyProblem(project_policy, f"in {repo_name}'s phil.toml: {exc}", None),)
+
+    config = [PolicyEntry(Rule(text=pattern, words=(), open_end=False), "allow", "config", "config")
+              for pattern in config_allow]
+    saved_allow = [] if (everywhere.problems or project.problems) else [
+        *everywhere.allow, *project.allow, *repo_entries]
+    return PolicySet(
+        deny=tuple(everywhere.deny + project.deny),
+        allow=tuple(saved_allow + config),
+        problems=problems,
+        repo_rules_untrusted=untrusted,
+    )
+
+
+@contextmanager
+def _locked(path: Path) -> Iterator[None]:
+    """Hold an exclusive lock on `<path>.lock` for a whole read-modify-write. Each call opens its
+    own handle, and both flock (POSIX) and LockFile (Windows) conflict between handles, even in one
+    process. The lock file always holds a byte, because msvcrt locks a byte range."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(path.name + ".lock"), "a+b") as handle:
+        if os.fstat(handle.fileno()).st_size == 0:
+            try:
+                handle.write(b"\0")
+                handle.flush()
+            except OSError:  # another writer got there first and holds the byte locked
+                pass
+        platform.lock_file(handle)
+        try:
+            yield
+        finally:
+            platform.unlock_file(handle)
+
+
+def _open_for_write(path: Path, header: str | None = None) -> Any:
+    """The parsed document to modify, or a fresh one; refuses a file that has any problem."""
+    state = _read_file(path, "")
+    if state.problems:
+        first = state.problems[0]
+        where = f" (line {first.line})" if first.line else ""
+        raise PolicyWriteError(f"{path} has a problem, so Phil won't change it{where}: {first.message}")
+    doc = state.doc
+    if not path.exists() and header:
+        doc.add(tomlkit.comment(header.removeprefix("#").strip()))
+        doc.add(tomlkit.nl())
+    return doc
+
+
+def _write(path: Path, doc: Any) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(tomlkit.dumps(doc), encoding="utf-8", newline="\n")
+        os.replace(tmp, path)
+    except OSError as exc:
+        raise PolicyWriteError(f"can't write {path}: {exc}") from exc
+
+
+def add_rule(path: Path, kind: str, rule_text: str, source: str, *, today: date, header: str | None = None) -> None:
+    """Append `rule_text` to `path` as `{rule, added, from}`. `header` is the comment a newly
+    created file starts with. Adding a rule already there (same kind and text) changes nothing."""
+    if kind not in KINDS:
+        raise PolicyWriteError(f"unknown rule kind {kind!r}")
+    try:
+        rule = parse_rule(rule_text)
+    except RuleError as exc:
+        raise PolicyWriteError(str(exc)) from exc
+    with _locked(path):
+        doc = _open_for_write(path, header)
+        if kind in doc:
+            if any(item.get("rule") == rule.text for item in doc[kind]):
+                return
+        else:
+            if len(doc):
+                doc.add(tomlkit.nl())
+            doc.add(kind, tomlkit.aot())
+        entry = tomlkit.table()
+        entry.add("rule", rule.text)
+        entry.add("added", today)
+        entry.add("from", source)
+        doc[kind].append(entry)
+        _write(path, doc)
+
+
+def remove_rule(path: Path, rule_text: str) -> bool:
+    """Remove the entries (allow or deny) whose rule is `rule_text`. False if there were none."""
+    try:
+        wanted = parse_rule(rule_text).text
+    except RuleError:
+        wanted = rule_text.strip()
+    if not path.exists():
+        return False
+    with _locked(path):
+        doc = _open_for_write(path)
+        removed = False
+        for kind in KINDS:
+            if kind not in doc:
+                continue
+            items = doc[kind]
+            for index in reversed(range(len(items))):
+                if items[index].get("rule") == wanted:
+                    del items[index]
+                    removed = True
+            if not len(items):
+                del doc[kind]
+        if removed:
+            _write(path, doc)
+        return removed
+
+
+def record_repo_decision(path: Path, decision: Literal["trust", "ignore"], rules_hash: str) -> None:
+    with _locked(path):
+        doc = _open_for_write(path)
+        table = tomlkit.table()
+        table.add("decision", decision)
+        table.add("hash", rules_hash)
+        if "repo_rules" in doc:
+            del doc["repo_rules"]
+        doc.add("repo_rules", table)
+        _write(path, doc)
+
+
+def repo_decision(path: Path, rules_hash: str) -> str | None:
+    """`trust` or `ignore` if the user decided about exactly these rules, else None."""
+    return _recorded_decision(_read_file(path, ""), rules_hash)
