@@ -1,15 +1,18 @@
 """Permission rules (spec 2026-10-13 §3.1, §3.3): a rule is a command as words, compared by program
-name, with an optional trailing `*` meaning "any further arguments, or none".
+name, with an optional trailing `*` meaning "any further plain arguments, or none".
 
-Policy (rulings R5, R7, R8 in the plan's constraints):
-- Open-ended suggestions come only from the vetted families in OPEN_FAMILIES. Every other command
-  is suggested exactly, so no open rule is ever offered for a program nobody has vetted.
-- Dangerous forms are exact-only (`exact_only`): interpreters, launchers, destructive programs,
-  and, within a family, anything on its FAMILY_DANGERS list, a remove verb or a dry run. No rule
-  ending in `*` ever matches them, whoever wrote it; only an exact rule can allow one.
-- A hand-written open rule (`terraform *`, `gh pr *`) trusts the whole program beyond those lists:
-  every option and argument it accepts. Task 7 asks for `--yes` before saving one for a program
-  outside the families.
+Policy (rulings R5, R7, R8, R9 in the plan's constraints):
+- The main rule (R9): a `*` covers plain arguments only, words that don't start with `-` and don't
+  contain `=`. Any option or `NAME=value` after a rule's fixed words makes the command ask again,
+  so no option, however dangerous, hides behind a `*`. That's why there are no option lists here.
+- Open-ended suggestions come only from the vetted families in OPEN_FAMILIES, and only when every
+  word after the subcommand is a plain argument. Every other command is suggested exactly.
+- Dangerous programs and subcommands are exact-only (`exact_only`): interpreters, launchers,
+  destructive programs, and, within a family, its FAMILY_DANGERS subcommands or a remove verb.
+  Their plain arguments are dangerous too (code, a command, a target), so no rule ending in `*`
+  ever matches them, whoever wrote it. `exact_only` also keeps "Always allow everywhere" out.
+- A hand-written open rule (`terraform *`, `gh pr *`) trusts every plain argument the program
+  accepts. Task 7 asks for `--yes` before saving one for a program outside the families.
 """
 
 import re
@@ -63,68 +66,25 @@ REMOVE_VERBS = frozenset({
     "kill", "clean", "reset",
 })
 
-# Git long options that name a command to run, or write outside the worktree (matched by unique
-# prefix, as git accepts `--upl` for `--upload-pack`).
-_GIT_DANGEROUS_OPTIONS = (
-    "--upload-pack", "--receive-pack", "--exec", "--template", "--config", "--open-files-in-pager", "--extcmd",
-    "--unsafe-paths",
-)
-# Git short options that name a command (`-x` on rebase, `-O` on grep) or a config value (`-c`),
-# found anywhere in a single-dash cluster: `-ix sh` and `-xsh` both run `sh`.
-_GIT_COMMAND_LETTERS = "xOc"
-# On clone and ls-remote, `-u` is --upload-pack.
-_GIT_UPLOAD_PACK_SUBCOMMANDS = ("clone", "ls-remote")
-# Options after `git push` that force, delete, or name a command (also by unique prefix).
-_DANGEROUS_PUSH_OPTIONS = (
-    "--delete", "--mirror", "--prune", "--force", "--force-with-lease", "--force-if-includes",
-    "--receive-pack", "--exec",
-)
-# Short push flags that force (f), delete (d), or make it a dry run (n, R8).
-_DANGEROUS_PUSH_LETTERS = "fdn"
-# Go options that run a command of the agent's choosing, also inside `GOFLAGS=...`.
-_GO_COMMAND_OPTIONS = ("toolexec", "vettool")
+def is_plain_argument(word: str) -> bool:
+    """What a rule's `*` covers (R9): a word that is neither an option (`-`, `--`, `-x`, `--opt`)
+    nor a `NAME=value` assignment."""
+    return not word.startswith("-") and "=" not in word
 
 
-def _short_letters(word: str) -> str:
-    """The letters of a single-dash option cluster (`-qu` gives `qu`, `-xsh` gives `xsh`), or ""."""
-    match = re.match(r"-([A-Za-z]+)", word)
-    return match.group(1) if match and not word.startswith("--") else ""
-
-
-def _is_long_option_prefix(word: str, options: tuple[str, ...]) -> bool:
-    """Whether `word` (before any `=value`) is a long option of `options` or an abbreviation of
-    one, at least `--x` long: git accepts any unique prefix, so `--del` is `--delete`."""
-    if not word.startswith("--"):
-        return False
-    name = word.split("=", 1)[0]
-    return len(name) >= 3 and any(option.startswith(name) for option in options)
-
-
-def _git_options_are_dangerous(rest: list[str], words: list[str]) -> bool:
-    """A git option that runs a command or writes outside the worktree, or a forced, destructive
-    or dry-run push (`git clean -n` is already exact-only, as `clean` is a remove verb)."""
-    for word in rest:
-        letters = _short_letters(word)
-        if _is_long_option_prefix(word, _GIT_DANGEROUS_OPTIONS) or any(ch in letters for ch in _GIT_COMMAND_LETTERS):
-            return True
-        if "u" in letters and any(sub in words for sub in _GIT_UPLOAD_PACK_SUBCOMMANDS):
-            return True
+def _git_push_is_destructive(rest: list[str], words: list[str]) -> bool:
+    """A `+`/`:` refspec after `git push` (force or delete a branch). These are plain arguments, so
+    R9 doesn't stop them; this check does. A forcing or deleting option (`-f`, `-4d`, `--force*`,
+    `--mirror`, `--delete`, `--prune`) can't reach an open rule (R9), but is still exact-only, so
+    that "Always allow everywhere" is never offered for a forced push."""
     if "push" not in rest:
         return False
-    return any(_push_word_is_dangerous(word) for word in rest[rest.index("push") + 1 :])
-
-
-def _push_word_is_dangerous(word: str) -> bool:
-    """--force*, --mirror, --delete, --prune, --receive-pack, --exec (or an abbreviation), a
-    short-flag cluster holding f, d or n (`-fu`, `-n`), or a `+`/`:` refspec."""
-    if word.startswith(("--force", "+", ":")) or _is_long_option_prefix(word, _DANGEROUS_PUSH_OPTIONS):
-        return True
-    return any(ch in _short_letters(word) for ch in _DANGEROUS_PUSH_LETTERS)
-
-
-def _go_options_are_dangerous(rest: list[str], words: list[str]) -> bool:
-    """`-toolexec`, `-vettool`, in any spelling (`--toolexec`, `-toolexec=x`, `GOFLAGS=-toolexec=x`)."""
-    return any(option in word for word in rest for option in _GO_COMMAND_OPTIONS)
+    for word in rest[rest.index("push") + 1 :]:
+        if word.startswith(("+", ":", "--force", "--mirror", "--delete", "--prune")):
+            return True
+        if re.fullmatch(r"-[A-Za-z0-9]+", word) and any(ch in word for ch in "fd"):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -133,11 +93,11 @@ class Dangers:
     command's non-flag words, since global options come first (`docker -H h run`, `cargo +nightly
     run`); over-matching only makes a command exact-only. `first_word` sequences count only as
     the first non-flag word, where elsewhere they're ordinary arguments (`npm install x`).
-    `options(rest, words)` flags a dangerous option."""
+    `check(rest, words)` flags any other dangerous form."""
 
     subcommands: tuple[tuple[str, ...], ...] = ()
     first_word: tuple[tuple[str, ...], ...] = ()
-    options: Callable[[list[str], list[str]], bool] | None = None
+    check: Callable[[list[str], list[str]], bool] | None = None
 
 
 # Each vetted family's danger list (R5, R7): subcommands that run another command, build with host
@@ -148,7 +108,7 @@ FAMILY_DANGERS: dict[str, Dangers] = {
             ("config",), ("submodule", "foreach"), ("bisect", "run"), ("filter-branch",), ("difftool",),
             ("mergetool",), ("send-email",), ("instaweb",), ("daemon",),
         ),
-        options=_git_options_are_dangerous,
+        check=_git_push_is_destructive,
     ),
     "gh": Dangers(subcommands=(("api",), ("config", "set"), ("codespace", "ssh"), ("cs", "ssh"))),
     "npm": Dangers(subcommands=(("exec",), ("explore",), ("config",)), first_word=(("x",), ("set",))),
@@ -156,7 +116,7 @@ FAMILY_DANGERS: dict[str, Dangers] = {
     "yarn": Dangers(subcommands=(("exec",), ("dlx",), ("config",))),
     "uv": Dangers(subcommands=(("run",),)),  # also `uv tool run`
     "cargo": Dangers(subcommands=(("run",),)),
-    "go": Dangers(subcommands=(("run",), ("tool",)), options=_go_options_are_dangerous),
+    "go": Dangers(subcommands=(("run",), ("tool",))),
     # `run`, `exec`, `create` and `build` anywhere also cover the `container`, `compose`, `image`,
     # `buildx` and `builder` forms.
     "docker": Dangers(subcommands=(("run",), ("exec",), ("create",), ("build",), ("bake",))),
@@ -240,8 +200,9 @@ def rule_matches(rule: Rule, argv: list[str]) -> bool:
     elif not argv[0].isascii() or program_name(argv[0]) != rule.words[0]:
         return False
     fixed, rest = rule.words[1:], [_slashed(arg) for arg in argv[1:]]
-    if rule.open_end:
-        return len(rest) >= len(fixed) and tuple(rest[: len(fixed)]) == fixed
+    if rule.open_end:  # R9: the `*` covers plain arguments only
+        return (tuple(rest[: len(fixed)]) == fixed and len(rest) >= len(fixed)
+                and all(is_plain_argument(word) for word in rest[len(fixed) :]))
     return tuple(rest) == fixed
 
 
@@ -250,19 +211,17 @@ def is_bare_program(rule: Rule) -> bool:
 
 
 def exact_only(argv: list[str]) -> bool:
-    """Commands only ever saved exactly, and never covered by an open-ended rule (R5, R8):
-    interpreters (their arguments are code), launchers (their arguments are another command),
-    destructive programs, any dry run, and a family command on its FAMILY_DANGERS list or holding
-    a remove verb. Names are NFKC-normalised and casefolded, which is safe in this blocking
-    direction."""
+    """Commands only ever saved exactly, never covered by an open-ended rule (R5, R8), and never
+    offered "everywhere": interpreters (their arguments are code), launchers (their arguments are
+    another command), destructive programs, and a family command on its FAMILY_DANGERS list or
+    holding a remove verb. Options aren't checked here: R9 keeps every option out of a `*`. Names
+    are NFKC-normalised and casefolded, which is safe in this blocking direction."""
     if not argv:
         return False
     name = folded_name(argv[0])
     if name in INTERPRETERS or name in LAUNCHERS or name in DESTRUCTIVE or _VERSIONED_INTERPRETER.fullmatch(name):
         return True
     rest = argv[1:]
-    if any(word == "--dry-run" or word.startswith("--dry-run=") for word in rest):  # R8
-        return True
     if name not in OPEN_FAMILIES:
         return False
     words = [word for word in rest if not word.startswith("-")]
@@ -275,7 +234,7 @@ def exact_only(argv: list[str]) -> bool:
         return True
     if any(tuple(words[: len(sub)]) == sub for sub in dangers.first_word):
         return True
-    return dangers.options is not None and dangers.options(rest, words)
+    return dangers.check is not None and dangers.check(rest, words)
 
 
 def _has_sequence(words: list[str], sub: tuple[str, ...]) -> bool:
@@ -286,27 +245,31 @@ def suggest_rule(argv: list[str]) -> str | None:
     """The rule "Always allow" offers for `argv` (spec §3.3, R7). Never a bare `program *`. None
     when it can't be saved: argv is empty, a word is empty or holds `*`, which a rule can't
     express (R4), or the program name isn't ASCII, which a bare-name rule never matches (N1).
-    Open-ended only for a vetted program in OPEN_FAMILIES, when `exact_only` is False and no flag
-    cut the subcommand short; otherwise the exact command."""
+    Open-ended only for a vetted program in OPEN_FAMILIES, when `exact_only` is False, the command
+    has all its subcommand words with no flag among them, and every word after them is a plain
+    argument (R9); otherwise the exact command."""
     if not argv or any(not word or "*" in word for word in argv) or not program_name(argv[0]).isascii():
         return None
     exact = _join(argv)
     name = folded_name(argv[0])
+    # The program name is ASCII, but a path to it may not be (`./ſ/gh`): such a path is saved exactly.
     if not argv[0].isascii() or name not in OPEN_FAMILIES or exact_only(argv):
         return exact
     rest = argv[1:]
     if name in SUBCOMMAND_DEPTH:
         depth = SUBCOMMAND_DEPTH.get((name, rest[0]), SUBCOMMAND_DEPTH[name]) if rest else 0
-        words: list[str] = []
-        for word in rest[:depth]:
-            if word.startswith("-"):
-                return exact
-            words.append(word)
-        return _join([argv[0], *words]) + " *" if words else exact
-    for i, word in enumerate(rest):
-        if not word.startswith("-"):
-            return _join([argv[0], *rest[: i + 1]]) + " *"
-    return exact
+        fixed = rest[:depth]
+        # Stopping at a group word (`docker plugin`, `gh repo`) would give a group-wide rule (Q2).
+        if not fixed or len(fixed) < depth or any(word.startswith("-") for word in fixed):
+            return exact
+    else:
+        first = next((i for i, word in enumerate(rest) if not word.startswith("-")), None)
+        if first is None:
+            return exact
+        fixed = rest[: first + 1]
+    if not all(is_plain_argument(word) for word in rest[len(fixed) :]):  # R9
+        return exact
+    return _join([argv[0], *fixed]) + " *"
 
 
 def _join(words: list[str]) -> str:

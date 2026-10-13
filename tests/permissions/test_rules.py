@@ -32,7 +32,8 @@ def test_rule_words_and_open_end():
     rule = parse_rule("gh pr checks *")
     assert rule.words == ("gh", "pr", "checks") and rule.open_end
     assert rule_matches(rule, ["gh", "pr", "checks"])
-    assert rule_matches(rule, ["gh", "pr", "checks", "42", "--watch"])
+    assert rule_matches(rule, ["gh", "pr", "checks", "42"])
+    assert not rule_matches(rule, ["gh", "pr", "checks", "42", "--watch"])  # R9
     assert not rule_matches(rule, ["./gh", "pr", "checks"])
     assert not rule_matches(rule, ["/usr/local/bin/gh", "pr", "checks"])
     assert not rule_matches(rule, ["gh", "pr", "merge", "42"])
@@ -59,8 +60,9 @@ def test_bare_program():
     (["git", "push", "origin", "main"], "git push *"),
     (["npm", "install", "left-pad"], "npm install *"),
     (["uv", "pip", "install", "x"], "uv pip install *"),
-    (["docker", "compose", "up", "-d"], "docker compose up *"),
-    (["make", "test-unit", "--fast"], "make test-unit *"),
+    (["docker", "compose", "up", "-d"], "docker compose up -d"),  # R9: an option after the subcommand
+    (["make", "test-unit", "--fast"], "make test-unit --fast"),
+    (["make", "test-unit"], "make test-unit *"),
     (["make", "-j4", "test"], "make -j4 test *"),
     (["ruff"], "ruff"),
     (["ruff", "--fix"], "ruff --fix"),
@@ -219,7 +221,7 @@ def test_only_vetted_families_get_open_suggestions(argv):
 @pytest.mark.parametrize("argv,rule", [
     (["docker", "container", "ls"], "docker container ls *"),
     (["pytest", "-q", "tests/"], "pytest -q tests/ *"),
-    (["gh", "pr"], "gh pr *"),
+    (["gh", "pr", "list"], "gh pr list *"),
     (["kubectl", "get", "pods"], "kubectl get *"),
     (["/usr/bin/gh", "pr", "view", "1"], "/usr/bin/gh pr view *"),
 ])
@@ -227,13 +229,18 @@ def test_vetted_families_get_open_suggestions(argv, rule):
     assert suggest_rule(argv) == rule
 
 
+def _covered(rule: str, argv: list[str]) -> bool:
+    return rule_matches(parse_rule(rule), argv)
+
+
 @pytest.mark.parametrize("argv", [
     ["git", "push", "--del", "origin", "main"], ["git", "push", "--mirr", "origin"], ["git", "push", "--pru", "origin"],
     ["git", "push", "--receive-pack=x", "."], ["git", "push", "--exec=x", "."], ["git", "push", "--force-if-includes"],
     ["git", "push", "--force-with-lease=x"],
 ])
-def test_abbreviated_dangerous_push_options_are_exact_only(argv):
-    assert exact_only(argv) is True
+def test_an_open_push_rule_never_covers_a_dangerous_push_option(argv):  # R9 (was an exact_only option list)
+    assert not _covered("git push *", argv)
+    assert suggest_rule(argv) == shlex.join(argv)
 
 
 @pytest.mark.parametrize("argv", [["git", "push", "--tags"], ["git", "push", "-u", "origin", "feat"]])
@@ -241,17 +248,25 @@ def test_harmless_push_options_are_not_exact_only(argv):
     assert exact_only(argv) is False
 
 
-@pytest.mark.parametrize("argv", [
-    ["git", "fetch", "--upload-pack=x", "."], ["git", "fetch", "--upload", "x", "."], ["git", "pull", "--upload-pack=x"],
-    ["git", "ls-remote", "--upload-pack=x", "."], ["git", "clone", "-u", "x", ".", "d"],
-    ["git", "clone", "--template=./t", "u"], ["git", "clone", "--config=core.fsmonitor=x", "u"],
-    ["git", "rebase", "--exec", "x", "main"], ["git", "rebase", "-x", "x", "main"],
-    ["git", "submodule", "foreach", "x"], ["git", "bisect", "run", "x"],
-    ["git", "grep", "--open-files-in-pager=x", "foo"], ["git", "grep", "-Ox", "foo"],
-    ["git", "difftool", "HEAD"], ["git", "mergetool"], ["git", "filter-branch"], ["git", "log", "--extcmd=x"],
-    ["git", "config", "a", "b"], ["git", "-c", "a=b", "log"],
+@pytest.mark.parametrize("rule,argv", [
+    ("git fetch *", ["git", "fetch", "--upload-pack=x", "."]), ("git fetch *", ["git", "fetch", "--upload", "x", "."]),
+    ("git pull *", ["git", "pull", "--upload-pack=x"]), ("git ls-remote *", ["git", "ls-remote", "--upload-pack=x", "."]),
+    ("git clone *", ["git", "clone", "-u", "x", ".", "d"]), ("git clone *", ["git", "clone", "--template=./t", "u"]),
+    ("git clone *", ["git", "clone", "--config=core.fsmonitor=x", "u"]),
+    ("git rebase *", ["git", "rebase", "--exec", "x", "main"]), ("git rebase *", ["git", "rebase", "-x", "x", "main"]),
+    ("git grep *", ["git", "grep", "--open-files-in-pager=x", "foo"]), ("git grep *", ["git", "grep", "-Ox", "foo"]),
+    ("git log *", ["git", "log", "--extcmd=x"]), ("git log *", ["git", "-c", "a=b", "log"]),
 ])
-def test_git_options_and_subcommands_that_run_a_command_are_exact_only(argv):
+def test_an_open_git_rule_never_covers_an_option_that_runs_a_command(rule, argv):  # R9 (was an exact_only list)
+    assert not _covered(rule, argv)
+    assert suggest_rule(argv) == shlex.join(argv)
+
+
+@pytest.mark.parametrize("argv", [
+    ["git", "submodule", "foreach", "x"], ["git", "bisect", "run", "x"], ["git", "difftool", "HEAD"],
+    ["git", "mergetool"], ["git", "filter-branch"], ["git", "config", "a", "b"],
+])
+def test_git_subcommands_that_run_a_command_are_exact_only(argv):
     assert exact_only(argv) is True
 
 
@@ -310,22 +325,29 @@ def test_an_empty_word_cannot_be_saved(argv):
 
 # --- fix round 4 -------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("argv", [
-    ["git", "rebase", "-xsh", "main"], ["git", "rebase", "-ix", "sh", "main"], ["git", "clone", "-ux", ".", "d"],
-    ["git", "clone", "-qu", "x", ".", "d"], ["git", "clone", "-qc", "a=b", "u"], ["git", "grep", "-iOx", "foo"],
-    ["git", "ls-remote", "-qu", "x", "."],
+@pytest.mark.parametrize("rule,argv", [
+    ("git rebase *", ["git", "rebase", "-xsh", "main"]), ("git rebase *", ["git", "rebase", "-ix", "sh", "main"]),
+    ("git clone *", ["git", "clone", "-ux", ".", "d"]), ("git clone *", ["git", "clone", "-qu", "x", ".", "d"]),
+    ("git clone *", ["git", "clone", "-qc", "a=b", "u"]), ("git grep *", ["git", "grep", "-iOx", "foo"]),
+    ("git ls-remote *", ["git", "ls-remote", "-qu", "x", "."]),
 ])
-def test_git_short_option_clusters_that_run_a_command_are_exact_only(argv):  # P1
-    assert exact_only(argv) is True
+def test_an_open_git_rule_never_covers_a_short_option_cluster(rule, argv):  # P1, now R9
+    assert not _covered(rule, argv)
+    assert suggest_rule(argv) == shlex.join(argv)
 
 
 @pytest.mark.parametrize("argv", [
     ["git", "send-email", "--to-cmd=x", "p"], ["git", "instaweb", "--httpd=x"],
-    ["git", "daemon", "--access-hook=x", "."], ["git", "apply", "--unsafe-paths", "p"],
-    ["git", "apply", "--unsafe", "p"],
+    ["git", "daemon", "--access-hook=x", "."],
 ])
-def test_git_subcommands_that_run_a_command_or_write_outside_are_exact_only(argv):  # P2
+def test_git_subcommands_that_run_a_command_are_exact_only_p2(argv):  # P2
     assert exact_only(argv) is True
+
+
+@pytest.mark.parametrize("argv", [["git", "apply", "--unsafe-paths", "p"], ["git", "apply", "--unsafe", "p"]])
+def test_an_open_apply_rule_never_covers_unsafe_paths(argv):  # P2, now R9
+    assert not _covered("git apply *", argv)
+    assert suggest_rule(argv) == shlex.join(argv)
 
 
 @pytest.mark.parametrize("argv,rule", [
@@ -375,12 +397,18 @@ def test_npm_set_is_only_the_subcommand_in_first_position():  # P6
     assert exact_only(["npm", "install", "set"]) is False
 
 
-@pytest.mark.parametrize("argv", [
-    ["go", "build", "-toolexec=x", "."], ["go", "build", "--toolexec", "x", "."], ["go", "vet", "-vettool=x", "."],
-    ["go", "env", "-w", "GOFLAGS=-toolexec=x"], ["go", "tool", "x"],
+@pytest.mark.parametrize("rule,argv", [
+    ("go build *", ["go", "build", "-toolexec=x", "."]), ("go build *", ["go", "build", "--toolexec", "x", "."]),
+    ("go vet *", ["go", "vet", "-vettool=x", "."]), ("go env *", ["go", "env", "-w", "GOFLAGS=-toolexec=x"]),
+    ("go build *", ["go", "build", "GOFLAGS=-toolexec=x"]),
 ])
-def test_go_options_that_run_a_command_and_go_tool_are_exact_only(argv):  # P7
-    assert exact_only(argv) is True
+def test_an_open_go_rule_never_covers_an_option_that_runs_a_command(rule, argv):  # P7, now R9
+    assert not _covered(rule, argv)
+    assert suggest_rule(argv) == shlex.join(argv)
+
+
+def test_go_tool_is_exact_only():  # P7
+    assert exact_only(["go", "tool", "x"]) is True
 
 
 @pytest.mark.parametrize("argv", [
@@ -390,15 +418,19 @@ def test_gh_codespace_ssh_and_npm_explore_are_exact_only(argv):  # P9, P10
     assert exact_only(argv) is True
 
 
-@pytest.mark.parametrize("argv", [
-    ["npm", "publish", "--dry-run"], ["cargo", "publish", "--dry-run"], ["uv", "publish", "--dry-run"],
-    ["kubectl", "delete", "pod", "x", "--dry-run=client"], ["kubectl", "apply", "--dry-run=server", "-f", "x.yaml"],
-    ["git", "push", "--dry-run", "origin", "feat"], ["git", "push", "-n", "origin", "feat"],
-    ["git", "push", "-un", "origin", "feat"], ["git", "clean", "-n"], ["git", "push", "--dry-run"],
+@pytest.mark.parametrize("argv,real", [
+    (["npm", "publish", "--dry-run"], ["npm", "publish"]), (["cargo", "publish", "--dry-run"], ["cargo", "publish"]),
+    (["uv", "publish", "--dry-run"], ["uv", "publish"]),
+    (["kubectl", "delete", "pod", "x", "--dry-run=client"], ["kubectl", "delete", "pod", "x"]),
+    (["kubectl", "apply", "--dry-run=server", "-f", "x.yaml"], ["kubectl", "apply", "-f", "x.yaml"]),
+    (["git", "push", "--dry-run", "origin", "feat"], ["git", "push", "origin", "feat"]),
+    (["git", "push", "-n", "origin", "feat"], ["git", "push", "origin", "feat"]),
+    (["git", "push", "-un", "origin", "feat"], ["git", "push", "-u", "origin", "feat"]),
+    (["git", "clean", "-n"], ["git", "clean", "-fdx"]), (["git", "push", "--dry-run"], ["git", "push"]),
 ])
-def test_a_dry_run_is_saved_exactly(argv):  # P11, R8
-    assert exact_only(argv) is True
+def test_a_dry_run_is_saved_exactly(argv, real):  # P11, R8, now R9: a dry run is an option
     assert suggest_rule(argv) == shlex.join(argv)
+    assert not _covered(suggest_rule(argv), real)
 
 
 def test_an_open_rule_never_covers_a_dry_run():  # R8
@@ -441,7 +473,7 @@ def test_ordinary_family_commands_stay_open(argv):
 
 @pytest.mark.parametrize("argv,rule", [
     (["git", "push", "origin", "feat"], "git push *"),
-    (["docker", "compose", "up", "-d"], "docker compose up *"),
+    (["docker", "compose", "up", "web"], "docker compose up *"),
     (["go", "build", "./..."], "go build *"),
 ])
 def test_ordinary_suggestions_are_unchanged(argv, rule):
@@ -451,3 +483,67 @@ def test_ordinary_suggestions_are_unchanged(argv, rule):
 @pytest.mark.parametrize("argv", [["ſudo", "rm", "x"], ["ﬁnd", "."], ["ｇｈ", "pr", "view"], ["./ſh", "x"]])
 def test_a_non_ascii_program_cannot_be_saved(argv):  # N1
     assert suggest_rule(argv) is None
+
+
+# --- fix round 5 (R9: a rule's `*` covers plain arguments only) ---------------------------------
+
+def test_a_star_covers_plain_arguments_only():  # R9
+    rule = parse_rule("gh pr checks *")
+    assert rule_matches(rule, ["gh", "pr", "checks", "43"])
+    assert rule_matches(rule, ["gh", "pr", "checks", "43", "44"])
+    for argv in (["gh", "pr", "checks", "43", "--watch"], ["gh", "pr", "checks", "--", "x"],
+                 ["gh", "pr", "checks", "a=b"], ["gh", "pr", "checks", "-"], ["gh", "pr", "checks", "-w"]):
+        assert not rule_matches(rule, argv)
+
+
+def test_options_in_the_fixed_words_still_match():  # R9 applies only after the fixed words
+    assert rule_matches(parse_rule("make -j4 test *"), ["make", "-j4", "test", "unit"])
+    assert rule_matches(parse_rule("make test --fast"), ["make", "test", "--fast"])
+
+
+@pytest.mark.parametrize("rule,argv", [
+    ("git grep *", ["git", "grep", "-3Ox", "y"]),  # B1
+    ("git grep *", ["git", "grep", "-i3Osh ./evil.sh", "foo"]),  # B1
+    ("gh repo clone *", ["gh", "repo", "clone", "o/r", "--", "-c", "core.hooksPath=x"]),  # B2
+    ("gh repo fork *", ["gh", "repo", "fork", "o/r", "--clone", "--", "-c", "core.hooksPath=x"]),  # B2
+    ("gh gist clone *", ["gh", "gist", "clone", "abc", "--", "--template=/w/tpl"]),  # B2
+    ("kubectl get *", ["kubectl", "get", "pods", "--kubeconfig", "./k.yaml"]),  # B3
+    ("kubectl get *", ["kubectl", "get", "pods", "--kubeconfig=./k.yaml"]),  # B3
+    ("kubectl get *", ["kubectl", "get", "pods", "-s", "https://h"]),  # B3
+    ("go env *", ["go", "env", "-w", "CC=./evil.sh"]),  # B4
+])
+def test_re_review_4_escapes_are_not_covered(rule, argv):  # B1 to B4
+    assert not _covered(rule, argv)
+
+
+@pytest.mark.parametrize("seen,rule", [
+    (["git", "grep", "foo"], "git grep *"), (["gh", "repo", "clone", "o/r"], "gh repo clone *"),
+    (["kubectl", "get", "pods"], "kubectl get *"), (["go", "env", "GOPATH"], "go env *"),
+    (["gh", "pr", "checks", "42"], "gh pr checks *"),
+])
+def test_plain_argument_suggestions_stay_open(seen, rule):  # R9
+    assert suggest_rule(seen) == rule
+    assert _covered(rule, seen)
+
+
+@pytest.mark.parametrize("argv", [
+    ["npm", "install", "-D", "vitest"], ["gh", "pr", "checks", "42", "--watch"], ["npm", "install", "a=b"],
+    ["git", "push", "origin", "feat", "--", "x"], ["pytest", "tests/", "-k", "x"],
+    ["docker", "volume", "ls", "--format", "x"],
+])
+def test_an_option_or_assignment_after_the_subcommand_gives_the_exact_command(argv):  # R9
+    assert suggest_rule(argv) == shlex.join(argv)
+
+
+@pytest.mark.parametrize("argv", [
+    ["docker", "plugin"], ["docker", "context"], ["uv", "tool"], ["gh", "repo"], ["gh", "pr"],
+])
+def test_a_command_stopping_at_a_group_word_is_saved_exactly(argv):  # Q2
+    assert suggest_rule(argv) == shlex.join(argv)
+
+
+def test_a_forced_or_destructive_push_is_still_exact_only():  # keeps "everywhere" out (Task 5)
+    for argv in (["git", "push", "-f"], ["git", "push", "--force-with-lease"], ["git", "push", "-4f", "o"],
+                 ["git", "push", "origin", "+main"], ["git", "push", "origin", ":old"]):
+        assert exact_only(argv) is True
+    assert not _covered("git push *", ["git", "push", "origin", "+main"])  # a refspec is a plain argument
