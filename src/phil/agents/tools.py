@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from phil.config import ShellConfig
+from phil.permissions.store import PolicySet, config_policy
 from phil.store.artifacts import ArtifactStore
 from phil.workspace.shell import READ_ONLY, ShellPolicy, child_env, run_command, truncate_output
 
@@ -26,10 +27,18 @@ def make_shell_tool(
     log_prefix: str = "",
     extra_allow: Iterable[str] = (),
     approved: Iterable[str] = (),
+    *,
+    policy: PolicySet | None = None,
+    read_only: bool = False,
 ) -> Callable[[str], str]:
+    """`policy` is the permission rules in effect (`permissions.load.policy_for`); None means
+    `shell.allow` alone, as config entries. `read_only` is for the read-only agents: only the
+    forbidden checks and the built-in reads apply."""
     extra_allow, approved = tuple(extra_allow), tuple(approved)
-    policy = ShellPolicy(shell.allow, extra_allow=extra_allow, approved=approved, root=workdir)
-    read_only = not (shell.allow or extra_allow or approved)
+    rules = policy if policy is not None else config_policy(list(shell.allow))
+    shell_policy = ShellPolicy(rules, extra_allow=extra_allow, approved=approved, root=workdir, read_only=read_only)
+    reads_only = read_only or not (rules.allow or extra_allow or approved)
+    allowed_patterns = ", ".join(entry.rule.text for entry in rules.allow)
     env = child_env(os.environ, shell.pass_env) | {"PYTHONDONTWRITEBYTECODE": "1"}
 
     def run_shell(command: str) -> str:
@@ -41,25 +50,26 @@ def make_shell_tool(
         Other commands must match the project's allowlist or this run's approved commands; others
         are denied. Shell operators such as pipes, redirects, `;` and `&&` are not allowed.
         """
-        reason = policy.denial_reason(command)
-        if reason == "forbidden":
+        decision = shell_policy.decide(command)
+        if decision.outcome == "forbidden":
             log.refused.append(command)
-            detail = policy.refusal_detail(command)
             return (
-                f"REFUSED: `{command}` {detail} and can never run here. "
+                f"REFUSED: `{command}` {decision.detail} and can never run here. "
                 "Use a plain allowlisted command instead."
             )
-        if reason is not None:
+        if decision.outcome == "deny":
+            # A deny rule is the user's standing answer: it never becomes an approval prompt.
+            return f"DENIED: `{command}` is blocked by your {decision.reason}. Don't use it."
+        if decision.outcome == "ask":
             log.denied.append(command)
-            if read_only:
+            if reads_only:
                 return f"DENIED: `{command}` is not read-only. Only read-only commands run here: {', '.join(READ_ONLY)}"
-            allowed = ", ".join(shell.allow)
-            return f"DENIED: `{command}` is not on the allowlist. Allowed patterns: {allowed}"
+            return f"DENIED: `{command}` is not on the allowlist. Allowed patterns: {allowed_patterns}"
         log.commands.append(command)
         result = run_command(command, workdir, shell.timeout_s, env=env, bash=shell.bash)
         full_output = result.stdout + (f"\n[stderr]\n{result.stderr}" if result.stderr else "")
         status = f"exit_code: {result.exit_code}" + (" (timed out)" if result.timed_out else "")
-        lines = [status]
+        lines = [status, f"allowed: {decision.reason}"]
         if artifacts is not None:
             log_name = f"{log_prefix}-shell-{len(log.commands)}" if log_prefix else f"shell-{len(log.commands)}"
             path = artifacts.write_log(log_name, full_output)

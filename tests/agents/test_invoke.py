@@ -218,6 +218,55 @@ def test_shell_log_prefix_matches_artifact_base_name(conn, artifacts, tmp_path):
     assert (artifacts.run_dir / "logs" / "implement-CALC-001-1-shell-1.log").exists()
 
 
+def _implementer_shell(ctx_values: dict, conn, artifacts, tmp_path) -> object:
+    captured: dict = {}
+
+    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None):
+        captured["tools"] = tools
+        return FakeAgent([TaskResult(phase="red", summary="s", files_changed=[], tests_added=[], self_check=self_check())])
+
+    task = Task(id="CALC-001", description="Add subtract", acceptance_criteria=["subtract(3, 1) == 2"])
+    packet = build_packet("implementer", ImplementInput(task=task, phase="red", test_cmd="pytest"), budget_tokens=4000)
+    config = PhilConfig(shell=ShellConfig(allow=["make *"]), models=TEST_MODELS)
+    ctx = AgentContext(config=config, conn=conn, layer="run", run_id="r-0001", artifacts=artifacts, factory=factory,
+                       workdir=tmp_path, **ctx_values)
+    invoke_agent(get_spec("implementer"), packet, ctx, node="implement", task_id="CALC-001")
+    [run_shell] = captured["tools"]
+    return run_shell
+
+
+def test_invoke_loads_the_policy_once_per_agent_call(conn, artifacts, tmp_path, monkeypatch):
+    from datetime import date
+
+    from phil.permissions import load
+    from phil.permissions.store import add_rule
+    from phil.store.paths import ProjectPaths
+
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    paths = ProjectPaths("calc-1")
+    add_rule(paths.policy_path, "deny", "make deploy", "manual", today=date(2026, 10, 13))
+    calls = []
+    real = load.policy_for
+    monkeypatch.setattr(load, "policy_for", lambda *args: calls.append(args) or real(*args))
+    run_shell = _implementer_shell({"repo_root": tmp_path, "paths": paths}, conn, artifacts, tmp_path)
+    assert run_shell("make deploy").startswith("DENIED: `make deploy` is blocked by your deny rule")
+    run_shell("make deploy")
+    assert len(calls) == 1
+
+
+def test_a_policy_that_fails_to_load_falls_back_to_the_config_allow_list(conn, artifacts, tmp_path, monkeypatch, caplog):
+    from phil.permissions import load
+    from phil.store.paths import ProjectPaths
+
+    def broken(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(load, "policy_for", broken)
+    run_shell = _implementer_shell({"repo_root": tmp_path, "paths": ProjectPaths("calc-1")}, conn, artifacts, tmp_path)
+    assert "allowed: rule \"make *\" (config)" in run_shell("make --version")
+    assert "couldn't load the permission rules" in caplog.text
+
+
 # --- plan 4c: usage accounting -------------------------------------------------------------
 
 OPENROUTER_MODEL = "openrouter:openai/gpt-6-sol"

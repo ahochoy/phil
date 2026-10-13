@@ -57,6 +57,8 @@ from phil.contracts.results import AttemptWorklog
 from phil.contracts.routing import Answer
 from phil.publish import publisher as publishing
 from phil.publish.service import PrChange, PublishRefused, change_line, publish_run, sweep_prs
+from phil.permissions.load import policy_or_fallback
+from phil.permissions.store import PolicySet
 from phil.repo import RepoInfo, resolve_repo
 from phil.repo_detect import detect_test_cmd
 from phil.routing import Route, decide, parse_override, route_state, skips_design
@@ -1076,7 +1078,7 @@ class ChatController:
         if plan is None:
             return None, None, ["the quick task doesn't make a valid plan"]
         setup_cmd, _ = effective_setup_cmd(self.config, root)
-        problems = launch_problems(plan, self.config, root, check_root=root or self.info.root)
+        problems = launch_problems(plan, self.config, root, check_root=root or self.info.root, policy=self._rules())
         return (None, None, problems) if problems else (plan, setup_cmd, [])
 
     def _design_job(self, goal: Goal) -> None:
@@ -1313,7 +1315,7 @@ class ChatController:
 
     def _show_plan(self, draft: PlanDraft) -> None:
         root = self._detection_root(draft.plan)
-        problem = test_cmd_problem(draft.plan, self.config, root)
+        problem = test_cmd_problem(draft.plan, self.config, root, policy=self._rules())
         differs = test_cmd_differs(draft.plan, self.config)
         origin = self.config.sources.get("project.test_cmd")  # the file that set [project] test_cmd
         note = problem or (
@@ -1339,6 +1341,10 @@ class ChatController:
             setup_cmd=setup_cmd,
             setup_cmd_source=setup_cmd_source,
         )
+
+    def _rules(self) -> PolicySet:
+        """The permission rules in effect now, read fresh: their deny rules block a plan's commands."""
+        return policy_or_fallback(self.info.root, ProjectPaths(self.info.slug), self.config)
 
     def _detection_root(self, plan: Plan) -> Path | None:
         """Where a missing test or setup command is detected from: the base commit's snapshot,
@@ -1366,7 +1372,9 @@ class ChatController:
             root = self._detection_root(draft.plan)
             # Check commands' paths must stay inside the tree: the base commit's snapshot when it was
             # exported for detection, else the repo itself.
-            problems = launch_problems(draft.plan, self.config, root, check_root=root or self.info.root)
+            problems = launch_problems(
+                draft.plan, self.config, root, check_root=root or self.info.root, policy=self._rules()
+            )
             if problems:
                 for item in problems:
                     self.console.print(f"[phil.error]{escape(terminated(item))}[/]")

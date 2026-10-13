@@ -156,6 +156,17 @@ def _recorded_decision(state: _FileState, rules_hash: str) -> str | None:
     return None
 
 
+def _config_entries(patterns: list[str]) -> list[PolicyEntry]:
+    return [PolicyEntry(Rule(text=pattern, words=(), open_end=False), "allow", "config", "config")
+            for pattern in patterns]
+
+
+def config_policy(patterns: list[str]) -> PolicySet:
+    """A policy of `[shell] allow` patterns only, with no policy files: what `ShellPolicy([...])`
+    uses, and what applies when the rules can't be loaded at all."""
+    return PolicySet(deny=(), allow=tuple(_config_entries(patterns)), problems=(), repo_rules_untrusted=())
+
+
 def load_policy(*, repo_name: str, project_policy: Path, global_policy: Path, config_allow: list[str],
                 repo_allow: list[str]) -> PolicySet:
     """Order: deny everywhere, then the repo; allow everywhere, then the repo, then the trusted
@@ -178,8 +189,7 @@ def load_policy(*, repo_name: str, project_policy: Path, global_policy: Path, co
                 except RuleError as exc:
                     problems += (PolicyProblem(project_policy, f"in {repo_name}'s phil.toml: {exc}", None),)
 
-    config = [PolicyEntry(Rule(text=pattern, words=(), open_end=False), "allow", "config", "config")
-              for pattern in config_allow]
+    config = _config_entries(config_allow)
     saved_allow = [] if (everywhere.problems or project.problems) else [
         *everywhere.allow, *project.allow, *repo_entries]
     return PolicySet(

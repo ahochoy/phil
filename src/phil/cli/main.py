@@ -30,6 +30,7 @@ from phil.config import (
 from phil.contracts import Plan
 from phil.contracts.schema import export_schemas
 from phil.git import GitError, git
+from phil.permissions.load import policy_or_fallback
 from phil.repo import RepoError, RepoInfo, resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, spawn_worker, worker_starting
 from phil.store.db import connect
@@ -492,7 +493,9 @@ def run_plan(
         raise typer.Exit(1) from exc
     config = _load_config(info.root, overrides)
     _require_bash(config)
-    problems = launch_problems(plan, config, info.root)
+    problems = launch_problems(
+        plan, config, info.root, policy=policy_or_fallback(info.root, ProjectPaths(info.slug), config)
+    )
     if problems:
         for problem in problems:
             console.print(f"[phil.error]{escape(terminated(problem))}[/]")

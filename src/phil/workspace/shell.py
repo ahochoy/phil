@@ -7,8 +7,12 @@ import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from phil import platform
+from phil.permissions.catalog import catalog_reads, label_for
+from phil.permissions.rules import folded_name, rule_matches
+from phil.permissions.store import PolicySet, config_policy
 
 # Root pids of the commands running now, for kill_active_groups().
 _ACTIVE_ROOTS: set[int] = set()
@@ -462,23 +466,67 @@ def _for_matching(tokens: list[str]) -> list[str]:
 def _is_denied(argv: list[str]) -> bool:
     # The program is compared by its folded basename (see permissions.rules), so a full path, a
     # case variant or a Unicode fold of `python3` is still `python3`.
-    from phil.permissions.rules import folded_name
-
     if folded_name(argv[0]) not in _RISKY_PROGRAMS:
         return False
     return any(arg.startswith(_RISKY_PREFIXES) or arg in _RISKY_EXACT for arg in argv[1:])
 
 
+@dataclass(frozen=True)
+class Decision:
+    """What the shell policy decided about one command (spec 2026-10-13 §3.1). `reason` says why,
+    in the words the feed and `phil show` use; `label` is `reads only`, `changes things` or `may
+    change things`; `detail` is set only when the command is forbidden, and is the one-line why."""
+
+    outcome: Literal["allow", "deny", "ask", "forbidden"]
+    reason: str
+    label: str
+    detail: str | None = None
+
+
+_READ_REASON = "read-only (built-in)"
+_PLAN_REASON = "the plan's test command"
+_APPROVED_REASON = "approved for this run"
+_ASK_REASON = "no rule matches"
+_DENIAL_REASONS = {"forbidden": "forbidden", "deny": "denied", "ask": "not_allowed", "allow": None}
+
+
+def _contained(argv: list[str], key: tuple[str, ...] | None, root: Path) -> bool:
+    """Whether every path a read-only command's arguments name stays inside `root`."""
+    root = root.resolve()
+    rest = argv[1:]
+    pattern_index = _pattern_index_to_exclude(key, rest) if key is not None else None
+    for i, arg in enumerate(rest):
+        if i == pattern_index:
+            continue
+        for candidate in _path_candidates(arg):
+            if _needs_containment_check(candidate, root) and _outside_root(candidate, root):
+                return False
+    return True
+
+
+def _config_matches(pattern: str, match_argv: list[str]) -> bool:
+    """A `[shell] allow` pattern from config, with its old glob matching (spec §3.1)."""
+    try:
+        pattern_tokens = _for_matching(shlex.split(pattern))
+    except ValueError:
+        return False
+    return _matches_pattern(match_argv, pattern_tokens)
+
+
 class ShellPolicy:
     def __init__(
         self,
-        allow: list[str],
+        policy: PolicySet | list[str] | None = None,
         *,
         extra_allow: Iterable[str] = (),
         approved: Iterable[str] = (),
         root: Path | None = None,
+        read_only: bool = False,
     ) -> None:
-        self.allow = allow
+        # A plain list is `[shell] allow` from config, as callers before the permission rules pass it.
+        if isinstance(policy, list):
+            policy = config_policy(policy)
+        self.policy: PolicySet = policy if policy is not None else config_policy([])
         # `extra_allow` (the plan's test/check commands) matches literal-escaped tokens plus a
         # real trailing "*", so trailing arguments are still allowed. `approved` (commands a human
         # approved after a denial) matches only the exact command — never widened with a wildcard,
@@ -486,76 +534,84 @@ class ShellPolicy:
         self.extra_allow = tuple(extra_allow)
         self.approved = tuple(approved)
         self.root = root
+        # The read-only agents: only the forbidden checks and the built-in reads apply to them.
+        self.read_only = read_only
 
-    def _classify(self, command: str) -> tuple[str | None, str | None]:
-        """(reason, detail): reason is None if allowed, "forbidden" if no approval could make it
-        safe, or "not_allowed" if only off the allowlist. detail is set only when reason is
-        "forbidden", and is the one-line reason why.
+    def decide(self, command: str) -> Decision:
+        """One decision, in the spec's order (§3.1): forbidden, deny rules, built-in reads, allow
+        rules (saved, trusted, config, then the plan's commands), approvals, else ask.
 
         The command is tokenised once, exactly as `run_command` tokenises it, and every safety
         check runs on those tokens: what is checked is what runs. Only the allowlist comparison
         differs by OS: on Windows the command's and each pattern's tokens have backslashes turned
         into forward slashes (`_for_matching`), so either path style matches the other."""
         command = command.strip()
+        argv: list[str] = []
+        forbidden = None
         if _FORBIDDEN & set(command):
-            return "forbidden", _GENERIC_FORBIDDEN_DETAIL
-        try:
-            argv = shlex.split(command)
-        except ValueError:
-            return "forbidden", _GENERIC_FORBIDDEN_DETAIL
-        if not argv or _is_denied(argv):
-            return "forbidden", _GENERIC_FORBIDDEN_DETAIL
-        key = _read_only_key(argv)
-        if key is not None:
-            if _read_only_mutates(argv, key):
-                return "forbidden", _GENERIC_FORBIDDEN_DETAIL
-            if self.root is not None:
-                root = self.root.resolve()
-                rest = argv[1:]
-                pattern_index = _pattern_index_to_exclude(key, rest)
-                for i, arg in enumerate(rest):
-                    if i == pattern_index:
-                        continue
-                    for candidate in _path_candidates(arg):
-                        if _needs_containment_check(candidate, root) and _outside_root(candidate, root):
-                            return "forbidden", CONTAINMENT_DETAIL
-            return None, None
-        match_argv = _for_matching(argv)
-        for pattern in self.approved:
+            forbidden = _GENERIC_FORBIDDEN_DETAIL
+        else:
             try:
-                pattern_tokens = _for_matching(shlex.split(literal_pattern(pattern)))
+                argv = shlex.split(command)
             except ValueError:
-                continue
-            if _matches_pattern(match_argv, pattern_tokens):
-                return None, None
+                forbidden = _GENERIC_FORBIDDEN_DETAIL
+        if forbidden is None and (not argv or _is_denied(argv)):
+            forbidden = _GENERIC_FORBIDDEN_DETAIL
+        key = _read_only_key(argv) if forbidden is None else None
+        if key is not None and _read_only_mutates(argv, key):
+            forbidden = _GENERIC_FORBIDDEN_DETAIL
+        reads = forbidden is None and (key is not None or catalog_reads(argv))
+        if reads and self.root is not None and not _contained(argv, key, self.root):
+            forbidden = CONTAINMENT_DETAIL
+        if forbidden is not None:
+            return Decision("forbidden", f"forbidden: {forbidden}", label_for(argv, read_only=False), forbidden)
+
+        label = label_for(argv, read_only=False)
+        if not self.read_only:
+            for entry in self.policy.deny:
+                if rule_matches(entry.rule, argv):
+                    return Decision("deny", f'deny rule "{entry.rule.text}" ({entry.scope})', label)
+        if reads:
+            return Decision("allow", _READ_REASON, label_for(argv, read_only=True))
+        if self.read_only:
+            return Decision("ask", _ASK_REASON, label)
+
+        match_argv = _for_matching(argv)
+        for entry in self.policy.allow:
+            if entry.scope == "config":
+                matched = _config_matches(entry.rule.text, match_argv)
+            else:
+                matched = rule_matches(entry.rule, argv)
+            if matched:
+                return Decision("allow", f'rule "{entry.rule.text}" ({entry.scope})', label)
         for pattern in self.extra_allow:
             try:
                 pattern_tokens = [*_for_matching(shlex.split(literal_pattern(pattern))), "*"]
             except ValueError:
                 continue
             if _matches_pattern(match_argv, pattern_tokens):
-                return None, None
-        for pattern in self.allow:
+                return Decision("allow", _PLAN_REASON, label)
+        for pattern in self.approved:
             try:
-                pattern_tokens = _for_matching(shlex.split(pattern))
+                pattern_tokens = _for_matching(shlex.split(literal_pattern(pattern)))
             except ValueError:
                 continue
             if _matches_pattern(match_argv, pattern_tokens):
-                return None, None
-        return "not_allowed", None
+                return Decision("allow", _APPROVED_REASON, label)
+        return Decision("ask", _ASK_REASON, label)
 
     def denial_reason(self, command: str) -> str | None:
-        """None if allowed; "forbidden" if no approval could make it safe; "not_allowed" if only off the allowlist."""
-        reason, _ = self._classify(command)
-        return reason
+        """None if allowed; "forbidden" if no approval could make it safe; "denied" if a deny rule
+        blocks it (never approvable either); "not_allowed" if no rule allows it (it can be asked)."""
+        return _DENIAL_REASONS[self.decide(command).outcome]
 
     def refusal_detail(self, command: str) -> str | None:
-        """One-line reason `command` is forbidden, or None if it isn't (including "not_allowed")."""
-        reason, detail = self._classify(command)
-        return detail if reason == "forbidden" else None
+        """One-line reason `command` is forbidden, or None if it isn't (including a deny or an ask)."""
+        decision = self.decide(command)
+        return decision.detail if decision.outcome == "forbidden" else None
 
     def is_allowed(self, command: str) -> bool:
-        return self.denial_reason(command) is None
+        return self.decide(command).outcome == "allow"
 
 
 @dataclass(frozen=True)

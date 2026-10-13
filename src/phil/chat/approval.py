@@ -4,6 +4,7 @@ from pathlib import Path
 
 from phil.config import RUN_ROLES, PhilConfig
 from phil.contracts import Plan
+from phil.permissions.store import PolicySet
 from phil.repo_detect import detect_test_cmd
 from phil.repo_detect import effective_setup_cmd as effective_setup_cmd  # the engine shares it
 from phil.workspace.shell import CONTAINMENT_DETAIL, ShellPolicy, needs_a_shell
@@ -34,18 +35,30 @@ def effective_test_cmd(plan: Plan, config: PhilConfig, root: Path | None = None)
     return None, "none"
 
 
-def test_cmd_problem(plan: Plan, config: PhilConfig, root: Path | None = None) -> str | None:
+def _policy(config: PhilConfig, policy: PolicySet | None, root: Path | None = None) -> ShellPolicy:
+    return ShellPolicy(policy if policy is not None else config.shell.allow, root=root)
+
+
+def test_cmd_problem(
+    plan: Plan, config: PhilConfig, root: Path | None = None, *, policy: PolicySet | None = None
+) -> str | None:
+    """`policy` is the permission rules in effect; a deny rule there blocks the command (R2)."""
     cmd, _ = effective_test_cmd(plan, config, root)
     if not cmd:
         if plan.tasks and all(task.verify == "check" for task in plan.tasks):
             return None  # every task is verified by its check_cmd: the run needs no test suite
         return "the plan has no test command and your config sets no [project] test_cmd"
+    decision = _policy(config, policy).decide(cmd)
+    # A deny rule is the user's standing answer, so approving the plan can't approve the command,
+    # even the configured one.
+    if decision.outcome == "deny":
+        return f"test command {cmd!r} is blocked by your {decision.reason}"
     if cmd == config.project.test_cmd:
         return None
     # Approving the plan approves its own test command (or the detected one it shows), so only a
     # genuinely forbidden one (shell operators, a blocked flag) is rejected here; anything merely
     # off [shell] allow is fine — the run allows it for the plan's test command regardless.
-    if ShellPolicy(config.shell.allow).denial_reason(cmd) == "forbidden":
+    if decision.outcome == "forbidden":
         return f"test command {cmd!r} uses shell operators or a blocked command; Phil runs it directly"
     return None
 
@@ -72,16 +85,23 @@ test_cmd_differs.__test__ = False
 setup_cmd_problem.__test__ = False
 
 
-def check_cmd_problems(plan: Plan, config: PhilConfig, root: Path | None = None) -> list[str]:
-    """Forbidden check commands. Anything merely off [shell] allow is fine: the run allows each check_cmd.
+def check_cmd_problems(
+    plan: Plan, config: PhilConfig, root: Path | None = None, *, policy: PolicySet | None = None
+) -> list[str]:
+    """Forbidden check commands, and ones a deny rule in `policy` blocks (R2). Anything merely off
+    [shell] allow is fine: the run allows each check_cmd.
 
     `root`, when given, is the tree the paths of a read-only check command must stay inside — the
     run's worktree is a checkout of it, and the run refuses an out-of-tree one anyway."""
-    policy = ShellPolicy(config.shell.allow, root=root)
+    shell_policy = _policy(config, policy, root)
     cmds = dict.fromkeys(task.check_cmd for task in plan.tasks if task.check_cmd)
     problems = []
     for cmd in cmds:
-        detail = policy.refusal_detail(cmd)
+        decision = shell_policy.decide(cmd)
+        if decision.outcome == "deny":
+            problems.append(f"check command {cmd!r} is blocked by your {decision.reason}")
+            continue
+        detail = decision.detail if decision.outcome == "forbidden" else None
         if detail is None:
             continue
         if detail == CONTAINMENT_DETAIL:
@@ -139,20 +159,26 @@ def git_policy_note(config: PhilConfig) -> str | None:
 
 
 def launch_problems(
-    plan: Plan, config: PhilConfig, root: Path | None = None, *, check_root: Path | None = None
+    plan: Plan,
+    config: PhilConfig,
+    root: Path | None = None,
+    *,
+    check_root: Path | None = None,
+    policy: PolicySet | None = None,
 ) -> list[str]:
     """Why a run of `plan` can't start under `config` (empty when it can). Callers escape before printing,
     and should use `terminated()` rather than assuming a problem needs a trailing period added.
 
     `root`, when given, is where a missing setup or test command is detected from. `check_root`
-    (default: `root`) is the tree check commands' paths must stay inside."""
+    (default: `root`) is the tree check commands' paths must stay inside. `policy` is the
+    permission rules in effect (None: [shell] allow alone), whose deny rules block a command."""
     problems = list(config.missing_model_messages(RUN_ROLES))
-    problem = test_cmd_problem(plan, config, root)
+    problem = test_cmd_problem(plan, config, root, policy=policy)
     if problem:
         problems.append(problem)
     setup_problem = setup_cmd_problem(config, root)
     if setup_problem:
         problems.append(setup_problem)
-    problems += check_cmd_problems(plan, config, check_root if check_root is not None else root)
+    problems += check_cmd_problems(plan, config, check_root if check_root is not None else root, policy=policy)
     problems += program_problems(plan, config, root)
     return problems

@@ -57,6 +57,7 @@ from phil.run.state import (
 from phil.store.activity import MAX_DETAIL_CHARS, ActivityLog
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.events import EventLog
+from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
 from phil.store.telemetry import run_usage, usage_by_role
 from phil.ui.plan_view import _clip
@@ -78,6 +79,7 @@ class RunDeps:
     sleep: Callable[[float], None] = time.sleep
     events: EventLog | None = None
     activity: ActivityLog | None = None
+    paths: ProjectPaths | None = None  # where the project's permission rules live; None: [shell] allow only
 
 
 def _write_json_atomic(path: Path, data: Any) -> None:
@@ -322,6 +324,8 @@ class RunEngine:
             extra_allow=extra_allow,
             approved=tuple(state.get("approved", [])),
             activity=self.deps.activity,
+            repo_root=self.deps.repo_root,
+            paths=self.deps.paths,
         )
 
     def _budget(self, role: str) -> int:

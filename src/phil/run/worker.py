@@ -183,6 +183,7 @@ def run_worker(
         sleep=sleep,
         events=events,
         activity=activity_log(paths, run_id),
+        paths=paths,
     )
     engine = RunEngine(deps)
     saver = open_checkpointer(paths.db_path)
