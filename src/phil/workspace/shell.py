@@ -459,15 +459,12 @@ def _for_matching(tokens: list[str]) -> list[str]:
     return tokens
 
 
-def _program_name(arg0: str) -> str:
-    """The program `arg0` names, as compared with _RISKY_PROGRAMS (see permissions.rules)."""
-    from phil.permissions.rules import program_name
-
-    return program_name(arg0)
-
-
 def _is_denied(argv: list[str]) -> bool:
-    if _program_name(argv[0]).lower() not in _RISKY_PROGRAMS:
+    # The program is compared by its folded basename (see permissions.rules), so a full path, a
+    # case variant or a Unicode fold of `python3` is still `python3`.
+    from phil.permissions.rules import folded_name
+
+    if folded_name(argv[0]) not in _RISKY_PROGRAMS:
         return False
     return any(arg.startswith(_RISKY_PREFIXES) or arg in _RISKY_EXACT for arg in argv[1:])
 

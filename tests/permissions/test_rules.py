@@ -203,3 +203,107 @@ def test_a_rule_is_tokenised_as_the_shell_policy_does(monkeypatch, text):
 ])
 def test_exact_only(argv, expected):
     assert exact_only(argv) is expected
+
+
+# --- fix round 3 -------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("argv", [
+    ["tar", "xzf", "a.tgz"], ["rsync", "-e", "x", "a", "b"], ["sed", "-n", "1p", "f"], ["ssh", "host", "ls"],
+    ["cmd", "/c", "dir"], ["terraform", "plan"], ["bash5", "x"], ["docker", "compose", "-f", "x", "up"],
+    ["uv", "pip", "--system", "install", "x"], ["git", "-C", "d", "status"],
+])
+def test_only_vetted_families_get_open_suggestions(argv):
+    assert suggest_rule(argv) == shlex.join(argv)
+
+
+@pytest.mark.parametrize("argv,rule", [
+    (["docker", "container", "ls"], "docker container ls *"),
+    (["pytest", "-q", "tests/"], "pytest -q tests/ *"),
+    (["gh", "pr"], "gh pr *"),
+    (["kubectl", "get", "pods"], "kubectl get *"),
+    (["/usr/bin/gh", "pr", "view", "1"], "/usr/bin/gh pr view *"),
+])
+def test_vetted_families_get_open_suggestions(argv, rule):
+    assert suggest_rule(argv) == rule
+
+
+@pytest.mark.parametrize("argv", [
+    ["git", "push", "--del", "origin", "main"], ["git", "push", "--mirr", "origin"], ["git", "push", "--pru", "origin"],
+    ["git", "push", "--receive-pack=x", "."], ["git", "push", "--exec=x", "."], ["git", "push", "--force-if-includes"],
+    ["git", "push", "--force-with-lease=x"],
+])
+def test_abbreviated_dangerous_push_options_are_exact_only(argv):
+    assert exact_only(argv) is True
+
+
+@pytest.mark.parametrize("argv", [["git", "push", "--dry-run"], ["git", "push", "--tags"],
+                                  ["git", "push", "-u", "origin", "feat"]])
+def test_harmless_push_options_are_not_exact_only(argv):
+    assert exact_only(argv) is False
+
+
+@pytest.mark.parametrize("argv", [
+    ["git", "fetch", "--upload-pack=x", "."], ["git", "fetch", "--upload", "x", "."], ["git", "pull", "--upload-pack=x"],
+    ["git", "ls-remote", "--upload-pack=x", "."], ["git", "clone", "-u", "x", ".", "d"],
+    ["git", "clone", "--template=./t", "u"], ["git", "clone", "--config=core.fsmonitor=x", "u"],
+    ["git", "rebase", "--exec", "x", "main"], ["git", "rebase", "-x", "x", "main"],
+    ["git", "submodule", "foreach", "x"], ["git", "bisect", "run", "x"],
+    ["git", "grep", "--open-files-in-pager=x", "foo"], ["git", "grep", "-Ox", "foo"],
+    ["git", "difftool", "HEAD"], ["git", "mergetool"], ["git", "filter-branch"], ["git", "log", "--extcmd=x"],
+    ["git", "config", "a", "b"], ["git", "-c", "a=b", "log"],
+])
+def test_git_options_and_subcommands_that_run_a_command_are_exact_only(argv):
+    assert exact_only(argv) is True
+
+
+@pytest.mark.parametrize("argv", [
+    ["git", "clone", "url"], ["git", "fetch", "origin"], ["git", "log", "--oneline"], ["git", "status"],
+    ["git", "grep", "foo"], ["git", "submodule", "update", "--init"], ["git", "bisect", "start"],
+])
+def test_ordinary_git_is_not_exact_only(argv):
+    assert exact_only(argv) is False
+
+
+@pytest.mark.parametrize("argv", [
+    ["docker", "run", "i"], ["docker", "exec", "c", "x"], ["docker", "create", "i"], ["docker", "container", "run", "i"],
+    ["docker", "container", "exec", "c"], ["docker", "container", "create", "i"], ["docker", "compose", "run", "w"],
+    ["docker", "compose", "exec", "w"], ["kubectl", "exec", "p"], ["kubectl", "run", "p"], ["kubectl", "debug", "p"],
+    ["kubectl", "attach", "p"], ["kubectl", "-n", "ns", "exec", "p"], ["docker", "-H", "h", "run", "i"],
+    ["go", "-C", "d", "run", "x.go"], ["cargo", "+nightly", "run"], ["uv", "--directory", "d", "run", "x"],
+    ["gh", "api", "repos/o/r"], ["gh", "api", "graphql", "-f", "q=x"],
+])
+def test_launcher_subcommands_are_found_at_any_position(argv):
+    assert exact_only(argv) is True
+
+
+@pytest.mark.parametrize("argv", [["docker", "ps"], ["docker", "compose", "up"], ["kubectl", "get", "pods"],
+                                  ["gh", "pr", "view", "1"], ["npm", "install", "x"]])
+def test_ordinary_container_and_gh_commands_are_not_exact_only(argv):
+    assert exact_only(argv) is False
+
+
+@pytest.mark.parametrize("argv", [
+    ["bash5", "x"], ["perl5.30", "x.pl"], ["node20", "x.js"], ["cmd", "/c", "dir"], ["wsl", "ls"],
+    ["cscript", "x.vbs"], ["wscript", "x.vbs"], ["mshta", "x.hta"], ["ruby3.2", "x"],
+])
+def test_versioned_interpreters_and_windows_launchers_are_exact_only(argv):
+    assert exact_only(argv) is True
+
+
+def test_unicode_folds_of_dangerous_names_are_exact_only():
+    assert exact_only(["ſudo", "rm", "x"]) is True
+    assert exact_only(["ſh", "-c", "x"]) is True
+    assert suggest_rule(["ſudo", "rm", "x"]) == shlex.join(["ſudo", "rm", "x"])
+    assert suggest_rule(["ﬁnd", ".", "-name", "x"]) == shlex.join(["ﬁnd", ".", "-name", "x"])
+    assert ShellPolicy([]).denial_reason("ｐｙｔｈｏｎ３ -c x") == "forbidden"
+
+
+def test_a_non_ascii_program_never_matches_a_bare_name_rule():
+    assert not rule_matches(parse_rule("sudo rm x"), ["ſudo", "rm", "x"])
+    assert not rule_matches(parse_rule("find ."), ["ﬁnd", "."])
+    assert rule_matches(parse_rule("find ."), ["find", "."])
+
+
+@pytest.mark.parametrize("argv", [["", "x"], ["gh", "pr", ""], ["gh", ""]])
+def test_an_empty_word_cannot_be_saved(argv):
+    assert suggest_rule(argv) is None
