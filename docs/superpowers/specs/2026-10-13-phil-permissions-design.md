@@ -177,7 +177,7 @@ hash = "sha256:…"
 - It holds the lock from `platform.py` while writing, and writes to a temporary file in the same folder, then replaces the original.
 
 **A broken file.** If a policy file can't be parsed, or a rule in it is invalid:
-- its rules are not applied, and neither are any of its deny rules;
+- its rules are not applied. Because a deny rule in it may have been meant to block an allow rule elsewhere, saved allow rules from every policy file are switched off too, so those commands ask instead (this fails safe);
 - the error is shown once, with the file and line, in the chat and in the run log;
 - `allow`, `deny` and saving from the callout refuse to write to that file until it's fixed.
 
