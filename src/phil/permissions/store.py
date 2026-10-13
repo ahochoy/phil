@@ -91,6 +91,12 @@ def _normal(rule: Rule) -> str:
     return shlex.join(rule.words) + (" *" if rule.open_end else "")
 
 
+def normalised_rule(text: str) -> str:
+    """The text `add_rule` stores for `text`: what the callout shows before saving it (R15).
+    Raises RuleError when `text` isn't a valid rule."""
+    return _normal(parse_rule(text))
+
+
 def _same_rule(stored: object, normal: str) -> bool:
     """Whether a rule already in a file (any spacing) is the rule whose normalised text is `normal`."""
     if not isinstance(stored, str):

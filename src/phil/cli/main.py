@@ -865,6 +865,8 @@ def resume(
             console.print(f"[phil.error]{FULL_FROM_TERMINAL}[/]")
             raise typer.Exit(1)
         decision = {"action": action} | ({"hint": hint} if hint else {})
+        if escalation.get("id") is not None:
+            decision["id"] = escalation["id"]  # R16: the answer is for this pause only
         spawn_worker(info.root, run_id, "resume", decision)
         console.print(f"Resuming [phil.id]{escape(run_id)}[/] with {escape(action)}.")
         return

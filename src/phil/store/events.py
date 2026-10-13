@@ -1,4 +1,5 @@
 import json
+import unicodedata
 from pathlib import Path
 
 from phil.store.db import utcnow
@@ -60,16 +61,35 @@ def test_cmd_changed_line(cmd: str) -> str:
 test_cmd_changed_line.__test__ = False  # not a pytest test
 
 
+def printable(text: object) -> str:
+    """`text` for display: each control character (Unicode Cc: ESC, BEL, newline...) but tab
+    becomes `?`, so an agent's command can't recolour the terminal or move its cursor. Only what's
+    shown changes; saved rules and approved commands keep their text."""
+    return "".join("?" if unicodedata.category(char) == "Cc" and char != "\t" else char for char in str(text))
+
+
+def _quoted(rules: list[str]) -> str:
+    return ", ".join(f'"{printable(rule)}"' for rule in rules)
+
+
 def saved_rules_line(rules: list[str], scope: str) -> str:
     """The feed line after "Always allow" saved `rules` for `scope` (a repo name or `everywhere`)."""
-    quoted = ", ".join(f'"{rule}"' for rule in rules)
     noun = "rule" if len(rules) == 1 else "rules"
-    return f"Saved {noun} {quoted} for {scope} · /permissions to review"
+    return f"Saved {noun} {_quoted(rules)} for {printable(scope)} · /permissions to review"
 
 
 def unsaved_rules_line(error: object) -> str:
-    """The feed line when "Always allow" couldn't save its rules: the commands still run this time."""
-    return f"Couldn't save rule: {error} · allowed for this run only"
+    """The feed line when "Always allow" couldn't save any of its rules: the commands still run this time."""
+    return f"Couldn't save rule: {printable(error)} · allowed for this run only"
+
+
+def partly_saved_line(saved: list[str], scope: str, failed: list[str], error: object, commands: list[str]) -> str:
+    """The feed line when some rules were saved and others weren't: `commands` (those whose rule
+    wasn't saved) still run this time."""
+    noun = "rule" if len(saved) == 1 else "rules"
+    shown = ", ".join(printable(command) for command in commands)
+    return (f"Saved {noun} {_quoted(saved)} for {printable(scope)}; couldn't save {_quoted(failed)}: "
+            f"{printable(error)} · {shown} allowed for this run only")
 
 
 def run_events(paths: ProjectPaths, run_id: str) -> EventLog:

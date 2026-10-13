@@ -4,6 +4,8 @@ handlers already accept, so picking from the menu and typing are the same thing 
 
 from dataclasses import dataclass
 
+from phil.store.events import printable
+
 BODY_LINES = 8
 SEE_MORE = "… see /more 1"  # a capped body's last line: the full body is detail 1
 DETAILS = "Details: /more 1"  # a body's pointer at detail 1 when nothing was cut (an attempts pause)
@@ -77,27 +79,34 @@ def answered_elsewhere(run_id: str) -> str:
     return f"{run_id} was answered elsewhere."
 
 
-# An approval pause's own labels (spec 2026-10-13 §3.4); other pauses keep LABELS.
+# An approval pause's own labels (spec 2026-10-13 §3.4, R15); other pauses keep LABELS.
 _APPROVAL_LABELS = {"approve": "Allow for this run", "deny": "Deny", "abort": "Stop the run"}
-RULES_JOIN = "  ·  "
 
 
 def approval_lines(escalation: dict) -> list[str]:
-    """Each denied command, indented and padded so its label lines up in a column after it."""
+    """Each denied command in full, with its label and the rule it would save (R15):
+    `  <command>  (<label>)  → saves <rule>`, or `→ can't be saved`. Display text only: control
+    characters show as `?`."""
     commands = [str(c) for c in escalation.get("commands") or []]
     labels = [str(label) for label in escalation.get("labels") or []]
-    if len(labels) != len(commands):
-        return [f"  {c}" for c in commands]
-    width = max(len(c) for c in commands) if commands else 0
-    return [f"  {c.ljust(width)}  {label}" for c, label in zip(commands, labels)]
+    saves = list(escalation.get("saves") or [])
+    lines = []
+    for index, command in enumerate(commands):
+        line = f"  {printable(command)}"
+        if index < len(labels):
+            line += f"  ({labels[index]})"
+        if index < len(saves):
+            rule = saves[index]
+            line += f"  → saves {printable(rule)}" if rule is not None else "  → can't be saved"
+        lines.append(line)
+    return lines
 
 
 def _approval_options(escalation: dict, words: list[str]) -> tuple[Option, ...]:
-    rules = RULES_JOIN.join(str(rule) for rule in escalation.get("rules") or [])
     labels = {
         **_APPROVAL_LABELS,
-        "always_repo": f"Always allow in {escalation.get('repo', 'this repo')}: {rules}",
-        "always_everywhere": f"Always allow everywhere: {rules}",
+        "always_repo": f"Always allow in {printable(escalation.get('repo', 'this repo'))}",
+        "always_everywhere": "Always allow everywhere",
     }
     return tuple(Option(labels.get(w) or LABELS.get(w, w.capitalize()), w) for w in words)
 
@@ -126,7 +135,7 @@ def pause_decision(run_id: str, escalation: dict) -> Decision:
         commands = [str(c) for c in escalation.get("commands") or []]
         title_end = _TITLES[reason]
         body = [f"{escalation.get('task_id', 'The task')} wants to run:", *approval_lines(escalation)]
-        note = ", ".join(commands)
+        note = ", ".join(printable(command) for command in commands)
     elif reason == "no_test_cmd":
         title_end = _TITLES[reason]
         body = [*problems, "Set [project] test_cmd in phil.toml, then retry."]

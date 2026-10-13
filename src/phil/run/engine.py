@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import tempfile
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
@@ -35,8 +36,8 @@ from phil.git import GitError, branch_for, git
 from phil.packets import Packet, PacketTooLarge, build_packet
 from phil.permissions.catalog import label_for
 from phil.permissions.load import trusted_shell
-from phil.permissions.rules import exact_only, suggest_rule
-from phil.permissions.store import PolicyWriteError, add_rule
+from phil.permissions.rules import RuleError, exact_only, suggest_rule
+from phil.permissions.store import PolicyWriteError, add_rule, normalised_rule
 from phil.repo_detect import effective_setup_cmd
 from phil.run.gates import (
     COMMAND_NOT_FOUND,
@@ -62,7 +63,7 @@ from phil.run.state import (
 )
 from phil.store.activity import MAX_DETAIL_CHARS, ActivityLog
 from phil.store.artifacts import ArtifactStore, artifact_name
-from phil.store.events import EventLog, saved_rules_line, unsaved_rules_line
+from phil.store.events import EventLog, partly_saved_line, saved_rules_line, unsaved_rules_line
 from phil.store.paths import ProjectPaths, global_policy_path
 from phil.store.runs import get_run, update_run
 from phil.store.telemetry import run_usage, usage_by_role
@@ -126,6 +127,19 @@ def _tool_reads(log: CommandLog) -> list[str]:
 
 def _cap_diff(diff: str) -> str:
     return diff if len(diff) <= MAX_DIFF_CHARS else diff[:MAX_DIFF_CHARS] + DIFF_TRUNCATED
+
+
+def saveable_rule(argv: list[str]) -> str | None:
+    """The rule "Always allow" would save for `argv`, exactly as `add_rule` stores it (R15), so what
+    the callout shows is what's saved. None when there's none (R4), or the suggestion isn't a valid
+    rule (a control character in a word)."""
+    suggestion = suggest_rule(argv)
+    if suggestion is None:
+        return None
+    try:
+        return normalised_rule(suggestion)
+    except RuleError:
+        return None
 
 
 def _argv(command: str) -> list[str] | None:
@@ -698,19 +712,21 @@ class RunEngine:
         argvs = [_argv(command) for command in commands]
         labels = [log.labels.get(command) or label_for(argv or [], read_only=False)
                   for command, argv in zip(commands, argvs)]
-        suggestions = [suggest_rule(argv) if argv is not None else None for argv in argvs]
+        saves = [saveable_rule(argv) if argv is not None else None for argv in argvs]
         options = ["approve"]
-        if self.deps.paths is not None and all(rule is not None for rule in suggestions):
+        if self.deps.paths is not None and all(rule is not None for rule in saves):
             options.append("always_repo")
             if not any(exact_only(argv) for argv in argvs if argv is not None):
                 options.append("always_everywhere")
         options += ["deny", "abort"]
         return {
             "reason": "approval",
+            "id": uuid.uuid4().hex[:12],  # R16: an answer applies only to the pause it was given for
             "task_id": task_id,
             "commands": commands,
             "labels": labels,
-            "rules": list(dict.fromkeys(rule for rule in suggestions if rule is not None)),
+            "saves": saves,  # the rule each command would save, parallel to `commands`; None: none
+            "rules": list(dict.fromkeys(rule for rule in saves if rule is not None)),
             "repo": self.deps.repo_root.name,
             "options": options,
             "summary": f"{task_id} needs approval for: {', '.join(commands)}",
@@ -721,22 +737,34 @@ class RunEngine:
         can't be saved is reported, and the commands are still approved for this run."""
         rules = [str(rule) for rule in escalation.get("rules") or []]
         repo = str(escalation.get("repo") or self.deps.repo_root.name)
-        try:
-            if everywhere:
-                path, scope = global_policy_path(), "everywhere"
-            elif self.deps.paths is not None:
-                path, scope = self.deps.paths.policy_path, repo
-            else:
-                raise PolicyWriteError("this run has no project folder to save to")
-            header = f"# Phil permissions — {scope}. `phil permissions` shows what's in effect."
-            source = f"approval in {repo} ({self.deps.run_id})"
-            for rule in rules:
+        scope = "everywhere" if everywhere else repo
+        saved: list[str] = []
+        failed: list[str] = []
+        error: Exception | None = None
+        header = f"# Phil permissions — {scope}. `phil permissions` shows what's in effect."
+        source = f"approval in {repo} ({self.deps.run_id})"
+        for rule in rules:
+            try:
+                if everywhere:
+                    path = global_policy_path()
+                elif self.deps.paths is not None:
+                    path = self.deps.paths.policy_path
+                else:
+                    raise PolicyWriteError("this run has no project folder to save to")
                 add_rule(path, "allow", rule, source, today=date.today(), header=header)
-        except Exception as exc:  # PolicyWriteError, or anything else: saving never fails the run
-            logger.warning("couldn't save the approved rules %s", rules, exc_info=True)
-            self._milestone("rule_saved", line=unsaved_rules_line(exc), ok=False)
-            return
-        self._milestone("rule_saved", line=saved_rules_line(rules, scope), ok=True)
+                saved.append(rule)
+            except Exception as exc:  # PolicyWriteError, or anything else: saving never fails the run
+                logger.warning("couldn't save the approved rule %r", rule, exc_info=True)
+                failed.append(rule)
+                error = error or exc
+        if not failed:
+            self._milestone("rule_saved", line=saved_rules_line(saved, scope), ok=True)
+        elif not saved:
+            self._milestone("rule_saved", line=unsaved_rules_line(error), ok=False)
+        else:
+            commands = [str(command) for command, rule in zip(escalation.get("commands") or [],
+                                                              escalation.get("saves") or []) if rule in failed]
+            self._milestone("rule_saved", line=partly_saved_line(saved, scope, failed, error, commands), ok=False)
 
     def _no_test_cmd_escalation(self, state: RunState) -> dict:
         task = load_plan(state).tasks[state["task_index"]]
@@ -906,6 +934,12 @@ class RunEngine:
         while True:
             decision = interrupt(payload)
             action = decision.get("action") if isinstance(decision, dict) else None
+            # R16: an answer applies only to the pause it was given for. A pause from before ids
+            # (no `id`) takes only an answer without one, so old paused runs still resume.
+            answered = decision.get("id") if isinstance(decision, dict) else None
+            if answered != escalation.get("id"):
+                payload = {**escalation, "error": "that answer was for an earlier pause; answer this one"}
+                continue
             if action in escalation["options"]:
                 break
             payload = {

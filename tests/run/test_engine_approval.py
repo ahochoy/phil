@@ -220,13 +220,15 @@ def paused(make_harness, *commands):
 
 
 def answer(harness, monkeypatch, action):
-    """Resume the paused run's escalate node with `action`, returning what it hands the graph."""
+    """Resume the paused run's escalate node with `action` (and the pause's id, as the chat sends
+    it), returning what it hands the graph."""
+    state = harness.graph.get_state(harness.thread).values
+
     def interrupt(payload):
         assert "error" not in payload, payload["error"]  # the engine rejected the answer
-        return {"action": action}
+        return {"action": action, "id": state["escalation"].get("id")}
 
     monkeypatch.setattr("phil.run.engine.interrupt", interrupt)
-    state = harness.graph.get_state(harness.thread).values
     return harness.engine.escalate(state)
 
 
@@ -327,3 +329,95 @@ def test_a_saved_rule_allows_the_command_on_the_next_call(make_harness, monkeypa
 
     policy = policy_for(harness.deps.repo_root, harness.deps.paths, harness.deps.config)
     assert ShellPolicy(policy).decide("make test-unit other").reason == 'rule "make test-unit *" (calc)'
+
+
+def test_each_command_carries_the_rule_it_would_save(make_harness):
+    _, escalation = paused(make_harness, MERGE, "make test '*'")
+    assert escalation["saves"] == ["gh pr merge *", None]
+
+
+def test_a_command_whose_rule_cannot_be_parsed_offers_no_always(make_harness):
+    # M1: a tab inside a quoted word is suggested, but parse_rule rejects the control character.
+    _, escalation = paused(make_harness, 'git commit -m "a\tb"')
+    assert escalation["saves"] == [None]
+    assert escalation["options"] == ["approve", "deny", "abort"]
+
+
+def test_the_rule_shown_is_the_rule_saved_on_windows(monkeypatch):
+    """Windows simulated (add_rule's file lock needs real Windows, so the stored text is checked
+    with normalised_rule, which is exactly what add_rule stores)."""
+    from phil import platform
+    from phil.permissions.rules import suggest_rule
+    from phil.permissions.store import normalised_rule
+    from phil.run.engine import saveable_rule
+
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    for argv, shown in ((["GH.EXE", "pr", "view", "1"], "gh pr view *"), (["make", "sub\\dir"], "make sub/dir *")):
+        assert suggest_rule(argv) != shown  # the raw suggestion is not what add_rule would store
+        assert saveable_rule(argv) == shown
+        assert normalised_rule(shown) == shown  # saving the shown text stores it unchanged
+
+
+def test_a_partial_save_names_what_was_saved(make_harness, monkeypatch):
+    from phil.permissions.store import PolicyWriteError
+    from phil.run import engine
+
+    real = engine.add_rule
+
+    def add_rule(path, kind, rule, *args, **kwargs):
+        if rule == "make test-unit *":
+            raise PolicyWriteError("disk full")
+        return real(path, kind, rule, *args, **kwargs)
+
+    harness, _ = paused(make_harness, MERGE, UNIT)
+    monkeypatch.setattr(engine, "add_rule", add_rule)
+    result = answer(harness, monkeypatch, "always_repo")
+    assert result["approved"] == [MERGE, UNIT]
+    assert feed_lines(harness) == [
+        'Saved rule "gh pr merge *" for calc; couldn\'t save "make test-unit *": disk full'
+        " · make test-unit calc allowed for this run only"
+    ]
+
+
+def test_each_pause_has_its_own_id(make_harness):
+    harness = make_harness({"implementer": [asks(MERGE), asks("npm install left-pad")]})
+    first = harness.start()["__interrupt__"][0].value
+    second = harness.resume({"action": "approve"})["__interrupt__"][0].value
+    assert first["id"] and second["id"] and first["id"] != second["id"]
+    assert second["commands"] == ["npm install left-pad"]
+
+
+def test_an_answer_meant_for_an_earlier_pause_changes_nothing(make_harness, tmp_path, monkeypatch):
+    # R16: "always everywhere" for the first pause arrives after the run paused again for another command.
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    harness = make_harness({"implementer": [asks(MERGE), asks("npm install left-pad")]})
+    first = harness.start()["__interrupt__"][0].value
+    second = harness.resume({"action": "approve", "id": first["id"]})["__interrupt__"][0].value
+
+    again = harness.resume({"action": "always_everywhere", "id": first["id"]})["__interrupt__"][0].value
+    assert again["id"] == second["id"] and again["commands"] == ["npm install left-pad"]
+    assert "error" in again
+    assert not (tmp_path / "home" / "policy.toml").exists()
+    assert not harness.deps.paths.policy_path.exists()
+    state = harness.graph.get_state(harness.thread).values
+    assert state["approved"] == [MERGE]
+
+
+def test_an_answer_without_an_id_is_refused_for_a_pause_with_one(make_harness):
+    harness = make_harness({"implementer": [asks(MERGE)]})
+    harness.start()
+    from langgraph.types import Command
+
+    again = harness.graph.invoke(Command(resume={"action": "always_repo"}), harness.thread)["__interrupt__"][0].value
+    assert "error" in again
+    assert not harness.deps.paths.policy_path.exists()
+
+
+def test_a_pause_from_before_ids_accepts_an_answer_without_one(make_harness, monkeypatch):
+    # Runs paused before R16 have escalations with no id: their bare answers still work.
+    harness, _ = paused(make_harness, MERGE)
+    state = harness.graph.get_state(harness.thread).values
+    old = {key: value for key, value in state["escalation"].items() if key != "id"}
+    monkeypatch.setattr("phil.run.engine.interrupt", lambda payload: {"action": "approve"})
+    result = harness.engine.escalate({**state, "escalation": old})
+    assert result["approved"] == [MERGE]

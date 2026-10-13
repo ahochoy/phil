@@ -375,14 +375,15 @@ def attempts_pause(problems, log=None):
     return step
 
 
-def approval_pause(options):
+def approval_pause(options, commands=("gh pr merge 42",)):
     def step(c):
         paths, run_id, conn = _run(c)
-        set_state(c, "escalated", needs_attention="CALC-001 needs approval for: gh pr merge 42")
+        set_state(c, "escalated", needs_attention="CALC-001 needs approval")
+        rules = [f"{command} *" for command in commands]
         run_events(paths, run_id).append("escalation", escalation={
-            "reason": "approval", "task_id": "CALC-001", "commands": ["gh pr merge 42"],
-            "labels": ["changes things"], "rules": ["gh pr merge *"], "repo": "calc", "options": options,
-            "summary": "CALC-001 needs approval for: gh pr merge 42",
+            "reason": "approval", "id": "e-1", "task_id": "CALC-001", "commands": list(commands),
+            "labels": ["changes things"] * len(commands), "saves": rules, "rules": rules, "repo": "calc",
+            "options": options, "summary": "CALC-001 needs approval",
         })
         c._watcher.poll_once()
         return WAKE
@@ -394,18 +395,18 @@ ALL_ANSWERS = ["approve", "always_repo", "always_everywhere", "deny", "abort"]
 
 
 @pytest.mark.parametrize("choice, label", [
-    ("always_repo", "Always allow in calc: gh pr merge *"),
-    ("always_everywhere", "Always allow everywhere: gh pr merge *"),
+    ("always_repo", "Always allow in calc"),
+    ("always_everywhere", "Always allow everywhere"),
 ])
-def test_an_always_answer_resumes_the_run_with_it(controller_with_choose, choice, label):
+def test_an_always_answer_resumes_the_run_with_it_and_the_pause_id(controller_with_choose, choice, label):
     calls = []
     text, spawned, runs, *_ = controller_with_choose(
         ["add subtract", "y", approval_pause(ALL_ANSWERS), choice], FULL_SCRIPT, calls=calls)
     pause = next(call[2] for call in calls if call[0] == "choose" and call[2].kind == "approval")
     assert [o.label for o in pause.options] == [
-        "Allow for this run", "Always allow in calc: gh pr merge *", "Always allow everywhere: gh pr merge *",
-        "Deny", "Stop the run"]
-    assert (runs[0].run_id, "resume", {"action": choice}) in spawned
+        "Allow for this run", "Always allow in calc", "Always allow everywhere", "Deny", "Stop the run"]
+    assert "  gh pr merge 42  (changes things)  → saves gh pr merge 42 *" in pause.body
+    assert (runs[0].run_id, "resume", {"action": choice, "id": "e-1"}) in spawned
     assert f"✓ {label} · gh pr merge 42" in text
 
 
@@ -415,8 +416,18 @@ def test_an_approval_without_everywhere_leaves_it_out_of_the_callout(controller_
         ["add subtract", "y", approval_pause(["approve", "always_repo", "deny", "abort"]), "deny"], FULL_SCRIPT,
         calls=calls)
     pause = next(call[2] for call in calls if call[0] == "choose" and call[2].kind == "approval")
-    assert [o.label for o in pause.options] == [
-        "Allow for this run", "Always allow in calc: gh pr merge *", "Deny", "Stop the run"]
+    assert [o.label for o in pause.options] == ["Allow for this run", "Always allow in calc", "Deny", "Stop the run"]
+
+
+def test_more_1_holds_every_command_and_rule_of_a_long_approval(controller_with_choose):
+    commands = tuple(f"make target-{n}" for n in range(12))
+    calls = []
+    text, *_ = controller_with_choose(
+        ["add subtract", "y", approval_pause(ALL_ANSWERS, commands), TYPE, "/more 1"], FULL_SCRIPT, calls=calls)
+    pause = next(call[2] for call in calls if call[0] == "choose" and call[2].kind == "approval")
+    assert pause.body[-1] == "… see /more 1"
+    for command in commands:
+        assert f"{command}  (changes things)  → saves {command} *" in text
 
 
 def test_an_attempts_pause_details_are_its_problems(controller):
@@ -546,11 +557,13 @@ def test_an_approved_command_reaches_the_resumed_worker(calc_repo):
     )
     run_id = runs[0].run_id
     pause = next(call[2] for call in calls if call[0] == "choose" and call[2].kind == "approval")
-    assert f"  {BUILD}  changes things" in pause.body
+    # The rule is the normalised saved form (R15): on Windows its path has forward slashes.
+    assert any(line.startswith(f"  {BUILD}  (changes things)  → saves ") for line in pause.body)
     # BUILD runs an interpreter: it can be saved for this repo, exactly, but never everywhere.
     assert [o.label for o in pause.options] == [
-        "Allow for this run", f"Always allow in {calc_repo.name}: {BUILD}", "Deny", "Stop the run"]
-    assert spawned[1] == (run_id, "resume", {"action": "approve"})
+        "Allow for this run", f"Always allow in {calc_repo.name}", "Deny", "Stop the run"]
+    assert spawned[1][:2] == (run_id, "resume")
+    assert spawned[1][2]["action"] == "approve" and spawned[1][2]["id"]
     assert "✓ Allow for this run · " + BUILD in text
     record = get_run(connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path), run_id)
     assert record.state == "completed"

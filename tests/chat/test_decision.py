@@ -16,44 +16,57 @@ def answers(decision):
 
 def test_approval_pause():
     d = pause_decision("r-4f2a", {"reason": "approval", "task_id": "CALC-002", "commands": ["node build.mjs"],
-                                  "labels": ["changes things"], "rules": ["node build.mjs"], "repo": "calc",
+                                  "labels": ["changes things"], "saves": ["node build.mjs"],
+                                  "rules": ["node build.mjs"], "repo": "calc",
                                   "options": ["approve", "always_repo", "deny", "abort"], "summary": "x"})
     assert d.kind == "approval"
     assert d.title == "⏸ r-4f2a needs you · approve a command"
-    assert d.body == ("CALC-002 wants to run:", "  node build.mjs  changes things")
-    assert labels(d) == ["Allow for this run", "Always allow in calc: node build.mjs", "Deny", "Stop the run"]
+    assert d.body == ("CALC-002 wants to run:", "  node build.mjs  (changes things)  → saves node build.mjs")
+    assert labels(d) == ["Allow for this run", "Always allow in calc", "Deny", "Stop the run"]
     assert answers(d) == ["approve", "always_repo", "deny", "abort"]
     assert d.default == 0
     assert settled_line(d, d.options[0]) == "✓ Allow for this run · node build.mjs"
 
 
+TWO = {
+    "reason": "approval", "task_id": "CALC-001", "commands": ["gh pr checks 42", "make test-unit calc"],
+    "labels": ["reads only", "may change things"], "saves": ["gh pr checks *", "make test-unit *"],
+    "rules": ["gh pr checks *", "make test-unit *"], "repo": "calc",
+    "options": ["approve", "always_repo", "always_everywhere", "deny", "abort"], "summary": "x",
+}
+
+
 def test_approval_pause_offers_saving_rules_everywhere_verbatim():
-    d = pause_decision("r-1", {
-        "reason": "approval", "task_id": "CALC-001", "commands": ["gh pr checks 42", "make test-unit --fast"],
-        "labels": ["reads only", "may change things"], "rules": ["gh pr checks *", "make test-unit *"],
-        "repo": "calc", "options": ["approve", "always_repo", "always_everywhere", "deny", "abort"], "summary": "x",
-    })
+    d = pause_decision("r-1", TWO)
     assert d.body == (
         "CALC-001 wants to run:",
-        "  gh pr checks 42        reads only",
-        "  make test-unit --fast  may change things",
+        "  gh pr checks 42  (reads only)  → saves gh pr checks *",
+        "  make test-unit calc  (may change things)  → saves make test-unit *",
     )
-    assert labels(d) == [
-        "Allow for this run",
-        "Always allow in calc: gh pr checks *  ·  make test-unit *",
-        "Always allow everywhere: gh pr checks *  ·  make test-unit *",
-        "Deny",
-        "Stop the run",
-    ]
+    assert labels(d) == ["Allow for this run", "Always allow in calc", "Always allow everywhere", "Deny",
+                         "Stop the run"]
     assert answers(d) == ["approve", "always_repo", "always_everywhere", "deny", "abort"]
     assert d.default == 0
 
 
 def test_approval_pause_without_saving_offers_only_the_run():
     d = pause_decision("r-1", {"reason": "approval", "task_id": "CALC-001", "commands": ["make x '*'"],
-                               "labels": ["may change things"], "rules": [], "repo": "calc",
+                               "labels": ["may change things"], "saves": [None], "rules": [], "repo": "calc",
                                "options": ["approve", "deny", "abort"], "summary": "x"})
+    assert d.body == ("CALC-001 wants to run:", "  make x '*'  (may change things)  → can't be saved")
     assert labels(d) == ["Allow for this run", "Deny", "Stop the run"]
+
+
+def test_approval_pause_shows_control_characters_as_question_marks():
+    # M3: an agent's command can't recolour or move the terminal's cursor; only the display changes.
+    command = "make test \x1bred\x07"
+    d = pause_decision("r-1", {"reason": "approval", "task_id": "CALC-001", "commands": [command],
+                               "labels": ["may change things"], "saves": [None], "rules": [], "repo": "ca\x1bc",
+                               "options": ["approve", "always_repo", "deny", "abort"], "summary": "x"})
+    assert d.body[1] == "  make test ?red?  (may change things)  → can't be saved"
+    assert labels(d)[1] == "Always allow in ca?c"
+    assert settled_line(d, d.options[0]) == "✓ Allow for this run · make test ?red?"
+    assert not any("\x1b" in line for line in (*d.body, *labels(d), d.note))
 
 
 def test_other_pauses_keep_their_abort_label():

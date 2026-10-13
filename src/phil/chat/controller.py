@@ -36,6 +36,7 @@ from phil.chat.decision import (
     answered_elsewhere,
     approach_decision,
     approval_decision,
+    approval_lines,
     fix_decision,
     pause_decision,
     pr_decision,
@@ -68,7 +69,7 @@ from phil.run.launch import is_worker_alive, prepare_run, worker_starting
 from phil.run.state import blocking_count
 from phil.store.activity import activity_log
 from phil.store.db import connect
-from phil.store.events import MILESTONE_KINDS, run_events, test_cmd_changed_line
+from phil.store.events import MILESTONE_KINDS, printable, run_events, test_cmd_changed_line
 from phil.store.paths import ProjectPaths
 from phil.store.parked import open_count, park
 from phil.store.runs import get_run, list_runs
@@ -535,7 +536,9 @@ class ChatController:
     def _pause_decision(self, pause: dict) -> Decision:
         """The pause's decision, with its details as detail 1: the escalation's log when it has
         one, else the summary and every problem."""
-        lines = [str(pause.get("summary", "")), *(str(p) for p in pause.get("problems") or [])]
+        lines = [printable(pause.get("summary", "")), *(str(p) for p in pause.get("problems") or [])]
+        if pause.get("reason") == "approval":
+            lines += approval_lines(pause)  # every command and rule in full (R15)
         log = pause.get("log")
         return self._with_details(pause_decision(self._run_id, pause), lines, log=str(log) if log else None)
 
@@ -1656,7 +1659,7 @@ class ChatController:
         self.state.set_paused(True)
         self._safe_note("run_paused", run_id=self._run_id, escalation=escalation)
         self.console.print(
-            f"[phil.warn]⏸ {escape(self._run_id)} needs you: {escape(str(escalation.get('summary', '')))}[/]"
+            f"[phil.warn]⏸ {escape(self._run_id)} needs you: {escape(printable(escalation.get('summary', '')))}[/]"
         )
         if self.stage in RUN_STAGES:
             self._set_stage("paused")
@@ -1703,8 +1706,12 @@ class ChatController:
         return self._worker_alive(record) or self._worker_starting(events)
 
     def _resume_run(self, decision: dict) -> None:
-        """Answer the pause: spawn a resume worker, unless the run already moved on."""
+        """Answer the pause: spawn a resume worker, unless the run already moved on. The answer
+        carries the pause's id, so the engine applies it to this pause only (R16)."""
         run_id = self._run_id
+        pause_id = (self._pause or {}).get("id")
+        if pause_id is not None:
+            decision = {**decision, "id": pause_id}
         record = get_run(self.conn, run_id)
         if record is None or record.state != "escalated" or self._worker_active(record):
             self._settled = None  # nothing was answered: no settled line

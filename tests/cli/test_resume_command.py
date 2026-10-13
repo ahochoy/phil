@@ -52,6 +52,17 @@ def test_escalated_run_resumes_with_action_and_hint(run):
     assert spawned == [("resume", {"action": "retry", "hint": "use a minus sign"})]
 
 
+def test_an_approval_answer_carries_the_pause_id(run):
+    repo, run_id, conn, events, spawned = run
+    update_run(conn, run_id, state="running")
+    update_run(conn, run_id, state="escalated", needs_attention="CALC-001 needs approval")
+    events.append("escalation", escalation={"reason": "approval", "id": "e-3", "summary": "CALC-001 needs approval",
+                                            "options": ["approve", "deny", "abort"]})
+    result = invoke(repo, run_id, "--action", "approve")
+    assert result.exit_code == 0, result.output
+    assert spawned == [("resume", {"action": "approve", "id": "e-3"})]
+
+
 def test_unknown_action_is_rejected(run):
     repo, run_id, conn, events, spawned = run
     escalate(conn, events, run_id)

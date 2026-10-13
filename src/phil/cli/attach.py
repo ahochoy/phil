@@ -6,10 +6,10 @@ from dataclasses import dataclass, field
 from rich.console import Console
 from rich.markup import escape
 
-from phil.chat.decision import RULES_JOIN, approval_lines
+from phil.chat.decision import approval_lines
 from phil.run.launch import is_worker_alive, worker_starting
 from phil.store.activity import ActivityLog
-from phil.store.events import EventLog, MILESTONE_KINDS, test_cmd_changed_line
+from phil.store.events import EventLog, MILESTONE_KINDS, printable, test_cmd_changed_line
 from phil.store.runs import RunRecord, get_run
 from phil.store.telemetry import budget_warning_line
 from phil.ui.feed_view import FeedRenderer, interleave
@@ -38,7 +38,7 @@ def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRend
         console.print(f"state: [phil.id]{escape(event['state'])}[/]{note}")
     elif kind == "escalation":
         escalation = event["escalation"]
-        console.print(f"[phil.warn]⏸ {escape(escalation['summary'])}[/]")
+        console.print(f"[phil.warn]⏸ {escape(printable(escalation['summary']))}[/]")
         if escalation.get("error"):
             console.print(f"[phil.error]{escape(escalation['error'])}[/]")
     elif kind == "worker":
@@ -55,14 +55,11 @@ def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRend
 
 
 def _prompt(escalation: dict) -> str:
-    """An approval lists each command with its label, then the rules "always" would save (the
-    chat's callout shows the same); any other pause is its summary."""
+    """An approval lists each command in full with its label and the rule it would save, as the
+    chat's callout does; any other pause is its summary. Control characters show as `?`."""
     if escalation.get("reason") != "approval":
-        return f"{escalation['summary']} — what next"
-    lines = [str(escalation.get("summary", "")), *approval_lines(escalation)]
-    if escalation.get("rules") and any(o.startswith("always_") for o in escalation.get("options") or []):
-        lines.append(f"Rules offered: {RULES_JOIN.join(str(rule) for rule in escalation['rules'])}")
-    return "\n".join([*lines, "what next"])
+        return f"{printable(escalation['summary'])} — what next"
+    return "\n".join([printable(escalation.get("summary", "")), *approval_lines(escalation), "what next"])
 
 
 def _exited(proc: object) -> bool:
@@ -124,6 +121,8 @@ def attach(
             options = [option for option in escalation["options"] if option != "full"]
             action = io.choose(_prompt(escalation), options)
             decision: dict = {"action": action}
+            if escalation.get("id") is not None:
+                decision["id"] = escalation["id"]  # R16: the answer is for this pause only
             if action == "retry":
                 hint = io.ask_hint()
                 if hint:

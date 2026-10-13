@@ -148,10 +148,11 @@ def test_attach_offers_the_approval_answers_with_labels_and_rules(calc_repo):
     conn = connect(paths.db_path)
     events = run_events(paths, record.run_id)
     events.append("escalation", escalation={
-        "reason": "approval", "task_id": "CALC-001", "commands": ["gh pr merge 42", "make test-unit --fast"],
-        "labels": ["changes things", "may change things"], "rules": ["gh pr merge *", "make test-unit *"],
-        "repo": "calc", "options": ["approve", "always_repo", "always_everywhere", "deny", "abort"],
-        "summary": "CALC-001 needs approval for: gh pr merge 42, make test-unit --fast",
+        "reason": "approval", "id": "e-7", "task_id": "CALC-001",
+        "commands": ["gh pr merge 42", "make test \x1b[31mred"],
+        "labels": ["changes things", "may change things"], "saves": ["gh pr merge *", None],
+        "rules": ["gh pr merge *"], "repo": "calc", "options": ["approve", "deny", "abort"],
+        "summary": "CALC-001 needs approval for: gh pr merge 42, make test \x1b[31mred",
     })
     asked, spawned = [], []
 
@@ -160,20 +161,19 @@ def test_attach_offers_the_approval_answers_with_labels_and_rules(calc_repo):
             update_run(conn, record.run_id, state="running")
         update_run(conn, record.run_id, state="completed", pid=None)
 
-    io = AttachIO(choose=lambda prompt, options: asked.append((prompt, options)) or "always_repo",
+    io = AttachIO(choose=lambda prompt, options: asked.append((prompt, options)) or "approve",
                   ask_hint=lambda: None, spawn=lambda m, d: spawned.append((m, d)), sleep=sleep)
     console = make_console(record=True, width=120)
     assert attach(conn, record.run_id, events, console, io, poll_s=0) == "completed"
     [(prompt, options)] = asked
-    assert options == ["approve", "always_repo", "always_everywhere", "deny", "abort"]
+    assert options == ["approve", "deny", "abort"]
     assert prompt == (
-        "CALC-001 needs approval for: gh pr merge 42, make test-unit --fast\n"
-        "  gh pr merge 42         changes things\n"
-        "  make test-unit --fast  may change things\n"
-        "Rules offered: gh pr merge *  ·  make test-unit *\n"
+        "CALC-001 needs approval for: gh pr merge 42, make test ?[31mred\n"
+        "  gh pr merge 42  (changes things)  → saves gh pr merge *\n"
+        "  make test ?[31mred  (may change things)  → can't be saved\n"
         "what next"
     )
-    assert spawned == [("resume", {"action": "always_repo"})]
+    assert spawned == [("resume", {"action": "approve", "id": "e-7"})]
 
 
 def test_render_event_prints_a_saved_rule_line():
