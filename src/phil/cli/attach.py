@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from rich.console import Console
 from rich.markup import escape
 
+from phil.chat.decision import RULES_JOIN, approval_lines
 from phil.run.launch import is_worker_alive, worker_starting
 from phil.store.activity import ActivityLog
 from phil.store.events import EventLog, MILESTONE_KINDS, test_cmd_changed_line
@@ -54,7 +55,14 @@ def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRend
 
 
 def _prompt(escalation: dict) -> str:
-    return f"{escalation['summary']} — what next"
+    """An approval lists each command with its label, then the rules "always" would save (the
+    chat's callout shows the same); any other pause is its summary."""
+    if escalation.get("reason") != "approval":
+        return f"{escalation['summary']} — what next"
+    lines = [str(escalation.get("summary", "")), *approval_lines(escalation)]
+    if escalation.get("rules") and any(o.startswith("always_") for o in escalation.get("options") or []):
+        lines.append(f"Rules offered: {RULES_JOIN.join(str(rule) for rule in escalation['rules'])}")
+    return "\n".join([*lines, "what next"])
 
 
 def _exited(proc: object) -> bool:

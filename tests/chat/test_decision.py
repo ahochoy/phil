@@ -16,15 +16,49 @@ def answers(decision):
 
 def test_approval_pause():
     d = pause_decision("r-4f2a", {"reason": "approval", "task_id": "CALC-002", "commands": ["node build.mjs"],
-                                  "options": ["approve", "deny", "abort"], "summary": "x"})
+                                  "labels": ["changes things"], "rules": ["node build.mjs"], "repo": "calc",
+                                  "options": ["approve", "always_repo", "deny", "abort"], "summary": "x"})
     assert d.kind == "approval"
     assert d.title == "⏸ r-4f2a needs you · approve a command"
-    assert d.body == ("CALC-002 wants to run:", "  node build.mjs",
-                      "Approving allows these exact commands for the rest of this run only.")
-    assert labels(d) == ["Approve for this run", "Deny: the agent continues without it", "Abort the run"]
-    assert answers(d) == ["approve", "deny", "abort"]
+    assert d.body == ("CALC-002 wants to run:", "  node build.mjs  changes things")
+    assert labels(d) == ["Allow for this run", "Always allow in calc: node build.mjs", "Deny", "Stop the run"]
+    assert answers(d) == ["approve", "always_repo", "deny", "abort"]
     assert d.default == 0
-    assert settled_line(d, d.options[0]) == "✓ Approve for this run · node build.mjs"
+    assert settled_line(d, d.options[0]) == "✓ Allow for this run · node build.mjs"
+
+
+def test_approval_pause_offers_saving_rules_everywhere_verbatim():
+    d = pause_decision("r-1", {
+        "reason": "approval", "task_id": "CALC-001", "commands": ["gh pr checks 42", "make test-unit --fast"],
+        "labels": ["reads only", "may change things"], "rules": ["gh pr checks *", "make test-unit *"],
+        "repo": "calc", "options": ["approve", "always_repo", "always_everywhere", "deny", "abort"], "summary": "x",
+    })
+    assert d.body == (
+        "CALC-001 wants to run:",
+        "  gh pr checks 42        reads only",
+        "  make test-unit --fast  may change things",
+    )
+    assert labels(d) == [
+        "Allow for this run",
+        "Always allow in calc: gh pr checks *  ·  make test-unit *",
+        "Always allow everywhere: gh pr checks *  ·  make test-unit *",
+        "Deny",
+        "Stop the run",
+    ]
+    assert answers(d) == ["approve", "always_repo", "always_everywhere", "deny", "abort"]
+    assert d.default == 0
+
+
+def test_approval_pause_without_saving_offers_only_the_run():
+    d = pause_decision("r-1", {"reason": "approval", "task_id": "CALC-001", "commands": ["make x '*'"],
+                               "labels": ["may change things"], "rules": [], "repo": "calc",
+                               "options": ["approve", "deny", "abort"], "summary": "x"})
+    assert labels(d) == ["Allow for this run", "Deny", "Stop the run"]
+
+
+def test_other_pauses_keep_their_abort_label():
+    d = pause_decision("r-1", {"reason": "budget", "options": ["continue", "abort"], "summary": "x"})
+    assert labels(d) == ["Keep going past the budget", "Abort the run"]
 
 
 def test_attempts_pause_lists_three_problems_and_defaults_to_retry():

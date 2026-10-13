@@ -15,6 +15,8 @@ class CommandLog:
     denied: list[str] = field(default_factory=list)
     refused: list[str] = field(default_factory=list)
     blocked: list[str] = field(default_factory=list)  # stopped by a deny rule: reported, never asked about
+    # Each denied command's label (`changes things`...), as the shell policy decided it.
+    labels: dict[str, str] = field(default_factory=dict)
     # Paths the agent's file tools touched, by tool name; `invoke_agent` records into it live, so
     # it survives a rejected output (ContractViolation) or a crash.
     tool_paths: dict[str, list[str]] = field(default_factory=dict)
@@ -75,6 +77,7 @@ def make_shell_tool(
             return f"DENIED: `{command}` is blocked by your {decision.reason}. Don't use it."
         if decision.outcome == "ask":
             log.denied.append(command)
+            log.labels[command] = decision.label
             if reads_only:
                 return f"DENIED: `{command}` is not read-only. Only read-only commands run here: {', '.join(READ_ONLY)}"
             return f"DENIED: `{command}` is not on the allowlist. Allowed patterns: {allowed_patterns}"

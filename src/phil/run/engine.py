@@ -1,12 +1,14 @@
 import json
 import logging
 import os
+import shlex
 import shutil
 import sqlite3
 import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, cast
 
@@ -31,7 +33,10 @@ from phil.contracts import (
 )
 from phil.git import GitError, branch_for, git
 from phil.packets import Packet, PacketTooLarge, build_packet
+from phil.permissions.catalog import label_for
 from phil.permissions.load import trusted_shell
+from phil.permissions.rules import exact_only, suggest_rule
+from phil.permissions.store import PolicyWriteError, add_rule
 from phil.repo_detect import effective_setup_cmd
 from phil.run.gates import (
     COMMAND_NOT_FOUND,
@@ -57,8 +62,8 @@ from phil.run.state import (
 )
 from phil.store.activity import MAX_DETAIL_CHARS, ActivityLog
 from phil.store.artifacts import ArtifactStore, artifact_name
-from phil.store.events import EventLog
-from phil.store.paths import ProjectPaths
+from phil.store.events import EventLog, saved_rules_line, unsaved_rules_line
+from phil.store.paths import ProjectPaths, global_policy_path
 from phil.store.runs import get_run, update_run
 from phil.store.telemetry import run_usage, usage_by_role
 from phil.ui.plan_view import _clip
@@ -121,6 +126,14 @@ def _tool_reads(log: CommandLog) -> list[str]:
 
 def _cap_diff(diff: str) -> str:
     return diff if len(diff) <= MAX_DIFF_CHARS else diff[:MAX_DIFF_CHARS] + DIFF_TRUNCATED
+
+
+def _argv(command: str) -> list[str] | None:
+    """A denied command's words, tokenised as the shell policy tokenised it; None if it can't be."""
+    try:
+        return shlex.split(command.strip())
+    except ValueError:
+        return None
 
 
 def _first_line(problem: str) -> str:
@@ -673,14 +686,57 @@ class RunEngine:
                 *(Issue(task_id=task.id, severity="minor", note=note).model_dump() for note in stopped),
             ]
         if log.denied:
-            update["escalation"] = {
-                "reason": "approval",
-                "task_id": task.id,
-                "commands": list(log.denied),
-                "options": ["approve", "deny", "abort"],
-                "summary": f"{task.id} needs approval for: {', '.join(log.denied)}",
-            }
+            update["escalation"] = self._approval_escalation(task.id, log)
         return {**budget_warn, **update}
+
+    def _approval_escalation(self, task_id: str, log: CommandLog) -> dict:
+        """The approval pause for the commands no rule allowed (spec §3.3, §3.4): each command's
+        label, the rules "Always allow" would save, and the answers on offer. The "always" answers
+        are left out when any command can't be saved as a rule (R4), and "everywhere" when any is
+        exact-only: an interpreter, a launcher, a destructive or remove command (R5, R8)."""
+        commands = list(log.denied)
+        argvs = [_argv(command) for command in commands]
+        labels = [log.labels.get(command) or label_for(argv or [], read_only=False)
+                  for command, argv in zip(commands, argvs)]
+        suggestions = [suggest_rule(argv) if argv is not None else None for argv in argvs]
+        options = ["approve"]
+        if self.deps.paths is not None and all(rule is not None for rule in suggestions):
+            options.append("always_repo")
+            if not any(exact_only(argv) for argv in argvs if argv is not None):
+                options.append("always_everywhere")
+        options += ["deny", "abort"]
+        return {
+            "reason": "approval",
+            "task_id": task_id,
+            "commands": commands,
+            "labels": labels,
+            "rules": list(dict.fromkeys(rule for rule in suggestions if rule is not None)),
+            "repo": self.deps.repo_root.name,
+            "options": options,
+            "summary": f"{task_id} needs approval for: {', '.join(commands)}",
+        }
+
+    def _save_rules(self, escalation: dict, everywhere: bool) -> None:
+        """Write an "Always allow" answer's rules and say so in the feed. Never raises: a rule that
+        can't be saved is reported, and the commands are still approved for this run."""
+        rules = [str(rule) for rule in escalation.get("rules") or []]
+        repo = str(escalation.get("repo") or self.deps.repo_root.name)
+        try:
+            if everywhere:
+                path, scope = global_policy_path(), "everywhere"
+            elif self.deps.paths is not None:
+                path, scope = self.deps.paths.policy_path, repo
+            else:
+                raise PolicyWriteError("this run has no project folder to save to")
+            header = f"# Phil permissions — {scope}. `phil permissions` shows what's in effect."
+            source = f"approval in {repo} ({self.deps.run_id})"
+            for rule in rules:
+                add_rule(path, "allow", rule, source, today=date.today(), header=header)
+        except Exception as exc:  # PolicyWriteError, or anything else: saving never fails the run
+            logger.warning("couldn't save the approved rules %s", rules, exc_info=True)
+            self._milestone("rule_saved", line=unsaved_rules_line(exc), ok=False)
+            return
+        self._milestone("rule_saved", line=saved_rules_line(rules, scope), ok=True)
 
     def _no_test_cmd_escalation(self, state: RunState) -> dict:
         task = load_plan(state).tasks[state["task_index"]]
@@ -869,6 +925,9 @@ class RunEngine:
             self.worktrees.reset_to(self.deps.worktree, state["task_base_sha"])
             plan = with_task_status(load_plan(state), state["task_index"], "SKIPPED")
             return {**cleared, "plan": plan.model_dump(), "next": "pick_task"}
+        if action in ("always_repo", "always_everywhere"):
+            self._save_rules(escalation, everywhere=action == "always_everywhere")
+            action = "approve"  # then exactly what approving does
         if action == "approve":
             # No gate judged the approved call, so implement continues that attempt on the worktree
             # as it was left (keep_worktree), with the approval in place. The call's own problems

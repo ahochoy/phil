@@ -375,6 +375,50 @@ def attempts_pause(problems, log=None):
     return step
 
 
+def approval_pause(options):
+    def step(c):
+        paths, run_id, conn = _run(c)
+        set_state(c, "escalated", needs_attention="CALC-001 needs approval for: gh pr merge 42")
+        run_events(paths, run_id).append("escalation", escalation={
+            "reason": "approval", "task_id": "CALC-001", "commands": ["gh pr merge 42"],
+            "labels": ["changes things"], "rules": ["gh pr merge *"], "repo": "calc", "options": options,
+            "summary": "CALC-001 needs approval for: gh pr merge 42",
+        })
+        c._watcher.poll_once()
+        return WAKE
+
+    return step
+
+
+ALL_ANSWERS = ["approve", "always_repo", "always_everywhere", "deny", "abort"]
+
+
+@pytest.mark.parametrize("choice, label", [
+    ("always_repo", "Always allow in calc: gh pr merge *"),
+    ("always_everywhere", "Always allow everywhere: gh pr merge *"),
+])
+def test_an_always_answer_resumes_the_run_with_it(controller_with_choose, choice, label):
+    calls = []
+    text, spawned, runs, *_ = controller_with_choose(
+        ["add subtract", "y", approval_pause(ALL_ANSWERS), choice], FULL_SCRIPT, calls=calls)
+    pause = next(call[2] for call in calls if call[0] == "choose" and call[2].kind == "approval")
+    assert [o.label for o in pause.options] == [
+        "Allow for this run", "Always allow in calc: gh pr merge *", "Always allow everywhere: gh pr merge *",
+        "Deny", "Stop the run"]
+    assert (runs[0].run_id, "resume", {"action": choice}) in spawned
+    assert f"✓ {label} · gh pr merge 42" in text
+
+
+def test_an_approval_without_everywhere_leaves_it_out_of_the_callout(controller_with_choose):
+    calls = []
+    controller_with_choose(
+        ["add subtract", "y", approval_pause(["approve", "always_repo", "deny", "abort"]), "deny"], FULL_SCRIPT,
+        calls=calls)
+    pause = next(call[2] for call in calls if call[0] == "choose" and call[2].kind == "approval")
+    assert [o.label for o in pause.options] == [
+        "Allow for this run", "Always allow in calc: gh pr merge *", "Deny", "Stop the run"]
+
+
 def test_an_attempts_pause_details_are_its_problems(controller):
     """No log: when the pause opens, /more 1 is decision.txt with the summary and every problem."""
     problems = ["first problem here", "second problem here", "third problem", "fourth problem"]
@@ -502,9 +546,12 @@ def test_an_approved_command_reaches_the_resumed_worker(calc_repo):
     )
     run_id = runs[0].run_id
     pause = next(call[2] for call in calls if call[0] == "choose" and call[2].kind == "approval")
-    assert "  " + BUILD in pause.body
+    assert f"  {BUILD}  changes things" in pause.body
+    # BUILD runs an interpreter: it can be saved for this repo, exactly, but never everywhere.
+    assert [o.label for o in pause.options] == [
+        "Allow for this run", f"Always allow in {calc_repo.name}: {BUILD}", "Deny", "Stop the run"]
     assert spawned[1] == (run_id, "resume", {"action": "approve"})
-    assert "✓ Approve for this run · " + BUILD in text
+    assert "✓ Allow for this run · " + BUILD in text
     record = get_run(connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path), run_id)
     assert record.state == "completed"
 

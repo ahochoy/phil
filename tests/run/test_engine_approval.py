@@ -192,3 +192,138 @@ def test_an_approval_resume_keeps_what_the_paused_call_wrote(make_harness, calc_
     final = harness.resume({"action": "approve"})
     assert final["status"] == "completed"
     assert harness.factory.remaining() == {"implementer": 0, "tester": 0, "reviewer": 0}
+
+
+# --- "Always allow": the callout saves rules (spec 2026-10-13 §3.3, §3.4) ---------------------
+
+# The brief's `make test-unit --fast` predates R9: an option after the subcommand is saved exactly
+# (see test_an_option_is_suggested_exactly), so the open-ended case uses a plain argument.
+MERGE, UNIT = "gh pr merge 42", "make test-unit calc"
+
+
+def asks(*commands):
+    """An implementer call that tries `commands` (each is denied: no rule allows it), then writes red."""
+    def script(turn):
+        for command in commands:
+            assert turn.tools["run_shell"](command).startswith("DENIED:")
+        return write_red(turn)
+
+    return script
+
+
+def paused(make_harness, *commands):
+    """A harness whose run paused for approval of `commands`, and that escalation."""
+    harness = make_harness({"implementer": [asks(*commands)]})
+    escalation = harness.start()["__interrupt__"][0].value
+    assert escalation["reason"] == "approval"
+    return harness, escalation
+
+
+def answer(harness, monkeypatch, action):
+    """Resume the paused run's escalate node with `action`, returning what it hands the graph."""
+    def interrupt(payload):
+        assert "error" not in payload, payload["error"]  # the engine rejected the answer
+        return {"action": action}
+
+    monkeypatch.setattr("phil.run.engine.interrupt", interrupt)
+    state = harness.graph.get_state(harness.thread).values
+    return harness.engine.escalate(state)
+
+
+def feed_lines(harness, kind="rule_saved"):
+    from phil.ui.feed_view import FeedRenderer
+
+    events, _ = harness.deps.events.read()
+    return [FeedRenderer().milestone(event, 200).plain for event in events if event["kind"] == kind]
+
+
+def test_an_approval_escalation_suggests_rules_and_labels_each_command(make_harness):
+    _, escalation = paused(make_harness, MERGE, UNIT)
+    assert escalation["commands"] == [MERGE, UNIT]
+    assert escalation["labels"] == ["changes things", "may change things"]
+    assert escalation["rules"] == ["gh pr merge *", "make test-unit *"]
+    assert escalation["options"] == ["approve", "always_repo", "always_everywhere", "deny", "abort"]
+    assert escalation["repo"] == "calc"
+
+
+def test_an_option_is_suggested_exactly(make_harness):
+    _, escalation = paused(make_harness, "make test-unit --fast")
+    assert escalation["rules"] == ["make test-unit --fast"]
+    assert escalation["labels"] == ["may change things"]
+    assert escalation["options"] == ["approve", "always_repo", "always_everywhere", "deny", "abort"]
+
+
+def test_the_same_rule_is_suggested_once(make_harness):
+    _, escalation = paused(make_harness, "gh pr merge 42", "gh pr merge 43")
+    assert escalation["rules"] == ["gh pr merge *"]
+    assert escalation["labels"] == ["changes things", "changes things"]
+
+
+def test_an_interpreter_is_never_offered_everywhere(make_harness):
+    _, escalation = paused(make_harness, MERGE, "python3 x.py")
+    assert escalation["rules"] == ["gh pr merge *", "python3 x.py"]
+    assert escalation["labels"] == ["changes things", "changes things"]
+    assert escalation["options"] == ["approve", "always_repo", "deny", "abort"]
+
+
+def test_a_command_no_rule_can_express_offers_no_always(make_harness):
+    # R4: a literal `*` word can't be saved as a rule, so neither "always" answer is offered.
+    _, escalation = paused(make_harness, MERGE, "make test '*'")
+    assert escalation["options"] == ["approve", "deny", "abort"]
+
+
+def test_always_repo_saves_the_rules_and_approves_for_the_run(make_harness, monkeypatch):
+    import tomllib
+
+    harness, _ = paused(make_harness, MERGE, UNIT)
+    result = answer(harness, monkeypatch, "always_repo")
+    assert result["approved"] == [MERGE, UNIT]
+    assert result["next"] == "implement" and result["keep_worktree"] is True
+    assert result["escalation"] is None and result["denied"] == []
+
+    path = harness.deps.paths.policy_path
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("# Phil permissions — calc. `phil permissions` shows what's in effect.\n")
+    saved = tomllib.loads(text)["allow"]
+    assert [entry["rule"] for entry in saved] == ["gh pr merge *", "make test-unit *"]
+    assert {entry["from"] for entry in saved} == {"approval in calc (r-0001)"}
+    assert not global_policy_path().exists()
+    assert feed_lines(harness) == ['Saved rules "gh pr merge *", "make test-unit *" for calc · /permissions to review']
+
+
+def test_always_everywhere_saves_to_the_global_file(make_harness, monkeypatch, tmp_path):
+    import tomllib
+
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    harness, _ = paused(make_harness, MERGE)
+    result = answer(harness, monkeypatch, "always_everywhere")
+    assert result["approved"] == [MERGE]
+
+    path = tmp_path / "home" / "policy.toml"
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("# Phil permissions — everywhere. `phil permissions` shows what's in effect.\n")
+    assert [entry["rule"] for entry in tomllib.loads(text)["allow"]] == ["gh pr merge *"]
+    assert not harness.deps.paths.policy_path.exists()
+    assert feed_lines(harness) == ['Saved rule "gh pr merge *" for everywhere · /permissions to review']
+
+
+def test_a_rule_that_cannot_be_saved_still_approves_for_the_run(make_harness, monkeypatch):
+    harness, _ = paused(make_harness, MERGE)
+    harness.deps.paths.policy_path.write_text("this is [not toml\n", encoding="utf-8", newline="\n")
+    result = answer(harness, monkeypatch, "always_repo")
+    assert result["approved"] == [MERGE]
+    assert result["next"] == "implement"
+    [line] = feed_lines(harness)
+    assert line.startswith("Couldn't save rule: ")
+    assert line.endswith(" · allowed for this run only")
+    assert harness.deps.paths.policy_path.read_text(encoding="utf-8") == "this is [not toml\n"
+
+
+def test_a_saved_rule_allows_the_command_on_the_next_call(make_harness, monkeypatch):
+    harness, _ = paused(make_harness, UNIT)
+    answer(harness, monkeypatch, "always_repo")
+    from phil.permissions.load import policy_for
+    from phil.workspace.shell import ShellPolicy
+
+    policy = policy_for(harness.deps.repo_root, harness.deps.paths, harness.deps.config)
+    assert ShellPolicy(policy).decide("make test-unit other").reason == 'rule "make test-unit *" (calc)'

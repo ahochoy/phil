@@ -77,11 +77,39 @@ def answered_elsewhere(run_id: str) -> str:
     return f"{run_id} was answered elsewhere."
 
 
+# An approval pause's own labels (spec 2026-10-13 §3.4); other pauses keep LABELS.
+_APPROVAL_LABELS = {"approve": "Allow for this run", "deny": "Deny", "abort": "Stop the run"}
+RULES_JOIN = "  ·  "
+
+
+def approval_lines(escalation: dict) -> list[str]:
+    """Each denied command, indented and padded so its label lines up in a column after it."""
+    commands = [str(c) for c in escalation.get("commands") or []]
+    labels = [str(label) for label in escalation.get("labels") or []]
+    if len(labels) != len(commands):
+        return [f"  {c}" for c in commands]
+    width = max(len(c) for c in commands) if commands else 0
+    return [f"  {c.ljust(width)}  {label}" for c, label in zip(commands, labels)]
+
+
+def _approval_options(escalation: dict, words: list[str]) -> tuple[Option, ...]:
+    rules = RULES_JOIN.join(str(rule) for rule in escalation.get("rules") or [])
+    labels = {
+        **_APPROVAL_LABELS,
+        "always_repo": f"Always allow in {escalation.get('repo', 'this repo')}: {rules}",
+        "always_everywhere": f"Always allow everywhere: {rules}",
+    }
+    return tuple(Option(labels.get(w) or LABELS.get(w, w.capitalize()), w) for w in words)
+
+
 def pause_decision(run_id: str, escalation: dict) -> Decision:
     reason = str(escalation.get("reason", ""))
     words = [str(w) for w in escalation.get("options") or ["abort"]]
     words = [w for w in words if w != "abort"] + ["abort"]  # abort always last
-    options = tuple(Option(LABELS.get(w, w.capitalize()), w) for w in words)
+    if reason == "approval":
+        options = _approval_options(escalation, words)
+    else:
+        options = tuple(Option(LABELS.get(w, w.capitalize()), w) for w in words)
     wanted = DEFAULT_FOR.get(reason)
     default = next((i for i, o in enumerate(options) if o.answer == wanted), 0)
     if options[default].answer == "abort":
@@ -97,8 +125,7 @@ def pause_decision(run_id: str, escalation: dict) -> Decision:
     elif reason == "approval":
         commands = [str(c) for c in escalation.get("commands") or []]
         title_end = _TITLES[reason]
-        body = [f"{escalation.get('task_id', 'The task')} wants to run:", *(f"  {c}" for c in commands),
-                "Approving allows these exact commands for the rest of this run only."]
+        body = [f"{escalation.get('task_id', 'The task')} wants to run:", *approval_lines(escalation)]
         note = ", ".join(commands)
     elif reason == "no_test_cmd":
         title_end = _TITLES[reason]

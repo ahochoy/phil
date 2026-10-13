@@ -163,4 +163,7 @@ class FeedRenderer:
             if role == "reviewer":
                 return Text(f"✗ reviewer asked for changes: {issues} issues ({blocking} blocking)", style="phil.band.fail")
             return Text(f"✗ {role}: {issues} issues ({blocking} blocking)", style="phil.band.fail")
+        if kind == "rule_saved":
+            # The line is built by the engine (store.events.saved_rules_line); rule text is plain, so Text.
+            return Text(str(event.get("line", "")), style="phil.muted" if event.get("ok", True) else "phil.warn")
         return Text(str(kind), style="phil.muted")

@@ -5,7 +5,7 @@ from phil.store.db import utcnow
 from phil.store.paths import ProjectPaths
 
 # The run milestones the activity feed shows between tool lines (each carries the activity `seq`).
-MILESTONE_KINDS = ("task_started", "gate", "attempt_failed", "task_done", "verdict")
+MILESTONE_KINDS = ("task_started", "gate", "attempt_failed", "task_done", "verdict", "rule_saved")
 
 
 class EventLog:
@@ -58,6 +58,18 @@ def test_cmd_changed_line(cmd: str) -> str:
 
 
 test_cmd_changed_line.__test__ = False  # not a pytest test
+
+
+def saved_rules_line(rules: list[str], scope: str) -> str:
+    """The feed line after "Always allow" saved `rules` for `scope` (a repo name or `everywhere`)."""
+    quoted = ", ".join(f'"{rule}"' for rule in rules)
+    noun = "rule" if len(rules) == 1 else "rules"
+    return f"Saved {noun} {quoted} for {scope} · /permissions to review"
+
+
+def unsaved_rules_line(error: object) -> str:
+    """The feed line when "Always allow" couldn't save its rules: the commands still run this time."""
+    return f"Couldn't save rule: {error} · allowed for this run only"
 
 
 def run_events(paths: ProjectPaths, run_id: str) -> EventLog:
