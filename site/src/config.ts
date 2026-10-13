@@ -16,6 +16,8 @@ export interface SiteConfig {
     documentation: string;
     personalSite: string;
     devlog: string;
+    devlogPart1: string;
+    cal: string;
   };
   metrics: {
     label: string;
@@ -43,6 +45,8 @@ export const SITE_CONFIG: SiteConfig = {
     documentation: "https://github.com/ahochoy/phil#readme",
     personalSite: "https://andrewhochoy.com/",
     devlog: "https://andrewhochoy.com/devlog/",
+    devlogPart1: "https://andrewhochoy.com/devlog/2026-10-08-building-phil-1-stop-the-waste",
+    cal: "https://cal.com/andrew-hochoy/intro-call",
   },
   metrics: [
     {

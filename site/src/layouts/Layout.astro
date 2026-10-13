@@ -48,31 +48,31 @@ const {
     >
     </div>
 
-    <!-- Header Navigation -->
-    <header class="sticky top-0 z-50 backdrop-blur-md bg-[#FAF8F5]/85 border-b border-[#E5DDD3] transition-all">
+    <!-- Header Navigation in Taupe palette matching the Hero -->
+    <header class="sticky top-0 z-50 backdrop-blur-md bg-[#352F2A]/90 border-b border-[#4D453E] transition-all">
       <div class="max-w-6xl mx-auto px-6 h-18 flex items-center justify-between">
         <!-- Brand -->
         <a href="#" class="flex items-center gap-3 group">
-          <div class="w-8 h-8 rounded-full border border-[#D5CCC0] bg-[#F2EDE4] flex items-center justify-center font-serif text-[#26221E] text-lg font-medium shadow-xs group-hover:border-[#C26910] transition-colors">
+          <div class="w-8 h-8 rounded-full border border-[#554C43] bg-[#433B34] flex items-center justify-center font-serif text-[#FAF8F5] text-lg font-medium shadow-xs group-hover:border-[#F59E0B] transition-colors">
             φ
           </div>
           <div class="flex flex-col">
-            <span class="font-serif text-xl tracking-tight font-medium text-[#26221E] leading-none group-hover:text-[#C26910] transition-colors">
+            <span class="font-serif text-xl tracking-tight font-medium text-[#FAF8F5] leading-none group-hover:text-[#F59E0B] transition-colors">
               Phil
             </span>
-            <span class="text-[11px] tracking-wider uppercase text-[#8A8177] font-mono mt-0.5">
+            <span class="text-[11px] tracking-wider uppercase text-[#B8ADA0] font-mono mt-0.5">
               φιλία · dev agent
             </span>
           </div>
         </a>
 
         <!-- Desktop Navigation -->
-        <nav class="hidden md:flex items-center gap-7 text-[13px] font-medium tracking-wide text-[#6B635B]">
-          <a href="#origin" class="hover:text-[#26221E] transition-colors">Origin</a>
-          <a href="#architecture" class="hover:text-[#26221E] transition-colors">Architecture</a>
-          <a href="#pillars" class="hover:text-[#26221E] transition-colors">Engineering Pillars</a>
-          <a href="#benchmarks" class="hover:text-[#26221E] transition-colors">Benchmarks</a>
-          <a href="#install" class="hover:text-[#26221E] transition-colors">Quickstart</a>
+        <nav class="hidden md:flex items-center gap-7 text-[13px] font-medium tracking-wide text-[#D5CCC0]">
+          <a href="#origin" class="hover:text-[#FAF8F5] transition-colors">Origin</a>
+          <a href="#architecture" class="hover:text-[#FAF8F5] transition-colors">Architecture</a>
+          <a href="#pillars" class="hover:text-[#FAF8F5] transition-colors">Engineering Pillars</a>
+          <a href="#benchmarks" class="hover:text-[#FAF8F5] transition-colors">Benchmarks</a>
+          <a href="#install" class="hover:text-[#FAF8F5] transition-colors">Quickstart</a>
         </nav>
 
         <!-- Action Buttons -->
@@ -81,7 +81,7 @@ const {
             href={SITE_CONFIG.links.personalSite}
             target="_blank"
             rel="noopener noreferrer"
-            class="hidden sm:inline-flex items-center gap-1.5 text-[12px] font-mono font-medium px-3 py-1.5 rounded-full border border-[#D5CCC0] bg-[#F4EFEA] text-[#6B635B] hover:text-[#26221E] hover:border-[#B8ADA0] transition-all"
+            class="hidden sm:inline-flex items-center gap-1.5 text-[12px] font-mono font-medium px-3 py-1.5 rounded-full border border-[#554C43] bg-[#433B34] text-[#D5CCC0] hover:text-[#FAF8F5] hover:border-[#6B6055] transition-all"
           >
             <span>by Andrew Hochoy</span>
             <span class="text-[#A3998C]">↗</span>
@@ -90,7 +90,7 @@ const {
             href={SITE_CONFIG.links.github}
             target="_blank"
             rel="noopener noreferrer"
-            class="inline-flex items-center gap-2 text-[13px] font-medium px-4 py-2 rounded-full bg-[#26221E] text-[#FAF8F5] hover:bg-[#3D3732] shadow-sm transition-all"
+            class="inline-flex items-center gap-2 text-[13px] font-medium px-4 py-2 rounded-full bg-[#FAF8F5] text-[#26221E] hover:bg-[#EFE9E2] shadow-sm transition-all"
           >
             <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
               <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
@@ -117,9 +117,9 @@ const {
           </p>
         </div>
         <div class="flex items-center gap-6 text-xs font-mono text-[#7A7268]">
-          <a href={SITE_CONFIG.links.devlog} target="_blank" class="hover:text-[#26221E] transition-colors">Read the Dev Log ↗</a>
+          <a href={SITE_CONFIG.links.devlogPart1} target="_blank" class="hover:text-[#26221E] transition-colors">Dev Log (Part 1) ↗</a>
           <a href={SITE_CONFIG.links.github} target="_blank" class="hover:text-[#26221E] transition-colors">GitHub Repository ↗</a>
-          <a href={SITE_CONFIG.links.personalSite} target="_blank" class="hover:text-[#26221E] transition-colors">Portfolio ↗</a>
+          <a href={SITE_CONFIG.links.cal} target="_blank" class="hover:text-[#26221E] transition-colors">Intro Call ↗</a>
         </div>
       </div>
     </footer>
