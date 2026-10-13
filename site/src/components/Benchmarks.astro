@@ -94,28 +94,28 @@ const ARTICLES: ArticleItem[] = [
             href={article.url}
             target="_blank"
             rel="noopener noreferrer"
-            class="block p-6 sm:p-7 rounded-2xl bg-[#FAF8F5] border-2 border-[#A7F3D0] hover:border-[#0B7A5A] shadow-xs hover:shadow-md transition-all group relative overflow-hidden"
+            class="block p-6 sm:p-7 rounded-2xl bg-[#FAF8F5] border-2 border-[#B89B7D] hover:border-[#6B503D] shadow-xs hover:shadow-md transition-all group relative overflow-hidden"
           >
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2.5">
               <div class="flex items-center gap-3 flex-wrap">
-                <span class="font-mono text-xs text-[#0B7A5A] font-bold">
+                <span class="font-mono text-xs text-[#6B503D] font-bold">
                   PART {article.num}
                 </span>
                 <span class="text-[#D5CCC0] hidden sm:inline">•</span>
-                <h3 class="font-serif text-xl sm:text-2xl font-medium text-[#26221E] group-hover:text-[#0B7A5A] transition-colors">
+                <h3 class="font-serif text-xl sm:text-2xl font-medium text-[#26221E] group-hover:text-[#6B503D] transition-colors">
                   {article.title}
                 </h3>
               </div>
 
-              <!-- Live Badge -->
+              <!-- Live Badge (Warm Taupe / Brown) -->
               <div class="flex items-center gap-2 self-start sm:self-auto">
                 {article.date && (
                   <span class="text-xs font-mono text-[#7A7268] hidden md:inline">
                     {article.date} ·
                   </span>
                 )}
-                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#E6F4EA] border border-[#A7F3D0] text-[#0B7A5A] font-mono text-[11px] font-semibold group-hover:bg-[#0B7A5A] group-hover:text-[#FAF8F5] transition-colors">
-                  <span class="w-1.5 h-1.5 rounded-full bg-[#0B7A5A] group-hover:bg-[#FAF8F5] animate-pulse"></span>
+                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#EFE8DE] border border-[#D5C7B5] text-[#5C4533] font-mono text-[11px] font-semibold group-hover:bg-[#5C4533] group-hover:text-[#FAF8F5] group-hover:border-[#5C4533] transition-colors">
+                  <span class="w-1.5 h-1.5 rounded-full bg-[#7A5C43] group-hover:bg-[#FAF8F5] animate-pulse"></span>
                   <span>Read Article</span>
                   <span class="text-xs">↗</span>
                 </span>
