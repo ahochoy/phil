@@ -460,16 +460,10 @@ def _for_matching(tokens: list[str]) -> list[str]:
 
 
 def _program_name(arg0: str) -> str:
-    """The program `arg0` names, as compared with _RISKY_PROGRAMS. On Windows that's its
-    basename (either separator), lowercased, without a .exe/.cmd/.bat suffix, so
-    `C:/x/python3.exe` is `python3`. Elsewhere `arg0` itself."""
-    if not platform.IS_WINDOWS:
-        return arg0
-    name = re.split(r"[\\/]", arg0)[-1].lower()
-    for suffix in (".exe", ".cmd", ".bat"):
-        if name.endswith(suffix):
-            return name.removesuffix(suffix)
-    return name
+    """The program `arg0` names, as compared with _RISKY_PROGRAMS (see permissions.rules)."""
+    from phil.permissions.rules import program_name
+
+    return program_name(arg0)
 
 
 def _is_denied(argv: list[str]) -> bool:

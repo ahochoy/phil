@@ -790,8 +790,9 @@ def test_on_windows_risky_programs_are_matched_by_basename(monkeypatch, command)
     assert ShellPolicy(["* *"]).denial_reason(command) == "forbidden"
 
 
-def test_on_posix_risky_program_matching_is_unchanged(monkeypatch):
+def test_on_posix_risky_programs_are_matched_by_basename(monkeypatch):
     monkeypatch.setattr(platform, "IS_WINDOWS", False)
+    assert ShellPolicy(["* *"]).denial_reason("/usr/bin/python3 -c x") == "forbidden"
     assert ShellPolicy(["python.exe *"]).is_allowed("python.exe -c x")
 
 
