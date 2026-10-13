@@ -1,10 +1,16 @@
-"""Built-in read-only subcommands (spec 2026-10-13 §3.2, ruling R10) and the labels the approval
-callout shows. Today's READ_ONLY list in workspace/shell.py stays as it is; this catalog adds
-subcommands of programs that also have mutating ones.
+"""Built-in read-only subcommands (spec 2026-10-13 §3.2, rulings R10 to R12) and the labels the
+approval callout shows. Today's READ_ONLY list in workspace/shell.py stays as it is; this catalog
+adds subcommands of programs that also have mutating ones.
 
 A command is a read only when every word after its subcommand path is a plain argument (R9: no
 leading `-`, no `=`) or an option whose name, the part before any `=`, is on that entry's own
-`safe_flags`. Any other option, and `--`, is not a read."""
+`safe_flags`. Any other option, and `--`, is not a read. A safe flag in `valued` takes a value
+(R12): the next word is consumed as it (and must not look like an option), or the flag is
+written `--opt=value`. An entry's `check` sees only the parsed options and plain arguments, never a
+consumed value.
+
+uv, pnpm and yarn have no entries (R11): they run code named in repo-local config files the agent
+can write (`pyproject.toml`, `.yarnrc.yml`, `.pnpmfile.cjs`)."""
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -14,26 +20,41 @@ from phil.permissions.rules import exact_only, has_separator, is_plain_argument,
 
 @dataclass(frozen=True)
 class Entry:
-    """One read-only subcommand: the options it tolerates, and an extra check on the words after
-    the subcommand path for the few entries that need one (a read mode that must be named)."""
+    """One read-only subcommand: the options it tolerates, which of those take a value, whether a
+    valued short flag may carry its value attached (`-L5`), and an extra check on the parsed
+    words for the few entries that need one (a read mode that must be named)."""
 
     safe_flags: frozenset[str] = frozenset()
+    valued: frozenset[str] = frozenset()
     check: Callable[[list[str]], bool] | None = None
+    attached: bool = False
+
+    def __post_init__(self) -> None:
+        assert self.valued <= self.safe_flags
 
 
 def _flags(*names: str) -> frozenset[str]:
     return frozenset(names)
 
 
+# gh: `-R`/`--repo` can point at any host, so the request goes where the agent says (a query, not a
+# write). `--jq` and `--template` run locally and can print environment variables; Phil strips
+# secret-named ones from `child_env`. `--web` and `-w` are left out: they open a browser at a URL
+# gh builds from the agent's arguments.
 _GH_READ = _flags(
-    "--json", "--jq", "-q", "--template", "-t", "--limit", "-L", "--state", "-s", "--web", "-w",
+    "--json", "--jq", "-q", "--template", "-t", "--limit", "-L", "--state", "-s",
     "--repo", "-R", "--comments", "-c", "--author", "-A", "--label", "-l", "--base", "-B", "--head",
     "-H", "--search", "-S", "--branch", "-b", "--assignee", "-a", "--patch", "--name-only", "--color",
     "--log", "--log-failed", "--watch", "--required", "--interval", "-i", "--exit-status", "--attempt",
     "--job", "-j",
 )
+_GH_VALUED = _flags(
+    "--json", "--jq", "-q", "--template", "-t", "--limit", "-L", "--state", "-s", "--repo", "-R",
+    "--author", "-A", "--label", "-l", "--base", "-B", "--head", "-H", "--search", "-S", "--branch",
+    "-b", "--assignee", "-a", "--interval", "-i", "--attempt", "--job", "-j", "--color",
+)
 _GH = {
-    path: Entry(_GH_READ)
+    path: Entry(_GH_READ, _GH_VALUED, attached=True)
     for path in (
         ("pr", "view"), ("pr", "list"), ("pr", "checks"), ("pr", "diff"), ("pr", "status"),
         ("issue", "view"), ("issue", "list"), ("issue", "status"), ("repo", "view"), ("run", "view"),
@@ -43,84 +64,92 @@ _GH = {
 }
 # `gh auth status --show-token` (`-t`) prints a secret: `-t` is not on this entry's list, and
 # neither is any abbreviation of `--show-token`.
-_GH[("auth", "status")] = Entry(_flags("--hostname"))
+_GH[("auth", "status")] = Entry(_flags("--hostname"), _flags("--hostname"))
 
 
-def _git_remote(rest: list[str]) -> bool:
-    return not any(is_plain_argument(word) for word in rest)  # `remote add o url` is a write
+def _git_remote(parsed: list[str]) -> bool:
+    return not any(is_plain_argument(word) for word in parsed)  # `remote add o url` is a write
 
 
-def _git_tag(rest: list[str]) -> bool:
-    return any(word in ("-l", "--list") for word in rest)  # listing must be asked for: `tag v1` creates
+def _git_tag(parsed: list[str]) -> bool:
+    return any(word in ("-l", "--list") for word in parsed)  # listing must be asked for: `tag v1` creates
 
 
-def _git_config(rest: list[str]) -> bool:
-    return any(word in ("--get", "--get-all", "--get-regexp", "--list", "-l") for word in rest)
+def _git_config(parsed: list[str]) -> bool:
+    return any(word in ("--get", "--get-all", "--get-regexp", "--list", "-l") for word in parsed)
 
 
-def _nothing_after(rest: list[str]) -> bool:
-    return not rest
+def _nothing_after(parsed: list[str]) -> bool:
+    return not parsed
 
 
 _GIT = {
-    ("remote",): Entry(_flags("-v", "--verbose"), _git_remote),
+    ("remote",): Entry(_flags("-v", "--verbose"), check=_git_remote),
     ("rev-parse",): Entry(_flags(
         "--abbrev-ref", "--short", "--show-toplevel", "--show-prefix", "--git-dir",
         "--is-inside-work-tree", "--verify", "-q", "--quiet", "--symbolic-full-name",
     )),
+    # `-M` and `-C` take only an attached number, so they are not valued.
     ("blame",): Entry(_flags(
         "-L", "-w", "-M", "-C", "-e", "-s", "-l", "--porcelain", "--line-porcelain", "--show-email", "-p",
-    )),
+    ), _flags("-L"), attached=True),
     ("tag",): Entry(_flags(
         "-l", "--list", "-n", "--sort", "--contains", "--no-contains", "--points-at", "--merged",
         "--no-merged", "--format",
-    ), _git_tag),
+    ), _flags("--sort", "--contains", "--no-contains", "--points-at", "--merged", "--no-merged", "--format"),
+        _git_tag),
     ("config",): Entry(_flags(
         "--get", "--get-all", "--get-regexp", "--list", "-l", "--local", "--global", "--system",
         "--show-origin", "--show-scope", "--name-only", "--null", "-z", "--default", "--type",
-    ), _git_config),
+    ), _flags("--default", "--type"), _git_config),
     ("stash", "list"): Entry(check=_nothing_after),  # `--output=<file>` writes: nothing may follow
 }
 _NPM_READ = _flags(
     "--json", "--all", "-a", "--depth", "--long", "-l", "--parseable", "-p", "--omit", "--include",
     "--workspace", "-w", "--workspaces",
 )
-_NPM = {(name,): Entry(_NPM_READ) for name in ("ls", "list", "outdated", "why", "explain", "view", "info")}
-# pnpm and yarn run a package.json script for a name they don't know, so each table lists only the
-# built-ins that exist (yarn's differ by version, so only `why`).
-_PNPM_READ = _flags(
-    "--json", "--depth", "--long", "--parseable", "--prod", "-P", "--dev", "-D", "--recursive", "-r",
-    "--filter", "--global", "-g",
-)
-_PNPM = {(name,): Entry(_PNPM_READ) for name in ("ls", "list", "why", "outdated")}
-_YARN = {("why",): Entry()}
-_UV_PIP = _flags(
-    "--format", "--editable", "-e", "--exclude-editable", "--strict", "--files", "-f", "--outdated",
-)  # not --python/-p: uv runs that file to query it
-_UV = {
-    ("pip", "list"): Entry(_UV_PIP), ("pip", "show"): Entry(_UV_PIP), ("pip", "freeze"): Entry(_UV_PIP),
-    ("python", "list"): Entry(),
+_NPM_VALUED = _flags("--depth", "--omit", "--include", "--workspace", "-w")
+_NPM = {
+    (name,): Entry(_NPM_READ, _NPM_VALUED)
+    for name in ("ls", "list", "outdated", "why", "explain", "view", "info")
 }
 _CARGO = {("version",): Entry()}
 _GO = {
-    ("list",): Entry(_flags("-json", "-m", "-e", "-f", "-u", "-versions", "-deps", "-find")),
+    ("list",): Entry(_flags("-json", "-m", "-e", "-f", "-u", "-versions", "-deps", "-find"), _flags("-f")),
     ("version",): Entry(_flags("-m", "-v")),
     ("env",): Entry(_flags("-json", "-changed")),  # not -w/-u (they edit the go env file)
 }
 
-CATALOG = {"gh": _GH, "git": _GIT, "npm": _NPM, "pnpm": _PNPM, "yarn": _YARN, "uv": _UV,
-           "cargo": _CARGO, "go": _GO}
-KNOWN_PROGRAMS = frozenset({*CATALOG, "docker", "kubectl"})
+CATALOG = {"gh": _GH, "git": _GIT, "npm": _NPM, "cargo": _CARGO, "go": _GO}
+KNOWN_PROGRAMS = frozenset({*CATALOG, "docker", "kubectl", "uv", "pnpm", "yarn"})
 
 
-def _words_allowed(entry: Entry, rest: list[str]) -> bool:
-    for word in rest:
-        if word.startswith("-"):
-            if word.split("=", 1)[0] not in entry.safe_flags:  # also rejects `-` and `--`
-                return False
-        elif not is_plain_argument(word):
-            return False
-    return entry.check is None or entry.check(rest)
+def _parse(entry: Entry, rest: list[str]) -> list[str] | None:
+    """The options (by name) and plain arguments in `rest`, without any consumed values; None when
+    a word isn't allowed or a valued flag has no usable value."""
+    parsed: list[str] = []
+    i = 0
+    while i < len(rest):
+        word = rest[i]
+        i += 1
+        if not word.startswith("-"):
+            if not is_plain_argument(word):
+                return None
+            parsed.append(word)
+            continue
+        name = word.split("=", 1)[0]
+        if name in entry.safe_flags:  # also rejects `-` and `--`
+            if "=" not in word and name in entry.valued:
+                if i >= len(rest) or rest[i].startswith("-"):
+                    return None
+                i += 1
+            parsed.append(name)
+        elif (entry.attached and "=" not in word and len(word) > 2 and word[1] != "-"
+              and word[:2] in entry.valued):
+            parsed.append(word[:2])
+        else:
+            return None
+    return parsed
 
 
 def catalog_reads(argv: list[str]) -> bool:
@@ -136,7 +165,8 @@ def catalog_reads(argv: list[str]) -> bool:
         return True
     for path, entry in table.items():
         if tuple(rest[: len(path)]) == path:
-            return _words_allowed(entry, rest[len(path):])
+            parsed = _parse(entry, rest[len(path):])
+            return parsed is not None and (entry.check is None or entry.check(parsed))
     return False
 
 
