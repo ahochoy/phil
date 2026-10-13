@@ -5,9 +5,9 @@
   <!-- Terminal Card Header & Mode Switcher -->
   <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mb-4">
     <div class="flex items-center gap-2">
-      <span class="text-xs font-mono uppercase tracking-wider text-[#7A7268]">Live Telemetry Preview</span>
-      <span class="text-[#D5CCC0]">•</span>
-      <span class="text-xs text-[#26221E] font-medium">Interactive Work Intensity Paths</span>
+      <span class="text-xs font-mono uppercase tracking-wider text-[#7A7268]">Example runs</span>
+      <span class="text-[#D5CCC0]">·</span>
+      <span class="text-xs text-[#26221E] font-medium">Three paths</span>
     </div>
 
     <!-- Interactive Path Switcher Tabs -->
@@ -17,21 +17,21 @@
         data-tab="quick"
         class="tab-btn px-3 py-1.5 rounded-lg text-[#26221E] bg-[#FAF8F5] shadow-xs font-medium transition-all"
       >
-        Quick Path
+        Quick path
       </button>
       <button
         type="button"
         data-tab="answer"
         class="tab-btn px-3 py-1.5 rounded-lg text-[#7A7268] hover:text-[#26221E] transition-all"
       >
-        Answer Path
+        Answer path
       </button>
       <button
         type="button"
         data-tab="full"
         class="tab-btn px-3 py-1.5 rounded-lg text-[#7A7268] hover:text-[#26221E] transition-all"
       >
-        Full Path
+        Full path
       </button>
     </div>
   </div>
@@ -46,7 +46,7 @@
         <div class="w-3 h-3 rounded-full bg-[#98C379]/80"></div>
       </div>
       <div class="text-[11px] text-[#8C827A] flex items-center gap-2">
-        <span>phil chat — volute @ main</span>
+        <span>phil chat · volute @ main</span>
         <span class="text-[#59524C]">|</span>
         <span class="text-[#A3998C]">budget: $2.00</span>
       </div>
@@ -74,7 +74,7 @@
             <span class="text-[#8C827A]">latency: 140ms · $0.0001</span>
           </div>
           <div class="text-[#059669]">
-            ✓ Classified: Simple change · <span class="underline underline-offset-2">quick path</span> (bypasses architect/critic overhead)
+            ✓ Classified: Simple change · <span class="underline underline-offset-2">quick path</span> (skips architect and critic)
           </div>
         </div>
 
@@ -169,21 +169,21 @@
         </div>
 
         <div class="space-y-1 text-xs">
-          <div class="text-[#E5C07B]">1. Intake clarifying questions (multiple choice) answered</div>
-          <div class="text-[#E5C07B]">2. Architect (High Tier) drafted 3-step contract plan</div>
-          <div class="text-[#E5C07B]">3. Critic (High Tier) reviewed plan & approved edge-case safety</div>
+          <div class="text-[#E5C07B]">1. Intake: 2 multiple-choice questions answered</div>
+          <div class="text-[#E5C07B]">2. Architect (high tier) drafted a 3-step contract plan</div>
+          <div class="text-[#E5C07B]">3. Critic (high tier) approved the plan</div>
           <div class="text-[#059669]">4. Run started in worktree .phil/worktrees/r-fe12 with 3 TDD tasks</div>
         </div>
 
         <div class="pt-2 text-xs text-[#8C827A] flex items-center justify-between border-t border-[#2B2622]">
-          <span>PR #14 opened: phil/r-fe12 → main (All 3 tasks verified)</span>
+          <span>PR #14 opened: phil/r-fe12 → main (3 of 3 tasks verified)</span>
           <span class="text-[#059669]">completed · spend: $0.28 / $2.00</span>
         </div>
       </div>
 
     </div>
 
-    <!-- Live Terminal Status Bar -->
+    <!-- Status bar -->
     <div class="px-4 py-2 bg-[#12100E] border-t border-[#332E2A] flex flex-wrap items-center justify-between text-[11px] text-[#8C827A] font-mono gap-2">
       <div class="flex items-center gap-3">
         <span class="text-[#98C379] flex items-center gap-1">

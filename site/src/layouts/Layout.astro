@@ -8,7 +8,7 @@ interface Props {
 }
 
 const {
-  title = `${SITE_CONFIG.title} — ${SITE_CONFIG.tagline}`,
+  title = `${SITE_CONFIG.title} | ${SITE_CONFIG.tagline}`,
   description = SITE_CONFIG.description,
 } = Astro.props;
 ---
@@ -41,14 +41,12 @@ const {
     />
   </head>
   <body class="bg-[#FAF8F5] text-[#4A443D] selection:bg-[#E2D9CC] selection:text-[#26221E] antialiased">
-    <!-- Subtle architectural museum background grid/texture -->
     <div
       class="fixed inset-0 pointer-events-none opacity-[0.03] z-[-1]"
       style="background-image: radial-gradient(#26221E 1px, transparent 1px); background-size: 32px 32px;"
     >
     </div>
 
-    <!-- Header Navigation in Taupe palette matching the Hero -->
     <header class="sticky top-0 z-50 backdrop-blur-md bg-[#352F2A]/90 border-b border-[#4D453E] transition-all">
       <div class="max-w-6xl mx-auto px-6 h-18 flex items-center justify-between">
         <!-- Brand -->
@@ -70,9 +68,9 @@ const {
         <nav class="hidden md:flex items-center gap-7 text-[13px] font-medium tracking-wide text-[#D5CCC0]">
           <a href="#origin" class="hover:text-[#FAF8F5] transition-colors">Origin</a>
           <a href="#architecture" class="hover:text-[#FAF8F5] transition-colors">Architecture</a>
-          <a href="#pillars" class="hover:text-[#FAF8F5] transition-colors">Engineering Pillars</a>
-          <a href="#benchmarks" class="hover:text-[#FAF8F5] transition-colors">Benchmarks</a>
-          <a href="#install" class="hover:text-[#FAF8F5] transition-colors">Quickstart</a>
+          <a href="#design" class="hover:text-[#FAF8F5] transition-colors">Design</a>
+          <a href="#devlog" class="hover:text-[#FAF8F5] transition-colors">Devlog</a>
+          <a href="#install" class="hover:text-[#FAF8F5] transition-colors">Install</a>
         </nav>
 
         <!-- Action Buttons -->
@@ -83,7 +81,7 @@ const {
             rel="noopener noreferrer"
             class="hidden sm:inline-flex items-center gap-1.5 text-[12px] font-mono font-medium px-3 py-1.5 rounded-full border border-[#554C43] bg-[#433B34] text-[#D5CCC0] hover:text-[#FAF8F5] hover:border-[#6B6055] transition-all"
           >
-            <span>by Andrew Hochoy</span>
+            <span>by Andrew HoChoy</span>
             <span class="text-[#A3998C]">↗</span>
           </a>
           <a
@@ -113,12 +111,12 @@ const {
             φ
           </div>
           <p class="text-sm text-[#7A7268]">
-            Phil is an open-source development agent built by <a href={SITE_CONFIG.links.personalSite} class="text-[#26221E] font-medium underline underline-offset-3 hover:text-[#C26910]">Andrew Hochoy</a>.
+            Phil is an open-source coding agent built by <a href={SITE_CONFIG.links.personalSite} class="text-[#26221E] font-medium underline underline-offset-3 hover:text-[#C26910]">Andrew HoChoy</a>.
           </p>
         </div>
         <div class="flex items-center gap-6 text-xs font-mono text-[#7A7268]">
-          <a href={SITE_CONFIG.links.devlogPart1} target="_blank" class="hover:text-[#26221E] transition-colors">Dev Log (Part 1) ↗</a>
-          <a href={SITE_CONFIG.links.github} target="_blank" class="hover:text-[#26221E] transition-colors">GitHub Repository ↗</a>
+          <a href={SITE_CONFIG.links.devlogPart1} target="_blank" class="hover:text-[#26221E] transition-colors">Devlog, Part 1 ↗</a>
+          <a href={SITE_CONFIG.links.github} target="_blank" class="hover:text-[#26221E] transition-colors">GitHub ↗</a>
           <a href={SITE_CONFIG.links.cal} target="_blank" class="hover:text-[#26221E] transition-colors">Schedule a chat ↗</a>
         </div>
       </div>

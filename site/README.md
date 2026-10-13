@@ -1,6 +1,6 @@
 # Phil Showcase Website
 
-A single-page showcase and engineering portfolio for **Phil** (The Token-Efficient, Contract-Driven Coding Agent), built with [Astro](https://astro.build/) and deployed on [Cloudflare](https://pages.cloudflare.com/).
+A one-page site for **Phil**, built with [Astro](https://astro.build/) and deployed on [Cloudflare](https://pages.cloudflare.com/).
 
 ## Local Development
 
@@ -34,7 +34,7 @@ This website is structured as a monorepo subfolder inside `site/`. When deployin
 
 ### Custom Domain
 
-Once deployed, go to **Custom domains** in the Cloudflare Pages project settings and add your custom domain or subdomain. Cloudflare will automatically provision SSL certificates and route traffic globally at the edge.
+Once deployed, go to **Custom domains** in the Cloudflare Pages project settings and add your custom domain or subdomain. Cloudflare provisions the certificate.
 
 ## Configuration & Links
 

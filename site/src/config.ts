@@ -28,11 +28,11 @@ export interface SiteConfig {
 
 export const SITE_CONFIG: SiteConfig = {
   title: "Phil",
-  tagline: "The Token-Efficient, Contract-Driven Coding Agent",
+  tagline: "A coding agent that knows what it costs",
   description:
-    "An autonomous CLI engineering teammate built around LangGraph, DeepAgents, and deterministic code-enforced gates. Runs in isolated git worktrees with strict budget controls and honest verification.",
+    "Phil is an open-source coding agent for the terminal. It plans with you, works in its own git worktree, checks its work with real commands, and stops before it spends more than you allowed.",
   author: {
-    name: "Andrew Hochoy",
+    name: "Andrew HoChoy",
     role: "AI Systems & Software Engineer",
     url: "https://andrewhochoy.com/",
     github: "https://github.com/ahochoy",
@@ -50,24 +50,24 @@ export const SITE_CONFIG: SiteConfig = {
   },
   metrics: [
     {
-      label: "Routing Speedup",
+      label: "Faster routing",
       value: "12×",
-      sublabel: "Lower p95 latency vs generative LLMs using TypeSafe Jev",
+      sublabel: "p95 latency, Jev vs. an LLM router",
     },
     {
-      label: "Cost Reduction",
-      value: "4× – 12×",
-      sublabel: "Saved per plan via 2-tier models and prompt caching",
+      label: "Cheaper plans",
+      value: "4 to 12×",
+      sublabel: "From two model tiers and prompt caching",
     },
     {
-      label: "Unsafe Routing Errors",
+      label: "Unsafe routes",
       value: "0",
-      sublabel: "Zero misrouted tasks on 50 live benchmark test cases",
+      sublabel: "Across 50 live benchmark runs",
     },
     {
-      label: "Containment",
-      value: "100%",
-      sublabel: "Worktree isolation, sanitized subshell envs & null keyrings",
+      label: "API keys in agent shells",
+      value: "0",
+      sublabel: "Env stripped, keyring backend set to null",
     },
   ],
 };

@@ -5,7 +5,7 @@
   --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
-  /* Cream, Stone & Taupe Palette */
+  /* Base palette */
   --color-cream-base: #FAF8F5;
   --color-cream-card: #F4EFEA;
   --color-cream-card-hover: #EFE9E2;
@@ -17,7 +17,7 @@
   --color-stone-dark: #1A1715;
   --color-stone-obsidian: #12100E;
 
-  /* Gemstone Accents */
+  /* Accents */
   --color-gem-topaz: #C26910;
   --color-gem-topaz-bg: #FEF3C7;
   --color-gem-topaz-border: #FCD34D;
@@ -53,7 +53,6 @@
   }
 }
 
-/* Subtle museum/editorial noise or border highlights */
 .editorial-border {
   border: 1px solid var(--color-stone-border);
 }

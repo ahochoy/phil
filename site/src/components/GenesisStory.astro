@@ -7,9 +7,9 @@ import { SITE_CONFIG } from "../config";
     <!-- Section Label -->
     <div class="flex items-center gap-2 mb-4 font-mono text-xs uppercase tracking-wider text-[#7A7268]">
       <span class="w-2 h-2 rounded-full bg-[#C26910]"></span>
-      <span>The Genesis Story</span>
-      <span class="text-[#D5CCC0]">•</span>
-      <span>Dev Log Part 1</span>
+      <span>Origin</span>
+      <span class="text-[#D5CCC0]">·</span>
+      <span>Devlog, Part 1</span>
     </div>
 
     <!-- Section Heading -->
@@ -19,41 +19,41 @@ import { SITE_CONFIG } from "../config";
           The one-line change that took <span class="italic font-serif text-[#C26910]">fifty minutes</span>.
         </h2>
         <p class="text-base sm:text-lg text-[#6B635B] leading-relaxed">
-          The job was simple: add a hidden <code class="text-xs bg-[#E8E1D7] px-1.5 py-0.5 rounded text-[#26221E] font-mono">&lt;meta name="easter-egg" content="hello world"&gt;</code> tag to a one-page Astro site. Any frontier coding model can write this in 2 seconds.
+          I asked an early version of Phil to add one hidden <code class="text-xs bg-[#E8E1D7] px-1.5 py-0.5 rounded text-[#26221E] font-mono">&lt;meta name="easter-egg" content="hello world"&gt;</code> tag to a one-page Astro site. Any current model writes that line in two seconds. Here is where the other fifty minutes went.
         </p>
       </div>
 
       <div class="lg:col-span-5 p-5 rounded-2xl bg-[#EFE9E2] border border-[#D5CCC0] text-xs space-y-3 font-mono">
-        <div class="text-[#7A7268] uppercase tracking-wider font-semibold">The Naive Agent Incident</div>
+        <div class="text-[#7A7268] uppercase tracking-wider font-semibold">What the run cost</div>
         <div class="grid grid-cols-2 gap-3 text-center pt-1">
           <div class="p-2.5 rounded-xl bg-[#FAF8F5] border border-[#E5DDD3]">
             <div class="font-serif text-2xl text-[#C26910] font-medium">438</div>
             <div class="text-[11px] text-[#7A7268] mt-0.5">Model Calls</div>
           </div>
           <div class="p-2.5 rounded-xl bg-[#FAF8F5] border border-[#E5DDD3]">
-            <div class="font-serif text-2xl text-[#C26910] font-medium">3,000,000+</div>
+            <div class="font-serif text-2xl text-[#C26910] font-medium">3M+</div>
             <div class="text-[11px] text-[#7A7268] mt-0.5">Input Tokens</div>
           </div>
         </div>
         <p class="text-[#6B635B] text-[11px] leading-relaxed">
-          The agent was not stupid—the harness was tripping over its own guardrails, resetting context on every human approval, and attempting TDD on an unrenderable meta tag.
+          The model wrote reasonable code. The harness around it tripped over its own guardrails, dropped context on every approval, and insisted on a failing test for a meta tag.
         </p>
       </div>
     </div>
 
-    <!-- Root Causes vs Solutions Grid -->
+    <!-- Root causes and fixes -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-10">
       <!-- Trap 1 -->
       <div class="p-6 rounded-2xl bg-[#FAF8F5] border border-[#E5DDD3] shadow-xs">
         <div class="flex items-center gap-2 mb-3">
           <span class="w-2 h-2 rounded-full bg-[#E06C75]"></span>
-          <h3 class="text-sm font-semibold text-[#26221E] uppercase tracking-wide font-mono">1. Exploratory Shell Halts</h3>
+          <h3 class="text-sm font-semibold text-[#26221E] uppercase tracking-wide font-mono">1. Every <code class="normal-case">ls</code> needed approval</h3>
         </div>
         <p class="text-sm text-[#6B635B] leading-relaxed mb-4">
           The agent used <code class="font-mono text-xs text-[#26221E]">ls</code>, <code class="font-mono text-xs text-[#26221E]">cat</code>, and <code class="font-mono text-xs text-[#26221E]">grep</code> to inspect the repository. None were on the execution allowlist, so each call paused for human approval. After each pause, the agent forgot its state and re-explored from zero.
         </p>
         <div class="p-3 rounded-xl bg-[#F4EFEA] border border-[#E5DDD3] text-xs text-[#0B7A5A] font-mono">
-          ✓ Phil Solution: Read-only safe allowlist with strict sandbox traversal and symlink guards.
+          Fix: Read-only commands like ls, cat, and grep run without approval, inside the worktree, with symlink checks.
         </div>
       </div>
 
@@ -61,13 +61,13 @@ import { SITE_CONFIG } from "../config";
       <div class="p-6 rounded-2xl bg-[#FAF8F5] border border-[#E5DDD3] shadow-xs">
         <div class="flex items-center gap-2 mb-3">
           <span class="w-2 h-2 rounded-full bg-[#E06C75]"></span>
-          <h3 class="text-sm font-semibold text-[#26221E] uppercase tracking-wide font-mono">2. Amnesia Across Retries</h3>
+          <h3 class="text-sm font-semibold text-[#26221E] uppercase tracking-wide font-mono">2. Each retry started from zero</h3>
         </div>
         <p class="text-sm text-[#6B635B] leading-relaxed mb-4">
-          Each approval, retry, or resume restarted a completely fresh agent session. Nearly all 3 million tokens were repetitive context re-transmissions rather than productive coding.
+          Each approval, retry, or resume started a new agent session. Most of the 3 million tokens were the same context, sent again.
         </p>
         <div class="p-3 rounded-xl bg-[#F4EFEA] border border-[#E5DDD3] text-xs text-[#0B7A5A] font-mono">
-          ✓ Phil Solution: SQLite checkpointing & state carry-over. Retries receive diffs and summaries, not amnesia.
+          Fix: SQLite checkpoints. A retry gets the diff and a summary of what already happened.
         </div>
       </div>
 
@@ -75,13 +75,13 @@ import { SITE_CONFIG } from "../config";
       <div class="p-6 rounded-2xl bg-[#FAF8F5] border border-[#E5DDD3] shadow-xs">
         <div class="flex items-center gap-2 mb-3">
           <span class="w-2 h-2 rounded-full bg-[#E06C75]"></span>
-          <h3 class="text-sm font-semibold text-[#26221E] uppercase tracking-wide font-mono">3. Rigid TDD on Static Code</h3>
+          <h3 class="text-sm font-semibold text-[#26221E] uppercase tracking-wide font-mono">3. TDD for a meta tag</h3>
         </div>
         <p class="text-sm text-[#6B635B] leading-relaxed mb-4">
-          The orchestrator demanded a failing test before writing code. But markup, copy, and static meta tags do not fail unit test suites, trapping the agent in an infinite red-phase loop.
+          The orchestrator wanted a failing test before any code. A meta tag can't fail a unit test, so the agent looped in the red phase and never got out.
         </p>
         <div class="p-3 rounded-xl bg-[#F4EFEA] border border-[#E5DDD3] text-xs text-[#0B7A5A] font-mono">
-          ✓ Phil Solution: Distinct "check" tasks verified by commands (e.g. build step), skipping failing-test dogma.
+          Fix: A separate check task type, verified by a command like the build. No test required.
         </div>
       </div>
 
@@ -89,13 +89,13 @@ import { SITE_CONFIG } from "../config";
       <div class="p-6 rounded-2xl bg-[#FAF8F5] border border-[#E5DDD3] shadow-xs">
         <div class="flex items-center gap-2 mb-3">
           <span class="w-2 h-2 rounded-full bg-[#E06C75]"></span>
-          <h3 class="text-sm font-semibold text-[#26221E] uppercase tracking-wide font-mono">4. Unbounded Model Costs</h3>
+          <h3 class="text-sm font-semibold text-[#26221E] uppercase tracking-wide font-mono">4. No spending limit</h3>
         </div>
         <p class="text-sm text-[#6B635B] leading-relaxed mb-4">
-          A small website change on Sonnet ran 46 model calls and 1.56M tokens in 90 seconds ($3.17) without hard stops or circuit breakers.
+          A small website change on Sonnet ran 46 model calls and 1.56M tokens in 90 seconds ($3.17) with nothing to stop it.
         </p>
         <div class="p-3 rounded-xl bg-[#F4EFEA] border border-[#E5DDD3] text-xs text-[#0B7A5A] font-mono">
-          ✓ Phil Solution: Hard model call caps, live dollar budgets ($2 default), and prompt caching.
+          Fix: Model call caps, a dollar budget ($2 by default), and prompt caching.
         </div>
       </div>
     </div>
@@ -103,8 +103,8 @@ import { SITE_CONFIG } from "../config";
     <!-- Devlog Link Callout -->
     <div class="flex flex-col sm:flex-row items-center justify-between p-5 rounded-2xl bg-[#EFE9E2] border border-[#D5CCC0] gap-4">
       <div class="text-xs text-[#4A443D]">
-        <span class="font-semibold text-[#26221E]">Read the full architectural breakdown:</span>
-        <span class="text-[#7A7268] block sm:inline sm:ml-1">"Building Phil, Part 1: Stop the Waste" covers the root-cause autopsy and the live benchmark harness.</span>
+        <span class="font-semibold text-[#26221E]">The full write-up:</span>
+        <span class="text-[#7A7268] block sm:inline sm:ml-1"><em>Building Phil, Part 1: Stop the Waste</em> walks through each root cause and the benchmark harness I built to catch the next one.</span>
       </div>
       <a
         href={SITE_CONFIG.links.devlogPart1}
@@ -112,7 +112,7 @@ import { SITE_CONFIG } from "../config";
         rel="noopener noreferrer"
         class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#26221E] text-[#FAF8F5] text-xs font-mono font-medium hover:bg-[#3D3732] whitespace-nowrap transition-all"
       >
-        <span>Read Part 1 on Devlog</span>
+        <span>Read Part 1</span>
         <span>↗</span>
       </a>
     </div>
