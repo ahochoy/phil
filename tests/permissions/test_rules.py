@@ -236,8 +236,7 @@ def test_abbreviated_dangerous_push_options_are_exact_only(argv):
     assert exact_only(argv) is True
 
 
-@pytest.mark.parametrize("argv", [["git", "push", "--dry-run"], ["git", "push", "--tags"],
-                                  ["git", "push", "-u", "origin", "feat"]])
+@pytest.mark.parametrize("argv", [["git", "push", "--tags"], ["git", "push", "-u", "origin", "feat"]])
 def test_harmless_push_options_are_not_exact_only(argv):
     assert exact_only(argv) is False
 
@@ -293,8 +292,8 @@ def test_versioned_interpreters_and_windows_launchers_are_exact_only(argv):
 def test_unicode_folds_of_dangerous_names_are_exact_only():
     assert exact_only(["ſudo", "rm", "x"]) is True
     assert exact_only(["ſh", "-c", "x"]) is True
-    assert suggest_rule(["ſudo", "rm", "x"]) == shlex.join(["ſudo", "rm", "x"])
-    assert suggest_rule(["ﬁnd", ".", "-name", "x"]) == shlex.join(["ﬁnd", ".", "-name", "x"])
+    assert suggest_rule(["ſudo", "rm", "x"]) is None
+    assert suggest_rule(["ﬁnd", ".", "-name", "x"]) is None
     assert ShellPolicy([]).denial_reason("ｐｙｔｈｏｎ３ -c x") == "forbidden"
 
 
@@ -306,4 +305,149 @@ def test_a_non_ascii_program_never_matches_a_bare_name_rule():
 
 @pytest.mark.parametrize("argv", [["", "x"], ["gh", "pr", ""], ["gh", ""]])
 def test_an_empty_word_cannot_be_saved(argv):
+    assert suggest_rule(argv) is None
+
+
+# --- fix round 4 -------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("argv", [
+    ["git", "rebase", "-xsh", "main"], ["git", "rebase", "-ix", "sh", "main"], ["git", "clone", "-ux", ".", "d"],
+    ["git", "clone", "-qu", "x", ".", "d"], ["git", "clone", "-qc", "a=b", "u"], ["git", "grep", "-iOx", "foo"],
+    ["git", "ls-remote", "-qu", "x", "."],
+])
+def test_git_short_option_clusters_that_run_a_command_are_exact_only(argv):  # P1
+    assert exact_only(argv) is True
+
+
+@pytest.mark.parametrize("argv", [
+    ["git", "send-email", "--to-cmd=x", "p"], ["git", "instaweb", "--httpd=x"],
+    ["git", "daemon", "--access-hook=x", "."], ["git", "apply", "--unsafe-paths", "p"],
+    ["git", "apply", "--unsafe", "p"],
+])
+def test_git_subcommands_that_run_a_command_or_write_outside_are_exact_only(argv):  # P2
+    assert exact_only(argv) is True
+
+
+@pytest.mark.parametrize("argv,rule", [
+    (["docker", "volume", "ls"], "docker volume ls *"),
+    (["docker", "plugin", "ls"], "docker plugin ls *"),
+    (["docker", "system", "df"], "docker system df *"),
+    (["docker", "image", "ls"], "docker image ls *"),
+    (["docker", "context", "ls"], "docker context ls *"),
+    (["docker", "stack", "ls"], "docker stack ls *"),
+    (["docker", "network", "ls"], "docker network ls *"),
+    (["uv", "tool", "list"], "uv tool list *"),
+])
+def test_two_level_groups_keep_both_words(argv, rule):  # P3, P8
+    assert suggest_rule(argv) == rule
+
+
+def test_a_two_level_rule_does_not_cover_a_sibling():  # P3, P8
+    assert not rule_matches(parse_rule(suggest_rule(["docker", "plugin", "ls"])),
+                            ["docker", "plugin", "install", "--grant-all-permissions", "x"])
+    assert not rule_matches(parse_rule(suggest_rule(["uv", "tool", "list"])), ["uv", "tool", "install", "x"])
+
+
+@pytest.mark.parametrize("argv", [
+    ["docker", "build", "-t", "a", "."], ["docker", "buildx", "bake"], ["docker", "image", "build", "."],
+    ["docker", "buildx", "build", "-t", "a", "."], ["docker", "builder", "build", "."],
+])
+def test_docker_builds_are_exact_only(argv):  # P4
+    assert exact_only(argv) is True
+
+
+@pytest.mark.parametrize("argv", [
+    ["kubectl", "cp", "a", "b"], ["kubectl", "config", "view", "--raw"], ["kubectl", "config", "use-context", "p"],
+])
+def test_kubectl_cp_and_config_are_exact_only(argv):  # P5
+    assert exact_only(argv) is True
+
+
+@pytest.mark.parametrize("argv", [
+    ["npm", "config", "set", "a=b"], ["npm", "set", "a=b"], ["pnpm", "config", "set", "a", "b"],
+    ["yarn", "config", "set", "-H", "a", "b"], ["gh", "config", "set", "pager", "x"],
+])
+def test_config_setters_that_can_name_a_command_are_exact_only(argv):  # P6
+    assert exact_only(argv) is True
+
+
+def test_npm_set_is_only_the_subcommand_in_first_position():  # P6
+    assert exact_only(["npm", "install", "set"]) is False
+
+
+@pytest.mark.parametrize("argv", [
+    ["go", "build", "-toolexec=x", "."], ["go", "build", "--toolexec", "x", "."], ["go", "vet", "-vettool=x", "."],
+    ["go", "env", "-w", "GOFLAGS=-toolexec=x"], ["go", "tool", "x"],
+])
+def test_go_options_that_run_a_command_and_go_tool_are_exact_only(argv):  # P7
+    assert exact_only(argv) is True
+
+
+@pytest.mark.parametrize("argv", [
+    ["gh", "codespace", "ssh", "-c", "x"], ["gh", "cs", "ssh", "-c", "x"], ["npm", "explore", "p", "--", "ls"],
+])
+def test_gh_codespace_ssh_and_npm_explore_are_exact_only(argv):  # P9, P10
+    assert exact_only(argv) is True
+
+
+@pytest.mark.parametrize("argv", [
+    ["npm", "publish", "--dry-run"], ["cargo", "publish", "--dry-run"], ["uv", "publish", "--dry-run"],
+    ["kubectl", "delete", "pod", "x", "--dry-run=client"], ["kubectl", "apply", "--dry-run=server", "-f", "x.yaml"],
+    ["git", "push", "--dry-run", "origin", "feat"], ["git", "push", "-n", "origin", "feat"],
+    ["git", "push", "-un", "origin", "feat"], ["git", "clean", "-n"], ["git", "push", "--dry-run"],
+])
+def test_a_dry_run_is_saved_exactly(argv):  # P11, R8
+    assert exact_only(argv) is True
+    assert suggest_rule(argv) == shlex.join(argv)
+
+
+def test_an_open_rule_never_covers_a_dry_run():  # R8
+    assert not rule_matches(parse_rule("npm publish *"), ["npm", "publish", "--dry-run"])
+    assert rule_matches(parse_rule("npm publish --dry-run"), ["npm", "publish", "--dry-run"])
+
+
+@pytest.mark.parametrize("argv", [
+    ["gh", "repo", "delete", "o/r"], ["gh", "release", "delete", "v1"], ["gh", "secret", "remove", "K"],
+    ["kubectl", "delete", "ns", "prod"], ["docker", "volume", "rm", "v"], ["docker", "system", "prune", "-af"],
+    ["docker", "image", "prune"], ["docker", "rm", "c"], ["docker", "kill", "c"], ["npm", "uninstall", "x"],
+    ["npm", "unpublish", "x"], ["pnpm", "remove", "x"], ["yarn", "remove", "x"], ["uv", "remove", "x"],
+    ["cargo", "uninstall", "x"], ["cargo", "clean"], ["go", "clean", "-cache"], ["git", "reset", "--hard"],
+    ["git", "clean", "-fd"], ["git", "stash", "drop"], ["git", "rm", "x"], ["git", "worktree", "remove", "w"],
+    ["git", "remote", "remove", "o"], ["make", "clean"], ["just", "destroy"], ["gh", "cache", "del", "k"],
+    ["kubectl", "-n", "ns", "delete", "pod", "x"], ["gh", "run", "delete", "1"], ["docker", "network", "prune"],
+    ["kubectl", "delete", "pod", "x"],
+])
+def test_remove_verbs_are_saved_exactly(argv):  # R8
+    assert exact_only(argv) is True
+    assert suggest_rule(argv) == shlex.join(argv)
+
+
+def test_an_open_rule_never_covers_a_remove_verb():  # R8
+    assert not rule_matches(parse_rule("gh repo *"), ["gh", "repo", "delete", "o/r"])
+    assert not rule_matches(parse_rule("docker volume *"), ["docker", "volume", "rm", "v"])
+    assert rule_matches(parse_rule("gh repo *"), ["gh", "repo", "view", "o/r"])
+
+
+@pytest.mark.parametrize("argv", [
+    ["git", "commit", "-m", "msg"], ["git", "push", "origin", "feat"], ["git", "rebase", "-i", "main"],
+    ["git", "status", "-sb"], ["git", "push", "-u", "origin", "feat"], ["git", "clone", "-q", "url"],
+    ["go", "build", "./..."], ["go", "vet", "./..."], ["docker", "compose", "up", "-d"],
+    ["kubectl", "get", "pods"], ["npm", "install", "x"], ["gh", "config", "get", "pager"],
+    ["docker", "volume", "ls"], ["uv", "tool", "list"],
+])
+def test_ordinary_family_commands_stay_open(argv):
+    assert exact_only(argv) is False
+
+
+@pytest.mark.parametrize("argv,rule", [
+    (["git", "push", "origin", "feat"], "git push *"),
+    (["docker", "compose", "up", "-d"], "docker compose up *"),
+    (["go", "build", "./..."], "go build *"),
+])
+def test_ordinary_suggestions_are_unchanged(argv, rule):
+    assert suggest_rule(argv) == rule
+
+
+@pytest.mark.parametrize("argv", [["ſudo", "rm", "x"], ["ﬁnd", "."], ["ｇｈ", "pr", "view"], ["./ſh", "x"]])
+def test_a_non_ascii_program_cannot_be_saved(argv):  # N1
     assert suggest_rule(argv) is None

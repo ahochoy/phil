@@ -1,15 +1,27 @@
 """Permission rules (spec 2026-10-13 §3.1, §3.3): a rule is a command as words, compared by program
-name, with an optional trailing `*` meaning "any further arguments, or none"."""
+name, with an optional trailing `*` meaning "any further arguments, or none".
+
+Policy (rulings R5, R7, R8 in the plan's constraints):
+- Open-ended suggestions come only from the vetted families in OPEN_FAMILIES. Every other command
+  is suggested exactly, so no open rule is ever offered for a program nobody has vetted.
+- Dangerous forms are exact-only (`exact_only`): interpreters, launchers, destructive programs,
+  and, within a family, anything on its FAMILY_DANGERS list, a remove verb or a dry run. No rule
+  ending in `*` ever matches them, whoever wrote it; only an exact rule can allow one.
+- A hand-written open rule (`terraform *`, `gh pr *`) trusts the whole program beyond those lists:
+  every option and argument it accepts. Task 7 asks for `--yes` before saving one for a program
+  outside the families.
+"""
 
 import re
 import shlex
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from phil import platform
 
 # Programs whose arguments are code, a command, or a script: only ever saved exactly (R5). Names
-# are compared lowercased; versioned pythons (`python3.12`) are caught by _VERSIONED_PYTHON.
+# are compared folded; versioned ones (`python3.12`, `node20`) are caught by _VERSIONED_INTERPRETER.
 INTERPRETERS = frozenset({
     "python", "python3", "node", "deno", "bun", "php", "ruby", "perl", "lua", "rscript", "osascript",
     "pwsh", "powershell", "bash", "sh", "zsh", "dash", "ksh", "fish", "tclsh",
@@ -21,52 +33,134 @@ LAUNCHERS = frozenset({
     "npx", "bunx", "uvx", "stdbuf", "ionice", "chroot", "setsid", "script",
     "cmd", "wsl", "cscript", "wscript", "mshta",
 })
-# Subcommands that run something else (or, for `git config`, can install a shell alias). Found at
-# any position among a command's non-flag words, since global options come first (`docker -H h
-# run`, `cargo +nightly run`); over-matching only makes a command exact-only.
-LAUNCHER_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
-    "uv": (("run",), ("tool", "run")),
-    "npm": (("exec",), ("x",)),
-    "pnpm": (("exec",), ("dlx",)),
-    "yarn": (("dlx",), ("exec",)),
-    "cargo": (("run",),),
-    "go": (("run",),),
-    "docker": (
-        ("run",), ("exec",), ("create",), ("container", "run"), ("container", "exec"),
-        ("container", "create"), ("compose", "run"), ("compose", "exec"),
-    ),
-    "kubectl": (("exec",), ("run",), ("debug",), ("attach",)),
-    "gh": (("api",),),
-    "git": (
-        ("config",), ("submodule", "foreach"), ("bisect", "run"), ("filter-branch",), ("difftool",),
-        ("mergetool",),
-    ),
-}
-# `npm x` is only the subcommand when it comes first: elsewhere `x` is just an argument.
-_FIRST_WORD_ONLY = frozenset({("npm", ("x",))})
-# Long options that name a command, or a place to find one, for git (matched by unique prefix).
-_GIT_COMMAND_OPTIONS = (
-    "--upload-pack", "--receive-pack", "--exec", "--template", "--config", "--open-files-in-pager", "--extcmd",
-)
-_DANGEROUS_PUSH_OPTIONS = (
-    "--delete", "--mirror", "--prune", "--force", "--force-with-lease", "--force-if-includes",
-    "--receive-pack", "--exec",
-)
+DESTRUCTIVE = frozenset({
+    "rm", "mv", "chmod", "chown", "dd", "kill", "rmdir", "shred", "truncate", "killall", "pkill",
+})
+
 # The only programs "Always allow" offers an open-ended rule for (R7).
 OPEN_FAMILIES = frozenset({
     "gh", "git", "npm", "pnpm", "yarn", "uv", "cargo", "go", "docker", "kubectl",
     "make", "just", "pytest", "tox", "nox", "ruff", "mypy", "eslint", "prettier", "tsc", "jest", "vitest",
 })
-DESTRUCTIVE = frozenset({
-    "rm", "mv", "chmod", "chown", "dd", "kill", "rmdir", "shred", "truncate", "killall", "pkill",
-})
+# Docker's management groups: `docker volume ls` and `docker volume rm` are different commands.
+_DOCKER_GROUPS = (
+    "builder", "buildx", "compose", "config", "container", "context", "image", "manifest", "network",
+    "node", "plugin", "secret", "service", "stack", "swarm", "system", "trust", "volume",
+)
 # How many leading subcommand words a suggestion keeps, per program; a (program, first word) entry
 # overrides the program's depth for that subcommand family.
 SUBCOMMAND_DEPTH: dict[str | tuple[str, str], int] = {
     "gh": 2, "git": 1, "npm": 1, "pnpm": 1, "yarn": 1, "uv": 1, "cargo": 1, "go": 1,
     "docker": 1, "kubectl": 1,
-    ("uv", "pip"): 2, ("uv", "python"): 2, ("go", "mod"): 2, ("docker", "compose"): 2,
-    ("docker", "container"): 2,
+    ("uv", "pip"): 2, ("uv", "python"): 2, ("uv", "tool"): 2, ("go", "mod"): 2,
+    **{("docker", group): 2 for group in _DOCKER_GROUPS},
+}
+
+# R8: in a family command, any of these among its words makes it exact-only, so approving one
+# deletion never approves another.
+REMOVE_VERBS = frozenset({
+    "delete", "del", "rm", "remove", "prune", "uninstall", "unpublish", "destroy", "purge", "drop",
+    "kill", "clean", "reset",
+})
+
+# Git long options that name a command to run, or write outside the worktree (matched by unique
+# prefix, as git accepts `--upl` for `--upload-pack`).
+_GIT_DANGEROUS_OPTIONS = (
+    "--upload-pack", "--receive-pack", "--exec", "--template", "--config", "--open-files-in-pager", "--extcmd",
+    "--unsafe-paths",
+)
+# Git short options that name a command (`-x` on rebase, `-O` on grep) or a config value (`-c`),
+# found anywhere in a single-dash cluster: `-ix sh` and `-xsh` both run `sh`.
+_GIT_COMMAND_LETTERS = "xOc"
+# On clone and ls-remote, `-u` is --upload-pack.
+_GIT_UPLOAD_PACK_SUBCOMMANDS = ("clone", "ls-remote")
+# Options after `git push` that force, delete, or name a command (also by unique prefix).
+_DANGEROUS_PUSH_OPTIONS = (
+    "--delete", "--mirror", "--prune", "--force", "--force-with-lease", "--force-if-includes",
+    "--receive-pack", "--exec",
+)
+# Short push flags that force (f), delete (d), or make it a dry run (n, R8).
+_DANGEROUS_PUSH_LETTERS = "fdn"
+# Go options that run a command of the agent's choosing, also inside `GOFLAGS=...`.
+_GO_COMMAND_OPTIONS = ("toolexec", "vettool")
+
+
+def _short_letters(word: str) -> str:
+    """The letters of a single-dash option cluster (`-qu` gives `qu`, `-xsh` gives `xsh`), or ""."""
+    match = re.match(r"-([A-Za-z]+)", word)
+    return match.group(1) if match and not word.startswith("--") else ""
+
+
+def _is_long_option_prefix(word: str, options: tuple[str, ...]) -> bool:
+    """Whether `word` (before any `=value`) is a long option of `options` or an abbreviation of
+    one, at least `--x` long: git accepts any unique prefix, so `--del` is `--delete`."""
+    if not word.startswith("--"):
+        return False
+    name = word.split("=", 1)[0]
+    return len(name) >= 3 and any(option.startswith(name) for option in options)
+
+
+def _git_options_are_dangerous(rest: list[str], words: list[str]) -> bool:
+    """A git option that runs a command or writes outside the worktree, or a forced, destructive
+    or dry-run push (`git clean -n` is already exact-only, as `clean` is a remove verb)."""
+    for word in rest:
+        letters = _short_letters(word)
+        if _is_long_option_prefix(word, _GIT_DANGEROUS_OPTIONS) or any(ch in letters for ch in _GIT_COMMAND_LETTERS):
+            return True
+        if "u" in letters and any(sub in words for sub in _GIT_UPLOAD_PACK_SUBCOMMANDS):
+            return True
+    if "push" not in rest:
+        return False
+    return any(_push_word_is_dangerous(word) for word in rest[rest.index("push") + 1 :])
+
+
+def _push_word_is_dangerous(word: str) -> bool:
+    """--force*, --mirror, --delete, --prune, --receive-pack, --exec (or an abbreviation), a
+    short-flag cluster holding f, d or n (`-fu`, `-n`), or a `+`/`:` refspec."""
+    if word.startswith(("--force", "+", ":")) or _is_long_option_prefix(word, _DANGEROUS_PUSH_OPTIONS):
+        return True
+    return any(ch in _short_letters(word) for ch in _DANGEROUS_PUSH_LETTERS)
+
+
+def _go_options_are_dangerous(rest: list[str], words: list[str]) -> bool:
+    """`-toolexec`, `-vettool`, in any spelling (`--toolexec`, `-toolexec=x`, `GOFLAGS=-toolexec=x`)."""
+    return any(option in word for word in rest for option in _GO_COMMAND_OPTIONS)
+
+
+@dataclass(frozen=True)
+class Dangers:
+    """One family's danger list. `subcommands` are word sequences found at any position among the
+    command's non-flag words, since global options come first (`docker -H h run`, `cargo +nightly
+    run`); over-matching only makes a command exact-only. `first_word` sequences count only as
+    the first non-flag word, where elsewhere they're ordinary arguments (`npm install x`).
+    `options(rest, words)` flags a dangerous option."""
+
+    subcommands: tuple[tuple[str, ...], ...] = ()
+    first_word: tuple[tuple[str, ...], ...] = ()
+    options: Callable[[list[str], list[str]], bool] | None = None
+
+
+# Each vetted family's danger list (R5, R7): subcommands that run another command, build with host
+# access, copy into a workload, or set config that names a command to run later.
+FAMILY_DANGERS: dict[str, Dangers] = {
+    "git": Dangers(
+        subcommands=(
+            ("config",), ("submodule", "foreach"), ("bisect", "run"), ("filter-branch",), ("difftool",),
+            ("mergetool",), ("send-email",), ("instaweb",), ("daemon",),
+        ),
+        options=_git_options_are_dangerous,
+    ),
+    "gh": Dangers(subcommands=(("api",), ("config", "set"), ("codespace", "ssh"), ("cs", "ssh"))),
+    "npm": Dangers(subcommands=(("exec",), ("explore",), ("config",)), first_word=(("x",), ("set",))),
+    "pnpm": Dangers(subcommands=(("exec",), ("dlx",), ("config",))),
+    "yarn": Dangers(subcommands=(("exec",), ("dlx",), ("config",))),
+    "uv": Dangers(subcommands=(("run",),)),  # also `uv tool run`
+    "cargo": Dangers(subcommands=(("run",),)),
+    "go": Dangers(subcommands=(("run",), ("tool",)), options=_go_options_are_dangerous),
+    # `run`, `exec`, `create` and `build` anywhere also cover the `container`, `compose`, `image`,
+    # `buildx` and `builder` forms.
+    "docker": Dangers(subcommands=(("run",), ("exec",), ("create",), ("build",), ("bake",))),
+    "kubectl": Dangers(subcommands=(("exec",), ("run",), ("debug",), ("attach",), ("cp",), ("config",))),
 }
 
 
@@ -156,70 +250,45 @@ def is_bare_program(rule: Rule) -> bool:
 
 
 def exact_only(argv: list[str]) -> bool:
-    """Commands only ever saved exactly, and never covered by an open-ended rule (R5):
+    """Commands only ever saved exactly, and never covered by an open-ended rule (R5, R8):
     interpreters (their arguments are code), launchers (their arguments are another command),
-    destructive commands, launcher subcommands (`docker run`, `gh api`...), git forms that run a
-    command, and a forced or destructive `git push`. Names are NFKC-normalised and casefolded,
-    which is safe in this blocking direction."""
+    destructive programs, any dry run, and a family command on its FAMILY_DANGERS list or holding
+    a remove verb. Names are NFKC-normalised and casefolded, which is safe in this blocking
+    direction."""
     if not argv:
         return False
     name = folded_name(argv[0])
     if name in INTERPRETERS or name in LAUNCHERS or name in DESTRUCTIVE or _VERSIONED_INTERPRETER.fullmatch(name):
         return True
     rest = argv[1:]
+    if any(word == "--dry-run" or word.startswith("--dry-run=") for word in rest):  # R8
+        return True
+    if name not in OPEN_FAMILIES:
+        return False
     words = [word for word in rest if not word.startswith("-")]
-    for sub in LAUNCHER_SUBCOMMANDS.get(name, ()):
-        starts = range(1) if (name, sub) in _FIRST_WORD_ONLY else range(len(words))
-        if any(tuple(words[i : i + len(sub)]) == sub for i in starts):
-            return True
-    if name != "git":
+    if any(word in REMOVE_VERBS for word in words):  # R8
+        return True
+    dangers = FAMILY_DANGERS.get(name)
+    if dangers is None:
         return False
-    if any(_git_option_runs_command(word, words) for word in rest):
+    if any(_has_sequence(words, sub) for sub in dangers.subcommands):
         return True
-    if "push" not in rest:
-        return False
-    after_push = argv[argv.index("push", 1) + 1 :]
-    return any(_forces_push(word) for word in after_push)
-
-
-def _is_long_option_prefix(word: str, options: tuple[str, ...]) -> bool:
-    """Whether `word` (before any `=value`) is a long option of `options` or an abbreviation of
-    one, at least `--x` long: git accepts any unique prefix, so `--del` is `--delete`."""
-    if not word.startswith("--"):
-        return False
-    name = word.split("=", 1)[0]
-    return len(name) >= 3 and any(option.startswith(name) for option in options)
-
-
-def _git_option_runs_command(word: str, words: list[str]) -> bool:
-    """Whether a git option names a command to run: --upload-pack and friends, `-x`, `-O...`,
-    `-c`, or `-u` on clone/ls-remote (where it is --upload-pack)."""
-    if _is_long_option_prefix(word, _GIT_COMMAND_OPTIONS):
+    if any(tuple(words[: len(sub)]) == sub for sub in dangers.first_word):
         return True
-    if word == "-x" or word.startswith("-O") or (word.startswith("-c") and not word.startswith("--")):
-        return True
-    return word == "-u" and ("clone" in words or "ls-remote" in words)
+    return dangers.options is not None and dangers.options(rest, words)
 
 
-def _forces_push(word: str) -> bool:
-    """Whether a word after `git push` forces, deletes or names a command: --force*, --mirror,
-    --delete, --prune, --receive-pack, --exec (or any abbreviation of them), a short-flag cluster
-    holding f or d (`-fu`), or a `+`/`:` refspec."""
-    if word.startswith(("--force", "+", ":")) or _is_long_option_prefix(word, _DANGEROUS_PUSH_OPTIONS):
-        return True
-    return re.fullmatch(r"-[A-Za-z]+", word) is not None and ("f" in word or "d" in word)
-
-
-def _join(words: list[str]) -> str:
-    return shlex.join(words)
+def _has_sequence(words: list[str], sub: tuple[str, ...]) -> bool:
+    return any(tuple(words[i : i + len(sub)]) == sub for i in range(len(words)))
 
 
 def suggest_rule(argv: list[str]) -> str | None:
     """The rule "Always allow" offers for `argv` (spec §3.3, R7). Never a bare `program *`. None
-    when it can't be saved (R4): argv is empty, or a word is empty or holds `*`, which a rule
-    can't express. Open-ended only for a vetted program in OPEN_FAMILIES, when `exact_only` is
-    False and no flag cut the subcommand short; otherwise the exact command."""
-    if not argv or any(not word or "*" in word for word in argv):
+    when it can't be saved: argv is empty, a word is empty or holds `*`, which a rule can't
+    express (R4), or the program name isn't ASCII, which a bare-name rule never matches (N1).
+    Open-ended only for a vetted program in OPEN_FAMILIES, when `exact_only` is False and no flag
+    cut the subcommand short; otherwise the exact command."""
+    if not argv or any(not word or "*" in word for word in argv) or not program_name(argv[0]).isascii():
         return None
     exact = _join(argv)
     name = folded_name(argv[0])
@@ -238,3 +307,7 @@ def suggest_rule(argv: list[str]) -> str | None:
         if not word.startswith("-"):
             return _join([argv[0], *rest[: i + 1]]) + " *"
     return exact
+
+
+def _join(words: list[str]) -> str:
+    return shlex.join(words)
