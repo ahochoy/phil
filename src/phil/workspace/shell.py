@@ -467,7 +467,7 @@ def _program_name(arg0: str) -> str:
 
 
 def _is_denied(argv: list[str]) -> bool:
-    if _program_name(argv[0]) not in _RISKY_PROGRAMS:
+    if _program_name(argv[0]).lower() not in _RISKY_PROGRAMS:
         return False
     return any(arg.startswith(_RISKY_PREFIXES) or arg in _RISKY_EXACT for arg in argv[1:])
 

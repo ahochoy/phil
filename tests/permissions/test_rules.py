@@ -1,10 +1,12 @@
+import shlex
+
 import pytest
 
 from phil import platform
 from phil.permissions.rules import (
-    RuleError, exact_only, is_bare_program, parse_rule, program_name, rule_matches, suggest_rule,
+    Rule, RuleError, exact_only, is_bare_program, parse_rule, program_name, rule_matches, suggest_rule,
 )
-from phil.workspace.shell import ShellPolicy
+from phil.workspace.shell import ShellPolicy, _for_matching
 
 
 @pytest.mark.parametrize("arg0,name", [
@@ -118,7 +120,7 @@ def test_a_path_never_matches_a_bare_name_rule(argv0):
 
 def test_windows_path_rules(monkeypatch):
     monkeypatch.setattr(platform, "IS_WINDOWS", True)
-    rule = parse_rule(r"C:\x\gh.exe pr *")
+    rule = parse_rule("C:/x/gh.exe pr *")
     assert rule_matches(rule, [r"C:\x\gh.exe", "pr", "1"])
     assert rule_matches(rule, ["c:/X/GH.EXE", "pr", "1"])
     assert not rule_matches(rule, ["gh", "pr", "1"])
@@ -128,6 +130,70 @@ def test_windows_path_rules(monkeypatch):
     assert not rule_matches(bare, [r"C:\x\gh.exe", "pr", "1"])
     assert not rule_matches(bare, [r"..\gh", "pr", "1"])
     assert not rule_matches(bare, [r".\gh.exe", "pr", "1"])
+
+
+@pytest.mark.parametrize("text", ["rm '*'", r"gh pr \*", 'gh pr "*"', 'rm "a*"', '"" *', "gh 'pr' '*'"])
+def test_a_quoted_or_escaped_star_is_not_a_wildcard(text):
+    with pytest.raises(RuleError):
+        parse_rule(text)
+
+
+def test_a_bare_trailing_star_is_still_open_ended():
+    rule = parse_rule("gh pr *")
+    assert rule.open_end and rule.words == ("gh", "pr")
+    assert parse_rule("gh 'pr view' *").words == ("gh", "pr view")
+
+
+def test_open_ended_rules_never_cover_dangerous_forms():
+    push = parse_rule("git push *")
+    assert rule_matches(push, ["git", "push", "origin", "main"])
+    assert not rule_matches(push, ["git", "push", "-f", "origin"])
+    assert not rule_matches(push, ["git", "-C", "x", "push", "--force"])
+    assert not rule_matches(parse_rule("rm *"), ["rm", "x"])
+    assert not rule_matches(Rule(text="rm *", words=("rm",), open_end=True), ["rm", "x"])
+    assert rule_matches(parse_rule("rm x"), ["rm", "x"])
+
+
+@pytest.mark.parametrize("argv", [
+    ["env", "bash", "-c", "x"], ["sudo", "rm", "x"], ["xargs", "rm"], ["uv", "run", "python", "-c", "x"],
+    ["git", "config", "alias.x", "!rm"], ["python3.12", "x.py"], ["deno", "run", "x"], ["RM", "-rf", "x"],
+    ["Python3", "x.py"], ["uv", "tool", "run", "x"], ["uvx", "x"], ["npm", "exec", "x"], ["pnpm", "dlx", "x"],
+    ["cargo", "run"], ["go", "run", "x.go"], ["docker", "run", "img"], ["kubectl", "exec", "p"],
+    ["pkill", "x"], ["pwsh", "-c", "x"], ["python3.12.1", "x"], ["git", "-c", "a=b", "config", "x"],
+])
+def test_dangerous_suggestions_are_exact(argv):
+    assert exact_only(argv) is True
+    assert suggest_rule(argv) == shlex.join(argv)
+
+
+@pytest.mark.parametrize("argv", [["pythonista", "x"], ["uv", "pip", "list"], ["cargo", "test"], ["go", "test"],
+                                  ["docker", "compose", "up"], ["npm", "install", "x"]])
+def test_ordinary_programs_are_not_exact_only(argv):
+    assert exact_only(argv) is False
+
+
+def test_risky_programs_are_forbidden_whatever_the_case():
+    assert ShellPolicy([]).denial_reason("PYTHON3 -c x") == "forbidden"
+
+
+def test_windows_path_comparison_keeps_the_extension(monkeypatch):
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    rule = parse_rule("./gh.exe pr *")
+    assert rule_matches(rule, [".\\GH.EXE", "pr", "x"])
+    assert not rule_matches(rule, ["./gh.bat", "pr", "x"])
+    assert not rule_matches(rule, ["./gh", "pr", "x"])
+    assert not rule_matches(rule, ["./gh.cmd", "pr", "x"])
+    assert rule_matches(parse_rule("./tools/gh.exe pr *"), ["./tools/gh.exe", "pr", "1"])
+
+
+@pytest.mark.parametrize("text", [r"gh pr view a\ b", r"gh echo C:\x\y", "gh 'a b' *", r"./tools\gh.exe pr *"])
+def test_a_rule_is_tokenised_as_the_shell_policy_does(monkeypatch, text):
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    expected = _for_matching(shlex.split(text))
+    words = parse_rule(text).words
+    fixed = expected[:-1] if expected[-1] == "*" else expected
+    assert words[1:] == tuple(fixed[1:])
+    assert words[0] == (fixed[0] if "/" in fixed[0] else program_name(fixed[0]))
 
 
 @pytest.mark.parametrize("argv,expected", [
