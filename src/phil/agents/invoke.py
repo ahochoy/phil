@@ -19,7 +19,7 @@ from phil.agents.usage import extract_usage
 from phil.config import PhilConfig
 from phil.contracts import Contract, Ref
 from phil.packets import Packet
-from phil.permissions.load import policy_or_fallback
+from phil.permissions.load import policy_or_fallback, trusted_shell
 from phil.permissions.store import PolicySet
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.parked import park
@@ -287,10 +287,12 @@ def _shell_for(
     extra_allow: tuple[str, ...] = (),
     approved: tuple[str, ...] = (),
     policy: PolicySet | None = None,
+    repo_root: Path | None = None,
 ) -> Callable[[str], str]:
     """The shell tool for `spec`. A read-only spec gets no rules, plan commands or approvals:
-    only the built-in reads run."""
-    shell = config.shell
+    only the built-in reads run. The repo's own [shell] allow, pass_env and bash never apply here
+    untrusted (R14): without a `policy`, the allow list is config's alone."""
+    shell = trusted_shell(config, repo_root)
     if spec.read_only_shell:
         shell, extra_allow, approved, policy = shell.model_copy(update={"allow": []}), (), (), None
     return make_shell_tool(
@@ -346,6 +348,7 @@ def invoke_agent(
                 extra_allow=ctx.extra_allow,
                 approved=ctx.approved,
                 policy=policy,
+                repo_root=ctx.repo_root,
             )
         )
     agent = _resolve_factory(ctx)(

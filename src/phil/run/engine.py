@@ -17,7 +17,7 @@ from phil.agents.collector import PATH_TOOLS
 from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, invoke_agent
 from phil.agents.registry import get_spec
 from phil.agents.tools import CommandLog
-from phil.config import PhilConfig
+from phil.config import PhilConfig, ShellConfig
 from phil.contracts import (
     AttemptWorklog,
     ImplementInput,
@@ -31,6 +31,7 @@ from phil.contracts import (
 )
 from phil.git import GitError, branch_for, git
 from phil.packets import Packet, PacketTooLarge, build_packet
+from phil.permissions.load import trusted_shell
 from phil.repo_detect import effective_setup_cmd
 from phil.run.gates import (
     COMMAND_NOT_FOUND,
@@ -100,6 +101,8 @@ def _write_json_atomic(path: Path, data: Any) -> None:
 
 
 # The previous attempt's diff is cut to this many characters before it goes into the packet.
+# How a command a deny rule stopped is reported in an attempt's problems and the tester's notes.
+BLOCKED_PREFIX = "blocked by your rule: "
 MAX_DIFF_CHARS = 8_000
 DIFF_TRUNCATED = "\n…(diff truncated)"
 DIFF_OMITTED = "…(diff omitted: over the packet budget)"
@@ -215,7 +218,7 @@ class RunEngine:
         report = run_tests(
             state["test_cmd"],
             worktree or self.deps.worktree,
-            shell=self.deps.config.shell,
+            shell=self._shell(),
             artifacts=self.deps.artifacts,
             name=name,
             baseline=state.get("baseline_failures", []),
@@ -327,6 +330,11 @@ class RunEngine:
             repo_root=self.deps.repo_root,
             paths=self.deps.paths,
         )
+
+    def _shell(self) -> ShellConfig:
+        """The shell settings the engine's own commands run with: the repo's phil.toml can't set
+        pass_env or bash untrusted (R14)."""
+        return trusted_shell(self.deps.config, self.deps.repo_root)
 
     def _budget(self, role: str) -> int:
         return self.deps.config.budget_for(role).max_input_tokens
@@ -514,9 +522,8 @@ class RunEngine:
         if not cmd:
             return None
         timeout_s = config.project.setup_timeout_s
-        result = run_command(
-            cmd, self.deps.worktree, timeout_s, env=child_env(os.environ, config.shell.pass_env), bash=config.shell.bash
-        )
+        shell = self._shell()
+        result = run_command(cmd, self.deps.worktree, timeout_s, env=child_env(os.environ, shell.pass_env), bash=shell.bash)
         log = self.deps.artifacts.write_log("setup", result.stdout + (f"\n{result.stderr}" if result.stderr else ""))
         if result.ok:
             # Installed dependencies git doesn't ignore would look like the task's changes (and a
@@ -646,6 +653,7 @@ class RunEngine:
             failed, problems = True, [f"implementer output rejected: {problem}" for problem in exc.problems]
             worklog = None
         problems += [f"refused command: {cmd}" for cmd in log.refused]
+        problems += [f"{BLOCKED_PREFIX}{cmd}" for cmd in log.blocked]
         if worklog is None:
             worklog = self._fallback_worklog(state, log, problems)
         update = {
@@ -720,7 +728,7 @@ class RunEngine:
         if state.get("implement_failed"):
             return self._failed_attempt(state, state.get("last_problems", []), state.get("last_report"))
         changed = self.worktrees.changed_files(worktree, since=state["task_base_sha"])
-        refused = [p for p in state.get("last_problems", []) if p.startswith("refused command: ")]
+        refused = [p for p in state.get("last_problems", []) if p.startswith(("refused command: ", BLOCKED_PREFIX))]
         if not self._attempt_changed(state, changed):
             return self._failed_attempt(state, [f"no changes were made for {task.id}", *refused], None)
         report = self._test(state, artifact_name("verify", task.id, state["call_seq"]))
@@ -744,7 +752,7 @@ class RunEngine:
             check_name = artifact_name("check", task.id, state["call_seq"])
             _, gate_seq = self._gate_start(state, f"gate {task.check_cmd}")
             check = run_check(
-                task.check_cmd, worktree, shell=self.deps.config.shell, artifacts=self.deps.artifacts, name=check_name
+                task.check_cmd, worktree, shell=self._shell(), artifacts=self.deps.artifacts, name=check_name
             )
             if self.deps.activity is not None and gate_seq is not None:
                 try:
@@ -972,6 +980,7 @@ class RunEngine:
         after = self._test(state, artifact_name(f"{node}-after", None, seq))
         notes += [Issue(severity="minor", note=f"tester command not approved: {cmd}") for cmd in log.denied]
         notes += [Issue(severity="minor", note=f"tester command refused: {cmd}") for cmd in log.refused]
+        notes += [Issue(severity="minor", note=f"tester command {BLOCKED_PREFIX}{cmd}") for cmd in log.blocked]
         blocking = [issue for issue in issues if issue.severity in ("blocker", "major")]
         minor = [issue for issue in issues if issue.severity == "minor"]
         plan = issues_to_tasks(plan, blocking, "tester", state["test_cmd"]) if blocking else plan

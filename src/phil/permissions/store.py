@@ -53,11 +53,23 @@ class PolicyProblem:
 
 
 @dataclass(frozen=True)
+class RepoShellSettings:
+    """The `[shell]` values a repo's own phil.toml sets that need the user's trust (R14): `allow`,
+    `pass_env` and `bash`. Until trusted, none of them applies; the trust prompt (Task 6) shows
+    them and hashes them. Empty when phil.toml sets none, or can't be read."""
+
+    allow: tuple[str, ...] = ()
+    pass_env: tuple[str, ...] = ()
+    bash: str | None = None
+
+
+@dataclass(frozen=True)
 class PolicySet:
     deny: tuple[PolicyEntry, ...]
     allow: tuple[PolicyEntry, ...]
     problems: tuple[PolicyProblem, ...]
     repo_rules_untrusted: tuple[str, ...]
+    repo_shell: RepoShellSettings = RepoShellSettings()
 
 
 @dataclass

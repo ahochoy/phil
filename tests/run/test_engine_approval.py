@@ -1,6 +1,10 @@
 import json
 import shlex
 import sys
+from datetime import date
+
+from phil.permissions.store import add_rule
+from phil.store.paths import global_policy_path
 
 from tests.helpers import run_git
 from tests.run.conftest import review, task_result, tester_report, write_green, write_red
@@ -109,6 +113,25 @@ def test_refused_command_reaches_the_next_attempt_as_feedback(make_harness):
     assert final["status"] == "completed"
     second = [p for role, p in harness.factory.calls if role == "implementer"][1]["messages"][0]["content"]
     assert "refused command: python -c 'print(1)'" in second
+
+
+def test_a_deny_rule_blocks_without_escalating_and_reaches_the_next_attempt(make_harness):
+    add_rule(global_policy_path(), "deny", "make deploy *", "manual", today=date(2026, 10, 13))
+    outputs: list[str] = []
+
+    def blocked_only(turn):
+        outputs.append(turn.tools["run_shell"]("make deploy now"))
+        return task_result("red")
+
+    harness = make_harness(
+        {"implementer": [blocked_only, write_red, write_green], "tester": [tester_report()], "reviewer": [review()]}
+    )
+    final = harness.start()
+    assert "__interrupt__" not in final
+    assert final["status"] == "completed"
+    assert outputs[0] == 'DENIED: `make deploy now` is blocked by your deny rule "make deploy *" (everywhere). Don\'t use it.'
+    second = [p for role, p in harness.factory.calls if role == "implementer"][1]["messages"][0]["content"]
+    assert "blocked by your rule: make deploy now" in second
 
 
 def build_only(turn):

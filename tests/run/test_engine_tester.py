@@ -161,6 +161,23 @@ def test_refused_tester_commands_are_reported(make_harness):
     assert "tester command refused: ls | cat" in [issue["note"] for issue in final["open_issues"]]
 
 
+def test_blocked_tester_commands_are_reported(make_harness):
+    from datetime import date
+
+    from phil.permissions.store import add_rule
+    from phil.store.paths import global_policy_path
+
+    add_rule(global_policy_path(), "deny", "make deploy *", "manual", today=date(2026, 10, 13))
+
+    def blocked(turn):
+        turn.tools["run_shell"]("make deploy")
+        return tester_report()
+
+    harness = make_harness({"implementer": [write_red, write_green], "tester": [blocked], "reviewer": [review()]})
+    final = harness.start()
+    assert "tester command blocked by your rule: make deploy" in [issue["note"] for issue in final["open_issues"]]
+
+
 def test_new_failures_at_finish_become_major_open_issues(make_harness):
     def failing_edge_test_minor(turn):
         (turn.workdir / "tests" / "test_edge.py").write_text(

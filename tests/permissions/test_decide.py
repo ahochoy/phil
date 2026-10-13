@@ -153,7 +153,7 @@ def test_the_shell_tool_blocks_a_deny_rule_without_asking(tmp_path):
     run_shell = make_shell_tool(tmp_path, ShellConfig(allow=[], timeout_s=10), log, policy=load(tmp_path))
     output = run_shell("git log")
     assert output == "DENIED: `git log` is blocked by your deny rule \"git log *\" (everywhere). Don't use it."
-    assert (log.commands, log.denied, log.refused) == ([], [], [])
+    assert (log.commands, log.denied, log.refused, log.blocked) == ([], [], [], ["git log"])
 
 
 def test_policy_for_reads_both_files_config_and_the_repos_list(tmp_path, monkeypatch):
@@ -192,3 +192,158 @@ def test_load_config_can_leave_the_repo_out(tmp_path, monkeypatch):
     (tmp_path / "phil.toml").write_text('[shell]\nallow = ["make *"]\n', encoding="utf-8", newline="\n")
     assert load_config(tmp_path).shell.allow == ["make *"]
     assert load_config(tmp_path, include_repo=False).shell.allow == PhilConfig().shell.allow
+
+
+# --- Fix round 1 -------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("command", ["git push -f", "/usr/bin/git push x", "GIT push x", "git push --force origin main"])
+def test_a_deny_rule_blocks_options_paths_and_case_variants_r13(tmp_path, command):
+    add_rule(tmp_path / "global.toml", "deny", "git push *", "manual", today=TODAY)
+    decision = ShellPolicy(load(tmp_path, config_allow=["git *"])).decide(command)
+    assert (decision.outcome, decision.reason) == ("deny", 'deny rule "git push *" (everywhere)')
+
+
+def test_a_deny_rule_blocks_a_built_in_read_with_options(tmp_path):
+    add_rule(tmp_path / "global.toml", "deny", "git log *", "manual", today=TODAY)
+    assert ShellPolicy(load(tmp_path)).decide("git log -p").outcome == "deny"
+
+
+def test_a_deny_rule_blocks_name_value_words(tmp_path):
+    add_rule(tmp_path / "global.toml", "deny", "make deploy *", "manual", today=TODAY)
+    assert ShellPolicy(load(tmp_path, config_allow=["make *"])).decide("make deploy ENV=prod").outcome == "deny"
+
+
+def test_a_deny_rule_blocks_an_exact_only_command(tmp_path):
+    add_rule(tmp_path / "global.toml", "deny", "docker run *", "manual", today=TODAY)
+    assert ShellPolicy(load(tmp_path, config_allow=["docker *"])).decide("docker run alpine").outcome == "deny"
+
+
+def test_an_exact_deny_rule_still_needs_the_exact_words(tmp_path):
+    add_rule(tmp_path / "global.toml", "deny", "make deploy", "manual", today=TODAY)
+    policy = ShellPolicy(load(tmp_path))
+    assert policy.decide("make deploy").outcome == "deny"
+    assert policy.decide("make deploy now").outcome == "ask"
+    assert policy.decide("make").outcome == "ask"
+
+
+def test_deny_matches_unit():
+    from phil.permissions.rules import deny_matches, parse_rule
+
+    rule = parse_rule("git push *")
+    assert deny_matches(rule, ["git", "push"])
+    assert deny_matches(rule, ["/usr/bin/git", "push", "-f", "X=1"])
+    assert not deny_matches(rule, ["git", "pull"])
+    assert not deny_matches(rule, ["git"])
+    assert not deny_matches(rule, [])
+    assert deny_matches(parse_rule("./gh pr *"), ["/tmp/gh", "pr", "merge"])  # by name, whatever the path
+
+
+def test_a_denied_or_refused_read_is_labelled_reads_only(tmp_path):
+    add_rule(tmp_path / "global.toml", "deny", "git log *", "manual", today=TODAY)
+    (tmp_path / "wt").mkdir()
+    policy = ShellPolicy(load(tmp_path), root=tmp_path / "wt")
+    assert policy.decide("git log").label == "reads only"
+    refused = policy.decide("cat /etc/passwd")
+    assert (refused.outcome, refused.label) == ("forbidden", "reads only")
+
+
+def test_the_ask_message_lists_at_most_ten_patterns(tmp_path):
+    patterns = [f"tool{i} *" for i in range(13)]
+    run_shell = make_shell_tool(tmp_path, ShellConfig(allow=[], timeout_s=10), CommandLog(),
+                                policy=load(tmp_path, config_allow=patterns))
+    output = run_shell("terraform apply")
+    assert output == ("DENIED: `terraform apply` is not on the allowlist. Allowed patterns: "
+                      + ", ".join(patterns[:10]) + " … (3 more: phil permissions)")
+
+
+def _repo(tmp_path: Path, phil_toml: str) -> Path:
+    repo = tmp_path / "calc"
+    repo.mkdir()
+    (repo / "phil.toml").write_text(phil_toml, encoding="utf-8", newline="\n")
+    return repo
+
+
+def test_a_broken_phil_toml_keeps_the_deny_rules_and_reports_a_problem(tmp_path, monkeypatch):
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    repo = _repo(tmp_path, "[shell\n")
+    add_rule(global_policy_path(), "deny", "make deploy *", "manual", today=TODAY)
+    config = PhilConfig.model_validate({"shell": {"allow": ["make *"]}})
+    config._sources = {"shell.allow": "phil.toml"}  # as load_config left it, before phil.toml broke
+    policy = policy_for(repo, ProjectPaths("calc-1"), config)
+    assert ShellPolicy(policy).decide("make deploy x").outcome == "deny"
+    assert [e.rule.text for e in policy.allow] == PhilConfig().shell.allow  # defaults: no repo list
+    assert policy.repo_rules_untrusted == ()
+    assert any("phil.toml" in problem.message for problem in policy.problems)
+
+
+def test_a_config_that_fails_to_reload_keeps_the_deny_rules_and_reports_a_problem(tmp_path, monkeypatch):
+    from phil.config import load_config
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("PHIL_HOME", str(home))
+    repo = _repo(tmp_path, '[shell]\nallow = ["make *"]\n')
+    config = load_config(repo)
+    home.mkdir(exist_ok=True)
+    (home / "config.toml").write_text("[shell\n", encoding="utf-8", newline="\n")  # broken since
+    add_rule(global_policy_path(), "deny", "make deploy *", "manual", today=TODAY)
+    policy = policy_for(repo, ProjectPaths("calc-1"), config)
+    assert ShellPolicy(policy).decide("make deploy").outcome == "deny"
+    assert [e.rule.text for e in policy.allow] == PhilConfig().shell.allow
+    assert policy.problems
+
+
+def test_policy_for_honours_set_over_a_repo_list(tmp_path, monkeypatch):
+    from phil.config import load_config
+
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    repo = _repo(tmp_path, '[shell]\nallow = ["make *"]\n')
+    policy = policy_for(repo, ProjectPaths("calc-1"), load_config(repo, overrides=['shell.allow=["just *"]']))
+    assert [(e.rule.text, e.scope) for e in policy.allow] == [("just *", "config")]
+    assert policy.repo_rules_untrusted == ("make *",)
+
+
+def test_the_fallback_drops_a_repo_set_list(tmp_path, monkeypatch, caplog):
+    from phil.config import load_config
+    from phil.permissions import load as load_module
+
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    repo = _repo(tmp_path, '[shell]\nallow = ["make *"]\n')
+
+    def broken(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(load_module, "policy_for", broken)
+    policy = load_module.policy_or_fallback(repo, ProjectPaths("calc-1"), load_config(repo))
+    assert policy.allow == () and policy.deny == ()
+    assert "couldn't load the permission rules" in caplog.text
+
+
+def test_the_repos_shell_settings_are_reported_not_applied_r14(tmp_path, monkeypatch):
+    from phil.config import load_config
+    from phil.permissions.load import trusted_shell
+    from phil.permissions.store import RepoShellSettings
+
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    repo = _repo(tmp_path, '[shell]\nallow = ["make *"]\npass_env = ["AWS_SECRET_ACCESS_KEY"]\nbash = "C:/evil/bash.exe"\n')
+    config = load_config(repo)
+    policy = policy_for(repo, ProjectPaths("calc-1"), config)
+    assert policy.repo_shell == RepoShellSettings(
+        allow=("make *",), pass_env=("AWS_SECRET_ACCESS_KEY",), bash="C:/evil/bash.exe")
+    shell = trusted_shell(config, repo)
+    assert (shell.allow, shell.pass_env, shell.bash) == (PhilConfig().shell.allow, [], None)
+    assert shell.timeout_s == config.shell.timeout_s
+
+
+def test_trusted_shell_keeps_set_and_global_values(tmp_path, monkeypatch):
+    from phil.config import load_config
+    from phil.permissions.load import trusted_shell
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("PHIL_HOME", str(home))
+    home.mkdir()
+    (home / "config.toml").write_text('[shell]\npass_env = ["MY_TOKEN"]\n', encoding="utf-8", newline="\n")
+    repo = _repo(tmp_path, '[shell]\npass_env = ["AWS_SECRET_ACCESS_KEY"]\n')
+    assert trusted_shell(load_config(repo), repo).pass_env == ["MY_TOKEN"]
+    with_set = load_config(repo, overrides=['shell.pass_env=["X_KEY"]'])
+    assert trusted_shell(with_set, repo).pass_env == ["X_KEY"]

@@ -14,9 +14,20 @@ class CommandLog:
     commands: list[str] = field(default_factory=list)
     denied: list[str] = field(default_factory=list)
     refused: list[str] = field(default_factory=list)
+    blocked: list[str] = field(default_factory=list)  # stopped by a deny rule: reported, never asked about
     # Paths the agent's file tools touched, by tool name; `invoke_agent` records into it live, so
     # it survives a rejected output (ContractViolation) or a crash.
     tool_paths: dict[str, list[str]] = field(default_factory=dict)
+
+
+MAX_LISTED_PATTERNS = 10
+
+
+def _pattern_list(patterns: list[str]) -> str:
+    """The allowed patterns an ask names, at most MAX_LISTED_PATTERNS of them."""
+    listed = ", ".join(patterns[:MAX_LISTED_PATTERNS])
+    more = len(patterns) - MAX_LISTED_PATTERNS
+    return f"{listed} … ({more} more: phil permissions)" if more > 0 else listed
 
 
 def make_shell_tool(
@@ -38,7 +49,7 @@ def make_shell_tool(
     rules = policy if policy is not None else config_policy(list(shell.allow))
     shell_policy = ShellPolicy(rules, extra_allow=extra_allow, approved=approved, root=workdir, read_only=read_only)
     reads_only = read_only or not (rules.allow or extra_allow or approved)
-    allowed_patterns = ", ".join(entry.rule.text for entry in rules.allow)
+    allowed_patterns = _pattern_list([entry.rule.text for entry in rules.allow])
     env = child_env(os.environ, shell.pass_env) | {"PYTHONDONTWRITEBYTECODE": "1"}
 
     def run_shell(command: str) -> str:
@@ -59,6 +70,7 @@ def make_shell_tool(
             )
         if decision.outcome == "deny":
             # A deny rule is the user's standing answer: it never becomes an approval prompt.
+            log.blocked.append(command)
             return f"DENIED: `{command}` is blocked by your {decision.reason}. Don't use it."
         if decision.outcome == "ask":
             log.denied.append(command)

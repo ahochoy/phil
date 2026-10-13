@@ -30,7 +30,7 @@ from phil.config import (
 from phil.contracts import Plan
 from phil.contracts.schema import export_schemas
 from phil.git import GitError, git
-from phil.permissions.load import policy_or_fallback
+from phil.permissions.load import policy_or_fallback, trusted_shell
 from phil.repo import RepoError, RepoInfo, resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, spawn_worker, worker_starting
 from phil.store.db import connect
@@ -134,8 +134,9 @@ def _load_config(root: Path, overrides: list[str]) -> PhilConfig:
 
 
 def _require_bash(config: PhilConfig) -> None:
-    """On Windows, stop unless Git Bash can be found: every agent command runs through it."""
-    if platform.IS_WINDOWS and platform.find_bash(config.shell.bash) is None:
+    """On Windows, stop unless Git Bash can be found: every agent command runs through it. The
+    bash checked is the one runs use: a repo's phil.toml can't name it untrusted (R14)."""
+    if platform.IS_WINDOWS and platform.find_bash(trusted_shell(config).bash) is None:
         console.print(f"[phil.error]{escape(platform.MISSING_BASH)}[/]", soft_wrap=True)
         raise typer.Exit(1)
 

@@ -11,7 +11,7 @@ from typing import Literal
 
 from phil import platform
 from phil.permissions.catalog import catalog_reads, label_for
-from phil.permissions.rules import folded_name, rule_matches
+from phil.permissions.rules import deny_matches, folded_name, rule_matches
 from phil.permissions.store import PolicySet, config_policy
 
 # Root pids of the commands running now, for kill_active_groups().
@@ -561,18 +561,19 @@ class ShellPolicy:
         if key is not None and _read_only_mutates(argv, key):
             forbidden = _GENERIC_FORBIDDEN_DETAIL
         reads = forbidden is None and (key is not None or catalog_reads(argv))
-        if reads and self.root is not None and not _contained(argv, key, self.root):
+        # A read stays labelled `reads only` when it is refused for leaving the worktree or denied.
+        label = label_for(argv, read_only=reads)
+        if forbidden is None and reads and self.root is not None and not _contained(argv, key, self.root):
             forbidden = CONTAINMENT_DETAIL
         if forbidden is not None:
-            return Decision("forbidden", f"forbidden: {forbidden}", label_for(argv, read_only=False), forbidden)
+            return Decision("forbidden", f"forbidden: {forbidden}", label, forbidden)
 
-        label = label_for(argv, read_only=False)
         if not self.read_only:
             for entry in self.policy.deny:
-                if rule_matches(entry.rule, argv):
+                if deny_matches(entry.rule, argv):  # R13: blocking errs toward matching
                     return Decision("deny", f'deny rule "{entry.rule.text}" ({entry.scope})', label)
         if reads:
-            return Decision("allow", _READ_REASON, label_for(argv, read_only=True))
+            return Decision("allow", _READ_REASON, label)
         if self.read_only:
             return Decision("ask", _ASK_REASON, label)
 

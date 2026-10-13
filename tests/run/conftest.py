@@ -142,7 +142,7 @@ def make_harness(calc_repo: Path):
             config=_with_test_models(config or PhilConfig()), conn=conn, repo_root=calc_repo, run_id=RUN_ID,
             worktree=paths.worktree_dir(RUN_ID), artifacts=ArtifactStore(paths.run_dir(RUN_ID)),
             factory=factory, sleep=lambda _: None,
-            events=EventLog(paths.run_dir(RUN_ID) / "events.jsonl"), activity=activity,
+            events=EventLog(paths.run_dir(RUN_ID) / "events.jsonl"), activity=activity, paths=paths,
         )
         engine = RunEngine(deps)
         return Harness(engine, engine.build(open_checkpointer(paths.db_path)), deps, factory, plan, base_sha)

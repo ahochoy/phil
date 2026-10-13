@@ -209,6 +209,21 @@ def rule_matches(rule: Rule, argv: list[str]) -> bool:
     return tuple(rest) == fixed
 
 
+def deny_matches(rule: Rule, argv: list[str]) -> bool:
+    """A deny rule's matcher (R13), which errs toward matching because it blocks: the program is
+    compared by folded name whatever its path (`/usr/bin/git`, `GIT`), the rule's fixed words must
+    be the command's leading words, a trailing `*` covers any further words, options and
+    `NAME=value` included, and no command is exempt as exact-only."""
+    if not argv:
+        return False
+    if folded_name(argv[0]) != folded_name(rule.words[0]):
+        return False
+    fixed, rest = rule.words[1:], [_slashed(arg) for arg in argv[1:]]
+    if rule.open_end:
+        return tuple(rest[: len(fixed)]) == fixed
+    return tuple(rest) == fixed
+
+
 def is_bare_program(rule: Rule) -> bool:
     return rule.open_end and len(rule.words) == 1
 
