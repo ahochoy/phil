@@ -1,0 +1,159 @@
+---
+---
+
+<section id="pillars" class="py-20 md:py-28 border-t border-[#E5DDD3] bg-[#FAF8F5]">
+  <div class="max-w-5xl mx-auto px-6">
+    <!-- Section Label -->
+    <div class="flex items-center gap-2 mb-4 font-mono text-xs uppercase tracking-wider text-[#7A7268]">
+      <span class="w-2 h-2 rounded-full bg-[#6D28D9]"></span>
+      <span>Engineering Deep Dives</span>
+      <span class="text-[#D5CCC0]">•</span>
+      <span>Four Architectural Pillars</span>
+    </div>
+
+    <!-- Section Heading -->
+    <div class="max-w-2xl mb-14">
+      <h2 class="font-serif text-3xl sm:text-4xl lg:text-[44px] font-normal text-[#26221E] leading-[1.2] mb-4">
+        Pragmatic systems design for <span class="italic font-serif text-[#6D28D9]">predictable execution</span>.
+      </h2>
+      <p class="text-base sm:text-lg text-[#6B635B] leading-relaxed">
+        Building a reliable agent is an exercise in defense-in-depth: optimizing token economics, isolating security boundaries, and calibrating work intensity to the problem.
+      </p>
+    </div>
+
+    <!-- The 4 Pillar Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+      
+      <!-- PILLAR 1: Jev Decision Classifier (Topaz Accent) -->
+      <div class="p-8 rounded-3xl bg-[#F4EFEA] border border-[#E5DDD3] hover:border-[#FCD34D] transition-colors relative overflow-hidden group">
+        <div class="absolute top-0 right-0 w-32 h-32 bg-[#FEF3C7]/40 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div>
+        <div class="flex items-center gap-2 mb-4 font-mono text-xs text-[#C26910]">
+          <span class="w-2 h-2 rounded-full bg-[#C26910]"></span>
+          <span>PILLAR 01 · ROUTING ECONOMICS</span>
+        </div>
+        <h3 class="font-serif text-2xl font-medium text-[#26221E] mb-3">
+          Specialized Decision Classifier
+        </h3>
+        <p class="text-sm text-[#6B635B] leading-relaxed mb-6">
+          Why burn a $3.00/M token generative LLM just to decide whether a user asked a question or wanted a refactor? Phil uses <strong class="text-[#26221E]">TypeSafe Jev</strong>—a dedicated "System One" decision model:
+        </p>
+        <ul class="space-y-2.5 text-xs font-mono text-[#4A443D] mb-6">
+          <li class="flex items-start gap-2">
+            <span class="text-[#C26910] font-bold">›</span>
+            <span><strong>$0.042/M tokens:</strong> Free output tokens; 70× cheaper than frontier chat models.</span>
+          </li>
+          <li class="flex items-start gap-2">
+            <span class="text-[#C26910] font-bold">›</span>
+            <span><strong>12× faster p95 latency:</strong> Instant sub-200ms path determination.</span>
+          </li>
+          <li class="flex items-start gap-2">
+            <span class="text-[#C26910] font-bold">›</span>
+            <span><strong>Graceful Fallback:</strong> Seamless fallback to the Low LLM tier if the decision service times out.</span>
+          </li>
+        </ul>
+        <div class="p-3 rounded-xl bg-[#FAF8F5] border border-[#E5DDD3] text-[11px] font-mono text-[#7A7268]">
+          Benchmark result: 0 unsafe routing mistakes across 50 test scenarios.
+        </div>
+      </div>
+
+      <!-- PILLAR 2: Tiered Models (Emerald Accent) -->
+      <div class="p-8 rounded-3xl bg-[#F4EFEA] border border-[#E5DDD3] hover:border-[#A7F3D0] transition-colors relative overflow-hidden group">
+        <div class="absolute top-0 right-0 w-32 h-32 bg-[#E6F4EA]/40 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div>
+        <div class="flex items-center gap-2 mb-4 font-mono text-xs text-[#0B7A5A]">
+          <span class="w-2 h-2 rounded-full bg-[#0B7A5A]"></span>
+          <span>PILLAR 02 · MODEL HIERARCHY</span>
+        </div>
+        <h3 class="font-serif text-2xl font-medium text-[#26221E] mb-3">
+          Two-Tier Model Architecture
+        </h3>
+        <p class="text-sm text-[#6B635B] leading-relaxed mb-6">
+          Early agent harnesses burdened users with configuring 6 separate internal agent roles. Phil collapsed them into two clear tiers:
+        </p>
+        <div class="grid grid-cols-2 gap-3 mb-6 text-xs font-mono">
+          <div class="p-3.5 rounded-xl bg-[#FAF8F5] border border-[#E5DDD3]">
+            <div class="text-[#0B7A5A] font-bold text-sm mb-1">HIGH TIER</div>
+            <div class="text-[11px] text-[#7A7268] mb-2">Judgment & Critique</div>
+            <div class="text-[#26221E]">• Architect</div>
+            <div class="text-[#26221E]">• Critic</div>
+            <div class="text-[#26221E]">• Reviewer</div>
+          </div>
+          <div class="p-3.5 rounded-xl bg-[#FAF8F5] border border-[#E5DDD3]">
+            <div class="text-[#7A7268] font-bold text-sm mb-1">LOW TIER</div>
+            <div class="text-[11px] text-[#7A7268] mb-2">Fast Execution</div>
+            <div class="text-[#26221E]">• Orchestrator</div>
+            <div class="text-[#26221E]">• Implementer</div>
+            <div class="text-[#26221E]">• Tester</div>
+          </div>
+        </div>
+        <div class="p-3 rounded-xl bg-[#FAF8F5] border border-[#E5DDD3] text-[11px] font-mono text-[#7A7268]">
+          Any provider: Claude, GPT, Gemini, DeepSeek, or local Ollama / vLLM.
+        </div>
+      </div>
+
+      <!-- PILLAR 3: Security & Containment (Amethyst Accent) -->
+      <div class="p-8 rounded-3xl bg-[#F4EFEA] border border-[#E5DDD3] hover:border-[#DDD6FE] transition-colors relative overflow-hidden group">
+        <div class="absolute top-0 right-0 w-32 h-32 bg-[#F3E8FF]/40 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div>
+        <div class="flex items-center gap-2 mb-4 font-mono text-xs text-[#6D28D9]">
+          <span class="w-2 h-2 rounded-full bg-[#6D28D9]"></span>
+          <span>PILLAR 03 · PERMISSIONS & SECURITY</span>
+        </div>
+        <h3 class="font-serif text-2xl font-medium text-[#26221E] mb-3">
+          Zero-Leak Sandbox Containment
+        </h3>
+        <p class="text-sm text-[#6B635B] leading-relaxed mb-6">
+          Agents running shell tools should never possess access to production API keys or escape the sandbox boundary:
+        </p>
+        <ul class="space-y-2.5 text-xs font-mono text-[#4A443D] mb-6">
+          <li class="flex items-start gap-2">
+            <span class="text-[#6D28D9] font-bold">›</span>
+            <span><strong>Null Keyring Isolation:</strong> Subshells pin <code class="text-[#26221E]">PYTHON_KEYRING_BACKEND=null</code>. Code run by agents cannot query stored OS keychain secrets.</span>
+          </li>
+          <li class="flex items-start gap-2">
+            <span class="text-[#6D28D9] font-bold">›</span>
+            <span><strong>Environment Sanitization:</strong> API keys and sensitive tokens are completely stripped from child command environments.</span>
+          </li>
+          <li class="flex items-start gap-2">
+            <span class="text-[#6D28D9] font-bold">›</span>
+            <span><strong>Strict Traversal Guard:</strong> Shell commands reject operators (<code class="text-[#26221E]">&amp;&amp;</code>, <code class="text-[#26221E]">|</code>, <code class="text-[#26221E]">;</code>), symlink escapes, and mutating flags.</span>
+          </li>
+        </ul>
+        <div class="p-3 rounded-xl bg-[#FAF8F5] border border-[#E5DDD3] text-[11px] font-mono text-[#7A7268]">
+          Four rounds of security testing against live grep, rg, and git escape vectors.
+        </div>
+      </div>
+
+      <!-- PILLAR 4: Work Intensity & Resilience (Amber Accent) -->
+      <div class="p-8 rounded-3xl bg-[#F4EFEA] border border-[#E5DDD3] hover:border-[#FDE68A] transition-colors relative overflow-hidden group">
+        <div class="absolute top-0 right-0 w-32 h-32 bg-[#FFFBEB]/40 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div>
+        <div class="flex items-center gap-2 mb-4 font-mono text-xs text-[#B45309]">
+          <span class="w-2 h-2 rounded-full bg-[#B45309]"></span>
+          <span>PILLAR 04 · PROCESS CALIBRATION</span>
+        </div>
+        <h3 class="font-serif text-2xl font-medium text-[#26221E] mb-3">
+          Adaptive Work Intensity
+        </h3>
+        <p class="text-sm text-[#6B635B] leading-relaxed mb-6">
+          Not all coding requests require the full heavyweight machinery of intake interviews, architects, and code reviewers:
+        </p>
+        <ul class="space-y-2.5 text-xs font-mono text-[#4A443D] mb-6">
+          <li class="flex items-start gap-2">
+            <span class="text-[#B45309] font-bold">›</span>
+            <span><strong>Answer Path:</strong> Diagnostic questions inspect read-only snapshots and answer directly without touching git.</span>
+          </li>
+          <li class="flex items-start gap-2">
+            <span class="text-[#B45309] font-bold">›</span>
+            <span><strong>Quick Path:</strong> Targeted 1-task changes run with a lean implementer and single review, saving minutes and dollars.</span>
+          </li>
+          <li class="flex items-start gap-2">
+            <span class="text-[#B45309] font-bold">›</span>
+            <span><strong>Interactive Intake:</strong> Ambiguous requests present 1-question multiple-choice clarifications instead of guessing.</span>
+          </li>
+        </ul>
+        <div class="p-3 rounded-xl bg-[#FAF8F5] border border-[#E5DDD3] text-[11px] font-mono text-[#7A7268]">
+          Hard circuit breakers: 15 calls per attempt on quick path, $2.00 default run budget.
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>

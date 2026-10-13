@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+@theme {
+  --font-serif: 'Newsreader', 'Playfair Display', Georgia, serif;
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Cream, Stone & Taupe Palette */
+  --color-cream-base: #FAF8F5;
+  --color-cream-card: #F4EFEA;
+  --color-cream-card-hover: #EFE9E2;
+  --color-stone-border: #E5DDD3;
+  --color-stone-border-subtle: #ECE5DC;
+  --color-stone-muted: #7A7268;
+  --color-stone-heading: #26221E;
+  --color-stone-body: #4A443D;
+  --color-stone-dark: #1A1715;
+  --color-stone-obsidian: #12100E;
+
+  /* Gemstone Accents */
+  --color-gem-topaz: #C26910;
+  --color-gem-topaz-bg: #FEF3C7;
+  --color-gem-topaz-border: #FCD34D;
+  
+  --color-gem-emerald: #0B7A5A;
+  --color-gem-emerald-bg: #E6F4EA;
+  --color-gem-emerald-border: #A7F3D0;
+  
+  --color-gem-amethyst: #6D28D9;
+  --color-gem-amethyst-bg: #F3E8FF;
+  --color-gem-amethyst-border: #DDD6FE;
+  
+  --color-gem-amber: #B45309;
+  --color-gem-amber-bg: #FFFBEB;
+  --color-gem-amber-border: #FDE68A;
+  
+  --color-gem-sapphire: #1E40AF;
+  --color-gem-sapphire-bg: #EFF6FF;
+  --color-gem-sapphire-border: #BFDBFE;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    background-color: var(--color-cream-base);
+    color: var(--color-stone-body);
+    font-family: var(--font-sans);
+  }
+
+  ::selection {
+    background-color: #E2D9CC;
+    color: var(--color-stone-heading);
+  }
+}
+
+/* Subtle museum/editorial noise or border highlights */
+.editorial-border {
+  border: 1px solid var(--color-stone-border);
+}
+
+.editorial-shadow {
+  box-shadow: 0 4px 20px -2px rgba(38, 34, 30, 0.04), 0 2px 6px -1px rgba(38, 34, 30, 0.02);
+}
+
+.editorial-shadow-lg {
+  box-shadow: 0 12px 32px -4px rgba(38, 34, 30, 0.06), 0 4px 12px -2px rgba(38, 34, 30, 0.03);
+}
+
+.terminal-shadow {
+  box-shadow: 0 20px 40px -10px rgba(18, 16, 14, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08);
+}

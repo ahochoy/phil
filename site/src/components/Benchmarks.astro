@@ -1,0 +1,111 @@
+---
+import { SITE_CONFIG } from "../config";
+
+const ARTICLES = [
+  {
+    num: "01",
+    title: "Stop the Waste",
+    date: "Sep 30, 2026",
+    summary:
+      "A 50-minute runaway loop on a 1-line meta tag exposes shell approval halts and harness amnesia. The birth of the live benchmark harness.",
+    url: `${SITE_CONFIG.links.devlog}01-stop-the-waste`,
+  },
+  {
+    num: "02",
+    title: "Configure Once, Any Model",
+    date: "Sep 30, 2026",
+    summary:
+      "Collapsing 6 complex internal agent roles into High and Low tiers. Moving secrets to the OS keychain with zero environment leak.",
+    url: `${SITE_CONFIG.links.devlog}02-configure-once-any-model`,
+  },
+  {
+    num: "03",
+    title: "The Right Amount of Process",
+    date: "Oct 1, 2026",
+    summary:
+      "Introducing TypeSafe Jev as a System-One decision primitive. Designing routing as a policy engine rather than a text generator.",
+    url: `${SITE_CONFIG.links.devlog}03-the-right-amount-of-process`,
+  },
+  {
+    num: "04",
+    title: "Paying for What You Use",
+    date: "Oct 5, 2026",
+    summary:
+      "Anatomy of a $3.17 planning runaway. Implementing model call caps, prompt caching, and interactive multi-choice intake questions.",
+    url: `${SITE_CONFIG.links.devlog}04-paying-for-what-you-use`,
+  },
+  {
+    num: "05",
+    title: "A Rule Written First",
+    date: "Oct 6, 2026",
+    summary:
+      "Validating classifier thresholds on 50 live benchmark runs. Why writing empirical decision rules before running tests prevents confirmation bias.",
+    url: `${SITE_CONFIG.links.devlog}05-a-rule-written-first`,
+  },
+];
+---
+
+<section id="benchmarks" class="py-20 md:py-28 border-t border-[#E5DDD3] bg-[#F4EFEA]/40">
+  <div class="max-w-5xl mx-auto px-6">
+    <!-- Section Label -->
+    <div class="flex items-center gap-2 mb-4 font-mono text-xs uppercase tracking-wider text-[#7A7268]">
+      <span class="w-2 h-2 rounded-full bg-[#1E40AF]"></span>
+      <span>Empirical Engineering</span>
+      <span class="text-[#D5CCC0]">•</span>
+      <span>The 5-Part Journey</span>
+    </div>
+
+    <!-- Section Heading -->
+    <div class="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-12">
+      <div class="max-w-2xl">
+        <h2 class="font-serif text-3xl sm:text-4xl lg:text-[44px] font-normal text-[#26221E] leading-[1.2] mb-4">
+          A rule written <span class="italic font-serif text-[#1E40AF]">first</span>.
+        </h2>
+        <p class="text-base sm:text-lg text-[#6B635B] leading-relaxed">
+          Instead of relying on anecdotal evaluation, every architectural change in Phil was measured against a live benchmark harness with hypotheses documented prior to execution.
+        </p>
+      </div>
+
+      <a
+        href={SITE_CONFIG.links.devlog}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="inline-flex items-center gap-2 px-4 py-2.5 rounded-full border border-[#D5CCC0] bg-[#FAF8F5] text-xs font-mono font-medium text-[#26221E] hover:border-[#B8ADA0] hover:bg-[#EFE9E2] transition-all self-start md:self-auto"
+      >
+        <span>View Full Dev Log</span>
+        <span>↗</span>
+      </a>
+    </div>
+
+    <!-- Articles List / Timeline -->
+    <div class="space-y-4">
+      {ARTICLES.map((article) => (
+        <a
+          href={article.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="block p-6 rounded-2xl bg-[#FAF8F5] border border-[#E5DDD3] hover:border-[#B8ADA0] hover:shadow-xs transition-all group"
+        >
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+            <div class="flex items-center gap-3">
+              <span class="font-mono text-xs text-[#7A7268] font-bold group-hover:text-[#1E40AF] transition-colors">
+                PART {article.num}
+              </span>
+              <span class="text-[#D5CCC0] hidden sm:inline">•</span>
+              <h3 class="font-serif text-xl font-medium text-[#26221E] group-hover:text-[#1E40AF] transition-colors">
+                {article.title}
+              </h3>
+            </div>
+            <div class="text-xs font-mono text-[#8C827A] flex items-center gap-1.5">
+              <span>{article.date}</span>
+              <span class="group-hover:translate-x-0.5 transition-transform text-[#B8ADA0]">↗</span>
+            </div>
+          </div>
+          <p class="text-xs sm:text-sm text-[#6B635B] leading-relaxed max-w-3xl">
+            {article.summary}
+          </p>
+        </a>
+      ))}
+    </div>
+  </div>
+</section>

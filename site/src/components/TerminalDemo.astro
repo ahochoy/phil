@@ -1,0 +1,231 @@
+---
+---
+
+<section class="py-12 max-w-5xl mx-auto px-6">
+  <!-- Terminal Card Header & Mode Switcher -->
+  <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mb-4">
+    <div class="flex items-center gap-2">
+      <span class="text-xs font-mono uppercase tracking-wider text-[#7A7268]">Live Telemetry Preview</span>
+      <span class="text-[#D5CCC0]">•</span>
+      <span class="text-xs text-[#26221E] font-medium">Interactive Work Intensity Paths</span>
+    </div>
+
+    <!-- Interactive Path Switcher Tabs -->
+    <div class="inline-flex p-1 rounded-xl bg-[#EFE9E2] border border-[#E5DDD3] text-xs font-mono">
+      <button
+        type="button"
+        data-tab="quick"
+        class="tab-btn px-3 py-1.5 rounded-lg text-[#26221E] bg-[#FAF8F5] shadow-xs font-medium transition-all"
+      >
+        Quick Path
+      </button>
+      <button
+        type="button"
+        data-tab="answer"
+        class="tab-btn px-3 py-1.5 rounded-lg text-[#7A7268] hover:text-[#26221E] transition-all"
+      >
+        Answer Path
+      </button>
+      <button
+        type="button"
+        data-tab="full"
+        class="tab-btn px-3 py-1.5 rounded-lg text-[#7A7268] hover:text-[#26221E] transition-all"
+      >
+        Full Path
+      </button>
+    </div>
+  </div>
+
+  <!-- Terminal Window Container -->
+  <div class="rounded-2xl bg-[#181614] border border-[#332E2A] text-[#EFEBE6] font-mono text-xs md:text-sm shadow-2xl overflow-hidden">
+    <!-- Window Bar -->
+    <div class="flex items-center justify-between px-4 py-3 bg-[#1F1C19] border-b border-[#332E2A]">
+      <div class="flex items-center gap-2">
+        <div class="w-3 h-3 rounded-full bg-[#E06C75]/80"></div>
+        <div class="w-3 h-3 rounded-full bg-[#E5C07B]/80"></div>
+        <div class="w-3 h-3 rounded-full bg-[#98C379]/80"></div>
+      </div>
+      <div class="text-[11px] text-[#8C827A] flex items-center gap-2">
+        <span>phil chat — volute @ main</span>
+        <span class="text-[#59524C]">|</span>
+        <span class="text-[#A3998C]">budget: $2.00</span>
+      </div>
+      <div class="text-[11px] text-[#A3998C] hidden sm:block">
+        pty · utf-8
+      </div>
+    </div>
+
+    <!-- Terminal Content Display -->
+    <div class="p-6 space-y-4 min-h-[340px]">
+      
+      <!-- QUICK PATH CONTENT -->
+      <div id="content-quick" class="tab-content space-y-3">
+        <div class="flex items-center gap-2 text-[#9A9085]">
+          <span class="text-[#C26910] font-bold">›</span>
+          <span class="text-[#EFEBE6]">phil "add subtract function with test"</span>
+        </div>
+
+        <div class="p-2.5 rounded-lg bg-[#24201D] border border-[#3D3732] text-xs space-y-1">
+          <div class="flex items-center justify-between text-[#B8ADA0]">
+            <span class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-[#059669]"></span>
+              <span>Router: TypeSafe Jev (confidence: 0.94)</span>
+            </span>
+            <span class="text-[#8C827A]">latency: 140ms · $0.0001</span>
+          </div>
+          <div class="text-[#059669]">
+            ✓ Classified: Simple change · <span class="underline underline-offset-2">quick path</span> (bypasses architect/critic overhead)
+          </div>
+        </div>
+
+        <div class="text-[#A3998C] text-xs">
+          ▸ Worktree: <span class="text-[#D5CCC0]">.phil/worktrees/r-98ac</span> (isolated branch: phil/r-98ac)
+        </div>
+
+        <div class="space-y-1.5 pl-2 border-l-2 border-[#3D3732]">
+          <div class="text-[#E5C07B] flex items-center gap-2">
+            <span>▸ CALC-001</span>
+            <span class="text-[#EFEBE6]">Add subtract and test case</span>
+          </div>
+          <div class="text-[#8C827A] flex items-center justify-between">
+            <span>&nbsp;&nbsp;tool &nbsp;write &nbsp;tests/test_math.py</span>
+            <span class="text-[#59524C]">#1</span>
+          </div>
+          <div class="text-[#8C827A] flex items-center justify-between">
+            <span>&nbsp;&nbsp;run &nbsp;&nbsp;pytest -q &nbsp;→ 1 failed (expected RED)</span>
+            <span class="text-[#59524C]">#2</span>
+          </div>
+          <div class="text-[#8C827A] flex items-center justify-between">
+            <span>&nbsp;&nbsp;tool &nbsp;edit &nbsp;&nbsp;src/math.py</span>
+            <span class="text-[#59524C]">#3</span>
+          </div>
+          <div class="text-[#059669] flex items-center justify-between">
+            <span>&nbsp;&nbsp;run &nbsp;&nbsp;pytest -q &nbsp;→ 8 passed (GREEN)</span>
+            <span class="text-[#59524C]">#4</span>
+          </div>
+          <div class="text-[#98C379] flex items-center gap-2">
+            <span>✓ CALC-001 done</span>
+            <span class="text-[#8C827A]">· 1 task · 1 attempt · 0 open issues</span>
+          </div>
+        </div>
+
+        <div class="pt-2 text-xs text-[#8C827A] flex items-center justify-between border-t border-[#2B2622]">
+          <span>Open a PR for r-98ac → main? [y/N]</span>
+          <span class="text-[#059669]">run complete · spend: $0.04 (budget: $2.00)</span>
+        </div>
+      </div>
+
+      <!-- ANSWER PATH CONTENT -->
+      <div id="content-answer" class="tab-content hidden space-y-3">
+        <div class="flex items-center gap-2 text-[#9A9085]">
+          <span class="text-[#C26910] font-bold">›</span>
+          <span class="text-[#EFEBE6]">phil "where is the API key keychain lookup defined?"</span>
+        </div>
+
+        <div class="p-2.5 rounded-lg bg-[#24201D] border border-[#3D3732] text-xs space-y-1">
+          <div class="flex items-center justify-between text-[#B8ADA0]">
+            <span class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-[#3B82F6]"></span>
+              <span>Router: TypeSafe Jev (confidence: 0.98)</span>
+            </span>
+            <span class="text-[#8C827A]">latency: 110ms · $0.0001</span>
+          </div>
+          <div class="text-[#60A5FA]">
+            ✓ Classified: Question / Diagnosis · <span class="underline underline-offset-2">answer path</span> (read-only snapshot)
+          </div>
+        </div>
+
+        <div class="text-xs text-[#D5CCC0] leading-relaxed bg-[#1F1C19] p-3 rounded-lg border border-[#332E2A]">
+          <p class="text-[#EFEBE6] font-medium mb-1">Keychain resolution logic:</p>
+          <p class="text-[#B8ADA0]">
+            Stored in <span class="text-[#FCD34D]">src/phil/key_store.py</span>. Phil checks environment variables first. If unset, it queries the OS keychain via <span class="text-[#98C379]">keyring.get_password()</span>. Agent subshells run with <span class="text-[#E06C75]">PYTHON_KEYRING_BACKEND=null</span> to prevent child scripts from accessing secrets.
+          </p>
+        </div>
+
+        <div class="pt-2 text-xs text-[#8C827A] flex items-center justify-between border-t border-[#2B2622]">
+          <span>0 worktrees created · 0 git commits</span>
+          <span class="text-[#059669]">read-only · spend: $0.003 (low model)</span>
+        </div>
+      </div>
+
+      <!-- FULL PATH CONTENT -->
+      <div id="content-full" class="tab-content hidden space-y-3">
+        <div class="flex items-center gap-2 text-[#9A9085]">
+          <span class="text-[#C26910] font-bold">›</span>
+          <span class="text-[#EFEBE6]">phil "implement oauth token refresh rotation with sqlite store"</span>
+        </div>
+
+        <div class="p-2.5 rounded-lg bg-[#24201D] border border-[#3D3732] text-xs space-y-1">
+          <div class="flex items-center justify-between text-[#B8ADA0]">
+            <span class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-[#A855F7]"></span>
+              <span>Router: TypeSafe Jev (confidence: 0.91)</span>
+            </span>
+            <span class="text-[#8C827A]">latency: 180ms</span>
+          </div>
+          <div class="text-[#C084FC]">
+            ✓ Classified: Feature / Refactor · <span class="underline underline-offset-2">full path</span>
+          </div>
+        </div>
+
+        <div class="space-y-1 text-xs">
+          <div class="text-[#E5C07B]">1. Intake clarifying questions (multiple choice) answered</div>
+          <div class="text-[#E5C07B]">2. Architect (High Tier) drafted 3-step contract plan</div>
+          <div class="text-[#E5C07B]">3. Critic (High Tier) reviewed plan & approved edge-case safety</div>
+          <div class="text-[#059669]">4. Run started in worktree .phil/worktrees/r-fe12 with 3 TDD tasks</div>
+        </div>
+
+        <div class="pt-2 text-xs text-[#8C827A] flex items-center justify-between border-t border-[#2B2622]">
+          <span>PR #14 opened: phil/r-fe12 → main (All 3 tasks verified)</span>
+          <span class="text-[#059669]">completed · spend: $0.28 / $2.00</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Live Terminal Status Bar -->
+    <div class="px-4 py-2 bg-[#12100E] border-t border-[#332E2A] flex flex-wrap items-center justify-between text-[11px] text-[#8C827A] font-mono gap-2">
+      <div class="flex items-center gap-3">
+        <span class="text-[#98C379] flex items-center gap-1">
+          <span class="w-1.5 h-1.5 rounded-full bg-[#98C379]"></span>
+          idle
+        </span>
+        <span>volute @ main</span>
+        <span class="text-[#59524C]">|</span>
+        <span class="text-[#B8ADA0]">model: low·gemini-flash</span>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="text-[#E5C07B]">budget: $0.04 / $2.00</span>
+        <span class="text-[#59524C]">|</span>
+        <span class="text-[#98C379]">0 open issues</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  // Tab switcher for interactive terminal
+  const buttons = document.querySelectorAll<HTMLButtonElement>('.tab-btn');
+  const contents = document.querySelectorAll<HTMLElement>('.tab-content');
+
+  buttons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const target = btn.getAttribute('data-tab');
+      
+      // Update buttons
+      buttons.forEach(b => {
+        b.classList.remove('bg-[#FAF8F5]', 'text-[#26221E]', 'shadow-xs');
+        b.classList.add('text-[#7A7268]');
+      });
+      btn.classList.add('bg-[#FAF8F5]', 'text-[#26221E]', 'shadow-xs');
+      btn.classList.remove('text-[#7A7268]');
+
+      // Update contents
+      contents.forEach(c => c.classList.add('hidden'));
+      const activeContent = document.getElementById(`content-${target}`);
+      if (activeContent) {
+        activeContent.classList.remove('hidden');
+      }
+    });
+  });
+</script>
