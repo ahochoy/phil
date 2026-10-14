@@ -37,7 +37,8 @@ from phil.permissions.load import policy_or_fallback, trusted_shell
 from phil.repo import RepoError, RepoInfo, resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, spawn_worker, worker_starting
 from phil.store.db import connect
-from phil.store.events import printable, run_events
+from phil.store.events import run_events
+from phil.text import printable
 from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, get_run, list_runs, update_run

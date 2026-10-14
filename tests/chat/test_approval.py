@@ -276,7 +276,7 @@ def test_launch_problems_includes_program_problems(monkeypatch):
 def deny_policy(tmp_path: Path, rule: str):
     add_rule(tmp_path / "global.toml", "deny", rule, "manual", today=date(2026, 10, 13))
     return load_policy(repo_name="calc", project_policy=tmp_path / "proj.toml", global_policy=tmp_path / "global.toml",
-                       config_allow=[], repo_allow=[])
+                       config_allow=[])
 
 
 def test_a_deny_rule_on_the_plans_test_command_blocks_approval(tmp_path):

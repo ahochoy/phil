@@ -42,8 +42,9 @@ from phil.chat.decision import (
     pr_decision,
     question_decision,
     replace_decision,
-    repo_rules_decision,
-    repo_rules_lines,
+    repo_shell_decision,
+    repo_shell_lines,
+    repo_shell_title,
     settled_line,
 )
 from phil.chat.design import propose_approaches
@@ -60,7 +61,7 @@ from phil.contracts.results import AttemptWorklog
 from phil.contracts.routing import Answer
 from phil.publish import publisher as publishing
 from phil.publish.service import PrChange, PublishRefused, change_line, publish_run, sweep_prs
-from phil.permissions.listing import CHANGE_HINT, listing_lines
+from phil.permissions.listing import CHANGE_HINT, listing_lines, problem_lines
 from phil.permissions.load import current_repo_shell_hash,policy_or_fallback, rule_label, undecided_repo_shell
 from phil.permissions.store import PolicySet, RepoShellSettings, record_repo_decision
 from phil.repo import RepoInfo, resolve_repo
@@ -72,8 +73,9 @@ from phil.run.launch import is_worker_alive, prepare_run, worker_starting
 from phil.run.state import blocking_count
 from phil.store.activity import activity_log
 from phil.store.db import connect
-from phil.store.events import MILESTONE_KINDS, printable, run_events, test_cmd_changed_line
-from phil.store.paths import ProjectPaths
+from phil.store.events import MILESTONE_KINDS, run_events, test_cmd_changed_line
+from phil.text import printable
+from phil.store.paths import ProjectPaths, global_policy_path
 from phil.store.parked import open_count, park
 from phil.store.runs import get_run, list_runs
 from phil.store.telemetry import budget_warning_line, chat_cost_since, chat_usage, last_telemetry_id, run_totals
@@ -543,8 +545,8 @@ class ChatController:
             return approval_decision()
         if stage == "trust_repo" and self._trust is not None:
             rules, labels, pass_env, bash = self._trust_parts(self._trust)
-            decision = repo_rules_decision(self.info.root.name, rules, labels, pass_env, bash)
-            return self._with_details(decision, repo_rules_lines(rules, labels, pass_env, bash))
+            decision = repo_shell_decision(self.info.root.name, rules, labels, pass_env, bash)
+            return self._with_details(decision, repo_shell_lines(rules, labels, pass_env, bash))
         if stage == "confirm_pr" and self._pr_offer is not None:
             return pr_decision(self._pr_offer, self._pr_force)
         if stage == "confirm_fix":
@@ -656,6 +658,7 @@ class ChatController:
 
     def run(self) -> None:
         try:
+            self._report_policy_problems()
             if self._resume:
                 self._reopen()
             self._refresh_cost()
@@ -1364,8 +1367,8 @@ class ChatController:
         self._set_stage("trust_repo")
         if self.io.choose is None:  # no menu shows it: print what is being trusted
             rules, labels, pass_env, bash = self._trust_parts(self._trust)
-            self.console.print(Text(f"{printable(self.info.root.name)}'s phil.toml allows these commands"))
-            for line in repo_rules_lines(rules, labels, pass_env, bash):
+            self.console.print(Text(repo_shell_title(self.info.root.name, rules)))
+            for line in repo_shell_lines(rules, labels, pass_env, bash):
                 self.console.print(Text(f"  {line}"))
         return True
 
@@ -2103,6 +2106,18 @@ class ChatController:
         self._safe_note("parked", id=item.id, note=note)
         self._refresh_parked()
         self.console.print(f"Parked [phil.id]{escape(item.id)}[/].")
+
+    def _report_policy_problems(self) -> None:
+        """At chat start, right after the banner: each problem with the permission rules, once, in
+        the line the listing shows (spec 2026-10-13 §3.6). `/permissions` lists them again."""
+        try:
+            paths = ProjectPaths(self.info.slug)
+            lines = problem_lines(self._rules(), (global_policy_path(), paths.policy_path))
+        except Exception:
+            logger.warning("couldn't check the permission rules for problems", exc_info=True)
+            return
+        for line in lines:
+            self.console.print(Text(line, style="phil.warn"), soft_wrap=True)
 
     def _permissions_command(self) -> None:
         """What `phil permissions` lists; changes are made with the CLI (spec 2026-10-13 §3.7)."""

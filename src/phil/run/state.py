@@ -49,6 +49,9 @@ class RunState(TypedDict, total=False):
     reviewed_sha: str  # a quick run's commit under review, before its fix after review
     moved_to_full: bool
     patch_editable_tests: list[str]
+    # Each policy file's sha256 (None: missing) as of run start, moved on by Phil's own writes, to
+    # notice a change that code the run executed made (R18). Absent in runs started before.
+    policy_digests: dict[str, str | None]
 
 
 def initial_state(
@@ -264,12 +267,15 @@ def render_summary(
     open_issues: list[dict[str, Any]],
     usage: list[UsageLine] | None = None,
     totals: Totals | None = None,
+    warnings: list[str] | None = None,
 ) -> str:
+    """`warnings` (a policy file changed outside Phil, say) go right under the status line."""
     blocking = f" · {blocking_count(open_issues)} blocking issue(s) open" if status == "incomplete" else ""
     lines = [
         f"# Run {run_id} · {plan.keyword}",
         "",
         f"Status: {status}{blocking} · branch {branch} · {base_sha[:8]}..{head_sha[:8]}",
+        *([""] + list(warnings) if warnings else []),
         "",
         "## Tasks",
         *task_lines(plan),

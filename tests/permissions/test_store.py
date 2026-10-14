@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 from phil.permissions.store import (
-    PolicyWriteError, add_rule, load_policy, record_repo_decision, remove_rule, repo_decision, repo_rules_hash,
+    PolicyWriteError, RepoShellSettings, add_rule, load_policy, record_repo_decision, remove_rule, repo_decision,
+    repo_shell_hash,
 )
 from phil.store.paths import ProjectPaths, global_policy_path
 
@@ -14,7 +15,12 @@ TODAY = date(2026, 10, 13)
 
 def load(tmp_path: Path, *, config_allow=(), repo_allow=()):
     return load_policy(repo_name="calc", project_policy=tmp_path / "proj.toml", global_policy=tmp_path / "global.toml",
-                       config_allow=list(config_allow), repo_allow=list(repo_allow))
+                       config_allow=list(config_allow), repo_shell=RepoShellSettings(allow=tuple(repo_allow)))
+
+
+def allow_only_hash(rules):
+    """The hash a decision about a repo that sets only `[shell] allow = rules` is recorded under."""
+    return repo_shell_hash(RepoShellSettings(allow=tuple(rules)))
 
 
 def test_missing_files_are_empty(tmp_path):
@@ -92,39 +98,61 @@ def test_an_invalid_rule_inside_a_file_is_a_problem_with_its_line(tmp_path):
 def test_remove_rule(tmp_path):
     path = tmp_path / "proj.toml"
     add_rule(path, "allow", "make test *", "manual", today=TODAY)
-    assert remove_rule(path, "make test *") is True
-    assert remove_rule(path, "make test *") is False
+    assert remove_rule(path, "make test *") == ("allow",)
+    assert remove_rule(path, "make test *") == ()
     assert load(tmp_path).allow == ()
+
+
+def test_remove_rule_says_which_kinds_it_removed(tmp_path):
+    path = tmp_path / "proj.toml"
+    add_rule(path, "allow", "make deploy", "manual", today=TODAY)
+    add_rule(path, "deny", "make deploy", "manual", today=TODAY)
+    assert remove_rule(path, "make  deploy") == ("allow", "deny")
+
+
+def test_trusted_repo_patterns_keep_config_glob_matching_r17(tmp_path):
+    # A pattern the rule language can't parse (`test*`) is no problem: it's a glob, as in config.
+    rules = ["uv run pytest *", "npm run test*"]
+    record_repo_decision(tmp_path / "proj.toml", "trust", allow_only_hash(rules))
+    policy = load(tmp_path, repo_allow=rules)
+    assert policy.problems == ()
+    assert [(e.rule.text, e.scope, e.glob) for e in policy.allow] == [
+        ("uv run pytest *", "calc phil.toml", True), ("npm run test*", "calc phil.toml", True)]
 
 
 def test_repo_rules_need_trust_for_their_hash(tmp_path):
     rules = ["make test *"]
     policy = load(tmp_path, repo_allow=rules)
     assert policy.repo_rules_untrusted == ("make test *",) and policy.allow == ()
-    record_repo_decision(tmp_path / "proj.toml", "trust", repo_rules_hash(rules))
+    record_repo_decision(tmp_path / "proj.toml", "trust", allow_only_hash(rules))
     policy = load(tmp_path, repo_allow=rules)
     assert [(e.rule.text, e.scope) for e in policy.allow] == [("make test *", "calc phil.toml")]
-    assert repo_decision(tmp_path / "proj.toml", repo_rules_hash(rules)) == "trust"
+    assert repo_decision(tmp_path / "proj.toml", allow_only_hash(rules)) == "trust"
     changed = ["make test *", "make deploy *"]
-    assert repo_decision(tmp_path / "proj.toml", repo_rules_hash(changed)) is None
+    assert repo_decision(tmp_path / "proj.toml", allow_only_hash(changed)) is None
     assert load(tmp_path, repo_allow=changed).repo_rules_untrusted == tuple(changed)
 
 
 def test_ignored_repo_rules_stay_off_without_nagging(tmp_path):
     rules = ["make test *"]
-    record_repo_decision(tmp_path / "proj.toml", "ignore", repo_rules_hash(rules))
+    record_repo_decision(tmp_path / "proj.toml", "ignore", allow_only_hash(rules))
     policy = load(tmp_path, repo_allow=rules)
     assert policy.allow == () and policy.repo_rules_untrusted == ()
 
 
 def test_config_allow_keeps_old_glob_patterns(tmp_path):
     policy = load(tmp_path, config_allow=["pytest tests/*.py"])
-    assert policy.allow[0].scope == "config"
+    assert (policy.allow[0].scope, policy.allow[0].glob) == ("config", True)
+
+
+def test_saved_rules_are_not_globs(tmp_path):
+    add_rule(tmp_path / "proj.toml", "allow", "make test *", "manual", today=TODAY)
+    assert [e.glob for e in load(tmp_path).allow] == [False]
 
 
 def test_the_hash_tells_rule_lists_apart():
-    assert repo_rules_hash(["make test", "ls"]) != repo_rules_hash(["make test\nls"])
-    assert repo_rules_hash(["a *", "b *"]) != repo_rules_hash(["b *", "a *"])
+    assert allow_only_hash(["make test", "ls"]) != allow_only_hash(["make test\nls"])
+    assert allow_only_hash(["a *", "b *"]) != allow_only_hash(["b *", "a *"])
 
 
 def test_the_hash_covers_pass_env_and_bash_r14():
@@ -139,7 +167,6 @@ def test_the_hash_covers_pass_env_and_bash_r14():
     assert repo_shell_hash(settings) == "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
     assert repo_shell_hash(settings) != repo_shell_hash(RepoShellSettings(allow=("make *",), pass_env=("TOKEN",)))
     assert repo_shell_hash(settings) != repo_shell_hash(RepoShellSettings(allow=("make *",), bash="C:/bash.exe"))
-    assert repo_rules_hash(["make *"]) == repo_shell_hash(RepoShellSettings(allow=("make *",)))
 
 
 def test_a_decision_covers_pass_env_and_bash_too_r14(tmp_path):

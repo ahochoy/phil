@@ -5,7 +5,7 @@ handlers already accept, so picking from the menu and typing are the same thing 
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from phil.store.events import printable
+from phil.text import printable
 
 BODY_LINES = 8
 SEE_MORE = "… see /more 1"  # a capped body's last line: the full body is detail 1
@@ -175,11 +175,17 @@ def approach_decision(approaches: list[tuple[str, str]]) -> Decision:
     return Decision("question", "Pick an approach", (), tuple(opts))
 
 
-def repo_rules_lines(rules: Sequence[str], labels: Sequence[str], pass_env: Sequence[str] = (),
+def repo_shell_title(repo: str, rules: Sequence[str]) -> str:
+    """The trust prompt's title: what the repo's phil.toml settings do (F9). Display text only."""
+    name = printable(repo)
+    return f"{name}'s phil.toml allows these commands" if rules else f"{name}'s phil.toml changes how commands run"
+
+
+def repo_shell_lines(rules: Sequence[str], labels: Sequence[str], pass_env: Sequence[str] = (),
                      bash: str | None = None) -> list[str]:
     """Everything a repo's phil.toml asks to be trusted (spec 2026-10-13 §3.5, R14): each allow
-    rule with its label, then pass_env and bash when set. Display text only: hidden characters
-    show as `?`."""
+    pattern, verbatim, with its label, then pass_env and bash when set. Display text only: hidden
+    characters show as `?`."""
     shown = [printable(rule) for rule in rules]
     width = max((len(rule) for rule in shown), default=0)
     lines = [f"{rule.ljust(width)}  {label}" if label else rule for rule, label in zip(shown, labels, strict=True)]
@@ -190,13 +196,13 @@ def repo_rules_lines(rules: Sequence[str], labels: Sequence[str], pass_env: Sequ
     return lines
 
 
-def repo_rules_decision(repo: str, rules: Sequence[str], labels: Sequence[str], pass_env: Sequence[str] = (),
+def repo_shell_decision(repo: str, rules: Sequence[str], labels: Sequence[str], pass_env: Sequence[str] = (),
                         bash: str | None = None) -> Decision:
     """Whether to trust the shell settings a repo's phil.toml ships, asked before plan approval
     and before a quick run starts. A long body is capped; the full list is detail 1."""
     name = printable(repo)
     return Decision(
-        "confirm", f"{name}'s phil.toml allows these commands", _capped(repo_rules_lines(rules, labels, pass_env, bash)),
+        "confirm", repo_shell_title(repo, rules), _capped(repo_shell_lines(rules, labels, pass_env, bash)),
         (Option(f"Trust these for {name}", "trust"), Option("Ignore them", "ignore")),
     )
 

@@ -11,7 +11,7 @@ from typing import Literal
 
 from phil import platform
 from phil.permissions.catalog import catalog_reads, label_for
-from phil.permissions.rules import deny_matches, folded_name, rule_matches
+from phil.permissions.rules import deny_matches, folded_name, rule_matches, slashed
 from phil.permissions.store import PolicySet, config_policy
 
 # Root pids of the commands running now, for kill_active_groups().
@@ -32,14 +32,6 @@ def needs_a_shell(command: str) -> bool:
     return False
 
 _GLOB_CHARS = set("*?[")
-
-
-def normalise_path_text(text: str) -> str:
-    """`text` with every backslash turned into a forward slash, so a Windows path such as
-    `C:\\x\\python.exe` matches an allowlist written either way. Phil's allowlist is POSIX-style,
-    and a backslash in an allowed command is never meaningful. Only allowlist matching on
-    Windows uses this: the command that runs keeps its backslashes on every OS."""
-    return text.replace("\\", "/")
 
 
 def literal_pattern(command: str) -> str:
@@ -412,7 +404,7 @@ def _needs_containment_check(candidate: str, root: Path) -> bool:
 
 def _outside_root(arg: str, root: Path) -> bool:
     # Windows paths accept either separator; normalising lets `..\x` be resolved as `../x`.
-    candidate = Path(normalise_path_text(arg) if platform.IS_WINDOWS else arg)
+    candidate = Path(slashed(arg))
     resolved = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
     return not resolved.is_relative_to(root)
 
@@ -457,10 +449,9 @@ def _matches_pattern(argv: list[str], pattern_tokens: list[str]) -> bool:
 
 def _for_matching(tokens: list[str]) -> list[str]:
     """Tokens as allowlist matching compares them: on Windows each token's backslashes become
-    forward slashes, so either path style matches the other. Never used for safety checks."""
-    if platform.IS_WINDOWS:
-        return [normalise_path_text(token) for token in tokens]
-    return tokens
+    forward slashes (`rules.slashed`), so either path style matches the other. The command that
+    runs keeps its backslashes on every OS. Never used for safety checks."""
+    return [slashed(token) for token in tokens]
 
 
 def _is_denied(argv: list[str]) -> bool:
@@ -487,7 +478,6 @@ _READ_REASON = "read-only (built-in)"
 _PLAN_REASON = "the plan's test command"
 _APPROVED_REASON = "approved for this run"
 _ASK_REASON = "no rule matches"
-_DENIAL_REASONS = {"forbidden": "forbidden", "deny": "denied", "ask": "not_allowed", "allow": None}
 
 
 def _contained(argv: list[str], key: tuple[str, ...] | None, root: Path) -> bool:
@@ -505,7 +495,8 @@ def _contained(argv: list[str], key: tuple[str, ...] | None, root: Path) -> bool
 
 
 def _config_matches(pattern: str, match_argv: list[str]) -> bool:
-    """A `[shell] allow` pattern from config, with its old glob matching (spec §3.1)."""
+    """A `[shell] allow` pattern from config or a trusted phil.toml, with its old glob matching
+    (spec §3.1, R17)."""
     try:
         pattern_tokens = _for_matching(shlex.split(pattern))
     except ValueError:
@@ -534,7 +525,8 @@ class ShellPolicy:
         self.extra_allow = tuple(extra_allow)
         self.approved = tuple(approved)
         self.root = root
-        # The read-only agents: only the forbidden checks and the built-in reads apply to them.
+        # The read-only agents: only the forbidden checks, the deny rules and the built-in reads
+        # apply to them.
         self.read_only = read_only
 
     def decide(self, command: str) -> Decision:
@@ -568,10 +560,10 @@ class ShellPolicy:
         if forbidden is not None:
             return Decision("forbidden", f"forbidden: {forbidden}", label, forbidden)
 
-        if not self.read_only:
-            for entry in self.policy.deny:
-                if deny_matches(entry.rule, argv):  # R13: blocking errs toward matching
-                    return Decision("deny", f'deny rule "{entry.rule.text}" ({entry.scope})', label)
+        # Deny rules apply to every agent, the read-only ones too (spec §4): they only block.
+        for entry in self.policy.deny:
+            if deny_matches(entry.rule, argv):  # R13: blocking errs toward matching
+                return Decision("deny", f'deny rule "{entry.rule.text}" ({entry.scope})', label)
         if reads:
             return Decision("allow", _READ_REASON, label)
         if self.read_only:
@@ -579,7 +571,7 @@ class ShellPolicy:
 
         match_argv = _for_matching(argv)
         for entry in self.policy.allow:
-            if entry.scope == "config":
+            if entry.glob:  # config's and a trusted repo's `[shell] allow` (R17)
                 matched = _config_matches(entry.rule.text, match_argv)
             else:
                 matched = rule_matches(entry.rule, argv)
@@ -601,18 +593,10 @@ class ShellPolicy:
                 return Decision("allow", _APPROVED_REASON, label)
         return Decision("ask", _ASK_REASON, label)
 
-    def denial_reason(self, command: str) -> str | None:
-        """None if allowed; "forbidden" if no approval could make it safe; "denied" if a deny rule
-        blocks it (never approvable either); "not_allowed" if no rule allows it (it can be asked)."""
-        return _DENIAL_REASONS[self.decide(command).outcome]
-
     def refusal_detail(self, command: str) -> str | None:
         """One-line reason `command` is forbidden, or None if it isn't (including a deny or an ask)."""
         decision = self.decide(command)
         return decision.detail if decision.outcome == "forbidden" else None
-
-    def is_allowed(self, command: str) -> bool:
-        return self.decide(command).outcome == "allow"
 
 
 @dataclass(frozen=True)

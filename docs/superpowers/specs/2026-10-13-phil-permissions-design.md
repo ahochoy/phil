@@ -258,6 +258,7 @@ Built-in read-only commands and the forbidden checks keep working.
 
 - Directory rules and whole-tool rules.
 - An OS sandbox (macOS seatbelt or Linux bubblewrap). It is possible hardening after launch.
+  Permissions control what agents run directly. Code that agents write and your test command runs still has your full rights; sandboxing that code is planned for after launch.
 - A "this chat" scope.
 - Phil's own `git push` and `gh pr create` when publishing. Those are confirmed in the chat's PR prompt.
 - Memory. M4 only reserves `projects/<slug>/memory/`.

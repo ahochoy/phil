@@ -11,12 +11,12 @@ the repo's list (and falls back to the defaults for config's), and is reported a
 
 import dataclasses
 import logging
+import shlex
 import tomllib
 from pathlib import Path
 
 from phil.config import REPO_SOURCE, PhilConfig, ShellConfig, load_config
 from phil.permissions.catalog import catalog_reads, label_for
-from phil.permissions.rules import RuleError, parse_rule
 from phil.permissions.store import (
     PolicyProblem,
     PolicySet,
@@ -27,6 +27,7 @@ from phil.permissions.store import (
     repo_shell_hash,
 )
 from phil.store.paths import ProjectPaths, global_policy_path
+from phil.workspace.shell import READ_ONLY
 
 logger = logging.getLogger(__name__)
 
@@ -74,17 +75,22 @@ UNTRUSTED_RULES_NOTICE = (
 UNTRUSTED_SETTINGS_NOTICE = (
     "Ignoring [shell] {keys} from phil.toml that you haven't trusted: run `phil permissions trust` to use them"
 )
+UNTRUSTED_BOTH_NOTICE = (
+    "Ignoring {n} rule(s) and pass_env/bash from phil.toml that you haven't trusted: "
+    "run `phil permissions trust` to use them"
+)
 
 
 def untrusted_notice(policy: PolicySet) -> str | None:
     """The run log's one line when the repo's phil.toml sets things nobody has trusted or ignored
     yet; None when there is nothing to say (an "ignore" decision included)."""
-    if policy.repo_rules_untrusted:
-        return UNTRUSTED_RULES_NOTICE.format(n=len(policy.repo_rules_untrusted))
     settings = policy.repo_shell
+    keys = [key for key, value in (("pass_env", settings.pass_env), ("bash", settings.bash)) if value]
+    if policy.repo_rules_untrusted:
+        notice = UNTRUSTED_BOTH_NOTICE if keys else UNTRUSTED_RULES_NOTICE
+        return notice.format(n=len(policy.repo_rules_untrusted))
     if settings.empty or policy.repo_decision is not None:
         return None
-    keys = [key for key, value in (("pass_env", settings.pass_env), ("bash", settings.bash)) if value]
     return UNTRUSTED_SETTINGS_NOTICE.format(keys=" and ".join(keys)) if keys else None
 
 
@@ -134,13 +140,35 @@ def current_repo_shell_hash(repo_root: Path) -> str | None:
         return None
 
 
-def rule_label(text: str) -> str:
-    """A repo rule's label in the trust prompt, as the approval callout labels a command."""
+_GLOB_CHARS = "*?["
+
+
+def _is_read(words: list[str]) -> bool:
+    """Whether `words` run as a command would be a built-in read: a catalog read or one of the
+    READ_ONLY commands."""
+    return catalog_reads(words) or any(words[: len(entry.split())] == entry.split() for entry in READ_ONLY)
+
+
+def rule_label(pattern: str) -> str:
+    """A repo `[shell] allow` pattern's label in the trust prompt and the listing (F5), as the
+    approval callout labels a command. The pattern is read as a command, without a trailing `*` or
+    glob word. An open pattern (it ends in `*` or holds any glob) is never `reads only`: it is
+    `may change things` when a plain argument after its words still reads (`git log *`), and
+    otherwise labelled as the command that writes (`git remote *` covers `git remote add`)."""
     try:
-        words = list(parse_rule(text).words)
-    except RuleError:
-        return "not a valid rule"
-    return label_for(words, read_only=catalog_reads(words))
+        words = shlex.split(pattern)
+    except ValueError:
+        return "may change things"  # never matches anything, but claims nothing either
+    open_ended = any(char in word for word in words for char in _GLOB_CHARS)
+    if words and any(char in words[-1] for char in _GLOB_CHARS):
+        words = words[:-1]
+    if not words:
+        return "may change things"
+    if not open_ended:
+        return label_for(words, read_only=_is_read(words))
+    if _is_read(words) and _is_read([*words, "x"]):
+        return "may change things"
+    return label_for(words, read_only=False)
 
 
 def _config_allow_for(repo_root: Path, config: PhilConfig) -> list[str]:

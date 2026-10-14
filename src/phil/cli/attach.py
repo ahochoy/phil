@@ -9,7 +9,8 @@ from rich.markup import escape
 from phil.chat.decision import approval_lines
 from phil.run.launch import is_worker_alive, worker_starting
 from phil.store.activity import ActivityLog
-from phil.store.events import EventLog, MILESTONE_KINDS, printable, test_cmd_changed_line
+from phil.store.events import EventLog, MILESTONE_KINDS, test_cmd_changed_line
+from phil.text import printable
 from phil.store.runs import RunRecord, get_run
 from phil.store.telemetry import budget_warning_line
 from phil.ui.feed_view import FeedRenderer, interleave

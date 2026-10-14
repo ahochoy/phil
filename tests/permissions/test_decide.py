@@ -9,7 +9,7 @@ import pytest
 from phil.agents.tools import CommandLog, make_shell_tool
 from phil.config import PhilConfig, ShellConfig
 from phil.permissions.load import policy_for
-from phil.permissions.store import PolicySet, add_rule, load_policy
+from phil.permissions.store import PolicySet, RepoShellSettings, add_rule, load_policy
 from phil.store.paths import ProjectPaths, global_policy_path
 from phil.workspace.shell import Decision, ShellPolicy
 
@@ -18,7 +18,7 @@ TODAY = date(2026, 10, 13)
 
 def load(tmp_path: Path, *, config_allow=(), repo_allow=()) -> PolicySet:
     return load_policy(repo_name="calc", project_policy=tmp_path / "proj.toml", global_policy=tmp_path / "global.toml",
-                       config_allow=list(config_allow), repo_allow=list(repo_allow))
+                       config_allow=list(config_allow), repo_shell=RepoShellSettings(allow=tuple(repo_allow)))
 
 
 def decide(policy: ShellPolicy, command: str) -> tuple[str, str, str]:
@@ -85,12 +85,56 @@ def test_a_read_only_agent_gets_only_forbidden_checks_and_reads(tmp_path):
     assert policy.decide("gh pr view 1").outcome == "allow"
 
 
-def test_a_read_only_agent_ignores_deny_rules_extras_and_approvals(tmp_path):
-    add_rule(tmp_path / "proj.toml", "deny", "git log *", "manual", today=TODAY)
+def test_a_read_only_agent_ignores_extras_and_approvals(tmp_path):
     policy = ShellPolicy(load(tmp_path), extra_allow=("make check",), approved=("rm x",), read_only=True)
     assert policy.decide("git log").outcome == "allow"
     assert policy.decide("make check").outcome == "ask"
     assert policy.decide("rm x").outcome == "ask"
+
+
+def test_a_deny_rule_blocks_a_built_in_read_for_a_read_only_agent_too(tmp_path):
+    add_rule(tmp_path / "proj.toml", "deny", "gh pr view *", "manual", today=TODAY)
+    decision = ShellPolicy(load(tmp_path), read_only=True).decide("gh pr view 1")
+    assert (decision.outcome, decision.reason) == ("deny", 'deny rule "gh pr view *" (calc)')
+
+
+def _trusted(tmp_path: Path, patterns: list[str]) -> PolicySet:
+    from phil.permissions.store import record_repo_decision, repo_shell_hash
+
+    settings = RepoShellSettings(allow=tuple(patterns))
+    record_repo_decision(tmp_path / "proj.toml", "trust", repo_shell_hash(settings))
+    return load(tmp_path, repo_allow=patterns)
+
+
+@pytest.mark.parametrize(("pattern", "command"), [
+    ("uv run pytest *", "uv run pytest -q"),
+    ("docker compose run --rm app pytest *", "docker compose run --rm app pytest tests"),
+    ("npm run test*", "npm run test:unit"),
+])
+def test_a_trusted_repo_pattern_matches_as_config_does_r17(tmp_path, pattern, command):
+    decision = ShellPolicy(_trusted(tmp_path, [pattern])).decide(command)
+    assert (decision.outcome, decision.reason) == ("allow", f'rule "{pattern}" (calc phil.toml)')
+
+
+@pytest.mark.parametrize(("pattern", "label"), [
+    ("git log *", "may change things"),  # an open read reaches more than reads (F5)
+    ("cat *", "may change things"),
+    ("git remote *", "changes things"),  # `git remote add x url` is a write
+    ("git remote -v", "reads only"),
+    ("uv run pytest *", "changes things"),
+    ("npm run test*", "changes things"),
+    ("make test *", "may change things"),
+    ("make [ab]", "may change things"),
+])
+def test_a_repo_pattern_is_labelled_by_its_reach(pattern, label):
+    from phil.permissions.load import rule_label
+
+    assert rule_label(pattern) == label
+
+
+def test_a_deny_rule_beats_a_trusted_repo_pattern(tmp_path):
+    add_rule(tmp_path / "global.toml", "deny", "uv run pytest *", "manual", today=TODAY)
+    assert ShellPolicy(_trusted(tmp_path, ["uv run pytest *"])).decide("uv run pytest -q").outcome == "deny"
 
 
 def test_a_catalog_read_that_writes_asks_and_is_not_forbidden(tmp_path):
@@ -121,15 +165,13 @@ def test_a_plain_list_is_config_entries(tmp_path):
     assert (decision.outcome, decision.reason) == ("allow", 'rule "pytest *" (config)')
 
 
-def test_denial_reason_wraps_decide(tmp_path):
+def test_refusal_detail_is_set_only_for_a_forbidden_command(tmp_path):
     add_rule(tmp_path / "global.toml", "deny", "make deploy", "manual", today=TODAY)
     policy = ShellPolicy(load(tmp_path))
-    assert policy.denial_reason("make deploy") == "denied"
-    assert policy.denial_reason("terraform apply") == "not_allowed"
-    assert policy.denial_reason("ls; rm x") == "forbidden"
-    assert policy.denial_reason("gh pr view 1") is None
+    assert [policy.decide(c).outcome for c in ("make deploy", "terraform apply", "ls; rm x", "gh pr view 1")] == [
+        "deny", "ask", "forbidden", "allow"]
     assert policy.refusal_detail("make deploy") is None
-    assert not policy.is_allowed("make deploy")
+    assert policy.refusal_detail("ls; rm x") is not None
 
 
 def test_decision_is_frozen():

@@ -707,6 +707,33 @@ def test_an_unattended_worker_ignores_untrusted_repo_rules_with_one_notice(calc_
     assert [e["message"] for e in events if e["kind"] == "notice"] == [UNTRUSTED_NOTICE]
 
 
+def test_the_notice_names_rules_and_pass_env_or_bash_together(calc_repo):
+    (calc_repo / "phil.toml").write_text(MODELS_TOML + '\n[shell]\nallow = ["make test *", "make lint"]\n'
+                                         'pass_env = ["REPO_TOKEN"]\n', encoding="utf-8", newline="\n")
+    info, record = new_run(calc_repo)
+    run_worker(calc_repo, record.run_id, "start", factory=happy())
+    events = run_events(ProjectPaths(info.slug), record.run_id).read()[0]
+    assert [e["message"] for e in events if e["kind"] == "notice"] == [
+        "Ignoring 2 rule(s) and pass_env/bash from phil.toml that you haven't trusted: "
+        "run `phil permissions trust` to use them"]
+
+
+def test_a_broken_policy_file_is_reported_once_in_the_run_log(calc_repo):
+    from phil.permissions.listing import shown_path
+    from phil.store.paths import global_policy_path
+
+    path = global_policy_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('[[allow]]\nrule = "gh * pr"\n', encoding="utf-8", newline="\n")
+    info, record = new_run(calc_repo)
+    run_worker(calc_repo, record.run_id, "start", factory=happy())
+    events = run_events(ProjectPaths(info.slug), record.run_id).read()[0]
+    notices = [e["message"] for e in events if e["kind"] == "notice"]
+    assert len(notices) == 1
+    assert notices[0].startswith(f"⚠ {shown_path(path)}:2: ")
+    assert notices[0].endswith(" — saved allow rules are off until it's fixed")
+
+
 def test_an_ignore_decision_is_silent(calc_repo):
     from phil.permissions.load import repo_shell_settings
     from phil.permissions.store import record_repo_decision, repo_shell_hash

@@ -25,7 +25,7 @@ def test_program_name_windows_rules(monkeypatch):
 @pytest.mark.parametrize("command", ["/usr/bin/python3 -c print(1)", "/usr/bin/git -c core.pager=x log",
                                      "/opt/homebrew/bin/uv --prefix=/tmp pip list"])
 def test_full_path_risky_programs_are_forbidden_on_posix(command):
-    assert ShellPolicy([]).denial_reason(command) == "forbidden"
+    assert ShellPolicy([]).decide(command).outcome == "forbidden"
 
 
 def test_rule_words_and_open_end():
@@ -190,7 +190,7 @@ def test_ordinary_programs_are_not_exact_only(argv):
 
 
 def test_risky_programs_are_forbidden_whatever_the_case():
-    assert ShellPolicy([]).denial_reason("PYTHON3 -c x") == "forbidden"
+    assert ShellPolicy([]).decide("PYTHON3 -c x").outcome == "forbidden"
 
 
 def test_windows_path_comparison_keeps_the_extension(monkeypatch):
@@ -324,7 +324,7 @@ def test_unicode_folds_of_dangerous_names_are_exact_only():
     assert exact_only(["ſh", "-c", "x"]) is True
     assert suggest_rule(["ſudo", "rm", "x"]) is None
     assert suggest_rule(["ﬁnd", ".", "-name", "x"]) is None
-    assert ShellPolicy([]).denial_reason("ｐｙｔｈｏｎ３ -c x") == "forbidden"
+    assert ShellPolicy([]).decide("ｐｙｔｈｏｎ３ -c x").outcome == "forbidden"
 
 
 def test_a_non_ascii_program_never_matches_a_bare_name_rule():
@@ -562,3 +562,19 @@ def test_a_forced_or_destructive_push_is_still_exact_only():  # keeps "everywher
                  ["git", "push", "origin", "+main"], ["git", "push", "origin", ":old"]):
         assert exact_only(argv) is True
     assert not _covered("git push *", ["git", "push", "origin", "+main"])  # a refspec is a plain argument
+
+
+@pytest.mark.parametrize("program", ["py", "pypy", "pypy3", "ipython", "ts-node", "tsx", "java", "deno", "bun"])
+def test_more_interpreters_are_exact_only(program):  # F11
+    assert exact_only([program, "x.py"]) is True
+    assert suggest_rule([program, "x.py"]) == f"{program} x.py"
+
+
+@pytest.mark.parametrize("arg0", ["git.exe.", "git.com", "GIT.COM", "git.", r"C:\x\git.com"])
+def test_on_windows_trailing_dots_and_com_fold_away(monkeypatch, arg0):  # F11
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    from phil.permissions.rules import deny_matches
+
+    assert program_name(arg0) == "git"
+    assert deny_matches(parse_rule("git push *"), [arg0, "push", "x"])  # blocking
+    assert rule_matches(parse_rule("git status *"), ["git.com", "status"])  # and allowing

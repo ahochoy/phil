@@ -11,19 +11,32 @@ import pytest
 
 from phil import platform
 from phil.config import ShellConfig
+from phil.permissions.rules import slashed
 from phil.workspace import shell as shell_module
 from phil.workspace.shell import (
     READ_ONLY,
-    ShellPolicy,
     child_env,
     is_secret_name,
     literal_pattern,
-    normalise_path_text,
     run_command,
     truncate_output,
 )
+from phil.workspace.shell import ShellPolicy as _ShellPolicy
 
 PY = shlex.quote(sys.executable)
+
+_REASONS = {"forbidden": "forbidden", "deny": "denied", "ask": "not_allowed", "allow": None}
+
+
+class ShellPolicy(_ShellPolicy):
+    """The real policy, plus the two yes/no views these tests were written against, both read
+    from `decide()` (the policy itself has only `decide`)."""
+
+    def is_allowed(self, command: str) -> bool:
+        return self.decide(command).outcome == "allow"
+
+    def denial_reason(self, command: str) -> str | None:
+        return _REASONS[self.decide(command).outcome]
 
 
 @pytest.mark.parametrize(
@@ -722,9 +735,12 @@ def test_wc_plain_count_is_still_allowed():
     assert ShellPolicy([]).is_allowed("wc -l README.md")
 
 
-def test_normalise_path_text_turns_backslashes_into_slashes():
-    assert normalise_path_text(r"'C:\x\python.exe' a.py") == "'C:/x/python.exe' a.py"
-    assert normalise_path_text("pytest -q tests/a.py") == "pytest -q tests/a.py"
+def test_slashed_turns_backslashes_into_slashes_on_windows_only(monkeypatch):
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    assert slashed(r"'C:\x\python.exe' a.py") == "'C:/x/python.exe' a.py"
+    assert slashed("pytest -q tests/a.py") == "pytest -q tests/a.py"
+    monkeypatch.setattr(platform, "IS_WINDOWS", False)
+    assert slashed(r"a\b") == r"a\b"
 
 
 WINDOWS_COMMAND = r"'C:\x\python.exe' a.py"

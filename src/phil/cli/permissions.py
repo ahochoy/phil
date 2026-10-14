@@ -2,16 +2,18 @@
 remove a rule, and trust or ignore the shell settings a repo's phil.toml ships."""
 
 import shlex
+import sys
 from datetime import date
 from pathlib import Path
 
 import typer
 from rich.text import Text
 
-from phil.config import PhilConfig
+from phil.chat.decision import repo_shell_lines, repo_shell_title
+from phil.config import PhilConfig, global_config_path
 from phil.permissions.listing import listing_lines, policy_entries, problem_lines, shown_path
-from phil.permissions.load import policy_or_fallback, repo_shell_settings
-from phil.permissions.rules import OPEN_FAMILIES, RuleError, folded_name, is_bare_program, parse_rule
+from phil.permissions.load import policy_or_fallback, repo_shell_settings, rule_label
+from phil.permissions.rules import OPEN_FAMILIES, RuleError, exact_only, folded_name, is_bare_program, parse_rule
 from phil.permissions.store import (
     POLICY_HEADER,
     PolicyWriteError,
@@ -24,8 +26,8 @@ from phil.permissions.store import (
     repo_shell_hash,
 )
 from phil.repo import RepoInfo
-from phil.store.events import printable
 from phil.store.paths import ProjectPaths, global_policy_path
+from phil.text import printable
 from phil.ui.theme import make_console
 from phil.workspace.shell import ShellPolicy
 
@@ -35,6 +37,7 @@ console = make_console()
 OUTCOME_WORDS = {"allow": "runs", "ask": "asks", "deny": "blocked", "forbidden": "refused"}
 PLAIN_ARGUMENTS_NOTE = 'Note: "*" covers plain arguments only (no options).'
 NOTHING_TO_TRUST = "phil.toml has no [shell] allow, pass_env or bash settings."
+NEEDS_YES = "Run with --yes to trust these without a prompt."
 EVERYWHERE_HELP = "Use the file for every repo (~/.phil/policy.toml) instead of this repo's."
 
 
@@ -103,6 +106,15 @@ def _needs_yes(rule, kind: str) -> str | None:
     return None
 
 
+def _never_matches(rule, kind: str) -> bool:
+    """An open allow rule whose fixed words are exact-only (`sudo *`, `python *`, `git push -f *`):
+    Phil saves such commands exactly, so it never matches anything (R5)."""
+    return kind == "allow" and rule.open_end and exact_only(list(rule.words))
+
+
+DEAD_RULE = '"{rule}" can never match — Phil saves commands like this exactly.'
+
+
 def _add(ctx: typer.Context, kind: str, rule_text: str, everywhere: bool, yes: bool) -> None:
     info, _ = _project(ctx)
     try:
@@ -113,7 +125,8 @@ def _add(ctx: typer.Context, kind: str, rule_text: str, everywhere: bool, yes: b
     decision = ShellPolicy(None).decide(shlex.join(rule.words))
     if decision.outcome == "forbidden":
         _fail(f'"{normal}" is forbidden, so it can\'t be saved ({printable(decision.reason)}).')
-    reason = _needs_yes(rule, kind)
+    dead = _never_matches(rule, kind)
+    reason = DEAD_RULE.format(rule=normal) if dead else _needs_yes(rule, kind)
     if reason is not None and not yes:
         _fail(f"{reason} Add --yes to save it anyway.")
     path, scope = _target(info, everywhere)
@@ -123,7 +136,9 @@ def _add(ctx: typer.Context, kind: str, rule_text: str, everywhere: bool, yes: b
     except PolicyWriteError as exc:
         _fail(printable(exc))
     _say(f'Added {kind} rule "{normal}" for {printable(scope)}.')
-    if kind == "allow" and rule.open_end:
+    if dead:
+        _say(f"Note: {DEAD_RULE.format(rule=normal)} Saved anyway.")
+    elif kind == "allow" and rule.open_end:
         _say(PLAIN_ARGUMENTS_NOTE)
 
 
@@ -164,7 +179,7 @@ def remove(
     everywhere: bool = typer.Option(False, "--everywhere", help=EVERYWHERE_HELP),
 ) -> None:
     """Remove an allow or deny rule."""
-    info, _ = _project(ctx)
+    info, config = _project(ctx)
     path, _scope = _target(info, everywhere)
     _refuse_broken(path)
     try:
@@ -176,8 +191,11 @@ def remove(
     except PolicyWriteError as exc:
         _fail(printable(exc))
     if removed:
-        _say(f'Removed "{shown}".')
+        _say(f'Removed {" and ".join(removed) + " " if len(removed) > 1 else ""}"{shown}".')
         return
+    policy = policy_or_fallback(info.root, ProjectPaths(info.slug), config)
+    if rule.strip() in [entry.rule.text for entry in policy.allow if entry.scope == "config"]:
+        _fail(f'"{printable(rule.strip())}" comes from {shown_path(global_config_path())} [shell] allow — edit it there.')
     program = _program(rule)
     similar = [text for _, text, _ in policy_entries(path) if program is not None and _program(text) == program]
     hint = " Similar: " + ", ".join(f'"{printable(text)}"' for text in similar) if similar else ""
@@ -193,7 +211,21 @@ def _settings_named(settings: RepoShellSettings) -> str:
     return parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} and {parts[-1]}"
 
 
-def _decide(ctx: typer.Context, decision: str) -> None:
+def _on_a_terminal() -> bool:
+    """Whether someone can answer a prompt here (patched in tests)."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _show(repo: str, settings: RepoShellSettings) -> None:
+    """What's being trusted, as the chat's trust prompt shows it (spec §3.5, R14): each allow
+    pattern verbatim with its label, then pass_env and bash. Display text only."""
+    rules = list(settings.allow)
+    _say(repo_shell_title(repo, rules))
+    for line in repo_shell_lines(rules, [rule_label(rule) for rule in rules], settings.pass_env, settings.bash):
+        _say(f"  {line}")
+
+
+def _decide(ctx: typer.Context, decision: str, yes: bool = False) -> None:
     info, _ = _project(ctx)
     try:
         settings = repo_shell_settings(info.root)
@@ -204,7 +236,16 @@ def _decide(ctx: typer.Context, decision: str) -> None:
         return
     path = ProjectPaths(info.slug).policy_path
     _refuse_broken(path)
+    _show(info.root.name, settings)
+    if decision == "trust" and not yes:
+        if not _on_a_terminal():
+            _fail(NEEDS_YES)
+        answer = typer.prompt(f"Trust these for {printable(info.root.name)}? [y/N]", default="", show_default=False)
+        if answer.strip().lower() not in ("y", "yes"):
+            _say("Nothing recorded.")
+            return
     try:
+        # The hash of exactly what was shown above, even if phil.toml changed since.
         record_repo_decision(path, decision, repo_shell_hash(settings))
     except PolicyWriteError as exc:
         _fail(printable(exc))
@@ -213,12 +254,15 @@ def _decide(ctx: typer.Context, decision: str) -> None:
 
 
 @permissions_app.command()
-def trust(ctx: typer.Context) -> None:
-    """Use the shell settings in this repo's phil.toml (allow, pass_env and bash)."""
-    _decide(ctx, "trust")
+def trust(
+    ctx: typer.Context,
+    yes: bool = typer.Option(False, "--yes", help="Trust them without asking (for scripts and no terminal)."),
+) -> None:
+    """Show the shell settings in this repo's phil.toml (allow, pass_env and bash), then use them."""
+    _decide(ctx, "trust", yes)
 
 
 @permissions_app.command()
 def ignore(ctx: typer.Context) -> None:
-    """Keep the shell settings in this repo's phil.toml off, and stop asking about them."""
+    """Show the shell settings in this repo's phil.toml, keep them off, and stop asking about them."""
     _decide(ctx, "ignore")

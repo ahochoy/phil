@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.run.conftest import calc_repo, make_harness  # noqa: F401  (fixtures)
+
 SRC = Path(__file__).resolve().parents[2] / "src" / "phil"
 
 # Functions whose `policy=None` fallback has no deny rules, and the file each is defined in.
@@ -42,6 +44,29 @@ def test_every_production_call_passes_a_policy(name):
         if path.relative_to(SRC).as_posix() == FALLBACKS[name] and "policy=policy" in call:
             continue  # the function's own internal delegation passes its argument through
         assert "policy=" in call, f"{path.relative_to(SRC)}: {call!r} passes no policy"
+
+
+def test_the_engines_agents_get_a_policy_at_runtime(make_harness, monkeypatch):
+    # F12: beyond the source text, the shell tool the engine's context leads to is built with the rules.
+    import phil.agents.invoke as invoke_module
+    from tests.run.conftest import write_red
+
+    real = invoke_module._shell_for
+    policies = []
+
+    def spy(*args, **kwargs):
+        policies.append(kwargs.get("policy"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(invoke_module, "_shell_for", spy)
+
+    def asks(turn):
+        assert turn.tools["run_shell"]("gh pr merge 42").startswith("DENIED:")
+        return write_red(turn)
+
+    harness = make_harness({"implementer": [asks]})
+    assert harness.start()["__interrupt__"][0].value["reason"] == "approval"
+    assert policies and all(policy is not None for policy in policies)
 
 
 def test_the_engine_gives_agents_the_rules():

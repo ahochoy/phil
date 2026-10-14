@@ -6,13 +6,14 @@ import os
 import tomllib
 from pathlib import Path
 
-from phil.config import PhilConfig, global_config_path
+from phil.config import DEFAULT_SOURCE, REPO_SOURCE, SET_SOURCE, PhilConfig, global_config_path, load_config
 from phil.permissions.load import policy_or_fallback, rule_label
 from phil.permissions.store import KINDS, PolicyProblem, PolicySet, file_problems
-from phil.store.events import printable
 from phil.store.paths import ProjectPaths, global_policy_path
+from phil.text import printable
 
 BUILT_IN_LINE = "Built-in: read-only commands (ls, grep, git log, gh pr view, npm ls, …) run without asking."
+BUILT_IN_DEFAULTS = "built-in defaults (no config entry)"
 CHANGE_HINT = "Change rules with `phil permissions allow|deny|remove`."
 _SAVED_OFF = " — saved allow rules are off until it's fixed"
 
@@ -57,23 +58,43 @@ def problem_lines(policy: PolicySet, policy_files: tuple[Path, ...]) -> list[str
 
 
 def _rows(entries: list[tuple[str, str, str]]) -> list[str]:
+    """Aligned rows: the kind column as wide as its widest (`allow`, `deny`, `pass_env`, `bash`)."""
     shown = [(kind, printable(rule), printable(note)) for kind, rule, note in entries]
+    kinds = max((len(kind) for kind, _, _ in shown), default=0)
     width = max((len(rule) for _, rule, _ in shown), default=0)
-    return [f"  {kind.ljust(5)}  {rule.ljust(width)}   {note}".rstrip() for kind, rule, note in shown]
+    return [f"  {kind.ljust(max(kinds, 5))}  {rule.ljust(width)}   {note}".rstrip() for kind, rule, note in shown]
 
 
-def _repo_section(repo: str, policy: PolicySet) -> list[str]:
+def _repo_section(repo: str, policy: PolicySet, policy_files: tuple[Path, ...]) -> list[str]:
     settings = policy.repo_shell
     if settings.empty:
         return []
     status = {"trust": "trusted", "ignore": "ignored"}.get(policy.repo_decision or "", "not trusted — phil permissions trust")
-    lines = [f"{repo} phil.toml ({status}):"]
-    lines += _rows([("allow", rule, rule_label(rule)) for rule in settings.allow])
+    if policy.repo_decision == "trust" and not policy.repo_trusted:
+        broken = next((path for path in policy_files if file_problems(path)), None)
+        if broken is not None:
+            status = f"trusted, but off until {printable(shown_path(broken))} is fixed"
+    rows = [("allow", rule, rule_label(rule)) for rule in settings.allow]
     if settings.pass_env:
-        lines.append(f"  pass_env  {', '.join(printable(name) for name in settings.pass_env)}")
+        rows.append(("pass_env", ", ".join(settings.pass_env), ""))
     if settings.bash is not None:
-        lines.append(f"  bash  {printable(settings.bash)}")
-    return lines
+        rows.append(("bash", settings.bash, ""))
+    return [f"{repo} phil.toml ({status}):", *_rows(rows)]
+
+
+def _config_header(repo_root: Path, config: PhilConfig) -> str:
+    """Where config's `[shell] allow` comes from: the defaults, `~/.phil/config.toml` or `--set`.
+    The repo's phil.toml never counts (it needs trust), so its layer is left out."""
+    try:
+        if config.sources.get("shell.allow") == REPO_SOURCE:
+            config = load_config(repo_root, include_repo=False)
+        source = config.sources.get("shell.allow", DEFAULT_SOURCE)
+    except Exception:
+        source = DEFAULT_SOURCE  # the policy falls back to the defaults too
+    if source == DEFAULT_SOURCE:
+        return f"Config ({BUILT_IN_DEFAULTS}):"
+    where = "--set" if source == SET_SOURCE else shown_path(global_config_path())
+    return f"Config ({printable(where)} [shell] allow):"
 
 
 def listing_lines(repo_root: Path, paths: ProjectPaths, config: PhilConfig) -> list[str]:
@@ -88,9 +109,9 @@ def listing_lines(repo_root: Path, paths: ProjectPaths, config: PhilConfig) -> l
         entries = policy_entries(path)
         if entries:
             lines += [printable(header), *_rows(entries)]
-    lines += _repo_section(repo, policy)
+    lines += _repo_section(repo, policy, (everywhere, project))
     patterns = [entry.rule.text for entry in policy.allow if entry.scope == "config"]
     if patterns:
-        lines.append(f"Config ({printable(shown_path(global_config_path()))} [shell] allow):")
+        lines.append(_config_header(repo_root, config))
         lines += _rows([("allow", pattern, "") for pattern in patterns])
     return lines

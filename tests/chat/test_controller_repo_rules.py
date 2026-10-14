@@ -2,7 +2,7 @@
 hash, before plan approval and before a quick run starts, and records the answer in the repo's
 policy file."""
 
-from phil.chat.decision import repo_rules_decision
+from phil.chat.decision import repo_shell_decision
 from phil.config import load_config
 from phil.permissions.load import policy_for, repo_shell_settings, trusted_shell
 from phil.permissions.store import repo_decision, repo_shell_hash
@@ -138,7 +138,7 @@ def test_pass_env_and_bash_are_shown_and_trusted_with_the_rules(calc_repo):
     calls = []
     plan_chat(calc_repo, ["trust", "n"], calls)
     trust = chooses(calls)[0]
-    assert trust.title == TITLE
+    assert trust.title == "calc's phil.toml changes how commands run"  # no allow patterns (F9)
     assert "passes these environment variables to agent commands: REPO_TOKEN, NPM_TOKEN" in trust.body
     assert "runs every command through: C:/Git/bin/bash.exe" in trust.body
     info = resolve_repo(calc_repo)
@@ -149,7 +149,7 @@ def test_pass_env_and_bash_are_shown_and_trusted_with_the_rules(calc_repo):
 
 
 def test_the_decision_shows_hidden_characters_as_question_marks():
-    decision = repo_rules_decision(
+    decision = repo_shell_decision(
         "ca\x1blc", ["make \x1b[31mtest *"], ["may change things"], pass_env=["A\u202eB"], bash="C:/b\tash.exe")
     assert decision.title == "ca?lc's phil.toml allows these commands"
     assert decision.options[0].label == "Trust these for ca?lc"
@@ -158,3 +158,16 @@ def test_the_decision_shows_hidden_characters_as_question_marks():
     assert any(line.startswith("make ?[31mtest *") for line in decision.body)
     assert "passes these environment variables to agent commands: A?B" in decision.body
     assert "runs every command through: C:/b?ash.exe" in decision.body
+
+
+def test_the_title_says_what_the_settings_do():
+    assert repo_shell_decision("calc", ["make *"], ["may change things"], pass_env=["A"]).title == TITLE
+    assert repo_shell_decision("calc", [], [], pass_env=["A"]).title == "calc's phil.toml changes how commands run"
+    assert repo_shell_decision("calc", [], [], bash="/bin/bash").title == "calc's phil.toml changes how commands run"
+
+
+def test_without_a_menu_the_chat_prints_the_same_title(calc_repo):
+    with_shell(calc_repo, 'pass_env = ["REPO_TOKEN"]\n')
+    text, *_ = run_chat(calc_repo, ["add subtract", "trust", "n"], dict(FULL_SCRIPT))
+    assert "calc's phil.toml changes how commands run" in text
+    assert "passes these environment variables to agent commands: REPO_TOKEN" in text

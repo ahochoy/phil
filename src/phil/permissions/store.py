@@ -37,14 +37,15 @@ class PolicyWriteError(Exception):
 @dataclass(frozen=True)
 class PolicyEntry:
     """One rule in effect. `scope` is `everywhere`, `<repo name>`, `<repo name> phil.toml` or
-    `config`. A `config` entry is a `[shell] allow` glob pattern, which keeps the old glob matching:
-    its `rule` is `Rule(text=<pattern>, words=(), open_end=False)`, never parsed, so the matcher
-    must read `rule.text` as the pattern and ignore `words`."""
+    `config`. A `glob` entry is a `[shell] allow` pattern, from config or a trusted repo's phil.toml
+    (R17), which keeps the old glob matching: its `rule` is `Rule(text=<pattern>, words=(),
+    open_end=False)`, never parsed, so the matcher must read `rule.text` as the pattern and ignore
+    `words`."""
 
     rule: Rule
     kind: Literal["allow", "deny"]
     scope: str
-    source: str
+    glob: bool = False
 
 
 @dataclass(frozen=True)
@@ -94,18 +95,14 @@ class _FileState:
     problems: list[PolicyProblem]
 
 
-def repo_rules_hash(rules: Sequence[str], pass_env: Sequence[str] = (), bash: str | None = None) -> str:
-    """Over everything a repo's phil.toml asks the user to trust (R14), as the JSON object
-    `{"allow": [...], "pass_env": [...], "bash": ...}`, so no text can fake a boundary between
-    two values. A decision recorded under the older allow-only hash simply asks again."""
-    encoded = json.dumps({"allow": list(rules), "pass_env": list(pass_env), "bash": bash},
+def repo_shell_hash(settings: RepoShellSettings) -> str:
+    """The hash a decision about `settings` is recorded under: over everything a repo's phil.toml
+    asks the user to trust (R14), as the JSON object `{"allow": [...], "pass_env": [...], "bash":
+    ...}`, so no text can fake a boundary between two values. A decision recorded under the older
+    allow-only hash simply asks again."""
+    encoded = json.dumps({"allow": list(settings.allow), "pass_env": list(settings.pass_env), "bash": settings.bash},
                          ensure_ascii=False, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def repo_shell_hash(settings: RepoShellSettings) -> str:
-    """The hash a decision about `settings` is recorded under."""
-    return repo_rules_hash(settings.allow, settings.pass_env, settings.bash)
 
 
 def _normal(rule: Rule) -> str:
@@ -120,13 +117,9 @@ def normalised_rule(text: str) -> str:
 
 
 def _same_rule(stored: object, normal: str) -> bool:
-    """Whether a rule already in a file (any spacing) is the rule whose normalised text is `normal`."""
-    if not isinstance(stored, str):
-        return False
-    try:
-        return _normal(parse_rule(stored)) == normal
-    except RuleError:
-        return stored.strip() == normal
+    """Whether a rule already in a file (any spacing) is the rule whose normalised text is `normal`.
+    Only files without problems are written, so every stored rule parses."""
+    return isinstance(stored, str) and _normal(parse_rule(stored)) == normal
 
 
 def _line_of(text: str, needle: str) -> int | None:
@@ -174,8 +167,9 @@ def _read_file(path: Path, scope: str) -> _FileState:
             except RuleError as exc:
                 state.problems.append(PolicyProblem(path, str(exc), _line_of(text, rule_text)))
                 continue
-            source = str(item.get("from", ""))
-            (state.allow if kind == "allow" else state.deny).append(PolicyEntry(rule, kind, scope, source))
+            (state.allow if kind == "allow" else state.deny).append(PolicyEntry(rule, kind, scope))
+    # The table's name predates pass_env and bash (R14), which its decision now covers too; it
+    # keeps the name so that policy files written before still load.
     repo_rules = doc.get("repo_rules")
     if repo_rules is not None:
         decision = repo_rules.get("decision") if isinstance(repo_rules, dict) else None
@@ -196,45 +190,41 @@ def _recorded_decision(state: _FileState, rules_hash: str) -> str | None:
     return None
 
 
-def _config_entries(patterns: list[str]) -> list[PolicyEntry]:
-    return [PolicyEntry(Rule(text=pattern, words=(), open_end=False), "allow", "config", "config")
+def _glob_entries(patterns: Sequence[str], scope: str) -> list[PolicyEntry]:
+    return [PolicyEntry(Rule(text=pattern, words=(), open_end=False), "allow", scope, glob=True)
             for pattern in patterns]
 
 
 def config_policy(patterns: list[str]) -> PolicySet:
     """A policy of `[shell] allow` patterns only, with no policy files: what `ShellPolicy([...])`
     uses, and what applies when the rules can't be loaded at all."""
-    return PolicySet(deny=(), allow=tuple(_config_entries(patterns)), problems=(), repo_rules_untrusted=())
+    return PolicySet(deny=(), allow=tuple(_glob_entries(patterns, "config")), problems=(), repo_rules_untrusted=())
 
 
 def load_policy(*, repo_name: str, project_policy: Path, global_policy: Path, config_allow: list[str],
-                repo_allow: Sequence[str] = (), repo_shell: RepoShellSettings | None = None) -> PolicySet:
+                repo_shell: RepoShellSettings = RepoShellSettings()) -> PolicySet:
     """Order: deny everywhere, then the repo; allow everywhere, then the repo, then the trusted
-    rules the repo's phil.toml ships, then config. Any problem in either file drops every saved allow
-    rule and the trusted repo rules (spec §3.6); readable deny rules and config rules stay.
+    patterns the repo's phil.toml ships, then config. Any problem in either file drops every saved
+    allow rule and the trusted repo patterns (spec §3.6); readable deny rules and config rules stay.
 
-    `repo_shell` is everything the repo's phil.toml sets that needs trust (R14); `repo_allow` is
-    short for a repo that sets only `[shell] allow`. The decision is looked up by their hash."""
+    `repo_shell` is everything the repo's phil.toml sets that needs trust (R14); the decision is
+    looked up by its hash. Once trusted, its `[shell] allow` patterns match as config's do, with
+    the old glob matching (R17): they're written in config syntax, and shown verbatim when trusted."""
     everywhere = _read_file(global_policy, "everywhere")
     project = _read_file(project_policy, repo_name)
     problems = tuple(everywhere.problems + project.problems)
-    settings = repo_shell if repo_shell is not None else RepoShellSettings(allow=tuple(repo_allow))
-    repo_allow = settings.allow
+    settings = repo_shell
 
     untrusted: tuple[str, ...] = ()
     repo_entries: list[PolicyEntry] = []
     decision = None if settings.empty else _recorded_decision(project, repo_shell_hash(settings))
-    if repo_allow:
+    if settings.allow:
         if decision is None:
-            untrusted = tuple(repo_allow)
+            untrusted = settings.allow
         elif decision == "trust":
-            for text in repo_allow:
-                try:
-                    repo_entries.append(PolicyEntry(parse_rule(text), "allow", f"{repo_name} phil.toml", "phil.toml"))
-                except RuleError as exc:
-                    problems += (PolicyProblem(project_policy, f"in {repo_name}'s phil.toml: {exc}", None),)
+            repo_entries = _glob_entries(settings.allow, f"{repo_name} phil.toml")
 
-    config = _config_entries(config_allow)
+    config = _glob_entries(config_allow, "config")
     broken = bool(everywhere.problems or project.problems)
     saved_allow = [] if broken else [*everywhere.allow, *project.allow, *repo_entries]
     return PolicySet(
@@ -321,17 +311,18 @@ def add_rule(path: Path, kind: str, rule_text: str, source: str, *, today: date,
         _write(path, doc)
 
 
-def remove_rule(path: Path, rule_text: str) -> bool:
-    """Remove the entries (allow or deny) whose rule is `rule_text`. False if there were none."""
+def remove_rule(path: Path, rule_text: str) -> tuple[str, ...]:
+    """Remove the entries (allow or deny) whose rule is `rule_text`. Returns the kinds removed, in
+    KINDS order: `()` when there were none."""
     try:
         wanted = _normal(parse_rule(rule_text))
     except RuleError:
-        wanted = rule_text.strip()
+        return ()  # no stored rule can be an invalid one
     if not path.exists():
-        return False
+        return ()
     with _locked(path):
         doc = _open_for_write(path)
-        removed = False
+        removed: list[str] = []
         for kind in KINDS:
             if kind not in doc:
                 continue
@@ -339,12 +330,13 @@ def remove_rule(path: Path, rule_text: str) -> bool:
             for index in reversed(range(len(items))):
                 if _same_rule(items[index].get("rule"), wanted):
                     del items[index]
-                    removed = True
+                    if kind not in removed:
+                        removed.append(kind)
             if not len(items):
                 del doc[kind]
         if removed:
             _write(path, doc)
-        return removed
+        return tuple(removed)
 
 
 def record_repo_decision(path: Path, decision: Literal["trust", "ignore"], rules_hash: str) -> None:

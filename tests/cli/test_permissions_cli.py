@@ -3,6 +3,7 @@ remove, trust or ignore rules."""
 
 import tomllib
 
+import pytest
 from typer.testing import CliRunner
 
 from phil.cli import main as cli
@@ -157,6 +158,39 @@ def test_remove_lists_near_matches_when_nothing_matches(calc_repo, monkeypatch):
     assert "make test" not in result.output
 
 
+def test_remove_says_when_it_removed_both_an_allow_and_a_deny(calc_repo, monkeypatch):
+    wide(monkeypatch)
+    phil(calc_repo, "allow", "make deploy")
+    phil(calc_repo, "deny", "make deploy")
+    result = phil(calc_repo, "remove", "make deploy")
+    assert result.exit_code == 0, result.output
+    assert result.output == 'Removed allow and deny "make deploy".\n'
+
+
+def test_remove_points_a_config_pattern_at_config_toml(calc_repo, monkeypatch):
+    from phil.config import global_config_path
+
+    wide(monkeypatch)
+    result = phil(calc_repo, "remove", "pytest *")  # a built-in default [shell] allow pattern
+    assert result.exit_code == 1
+    assert result.output == (
+        f'"pytest *" comes from {shown_path(global_config_path())} [shell] allow — edit it there.\n')
+
+
+@pytest.mark.parametrize("rule", ["sudo *", "python *", "git push -f *"])
+def test_allow_refuses_a_rule_that_can_never_match_without_yes(calc_repo, monkeypatch, rule):
+    wide(monkeypatch)
+    result = phil(calc_repo, "allow", rule)
+    assert result.exit_code == 1
+    assert result.output == (
+        f'"{rule}" can never match — Phil saves commands like this exactly. Add --yes to save it anyway.\n')
+    assert not project_policy(calc_repo).exists()
+    result = phil(calc_repo, "allow", rule, "--yes")
+    assert result.exit_code == 0, result.output
+    assert f'Note: "{rule}" can never match — Phil saves commands like this exactly. Saved anyway.' in result.output
+    assert rules_in(project_policy(calc_repo)) == [rule]
+
+
 def test_remove_everywhere_uses_the_global_file(calc_repo, monkeypatch):
     wide(monkeypatch)
     phil(calc_repo, "allow", "make test", "--everywhere")
@@ -220,23 +254,105 @@ def recorded(repo):
     return repo_decision(project_policy(repo), repo_shell_hash(repo_shell_settings(repo)))
 
 
-def test_trust_records_the_decision_for_the_current_settings(calc_repo, monkeypatch):
+TRUST_LIST = (
+    "calc's phil.toml allows these commands\n"
+    "  make test *  may change things\n"
+    "  make lint    may change things\n"
+    "  passes these environment variables to agent commands: REPO_TOKEN\n"
+)
+
+
+def test_trust_with_yes_shows_what_it_trusts_and_records_it(calc_repo, monkeypatch):
     wide(monkeypatch)
     with_shell(calc_repo, 'allow = ["make test *", "make lint"]\npass_env = ["REPO_TOKEN"]\n')
-    result = phil(calc_repo, "trust")
+    result = phil(calc_repo, "trust", "--yes")
     assert result.exit_code == 0, result.output
-    assert result.output == "Trusted 2 rules and pass_env from phil.toml.\n"
+    assert result.output == TRUST_LIST + "Trusted 2 rules and pass_env from phil.toml.\n"
     assert recorded(calc_repo) == "trust"
     result = phil(calc_repo, "check", "make test unit")
     assert result.output == 'runs · may change things · rule "make test *" (calc phil.toml)\n'
 
 
-def test_ignore_records_the_decision(calc_repo, monkeypatch):
+def test_trust_without_a_terminal_or_yes_shows_the_list_and_records_nothing(calc_repo, monkeypatch):
+    wide(monkeypatch)
+    with_shell(calc_repo, 'allow = ["make test *", "make lint"]\npass_env = ["REPO_TOKEN"]\n')
+    result = phil(calc_repo, "trust")
+    assert result.exit_code == 1
+    assert result.output == TRUST_LIST + "Run with --yes to trust these without a prompt.\n"
+    assert recorded(calc_repo) is None
+
+
+def on_a_terminal(monkeypatch, answer, then=None):
+    """`phil permissions trust` as if run in a terminal, answering its prompt with `answer`."""
+    prompts = []
+
+    def prompt(text, **kwargs):
+        prompts.append(text)
+        if then is not None:
+            then()
+        return answer
+
+    monkeypatch.setattr(permissions_cli, "_on_a_terminal", lambda: True)
+    monkeypatch.setattr(permissions_cli.typer, "prompt", prompt)
+    return prompts
+
+
+def test_trust_on_a_terminal_asks_first(calc_repo, monkeypatch):
+    wide(monkeypatch)
+    with_shell(calc_repo, 'allow = ["make test *", "make lint"]\npass_env = ["REPO_TOKEN"]\n')
+    prompts = on_a_terminal(monkeypatch, "y")
+    result = phil(calc_repo, "trust")
+    assert result.exit_code == 0, result.output
+    assert prompts == ["Trust these for calc? [y/N]"]
+    assert result.output == TRUST_LIST + "Trusted 2 rules and pass_env from phil.toml.\n"
+    assert recorded(calc_repo) == "trust"
+
+
+@pytest.mark.parametrize("answer", ["", "n", "no"])
+def test_trust_on_a_terminal_records_nothing_unless_you_say_yes(calc_repo, monkeypatch, answer):
+    wide(monkeypatch)
+    with_shell(calc_repo, 'allow = ["make test *"]\n')
+    on_a_terminal(monkeypatch, answer)
+    result = phil(calc_repo, "trust")
+    assert result.exit_code == 0, result.output
+    assert result.output.endswith("Nothing recorded.\n")
+    assert recorded(calc_repo) is None
+
+
+def test_trust_records_the_hash_of_what_it_printed(calc_repo, monkeypatch):
+    wide(monkeypatch)
+    with_shell(calc_repo, 'allow = ["make test *"]\n')
+    shown = repo_shell_hash(repo_shell_settings(calc_repo))
+    on_a_terminal(monkeypatch, "y", then=lambda: with_shell(calc_repo, 'allow = ["make deploy *"]\n'))
+    result = phil(calc_repo, "trust")
+    assert result.exit_code == 0, result.output
+    assert "make deploy" not in result.output
+    assert repo_decision(project_policy(calc_repo), shown) == "trust"
+    assert recorded(calc_repo) is None  # the changed settings were never shown, so they're not trusted
+
+
+def test_trust_shows_hidden_characters_as_question_marks(calc_repo, monkeypatch):
+    wide(monkeypatch)
+    with_shell(calc_repo, 'allow = ["make \\u001b[31mtest *"]\nbash = "C:/b\\tash.exe"\n')
+    result = phil(calc_repo, "trust", "--yes")
+    assert result.exit_code == 0, result.output
+    assert "\x1b" not in result.output and "\t" not in result.output
+    assert "  make ?[31mtest *" in result.output
+    assert "  runs every command through: C:/b?ash.exe\n" in result.output
+
+
+def test_ignore_shows_the_list_and_records_without_asking(calc_repo, monkeypatch):
     wide(monkeypatch)
     with_shell(calc_repo, 'allow = ["make test *"]\npass_env = ["A"]\nbash = "/bin/bash"\n')
     result = phil(calc_repo, "ignore")
     assert result.exit_code == 0, result.output
-    assert result.output == "Ignoring 1 rule, pass_env and bash from phil.toml.\n"
+    assert result.output == (
+        "calc's phil.toml allows these commands\n"
+        "  make test *  may change things\n"
+        "  passes these environment variables to agent commands: A\n"
+        "  runs every command through: /bin/bash\n"
+        "Ignoring 1 rule, pass_env and bash from phil.toml.\n"
+    )
     assert recorded(calc_repo) == "ignore"
     assert phil(calc_repo, "check", "make test unit").output.startswith("asks · ")
 
@@ -270,11 +386,41 @@ def test_the_listing_shows_every_section_in_order(calc_repo, monkeypatch):
     repo = out.index(f"calc ({shown_path(project_policy(calc_repo))}):")
     assert out[repo + 1].startswith("  deny   git push *   manual · ")
     toml = out.index("calc phil.toml (not trusted — phil permissions trust):")
-    assert out[toml + 1].startswith("  allow  make test *")
+    assert out[toml + 1] == "  allow     make test *   may change things"  # the rows line up (F10)
     assert out[toml + 2] == "  pass_env  REPO_TOKEN"
-    config = next(i for i, line in enumerate(out) if line.startswith("Config (") and line.endswith("[shell] allow):"))
+    config = out.index("Config (built-in defaults (no config entry)):")  # no config.toml sets it (F10)
     assert "  allow  pytest *" in out[config + 1 :]
     assert everywhere < repo < toml < config
+
+
+def test_the_listing_names_config_toml_when_it_sets_the_allow_list(calc_repo, monkeypatch):
+    from phil.config import global_config_path
+
+    wide(monkeypatch)
+    path = global_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('[shell]\nallow = ["just *"]\n', encoding="utf-8", newline="\n")
+    out = lines(phil(calc_repo))
+    config = out.index(f"Config ({shown_path(path)} [shell] allow):")
+    assert out[config + 1 :] == ["  allow  just *"]
+
+
+def test_the_listing_says_when_a_broken_file_switched_trust_off(calc_repo, monkeypatch):
+    wide(monkeypatch)
+    with_shell(calc_repo, 'allow = ["make test *"]\n')
+    phil(calc_repo, "trust", "--yes")
+    path = global_policy_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[[allow]\n", encoding="utf-8", newline="\n")
+    assert f"calc phil.toml (trusted, but off until {shown_path(path)} is fixed):" in lines(phil(calc_repo))
+
+
+def test_the_bash_row_lines_up_too(calc_repo, monkeypatch):
+    wide(monkeypatch)
+    with_shell(calc_repo, 'allow = ["make test *"]\nbash = "/bin/bash"\n')
+    out = lines(phil(calc_repo))
+    toml = out.index("calc phil.toml (not trusted — phil permissions trust):")
+    assert out[toml + 1 : toml + 3] == ["  allow  make test *   may change things", "  bash   /bin/bash"]
 
 
 def test_the_listing_leaves_out_empty_sections(calc_repo, monkeypatch):
@@ -290,7 +436,7 @@ def test_the_listing_leaves_out_empty_sections(calc_repo, monkeypatch):
 def test_the_listing_shows_the_repo_decision(calc_repo, monkeypatch):
     wide(monkeypatch)
     with_shell(calc_repo, 'allow = ["make test *"]\n')
-    phil(calc_repo, "trust")
+    phil(calc_repo, "trust", "--yes")
     assert "calc phil.toml (trusted):" in lines(phil(calc_repo))
     phil(calc_repo, "ignore")
     assert "calc phil.toml (ignored):" in lines(phil(calc_repo))

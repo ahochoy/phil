@@ -540,7 +540,10 @@ ask instead), keeps the deny rules it can read, and won't write to the file unti
 
 A repo's own `phil.toml` can ship `[shell] allow`, `pass_env` and `bash` settings. Phil doesn't
 use them until you trust them: the chat asks before it shows a plan or starts a quick run, or run
-`phil permissions trust` (or `ignore`). If the settings change, Phil asks again.
+`phil permissions trust` (or `ignore`). If the settings change, Phil asks again. Once trusted, a
+repo's `[shell] allow` patterns match exactly as your config's do (`npm run test*` included). Deny
+rules still win over them, and over the plan's test, check and setup commands, which a deny rule
+stops before they run.
 
 ```bash
 phil permissions                        # every rule in effect, and where it comes from
@@ -548,11 +551,16 @@ phil permissions check "gh pr merge 42" # asks · changes things · no rule matc
 phil permissions allow "make test *"    # for this repo; --everywhere for every repo
 phil permissions deny "git push *"
 phil permissions remove "make test *"   # lists near matches if there's no such rule
-phil permissions trust                  # or ignore: this repo's phil.toml shell settings
+phil permissions trust                  # shows this repo's phil.toml shell settings, then asks (--yes: don't ask)
+phil permissions ignore                 # shows them and keeps them off
 ```
 
 A bare `program *`, or an open rule for a program Phil hasn't vetted, needs `--yes`. A rule for
 something forbidden is refused. In the chat, `/permissions` prints the same list.
+
+Permissions control what agents run directly. Code that agents write and your test command runs
+still has your full rights; sandboxing that code is planned for after launch. If a policy file
+changes during a run and Phil didn't save the change, the run's summary says so.
 
 ## Plans
 

@@ -22,11 +22,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from phil import platform
+from phil.text import HIDDEN_CATEGORIES
 
 # Programs whose arguments are code, a command, or a script: only ever saved exactly (R5). Names
 # are compared folded; versioned ones (`python3.12`, `node20`) are caught by _VERSIONED_INTERPRETER.
 INTERPRETERS = frozenset({
-    "python", "python3", "node", "deno", "bun", "php", "ruby", "perl", "lua", "rscript", "osascript",
+    "python", "python3", "py", "pypy", "pypy3", "ipython", "node", "deno", "bun", "ts-node", "tsx",
+    "java", "php", "ruby", "perl", "lua", "rscript", "osascript",
     "pwsh", "powershell", "bash", "sh", "zsh", "dash", "ksh", "fish", "tclsh",
 })
 _VERSIONED_INTERPRETER = re.compile(r"(python|perl|ruby|node|php|lua|bash|tclsh)[\d.]*")
@@ -65,11 +67,6 @@ REMOVE_VERBS = frozenset({
     "delete", "del", "rm", "remove", "prune", "uninstall", "unpublish", "destroy", "purge", "drop",
     "kill", "clean", "reset",
 })
-
-# Characters that hide, reorder or break up text (N1): controls including tab (Cc), format and
-# bidi controls (Cf), line and paragraph separators (Zl, Zp), private-use (Co), unassigned (Cn)
-# and lone surrogates (Cs). No rule may hold one, and the callout shows each as `?`.
-HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cn", "Cs"})
 
 
 def is_plain_argument(word: str) -> bool:
@@ -149,26 +146,29 @@ class Rule:
 
 def program_name(arg0: str) -> str:
     """The program `arg0` names: its basename, so `/usr/bin/gh` is `gh`. On Windows either
-    separator splits, and the name is lowercased without a .exe/.cmd/.bat suffix."""
+    separator splits, and the name is lowercased without trailing dots (which Windows ignores) or
+    a .exe/.com/.cmd/.bat suffix, so `git.exe.` and `git.com` are `git` too. Allow and deny
+    matching both use it."""
     if platform.IS_WINDOWS:
-        name = re.split(r"[\\/]", arg0)[-1].lower()
-        for suffix in (".exe", ".cmd", ".bat"):
+        name = re.split(r"[\\/]", arg0)[-1].lower().rstrip(".")
+        for suffix in (".exe", ".com", ".cmd", ".bat"):
             if name.endswith(suffix):
-                return name.removesuffix(suffix)
+                return name.removesuffix(suffix).rstrip(".")
         return name
     return arg0.rsplit("/", 1)[-1]
 
 
-def _slashed(text: str) -> str:
-    """On Windows every backslash becomes `/` (as the shell policy's allowlist does), so a path
-    rule survives shlex and either spelling of a path compares equal. Elsewhere `text` itself."""
+def slashed(text: str) -> str:
+    """On Windows every backslash becomes `/`, so a path rule survives shlex and either spelling of
+    a path compares equal; elsewhere `text` itself. The one slash normalisation: rules, allowlist
+    matching and the shell policy's containment check all use it (R6)."""
     return text.replace("\\", "/") if platform.IS_WINDOWS else text
 
 
 def _path_key(path: str) -> str:
     """A path as compared for equality: slashes normalised, and on Windows case-folded. The suffix
     stays, because `./gh.bat` is not `./gh.exe`."""
-    path = _slashed(path)
+    path = slashed(path)
     return path.lower() if platform.IS_WINDOWS else path
 
 
@@ -180,7 +180,7 @@ def parse_rule(text: str) -> Rule:
     if any(unicodedata.category(char) in HIDDEN_CATEGORIES for char in text):
         raise RuleError(f"rule {text!r} contains a control or hidden character")
     try:
-        words = [_slashed(word) for word in shlex.split(text)]
+        words = [slashed(word) for word in shlex.split(text)]
     except ValueError as exc:
         raise RuleError(f"can't read rule {text!r}: {exc}") from exc
     open_end = bool(words) and words[-1] == "*" and re.search(r"\s\*$", text.strip()) is not None
@@ -195,7 +195,7 @@ def parse_rule(text: str) -> Rule:
 
 def has_separator(arg0: str) -> bool:
     """Whether `arg0` is a path (`./gh`, `/usr/bin/gh`) rather than a bare program name."""
-    return "/" in _slashed(arg0)
+    return "/" in slashed(arg0)
 
 
 def rule_matches(rule: Rule, argv: list[str]) -> bool:
@@ -208,7 +208,7 @@ def rule_matches(rule: Rule, argv: list[str]) -> bool:
             return False
     elif not argv[0].isascii() or program_name(argv[0]) != rule.words[0]:
         return False
-    fixed, rest = rule.words[1:], [_slashed(arg) for arg in argv[1:]]
+    fixed, rest = rule.words[1:], [slashed(arg) for arg in argv[1:]]
     if rule.open_end:  # R9: the `*` covers plain arguments only
         return (tuple(rest[: len(fixed)]) == fixed and len(rest) >= len(fixed)
                 and all(is_plain_argument(word) for word in rest[len(fixed) :]))
@@ -226,7 +226,7 @@ def deny_matches(rule: Rule, argv: list[str]) -> bool:
         return False
     if folded_name(argv[0]) != folded_name(rule.words[0]):
         return False
-    fixed, rest = rule.words[1:], [_slashed(arg) for arg in argv[1:]]
+    fixed, rest = rule.words[1:], [slashed(arg) for arg in argv[1:]]
     if rule.open_end:
         remaining = iter(rest)
         return all(word in remaining for word in fixed)  # a subsequence: in order, gaps allowed

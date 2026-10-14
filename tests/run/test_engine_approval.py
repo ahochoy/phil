@@ -430,6 +430,60 @@ def test_an_answer_without_an_id_is_refused_for_a_pause_with_one(make_harness):
     assert not harness.deps.paths.policy_path.exists()
 
 
+def test_after_always_repo_the_next_call_runs_the_command_through_the_saved_rule(make_harness):
+    # F12: the whole chain, through the real invoke_agent shell tool: resume with "always allow in
+    # repo", then the next implementer call runs a command only the saved rule covers.
+    outputs: list[str] = []
+
+    def run_another(turn):
+        outputs.append(turn.tools["run_shell"]("make test-unit other"))
+        return write_red(turn)
+
+    harness = make_harness({"implementer": [asks(UNIT), run_another, write_green], "tester": [tester_report()],
+                            "reviewer": [review()]})
+    harness.start()
+    assert harness.resume({"action": "always_repo"})["status"] == "completed"
+    assert outputs[0].splitlines()[1] == 'allowed: rule "make test-unit *" (calc)'
+
+
+POLICY_CHANGED = "⚠ {path} changed during this run without Phil saving a rule — review it with `phil permissions`"
+
+
+def _summary(harness) -> str:
+    return (harness.deps.artifacts.run_dir / "summary.md").read_text(encoding="utf-8")
+
+
+def _notices(harness) -> list[str]:
+    events, _ = harness.deps.events.read()
+    return [event["message"] for event in events if event["kind"] == "notice"]
+
+
+def test_a_policy_file_changed_by_code_during_the_run_is_reported(make_harness):
+    from phil.permissions.listing import shown_path
+
+    def red_and_tamper(turn):
+        # Code the agent wrote and a test command ran could do this; here the script does it directly.
+        add_rule(global_policy_path(), "allow", "gh pr merge *", "approval in calc (r-xyz)", today=date(2026, 10, 13))
+        return write_red(turn)
+
+    harness = make_harness({"implementer": [red_and_tamper, write_green], "tester": [tester_report()],
+                            "reviewer": [review()]})
+    assert harness.start()["status"] == "completed"
+    line = POLICY_CHANGED.format(path=shown_path(global_policy_path()))
+    assert line in _summary(harness)
+    assert _notices(harness) == [line]
+
+
+def test_phils_own_saved_rule_is_not_reported_as_a_change(make_harness):
+    harness = make_harness({"implementer": [asks(UNIT), write_red, write_green], "tester": [tester_report()],
+                            "reviewer": [review()]})
+    harness.start()
+    assert harness.resume({"action": "always_repo"})["status"] == "completed"
+    assert harness.deps.paths.policy_path.exists()
+    assert "changed during this run" not in _summary(harness)
+    assert _notices(harness) == []
+
+
 def test_a_pause_from_before_ids_accepts_an_answer_without_one(make_harness, monkeypatch):
     # Runs paused before R16 have escalations with no id: their bare answers still work.
     harness, _ = paused(make_harness, MERGE)
