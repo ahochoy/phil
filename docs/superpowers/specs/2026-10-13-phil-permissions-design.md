@@ -41,7 +41,7 @@ The live tests showed what this leads to:
 | # | Check | Result |
 |---|---|---|
 | 1 | Forbidden: today's character, parse, risky program and flag, and containment checks. The risky check now uses the program name, which closes the full-path bypass. | refused, and can't be approved |
-| 2 | Deny rules: everywhere, then this repo | denied, and can't be approved this run |
+| 2 | Deny rules: everywhere, then this repo. A deny rule matches broadly: the program by its name (any path, any letter case), the rule's words in order anywhere after the program, and a trailing `*` covering anything, including options. So `git push *` blocks `git -C x push -f`. | denied, and can't be approved this run |
 | 3 | The built-in read-only list (§3.2) | allowed |
 | 4 | Allow rules: everywhere, then this repo, then trusted repo rules, then `[shell] allow` from `~/.phil/config.toml`, then the plan's test and check commands | allowed |
 | 5 | Approved earlier in this run | allowed |
@@ -56,20 +56,22 @@ The reason appears in the activity feed and in `phil show`.
 
 ### 3.2 The built-in read-only list
 
-The list is a table of program, read-only subcommand, and the flags that turn that subcommand into a write. Today's list stays, and it grows to cover:
+This list was amended during implementation (2026-10-13), after security review found entries in the original list that could write or run code. Today's list stays. The new entries are subcommands, and each entry carries its own list of safe flags.
 
 | Program | Read-only (examples) | Always asks (examples) |
 |---|---|---|
-| `gh` | `pr view/list/checks/diff/status`, `issue view/list`, `repo view`, `run view/list`, `release view/list`, `auth status` | `pr merge/create/close/edit`, `api` (any method), `repo delete`, `release create` |
-| `git` | today's set, plus `remote -v`, `rev-parse`, `blame`, `tag -l`, `stash list`, `config --get` | `push`, `commit`, `reset`, `checkout`, `tag <name>` |
-| `npm`, `pnpm`, `yarn` | `ls`, `view`, `outdated`, `why` | `install`, `run`, `publish` |
-| `uv` | `tree`, `pip list/show`, `python --version` | `add`, `sync`, `run` |
-| `cargo`, `go` | `tree`, `metadata`, `list`, `version`, `env` | `build`, `install`, `get` |
+| `gh` | `pr view/list/checks/diff/status`, `issue view/list`, `repo view`, `run view/list`, `release view/list`, `auth status` | `pr merge/create/close/edit`, `api` (any method), `repo delete`, `release create`, `--web` |
+| `git` | today's set, plus `remote -v`, `rev-parse`, `blame`, `tag -l`, `stash list` (exactly), `config --get` | `push`, `commit`, `reset`, `checkout`, `tag <name>`, `blame --contents` |
+| `npm` | `ls`, `view`, `outdated`, `why`, `explain` | `install`, `run`, `publish`, `--registry` |
+| `go` | `list`, `version`, `env` (reading only) | `build`, `install`, `get`, `env -w`, `list -toolexec` |
+| `cargo` | `version` | everything else (`tree` and `metadata` write `Cargo.lock`) |
 
 **Rules for the list:**
+- **Safe flags only.** A command counts as a read only when everything after the subcommand is either a plain argument or one of that entry's safe flags. Any other option, or `--`, sends it on to your rules, or Phil asks. A flag that takes a value consumes the next word, so `git tag --format -l v1` isn't mistaken for listing.
+- **No reads for `uv`, `yarn` or `pnpm`.** These run code from configuration files the agent can write in the worktree, such as `pyproject.toml`, `.yarnrc.yml` and `.pnpmfile.cjs`. Their commands always ask, or match your own rules.
 - **`gh api`** always asks. It can make any request, so it can't be classed as read-only.
-- **Flags that write.** A read-only subcommand used with a flag known to write is treated as `changes things`. Examples are `git config --get` alongside `--add`, or `git tag -l` alongside `-d`.
-- **Labels.** A known program with a mutating subcommand is labelled `changes things`. A program Phil doesn't know is labelled `may change things`.
+- **Programs run by path** (`./gh`, `/opt/homebrew/bin/gh`) are never reads.
+- **Labels.** A known program used in a way that isn't a read is labelled `changes things`. A program Phil doesn't know is labelled `may change things`.
 
 ### 3.3 What "always allow" suggests
 
@@ -91,19 +93,26 @@ The callout replaces today's approval choices when the implementer was denied co
 
 ```
 ╭─ implementer wants to run ─────────────────────────────────╮
-│ gh pr checks 42                     reads only             │
-│ make test-unit --fast               may change things      │
+│ gh pr merge 42  (changes things)  → saves gh pr merge *    │
+│ make test-unit --fast  (may change things)                 │
+│   → saves make test-unit --fast                            │
 │                                                            │
 │ ❯ Allow for this run                                       │
-│   Always allow in calc:   gh pr checks *  ·  make test-unit *│
-│   Always allow everywhere: gh pr checks *  ·  make test-unit *│
+│   Always allow in calc (2 rules)                           │
+│   Always allow everywhere (2 rules)                        │
 │   Deny                                                     │
 │   Stop the run                                             │
 ╰────────────────────────────────────────────────────────────╯
 ```
 
-- **The "always" choices** show the exact rules they will save.
-- **No "everywhere" for interpreters or destructive commands.** If any listed command is one of those, "Always allow everywhere" is left out for that pause.
+The layout was amended during implementation (2026-10-13):
+- **Every rule is visible in full** before you choose "Always". The body lists each command with its label and the exact rule it would save, and lines wrap rather than being cut off. When the body overflows, its last line says how many commands and rules are hidden and points to `/more 1`, which lists everything.
+- **The options are short.** The "Always" options show the rule count when there's more than one.
+- **What's shown is what's saved.** The rule shown is the normalised form that gets saved. A command whose rule can't be saved shows `→ can't be saved`, and then both "Always" options are left out.
+- **Hidden characters** (control, formatting and reordering characters) display as `?`. A command containing one can't be saved as a rule; it can still be allowed for this run.
+- **No "everywhere" for dangerous forms.** If any listed command is an interpreter, a destructive command, a launcher, or a dangerous form inside a family, "Always allow everywhere" is left out for that pause.
+- **Each answer belongs to its pause.** Every pause carries an id, and an answer meant for an earlier pause changes nothing; Phil asks again.
+- **`phil resume`** shows the commands and rules, but it won't save rules. Use the chat or `phil attach` for that.
 - **Choosing "always":**
   1. Phil writes the rules to the policy file.
   2. It adds the commands to the run's approvals.
@@ -119,8 +128,10 @@ The callout replaces today's approval choices when the implementer was denied co
 ### 3.5 Trusting a repo's rules
 
 **When Phil asks.** The question comes when both are true:
-- the repo's `phil.toml` has `[shell] allow`;
-- this repo's policy file has no decision for the current hash of that list.
+- the repo's `phil.toml` sets `[shell] allow`, `[shell] pass_env` or `[shell] bash`. All three need trust, because a repo could otherwise pass your secrets into agent commands (`pass_env`) or choose the shell every command runs through (`bash`, on Windows). This was amended during implementation;
+- this repo's policy file has no decision for the current hash of those settings.
+
+The recorded hash is always the hash of exactly what you were shown. If `phil.toml` changes while you're deciding, nothing is recorded and Phil asks again.
 
 It comes before a plan is approved in the chat, so it joins a decision you're already making. It also comes before a quick run starts.
 
@@ -136,7 +147,7 @@ It comes before a plan is approved in the chat, so it joins a decision you're al
 
 - **Recording the answer.** The decision is saved in the repo's policy file together with a sha256 of the list. If the list changes, Phil asks again.
 - **With no one to ask** (a worker started directly with `phil run`): repo rules you haven't trusted are ignored, with a one-line notice in the run log.
-- **The rest of `phil.toml`** (settings such as models and test commands) is unaffected. Only `[shell] allow` from the repo needs trust.
+- **The rest of `phil.toml`** (settings such as models and test commands) is unaffected. Only `[shell] allow`, `pass_env` and `bash` from the repo need trust.
 
 ### 3.6 Files on disk
 
