@@ -2,6 +2,7 @@ import json
 import unicodedata
 from pathlib import Path
 
+from phil.permissions.rules import HIDDEN_CATEGORIES
 from phil.store.db import utcnow
 from phil.store.paths import ProjectPaths
 
@@ -62,10 +63,11 @@ test_cmd_changed_line.__test__ = False  # not a pytest test
 
 
 def printable(text: object) -> str:
-    """`text` for display: each control character (Unicode Cc: ESC, BEL, newline...) but tab
-    becomes `?`, so an agent's command can't recolour the terminal or move its cursor. Only what's
+    """`text` for display: each hidden character (rules.HIDDEN_CATEGORIES: controls such as ESC and
+    tab, bidi and other format characters, line separators...) becomes `?`, so an agent's command
+    can't recolour the terminal, move its cursor, reorder its text or fake a new line. Only what's
     shown changes; saved rules and approved commands keep their text."""
-    return "".join("?" if unicodedata.category(char) == "Cc" and char != "\t" else char for char in str(text))
+    return "".join("?" if unicodedata.category(char) in HIDDEN_CATEGORIES else char for char in str(text))
 
 
 def _quoted(rules: list[str]) -> str:

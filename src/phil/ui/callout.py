@@ -176,19 +176,38 @@ def _approval_entry(entry: str, inner: int) -> list[str]:
     return [*_wrap_spaced(head, inner), *_wrap_spaced(f"    → {tail}", inner)]
 
 
+REST = "… see /more 1 for the rest"
+
+
+def hidden_pointer(hidden: int) -> str:
+    """The last body line of an approval that leaves `hidden` entries out (N2)."""
+    things = "command and rule" if hidden == 1 else "commands and rules"
+    return f"… {hidden} more {things} — see /more 1 before choosing Always"
+
+
 def _approval_rows(body: tuple[str, ...], inner: int) -> tuple[list[str], bool]:
-    """An approval's body (R15): every line wraps, keeping its spacing, and is never cut with `…`.
-    When it's taller than BODY_LINES rows, whole entries are kept up to the cap, then
-    `… see /more 1`, so each rule shown is shown in full; /more 1 holds them all."""
+    """An approval's body (R15, N2): its first line, then one entry per command. Every line wraps,
+    keeping its spacing, and is never cut with `…`. Taller than BODY_LINES rows: the entries that
+    fit are drawn whole, then a pointer saying how many are left out. When not even the first
+    command fits, as many of its rows as fit are drawn, then `… see /more 1 for the rest`, so
+    the box always shows a command. /more 1 holds them all."""
     entries = [_approval_entry(entry, inner) for line in body for entry in str(line).splitlines()]
     if sum(len(rows) for rows in entries) <= BODY_LINES:
         return [row for rows in entries for row in rows], False
+    head, commands = (entries[0], entries[1:]) if entries else ([], [])
+    room = BODY_LINES - len(head)
+    reserve = len(_wrap(hidden_pointer(len(commands)), inner))  # the widest the pointer gets
     kept: list[str] = []
-    for rows in entries:
-        if len(kept) + len(rows) > BODY_LINES - 1:
+    count = 0
+    for rows in commands:
+        if len(kept) + len(rows) > room - reserve:
             break
         kept.extend(rows)
-    return [*kept, SEE_MORE], True
+        count += 1
+    if count == 0 and commands:
+        rest = _wrap(REST, inner)
+        return [*head, *commands[0][: max(room - len(rest), 1)], *rest], True
+    return [*head, *kept, *_wrap(hidden_pointer(len(commands) - count), inner)], True
 
 
 def overflows(decision: Decision, width: int) -> bool:

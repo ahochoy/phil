@@ -425,7 +425,7 @@ def test_more_1_holds_every_command_and_rule_of_a_long_approval(controller_with_
     text, *_ = controller_with_choose(
         ["add subtract", "y", approval_pause(ALL_ANSWERS, commands), TYPE, "/more 1"], FULL_SCRIPT, calls=calls)
     pause = next(call[2] for call in calls if call[0] == "choose" and call[2].kind == "approval")
-    assert pause.body[-1] == "… see /more 1"
+    assert len(pause.body) == 13  # every entry: the callout renderer points at /more 1 for the rest
     for command in commands:
         assert f"{command}  (changes things)  → saves {command} *" in text
 

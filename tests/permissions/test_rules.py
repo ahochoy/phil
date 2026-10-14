@@ -146,6 +146,15 @@ def test_a_quoted_or_escaped_star_is_not_a_wildcard(text):
         parse_rule(text)
 
 
+@pytest.mark.parametrize("char", ["\t", "\x1b", " ", " ", "‮", "​", "", "͸", "\ud800"])
+def test_a_rule_with_a_hidden_character_is_refused(char):
+    # N1: control (Cc), format (Cf), line and paragraph separators (Zl, Zp), private-use (Co) and
+    # unassigned (Cn) characters and lone surrogates (Cs) can hide or reorder what a rule says, so
+    # no rule holds one.
+    with pytest.raises(RuleError):
+        parse_rule(f"make 'a{char}b' *")
+
+
 def test_a_bare_trailing_star_is_still_open_ended():
     rule = parse_rule("gh pr *")
     assert rule.open_end and rule.words == ("gh", "pr")

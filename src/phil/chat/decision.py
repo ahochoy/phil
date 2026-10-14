@@ -103,10 +103,14 @@ def approval_lines(escalation: dict) -> list[str]:
 
 
 def _approval_options(escalation: dict, words: list[str]) -> tuple[Option, ...]:
+    """The approval's answers. With more than one rule, the "always" answers say how many they save
+    (N2), so a box that can't show every rule still says what choosing one does."""
+    count = len(escalation.get("rules") or [])
+    rules = f" ({count} rules)" if count > 1 else ""
     labels = {
         **_APPROVAL_LABELS,
-        "always_repo": f"Always allow in {printable(escalation.get('repo', 'this repo'))}",
-        "always_everywhere": "Always allow everywhere",
+        "always_repo": f"Always allow in {printable(escalation.get('repo', 'this repo'))}{rules}",
+        "always_everywhere": f"Always allow everywhere{rules}",
     }
     return tuple(Option(labels.get(w) or LABELS.get(w, w.capitalize()), w) for w in words)
 
@@ -149,7 +153,9 @@ def pause_decision(run_id: str, escalation: dict) -> Decision:
         title_end = summary or "a decision"
         body = problems
     kind = "approval" if reason == "approval" else "pause"
-    return Decision(kind, f"⏸ {run_id} needs you · {title_end}", _capped(body), options, default, note=note)
+    # An approval's body is never capped here: the callout renderer counts the entries it leaves out (N2).
+    shown = tuple(body) if kind == "approval" else _capped(body)
+    return Decision(kind, f"⏸ {run_id} needs you · {title_end}", shown, options, default, note=note)
 
 
 def question_decision(index: int, total: int, text: str, why: str, options: list[str]) -> Decision | None:

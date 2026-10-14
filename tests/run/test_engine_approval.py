@@ -3,6 +3,8 @@ import shlex
 import sys
 from datetime import date
 
+import pytest
+
 from phil.permissions.store import add_rule
 from phil.store.paths import global_policy_path
 
@@ -341,6 +343,21 @@ def test_a_command_whose_rule_cannot_be_parsed_offers_no_always(make_harness):
     _, escalation = paused(make_harness, 'git commit -m "a\tb"')
     assert escalation["saves"] == [None]
     assert escalation["options"] == ["approve", "deny", "abort"]
+
+
+@pytest.mark.parametrize("command", ["make 'a b'", "make 'a‮b'", "make 'a\tb'"])
+def test_a_hidden_character_is_shown_as_a_question_mark_and_never_saved(make_harness, monkeypatch, command):
+    # N1: a line separator, a bidi control or a tab: never saved, never shown, but still approvable as is.
+    from phil.chat.decision import pause_decision
+
+    harness, escalation = paused(make_harness, command)
+    assert escalation["saves"] == [None]
+    assert escalation["options"] == ["approve", "deny", "abort"]
+    decision = pause_decision("r-1", escalation)
+    assert decision.body[1] == "  make 'a?b'  (may change things)  → can't be saved"
+    assert decision.note == "make 'a?b'"
+    result = answer(harness, monkeypatch, "approve")
+    assert result["approved"] == [command]  # the exact command, with its original characters
 
 
 def test_the_rule_shown_is_the_rule_saved_on_windows(monkeypatch):

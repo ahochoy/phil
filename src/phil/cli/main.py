@@ -14,9 +14,11 @@ from pathlib import Path
 import typer
 from pydantic import ValidationError
 from rich.markup import escape
+from rich.text import Text
 
 from phil import __version__, platform
 from phil.chat.approval import effective_setup_cmd, git_policy_note, launch_problems, terminated
+from phil.chat.decision import approval_lines
 from phil.config import (
     CHAT_ROLES,
     ROLES,
@@ -34,7 +36,7 @@ from phil.permissions.load import policy_or_fallback, trusted_shell
 from phil.repo import RepoError, RepoInfo, resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, spawn_worker, worker_starting
 from phil.store.db import connect
-from phil.store.events import run_events
+from phil.store.events import printable, run_events
 from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, get_run, list_runs, update_run
@@ -63,6 +65,11 @@ _read_secret = getpass.getpass
 PENDING_STALE_AFTER_S = 30.0
 FORCE_STOP_WAIT_S = 5.0  # how long `phil stop` waits for a killed worker to exit
 FULL_FROM_TERMINAL = "full is only available in the chat that started this run; answer retry or abort."
+SAVING_ACTIONS = ("always_repo", "always_everywhere")
+SAVE_FROM_RESUME = (
+    "Saving rules needs the full approval view: use `phil attach {run}` or the chat. "
+    "`--action approve` allows these commands for this run only."
+)
 
 SET_HELP = "Override a setting for this command, e.g. --set run.max_cost_usd=5 (repeatable)."
 
@@ -849,12 +856,20 @@ def resume(
         latest = run_events(ProjectPaths(info.slug), run_id).latest("escalation")
         escalation = latest["escalation"] if latest else {"summary": record.needs_attention or "", "options": []}
         options = escalation["options"]
-        # `full` is listed only in the chat that started the run; an explicit --action full is refused below.
-        shown = [option for option in options if option != "full"]
+        # `full` is listed only in the chat that started the run, and saving rules only in the chat
+        # and `phil attach`, which show what they save; both are refused below.
+        shown = [option for option in options if option != "full" and option not in SAVING_ACTIONS]
         if action is None:
-            console.print(escape(escalation["summary"]))
+            console.print(escape(printable(escalation["summary"])))
+            if escalation.get("reason") == "approval":
+                for line in approval_lines(escalation):
+                    console.print(Text(line), soft_wrap=True)
             console.print(f"[phil.error]choose --action: {escape(', '.join(shown))}[/]")
             raise typer.Exit(2)
+        if action in SAVING_ACTIONS:
+            # A rule saved from here would be saved blind (R15), for whichever pause is current (R16).
+            console.print(f"[phil.error]{escape(SAVE_FROM_RESUME.format(run=run_id))}[/]")
+            raise typer.Exit(1)
         if action not in options:
             console.print(
                 f"[phil.error]unknown action {escape(repr(action))}; choose one of: {escape(', '.join(shown))}[/]"

@@ -189,17 +189,41 @@ def test_the_drawn_approval_callout_shows_every_rule_in_full(width, shown):
     assert any("3 Always allow everywhere" in l for l in lines)
 
 
-def test_a_tall_approval_keeps_whole_entries_and_points_at_more_1():
-    """Too tall for the box: the entries that fit are drawn whole, the rest are behind /more 1,
-    and no rule is ever drawn in part."""
-    lines = text(callout_lines(pause_decision("r-1", APPROVAL), 0, 60, live=True))
-    body = _box_body(lines)
-    assert body[-1] == "… see /more 1"
+FIVE = approval([f"make target-{n} calc" for n in range(5)], ["may change things"] * 5,
+                [f"make target-{n} *" for n in range(5)])
+
+
+def test_a_tall_approval_keeps_whole_entries_and_says_what_it_hides():
+    """N2: five commands at width 60. The entries that fit are drawn whole, then a pointer that
+    says how many commands and rules are hidden, and the "always" options count the rules."""
+    decision = pause_decision("r-1", FIVE)
+    lines = text(callout_lines(decision, 0, 60, live=True))
     assert all(cell_len(l) <= 59 for l in lines)
-    joined = " ".join(body)
-    assert "→ saves gh pr merge *" in joined and "→ saves make test-unit *" in joined
-    assert "docker compose" not in joined  # left out whole, not drawn in part
-    assert overflows(pause_decision("r-1", APPROVAL), 60)
+    joined = " ".join(_box_body(lines))
+    shown = [n for n in range(5) if f"→ saves make target-{n} *" in joined]
+    assert shown == list(range(len(shown))) and 0 < len(shown) < 5
+    hidden = 5 - len(shown)
+    assert joined.endswith(f"… {hidden} more commands and rules — see /more 1 before choosing Always")
+    for n in range(len(shown), 5):
+        assert f"make target-{n}" not in joined  # left out whole, not drawn in part
+    assert any("2 Always allow in calc (5 rules)" in l for l in lines)
+    assert any("3 Always allow everywhere (5 rules)" in l for l in lines)
+    assert overflows(decision, 60)
+
+
+def test_one_command_taller_than_the_box_shows_what_fits_then_points_at_the_rest():
+    """N2: one very long command: as many of its rows as fit, then `… see /more 1 for the rest`;
+    never the title alone."""
+    command = "make " + " ".join(f"argument-{n}" for n in range(60))
+    decision = pause_decision("r-1", approval([command], ["may change things"], [None]))
+    for width in (60, 120):
+        lines = text(callout_lines(decision, 0, width, live=True))
+        body = _box_body(lines)
+        assert body[0] == "CALC-001 wants to run:"
+        assert body[1].startswith("make argument-0 argument-1")  # _box_body strips the indent
+        assert body[-1] == "… see /more 1 for the rest"
+        assert len(body) == BODY_LINES
+        assert all(cell_len(l) <= width - 1 for l in lines)
 
 
 def test_the_drawn_approval_callout_keeps_its_spacing_when_a_line_fits():

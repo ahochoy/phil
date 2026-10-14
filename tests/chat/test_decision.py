@@ -43,8 +43,9 @@ def test_approval_pause_offers_saving_rules_everywhere_verbatim():
         "  gh pr checks 42  (reads only)  → saves gh pr checks *",
         "  make test-unit calc  (may change things)  → saves make test-unit *",
     )
-    assert labels(d) == ["Allow for this run", "Always allow in calc", "Always allow everywhere", "Deny",
-                         "Stop the run"]
+    # More than one rule: the "always" answers say how many they save (N2).
+    assert labels(d) == ["Allow for this run", "Always allow in calc (2 rules)", "Always allow everywhere (2 rules)",
+                         "Deny", "Stop the run"]
     assert answers(d) == ["approve", "always_repo", "always_everywhere", "deny", "abort"]
     assert d.default == 0
 
@@ -55,6 +56,17 @@ def test_approval_pause_without_saving_offers_only_the_run():
                                "options": ["approve", "deny", "abort"], "summary": "x"})
     assert d.body == ("CALC-001 wants to run:", "  make x '*'  (may change things)  → can't be saved")
     assert labels(d) == ["Allow for this run", "Deny", "Stop the run"]
+
+
+def test_an_approval_body_is_never_cut_here_the_renderer_decides():
+    # N2: the callout renderer counts what it leaves out, so it needs every entry.
+    commands = [f"make target-{n}" for n in range(12)]
+    d = pause_decision("r-1", {"reason": "approval", "task_id": "CALC-001", "commands": commands,
+                               "labels": ["may change things"] * 12, "saves": [f"{c} *" for c in commands],
+                               "rules": [f"{c} *" for c in commands], "repo": "calc",
+                               "options": ["approve", "always_repo", "deny", "abort"], "summary": "x"})
+    assert len(d.body) == 13 and "… see /more 1" not in d.body
+    assert labels(d)[1] == "Always allow in calc (12 rules)"
 
 
 def test_approval_pause_shows_control_characters_as_question_marks():

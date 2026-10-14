@@ -66,6 +66,12 @@ REMOVE_VERBS = frozenset({
     "kill", "clean", "reset",
 })
 
+# Characters that hide, reorder or break up text (N1): controls including tab (Cc), format and
+# bidi controls (Cf), line and paragraph separators (Zl, Zp), private-use (Co), unassigned (Cn)
+# and lone surrogates (Cs). No rule may hold one, and the callout shows each as `?`.
+HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cn", "Cs"})
+
+
 def is_plain_argument(word: str) -> bool:
     """What a rule's `*` covers (R9): a word that is neither an option (`-`, `--`, `-x`, `--opt`)
     nor a `NAME=value` assignment."""
@@ -171,8 +177,8 @@ def parse_rule(text: str) -> Rule:
     Windows. The rule is open-ended only if its raw text ends in whitespace and a bare `*`; a
     quoted or escaped `*` is an error (R4), never a wildcard. Control characters (newline, tab,
     escape...) are an error: they have no place in a rule and could forge lines in a file."""
-    if any(unicodedata.category(char) == "Cc" for char in text):
-        raise RuleError(f"rule {text!r} contains a control character")
+    if any(unicodedata.category(char) in HIDDEN_CATEGORIES for char in text):
+        raise RuleError(f"rule {text!r} contains a control or hidden character")
     try:
         words = [_slashed(word) for word in shlex.split(text)]
     except ValueError as exc:
