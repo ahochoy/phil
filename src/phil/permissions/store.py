@@ -12,7 +12,7 @@ import hashlib
 import json
 import os
 import shlex
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
@@ -62,14 +62,26 @@ class RepoShellSettings:
     pass_env: tuple[str, ...] = ()
     bash: str | None = None
 
+    @property
+    def empty(self) -> bool:
+        """Whether phil.toml sets none of them: then there is nothing to trust."""
+        return not self.allow and not self.pass_env and self.bash is None
+
 
 @dataclass(frozen=True)
 class PolicySet:
+    """`repo_rules_untrusted` is the repo's allow list while no decision covers its settings.
+    `repo_decision` is the decision recorded for the repo's current settings (None: none, or the
+    repo sets nothing); `repo_trusted` is whether they apply, which a problem in either policy
+    file switches off as it does the saved allow rules."""
+
     deny: tuple[PolicyEntry, ...]
     allow: tuple[PolicyEntry, ...]
     problems: tuple[PolicyProblem, ...]
     repo_rules_untrusted: tuple[str, ...]
     repo_shell: RepoShellSettings = RepoShellSettings()
+    repo_decision: str | None = None
+    repo_trusted: bool = False
 
 
 @dataclass
@@ -80,10 +92,18 @@ class _FileState:
     problems: list[PolicyProblem]
 
 
-def repo_rules_hash(rules: list[str]) -> str:
-    """Over the list as JSON, so no rule text can fake a boundary between two rules."""
-    encoded = json.dumps(rules, ensure_ascii=False, separators=(",", ":"))
+def repo_rules_hash(rules: Sequence[str], pass_env: Sequence[str] = (), bash: str | None = None) -> str:
+    """Over everything a repo's phil.toml asks the user to trust (R14), as the JSON object
+    `{"allow": [...], "pass_env": [...], "bash": ...}`, so no text can fake a boundary between
+    two values. A decision recorded under the older allow-only hash simply asks again."""
+    encoded = json.dumps({"allow": list(rules), "pass_env": list(pass_env), "bash": bash},
+                         ensure_ascii=False, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def repo_shell_hash(settings: RepoShellSettings) -> str:
+    """The hash a decision about `settings` is recorded under."""
+    return repo_rules_hash(settings.allow, settings.pass_env, settings.bash)
 
 
 def _normal(rule: Rule) -> str:
@@ -186,18 +206,23 @@ def config_policy(patterns: list[str]) -> PolicySet:
 
 
 def load_policy(*, repo_name: str, project_policy: Path, global_policy: Path, config_allow: list[str],
-                repo_allow: list[str]) -> PolicySet:
+                repo_allow: Sequence[str] = (), repo_shell: RepoShellSettings | None = None) -> PolicySet:
     """Order: deny everywhere, then the repo; allow everywhere, then the repo, then the trusted
     rules the repo's phil.toml ships, then config. Any problem in either file drops every saved allow
-    rule and the trusted repo rules (spec §3.6); readable deny rules and config rules stay."""
+    rule and the trusted repo rules (spec §3.6); readable deny rules and config rules stay.
+
+    `repo_shell` is everything the repo's phil.toml sets that needs trust (R14); `repo_allow` is
+    short for a repo that sets only `[shell] allow`. The decision is looked up by their hash."""
     everywhere = _read_file(global_policy, "everywhere")
     project = _read_file(project_policy, repo_name)
     problems = tuple(everywhere.problems + project.problems)
+    settings = repo_shell if repo_shell is not None else RepoShellSettings(allow=tuple(repo_allow))
+    repo_allow = settings.allow
 
     untrusted: tuple[str, ...] = ()
     repo_entries: list[PolicyEntry] = []
+    decision = None if settings.empty else _recorded_decision(project, repo_shell_hash(settings))
     if repo_allow:
-        decision = _recorded_decision(project, repo_rules_hash(repo_allow))
         if decision is None:
             untrusted = tuple(repo_allow)
         elif decision == "trust":
@@ -208,13 +233,16 @@ def load_policy(*, repo_name: str, project_policy: Path, global_policy: Path, co
                     problems += (PolicyProblem(project_policy, f"in {repo_name}'s phil.toml: {exc}", None),)
 
     config = _config_entries(config_allow)
-    saved_allow = [] if (everywhere.problems or project.problems) else [
-        *everywhere.allow, *project.allow, *repo_entries]
+    broken = bool(everywhere.problems or project.problems)
+    saved_allow = [] if broken else [*everywhere.allow, *project.allow, *repo_entries]
     return PolicySet(
         deny=tuple(everywhere.deny + project.deny),
         allow=tuple(saved_allow + config),
         problems=problems,
         repo_rules_untrusted=untrusted,
+        repo_shell=settings,
+        repo_decision=decision,
+        repo_trusted=decision == "trust" and not broken,
     )
 
 

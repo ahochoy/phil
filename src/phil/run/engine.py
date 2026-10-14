@@ -35,7 +35,7 @@ from phil.contracts import (
 from phil.git import GitError, branch_for, git
 from phil.packets import Packet, PacketTooLarge, build_packet
 from phil.permissions.catalog import label_for
-from phil.permissions.load import trusted_shell
+from phil.permissions.load import policy_or_fallback, trusted_shell
 from phil.permissions.rules import RuleError, exact_only, suggest_rule
 from phil.permissions.store import PolicyWriteError, add_rule, normalised_rule
 from phil.repo_detect import effective_setup_cmd
@@ -361,7 +361,10 @@ class RunEngine:
     def _shell(self) -> ShellConfig:
         """The shell settings the engine's own commands run with: the repo's phil.toml can't set
         pass_env or bash untrusted (R14)."""
-        return trusted_shell(self.deps.config, self.deps.repo_root)
+        policy = None
+        if self.deps.paths is not None:
+            policy = policy_or_fallback(self.deps.repo_root, self.deps.paths, self.deps.config)
+        return trusted_shell(self.deps.config, self.deps.repo_root, policy)
 
     def _budget(self, role: str) -> int:
         return self.deps.config.budget_for(role).max_input_tokens

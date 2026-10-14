@@ -42,6 +42,8 @@ from phil.chat.decision import (
     pr_decision,
     question_decision,
     replace_decision,
+    repo_rules_decision,
+    repo_rules_lines,
     settled_line,
 )
 from phil.chat.design import propose_approaches
@@ -58,8 +60,8 @@ from phil.contracts.results import AttemptWorklog
 from phil.contracts.routing import Answer
 from phil.publish import publisher as publishing
 from phil.publish.service import PrChange, PublishRefused, change_line, publish_run, sweep_prs
-from phil.permissions.load import policy_or_fallback
-from phil.permissions.store import PolicySet
+from phil.permissions.load import current_repo_shell_hash, policy_or_fallback, rule_label, undecided_repo_shell
+from phil.permissions.store import PolicySet, RepoShellSettings, record_repo_decision
 from phil.repo import RepoInfo, resolve_repo
 from phil.repo_detect import detect_test_cmd
 from phil.routing import Route, decide, parse_override, route_state, skips_design
@@ -111,6 +113,7 @@ PROMPTS = {
     "confirm_pr": "Open a PR? [y / n] › ",
     "confirm_fix": "Fix it? [Enter = quick fix / full = plan it / n] › ",
     "choose_approach": "Pick an approach [Enter = 1 / number / describe your own] › ",
+    "trust_repo": "Trust phil.toml's settings? [trust / ignore] › ",
 }
 PR_ANYWAY_PROMPT = "Open a PR anyway? [y / n] › "  # confirm_pr, for a run finished with blocking issues
 QUICK_FALLBACK = "Couldn't plan this as a quick change; planning it fully."
@@ -161,6 +164,18 @@ CLASS_LABELS = {
     "simple_change": "Simple change", "focused_fix": "Focused fix", "feature": "Feature", "refactor": "Refactor",
     "design": "Design", "broad_project": "Broad project", "other": "Unclear",
 }
+
+
+@dataclass(frozen=True)
+class TrustAsk:
+    """The trust question about a repo's phil.toml shell settings (spec 2026-10-13 §3.5, R14):
+    what is shown, the hash of exactly that (recorded with the answer), and where the chat goes
+    next: plan approval, or the quick run of `goal`."""
+
+    settings: RepoShellSettings
+    digest: str
+    then: str  # "approval" | "quick"
+    goal: Goal | None = None
 
 
 @dataclass
@@ -304,6 +319,7 @@ class ChatController:
         # A settled line that waits for its answer to take effect: an approved plan's run starting,
         # or a pause's resume being sent (a retry's, past its hint prompt).
         self._settled: str | None = None
+        self._trust: TrustAsk | None = None  # the repo's phil.toml settings the trust_repo stage asks about
 
     # --- events and jobs -------------------------------------------------------------------------
 
@@ -523,6 +539,10 @@ class ChatController:
             return approach_decision([(a.name, a.summary) for a in self._approach_order])
         if stage == "approval":
             return approval_decision()
+        if stage == "trust_repo" and self._trust is not None:
+            rules, labels, pass_env, bash = self._trust_parts(self._trust)
+            decision = repo_rules_decision(self.info.root.name, rules, labels, pass_env, bash)
+            return self._with_details(decision, repo_rules_lines(rules, labels, pass_env, bash))
         if stage == "confirm_pr" and self._pr_offer is not None:
             return pr_decision(self._pr_offer, self._pr_force)
         if stage == "confirm_fix":
@@ -586,6 +606,8 @@ class ChatController:
                 stage = "idle"  # the question isn't asked again (`phil pr` opens a PR later)
             elif stage == "edit" or (stage == "planning" and self._revising and self._draft is not None):
                 stage = "approval"  # a reopened chat returns to the draft being revised
+            elif stage == "trust_repo" and self._draft is not None:
+                stage = "approval"  # a reopened chat asks about phil.toml again before approval
             draft = self._draft
             planner_calls, planner_version = self.planner.counters()
             self.session.save_state(
@@ -734,6 +756,8 @@ class ChatController:
             self._choose_approach(text)
         elif stage == "approval":
             self._approval(text)
+        elif stage == "trust_repo":
+            self._trust_answer(text)
         elif stage == "edit":
             self._edit(text)
         elif stage == "confirm_replace":
@@ -788,7 +812,7 @@ class ChatController:
             self._set_stage("approval")
             self.console.print("[phil.muted]Cancelled the revision.[/]")
             self._show_plan(self._draft)
-        elif self.stage in (*GOAL_JOB_STAGES, "questions", "choose_approach"):
+        elif self.stage in (*GOAL_JOB_STAGES, "questions", "choose_approach", "trust_repo"):
             self._next_generation()  # an in-flight result is dropped when it lands
             self.state.set_cancelling(True)
             self._reset_goal()
@@ -820,6 +844,7 @@ class ChatController:
         self._pending, self._replies, self._typing_other = [], [], False
         self._skip_design, self._approach_order, self._approach, self._approach_note = False, [], None, ""
         self._describing, self._budget_warned = False, False
+        self._trust = None
 
     def _forced_input(self, raw: str, forced: str, rest: str) -> None:
         """A message prefixed with /ask, /quick, /full or /full!: a goal whose depth skips the router."""
@@ -1046,8 +1071,11 @@ class ChatController:
         didn't start with /full! (spec §3.4)."""
         return goal.approach_open and not goal.open_questions and not self._skip_design
 
-    def _quick(self, goal: Goal) -> None:
-        """Start the goal's one-task run straight away, or fall back to full planning (spec §4.1)."""
+    def _quick(self, goal: Goal, *, ask_trust: bool = True) -> None:
+        """Start the goal's one-task run straight away, or fall back to full planning (spec §4.1).
+        First, the repo's phil.toml settings are trusted or ignored (2026-10-13 §3.5)."""
+        if ask_trust and self._ask_trust("quick", goal):
+            return
         plan, setup_cmd, reasons = self._quick_plan(goal)
         if plan is None:
             self.console.print(f"[phil.muted]{QUICK_FALLBACK}[/]")
@@ -1286,14 +1314,13 @@ class ChatController:
         self._record_draft(draft)
         self._draft = draft
         self._revising = False
-        self._set_stage("approval")
         if draft.budget_stopped:
             self.console.print(
                 "[phil.muted]Skipped the critic's revision: this goal reached its planning budget "
                 "(chat.max_cost_usd).[/]"
             )
         self._budget_note()
-        self._show_plan(draft)
+        self._to_approval()
 
     def _on_job_failed(self, data: dict) -> None:
         self._failed(data["error"], data.get("failure"))
@@ -1313,6 +1340,74 @@ class ChatController:
             self.console.print("[phil.muted]Keeping the current goal.[/]")
             self._set_stage(self._parent_stage)
         self._replacement, self._replacement_forced, self._replacement_skip = "", None, False
+
+    # --- trusting the repo's phil.toml ------------------------------------------------------------
+
+    def _to_approval(self, *, ask_trust: bool = True) -> None:
+        """Show the draft for approval, once the repo's phil.toml settings are trusted or ignored."""
+        if ask_trust and self._ask_trust("approval"):
+            return
+        self._set_stage("approval")
+        self._show_plan(self._draft)
+
+    def _ask_trust(self, then: str, goal: Goal | None = None) -> bool:
+        """Ask whether to trust the repo's phil.toml shell settings, when nothing recorded covers
+        their hash (spec 2026-10-13 §3.5, R14). True when the trust_repo stage now waits for it."""
+        pending = undecided_repo_shell(self.info.root, ProjectPaths(self.info.slug))
+        if pending is None:
+            return False
+        self._trust = TrustAsk(*pending, then=then, goal=goal)
+        self._set_stage("trust_repo")
+        if self.io.choose is None:  # no menu shows it: print what is being trusted
+            rules, labels, pass_env, bash = self._trust_parts(self._trust)
+            self.console.print(Text(f"{printable(self.info.root.name)}'s phil.toml allows these commands"))
+            for line in repo_rules_lines(rules, labels, pass_env, bash):
+                self.console.print(Text(f"  {line}"))
+        return True
+
+    @staticmethod
+    def _trust_parts(ask: TrustAsk) -> tuple[list[str], list[str], tuple[str, ...], str | None]:
+        rules = list(ask.settings.allow)
+        return rules, [rule_label(rule) for rule in rules], ask.settings.pass_env, ask.settings.bash
+
+    def _trust_answer(self, text: str) -> None:
+        """Record trust or ignore under the hash of what was shown. If phil.toml changed since,
+        nothing is recorded and the chat asks about what it says now."""
+        ask = self._trust
+        choice = text.strip().lower()
+        if ask is None:
+            self._set_stage("idle")
+            return
+        if choice not in ("trust", "ignore"):
+            self.console.print("Answer trust or ignore.")
+            return
+        self._trust = None
+        if current_repo_shell_hash(self.info.root) != ask.digest:
+            self.console.print("[phil.warn]phil.toml changed while you were deciding, so nothing was recorded.[/]")
+            self._continue_after_trust(ask)
+            return
+        try:
+            record_repo_decision(ProjectPaths(self.info.slug).policy_path, choice, ask.digest)
+        except Exception as exc:  # recording never stops the goal; the settings stay off
+            logger.warning("couldn't record the phil.toml decision", exc_info=True)
+            self._safe_note("repo_settings", decision=choice, hash=ask.digest, error=f"{type(exc).__name__}: {exc}")
+            self.console.print(
+                f"[phil.warn]Couldn't save your answer ({escape(str(exc))}): phil.toml's settings stay off, "
+                "and Phil will ask again next time.[/]"
+            )
+            self._continue_after_trust(ask, ask_trust=False)
+            return
+        self._safe_note("repo_settings", decision=choice, hash=ask.digest)
+        self._continue_after_trust(ask)
+
+    def _continue_after_trust(self, ask: TrustAsk, *, ask_trust: bool = True) -> None:
+        if ask.then == "quick" and ask.goal is not None:
+            self._quick(ask.goal, ask_trust=ask_trust)
+        elif self._draft is not None:
+            self._to_approval(ask_trust=ask_trust)
+        else:
+            self._reset_goal()
+            self._set_stage("idle")
 
     # --- approval and start ----------------------------------------------------------------------
 
@@ -2298,8 +2393,7 @@ class ChatController:
             self.console.print(f"[phil.muted]Following run {escape(self._run_id)}.[/]")
             self._follow()
         elif stage in ("approval", "planning", "edit") and self._draft is not None:
-            self._set_stage("approval")
-            self._show_plan(self._draft)
+            self._to_approval()
         else:
             self._reset_goal()
             self._set_stage("idle")

@@ -2,6 +2,7 @@
 callout and answered from a menu. Each option's `answer` is the text the chat's existing input
 handlers already accept, so picking from the menu and typing are the same thing to the chat."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from phil.store.events import printable
@@ -172,6 +173,32 @@ def approach_decision(approaches: list[tuple[str, str]]) -> Decision:
             for n, (name, summary) in enumerate(approaches, 1)]
     opts.append(Option("Describe your own", str(len(approaches) + 1), typed=True))
     return Decision("question", "Pick an approach", (), tuple(opts))
+
+
+def repo_rules_lines(rules: Sequence[str], labels: Sequence[str], pass_env: Sequence[str] = (),
+                     bash: str | None = None) -> list[str]:
+    """Everything a repo's phil.toml asks to be trusted (spec 2026-10-13 §3.5, R14): each allow
+    rule with its label, then pass_env and bash when set. Display text only: hidden characters
+    show as `?`."""
+    shown = [printable(rule) for rule in rules]
+    width = max((len(rule) for rule in shown), default=0)
+    lines = [f"{rule.ljust(width)}  {label}" if label else rule for rule, label in zip(shown, labels, strict=True)]
+    if pass_env:
+        lines.append(f"passes these environment variables to agent commands: {', '.join(printable(n) for n in pass_env)}")
+    if bash is not None:
+        lines.append(f"runs every command through: {printable(bash)}")
+    return lines
+
+
+def repo_rules_decision(repo: str, rules: Sequence[str], labels: Sequence[str], pass_env: Sequence[str] = (),
+                        bash: str | None = None) -> Decision:
+    """Whether to trust the shell settings a repo's phil.toml ships, asked before plan approval
+    and before a quick run starts. A long body is capped; the full list is detail 1."""
+    name = printable(repo)
+    return Decision(
+        "confirm", f"{name}'s phil.toml allows these commands", _capped(repo_rules_lines(rules, labels, pass_env, bash)),
+        (Option(f"Trust these for {name}", "trust"), Option("Ignore them", "ignore")),
+    )
 
 
 def approval_decision() -> Decision:

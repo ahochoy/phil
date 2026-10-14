@@ -682,6 +682,44 @@ def test_a_resumed_worker_keeps_the_runs_set_overrides(calc_repo, monkeypatch):
     assert loaded == [(["run.max_cost_usd=5"], 5.0, "--set")] * 2
 
 
+UNTRUSTED_NOTICE = (
+    "Ignoring 1 rule(s) from phil.toml that you haven't trusted: run `phil permissions trust` to use them"
+)
+
+
+def test_an_unattended_worker_ignores_untrusted_repo_rules_with_one_notice(calc_repo):
+    (calc_repo / "phil.toml").write_text(MODELS_TOML + '\n[shell]\nallow = ["make test *"]\n',
+                                         encoding="utf-8", newline="\n")
+    info, record = new_run(calc_repo)
+    outputs = []
+
+    def red_with_make(turn):
+        outputs.append(turn.tools["run_shell"]("make test"))
+        return write_red(turn)
+
+    factory = ScriptedAgentFactory({"implementer": [red_with_make, write_green]})
+    outcome = run_worker(calc_repo, record.run_id, "start", factory=factory)
+    assert outputs[0].startswith("DENIED:")  # only the repo's untrusted rule covers it: it asks
+    assert outcome.status == "escalated"
+    events = run_events(ProjectPaths(info.slug), record.run_id).read()[0]
+    escalation = next(e["escalation"] for e in events if e["kind"] == "escalation")
+    assert escalation["reason"] == "approval" and escalation["commands"] == ["make test"]
+    assert [e["message"] for e in events if e["kind"] == "notice"] == [UNTRUSTED_NOTICE]
+
+
+def test_an_ignore_decision_is_silent(calc_repo):
+    from phil.permissions.load import repo_shell_settings
+    from phil.permissions.store import record_repo_decision, repo_shell_hash
+
+    (calc_repo / "phil.toml").write_text(MODELS_TOML + '\n[shell]\nallow = ["make test *"]\n',
+                                         encoding="utf-8", newline="\n")
+    info, record = new_run(calc_repo)
+    record_repo_decision(ProjectPaths(info.slug).policy_path, "ignore", repo_shell_hash(repo_shell_settings(calc_repo)))
+    assert run_worker(calc_repo, record.run_id, "start", factory=happy()).status == "completed"
+    events = run_events(ProjectPaths(info.slug), record.run_id).read()[0]
+    assert [e for e in events if e["kind"] == "notice"] == []
+
+
 def test_a_run_without_overrides_stores_none(calc_repo):
     info, record = new_run(calc_repo)
     assert record.config_overrides is None

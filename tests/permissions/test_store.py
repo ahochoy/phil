@@ -127,6 +127,37 @@ def test_the_hash_tells_rule_lists_apart():
     assert repo_rules_hash(["a *", "b *"]) != repo_rules_hash(["b *", "a *"])
 
 
+def test_the_hash_covers_pass_env_and_bash_r14():
+    import hashlib
+    import json
+
+    from phil.permissions.store import RepoShellSettings, repo_shell_hash
+
+    settings = RepoShellSettings(allow=("make *",), pass_env=("TOKEN",), bash="C:/bash.exe")
+    encoded = json.dumps({"allow": ["make *"], "pass_env": ["TOKEN"], "bash": "C:/bash.exe"},
+                         ensure_ascii=False, separators=(",", ":"))
+    assert repo_shell_hash(settings) == "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    assert repo_shell_hash(settings) != repo_shell_hash(RepoShellSettings(allow=("make *",), pass_env=("TOKEN",)))
+    assert repo_shell_hash(settings) != repo_shell_hash(RepoShellSettings(allow=("make *",), bash="C:/bash.exe"))
+    assert repo_rules_hash(["make *"]) == repo_shell_hash(RepoShellSettings(allow=("make *",)))
+
+
+def test_a_decision_covers_pass_env_and_bash_too_r14(tmp_path):
+    from phil.permissions.store import RepoShellSettings, repo_shell_hash
+
+    settings = RepoShellSettings(allow=("make test *",), pass_env=("TOKEN",))
+    record_repo_decision(tmp_path / "proj.toml", "trust", repo_shell_hash(settings))
+    policy = load_policy(repo_name="calc", project_policy=tmp_path / "proj.toml", global_policy=tmp_path / "g.toml",
+                         config_allow=[], repo_shell=settings)
+    assert policy.repo_trusted and policy.repo_decision == "trust"
+    assert [e.scope for e in policy.allow] == ["calc phil.toml"]
+    changed = RepoShellSettings(allow=("make test *",), pass_env=("TOKEN", "OTHER"))
+    policy = load_policy(repo_name="calc", project_policy=tmp_path / "proj.toml", global_policy=tmp_path / "g.toml",
+                         config_allow=[], repo_shell=changed)
+    assert not policy.repo_trusted and policy.repo_decision is None
+    assert policy.allow == () and policy.repo_rules_untrusted == ("make test *",)
+
+
 def test_spacing_variants_of_a_rule_are_one_rule_stored_normalised(tmp_path):
     path = tmp_path / "global.toml"
     add_rule(path, "allow", "make  test *", "manual", today=TODAY)

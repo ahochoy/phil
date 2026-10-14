@@ -52,6 +52,8 @@ def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRend
         console.print(f"[phil.warn]{escape(budget_warning_line(run_id, **fields))}[/]")
     elif kind == "test_cmd_changed":
         console.print(f"[phil.warn]{escape(test_cmd_changed_line(str(event.get('cmd'))))}[/]")
+    elif kind == "notice":
+        console.print(f"[phil.warn]{escape(printable(event.get('message', '')))}[/]")
 
 
 def _prompt(escalation: dict) -> str:

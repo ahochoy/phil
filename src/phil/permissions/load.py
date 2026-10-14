@@ -3,7 +3,8 @@
 repo's own `[shell] allow`, which applies only once the user trusts it.
 
 A repo's `[shell] pass_env` and `bash` need trust too (R14): `trusted_shell` gives the shell
-settings with those, and `allow`, taken from the layers below the repo.
+settings with those, and `allow`, taken from the layers below the repo until the user trusts them.
+One decision, recorded under one hash, covers all three.
 
 Loading never drops a deny rule: a phil.toml or config file that can't be read here only empties
 the repo's list (and falls back to the defaults for config's), and is reported as a problem."""
@@ -14,7 +15,17 @@ import tomllib
 from pathlib import Path
 
 from phil.config import REPO_SOURCE, PhilConfig, ShellConfig, load_config
-from phil.permissions.store import PolicyProblem, PolicySet, RepoShellSettings, config_policy, load_policy
+from phil.permissions.catalog import catalog_reads, label_for
+from phil.permissions.rules import RuleError, parse_rule
+from phil.permissions.store import (
+    PolicyProblem,
+    PolicySet,
+    RepoShellSettings,
+    config_policy,
+    load_policy,
+    repo_decision,
+    repo_shell_hash,
+)
 from phil.store.paths import ProjectPaths, global_policy_path
 
 logger = logging.getLogger(__name__)
@@ -27,20 +38,54 @@ def _repo_set(config: PhilConfig, key: str) -> bool:
     return config.sources.get(f"shell.{key}") == REPO_SOURCE
 
 
-def trusted_shell(config: PhilConfig, repo_root: Path | None = None) -> ShellConfig:
+def trusted_shell(config: PhilConfig, repo_root: Path | None = None, policy: PolicySet | None = None) -> ShellConfig:
     """`config.shell`, with every value in UNTRUSTED_SHELL_KEYS that the repo's phil.toml set taken
     from the layers below it instead (defaults and `~/.phil/config.toml`). A `--set` value stays.
-    If those layers can't be read again, the defaults apply. Never raises."""
+    If those layers can't be read again, the defaults apply. Never raises.
+
+    When `policy` says the user trusted the repo's settings, its `pass_env` and `bash` apply: the
+    values that were hashed, so exactly what the user saw. Its `allow` applies through the policy
+    (as `<repo> phil.toml` rules), never as config's glob patterns."""
     keys = [key for key in UNTRUSTED_SHELL_KEYS if _repo_set(config, key)]
     if not keys:
         return config.shell
-    try:
-        # Without the repo, load_config never reads repo_root.
-        below = load_config(repo_root or Path.cwd(), include_repo=False).shell
-    except Exception:
-        logger.warning("couldn't read your config again; using the default [shell] settings", exc_info=True)
-        below = ShellConfig()
-    return config.shell.model_copy(update={key: getattr(below, key) for key in keys})
+    trusted: dict[str, object] = {}
+    if policy is not None and policy.repo_trusted:
+        settings = policy.repo_shell
+        if settings.pass_env:
+            trusted["pass_env"] = list(settings.pass_env)
+        if settings.bash is not None:
+            trusted["bash"] = settings.bash
+    below_keys = [key for key in keys if key not in trusted]
+    below = ShellConfig()
+    if below_keys:
+        try:
+            # Without the repo, load_config never reads repo_root.
+            below = load_config(repo_root or Path.cwd(), include_repo=False).shell
+        except Exception:
+            logger.warning("couldn't read your config again; using the default [shell] settings", exc_info=True)
+    update = {key: trusted[key] if key in trusted else getattr(below, key) for key in keys}
+    return config.shell.model_copy(update=update)
+
+
+UNTRUSTED_RULES_NOTICE = (
+    "Ignoring {n} rule(s) from phil.toml that you haven't trusted: run `phil permissions trust` to use them"
+)
+UNTRUSTED_SETTINGS_NOTICE = (
+    "Ignoring [shell] {keys} from phil.toml that you haven't trusted: run `phil permissions trust` to use them"
+)
+
+
+def untrusted_notice(policy: PolicySet) -> str | None:
+    """The run log's one line when the repo's phil.toml sets things nobody has trusted or ignored
+    yet; None when there is nothing to say (an "ignore" decision included)."""
+    if policy.repo_rules_untrusted:
+        return UNTRUSTED_RULES_NOTICE.format(n=len(policy.repo_rules_untrusted))
+    settings = policy.repo_shell
+    if settings.empty or policy.repo_decision is not None:
+        return None
+    keys = [key for key, value in (("pass_env", settings.pass_env), ("bash", settings.bash)) if value]
+    return UNTRUSTED_SETTINGS_NOTICE.format(keys=" and ".join(keys)) if keys else None
 
 
 def repo_shell_settings(repo_root: Path) -> RepoShellSettings:
@@ -62,6 +107,42 @@ def repo_shell_settings(repo_root: Path) -> RepoShellSettings:
                              bash if isinstance(bash, str) else None)
 
 
+def undecided_repo_shell(repo_root: Path, paths: ProjectPaths) -> tuple[RepoShellSettings, str] | None:
+    """The repo's phil.toml shell settings and their hash, when they need the user's answer: set,
+    with no decision recorded for this hash (spec §3.5, R14). None otherwise, and when phil.toml
+    can't be read (then nothing from it applies, and the policy reports the problem). The hash
+    is of exactly the settings returned, so it's the one to record with an answer about them."""
+    try:
+        settings = repo_shell_settings(repo_root)
+    except Exception:
+        logger.warning("couldn't read %s's phil.toml to ask about its shell settings", repo_root, exc_info=True)
+        return None
+    if settings.empty:
+        return None
+    digest = repo_shell_hash(settings)
+    if repo_decision(paths.policy_path, digest) is not None:
+        return None
+    return settings, digest
+
+
+def current_repo_shell_hash(repo_root: Path) -> str | None:
+    """The hash of the repo's phil.toml shell settings now; None when phil.toml can't be read."""
+    try:
+        return repo_shell_hash(repo_shell_settings(repo_root))
+    except Exception:
+        logger.warning("couldn't read %s's phil.toml again", repo_root, exc_info=True)
+        return None
+
+
+def rule_label(text: str) -> str:
+    """A repo rule's label in the trust prompt, as the approval callout labels a command."""
+    try:
+        words = list(parse_rule(text).words)
+    except RuleError:
+        return "not a valid rule"
+    return label_for(words, read_only=catalog_reads(words))
+
+
 def _config_allow_for(repo_root: Path, config: PhilConfig) -> list[str]:
     """`[shell] allow` from config: defaults, `~/.phil/config.toml` and `--set`, never the repo's
     phil.toml. Raises when the config has to be read again and can't be."""
@@ -70,13 +151,13 @@ def _config_allow_for(repo_root: Path, config: PhilConfig) -> list[str]:
     return list(config.shell.allow)
 
 
-def _load(repo_root: Path, paths: ProjectPaths, config_allow: list[str], repo_allow: list[str]) -> PolicySet:
+def _load(repo_root: Path, paths: ProjectPaths, config_allow: list[str], repo_shell: RepoShellSettings) -> PolicySet:
     return load_policy(
         repo_name=repo_root.name,
         project_policy=paths.policy_path,
         global_policy=global_policy_path(),
         config_allow=config_allow,
-        repo_allow=repo_allow,
+        repo_shell=repo_shell,
     )
 
 
@@ -97,8 +178,8 @@ def policy_for(repo_root: Path, paths: ProjectPaths, config: PhilConfig) -> Poli
         config_allow = list(ShellConfig().allow)
         problems.append(PolicyProblem(
             phil_toml, f"can't read your config again, so the default [shell] allow applies: {exc!r}", None))
-    policy = _load(repo_root, paths, config_allow, list(repo_shell.allow))
-    return dataclasses.replace(policy, problems=(*policy.problems, *problems), repo_shell=repo_shell)
+    policy = _load(repo_root, paths, config_allow, repo_shell)
+    return dataclasses.replace(policy, problems=(*policy.problems, *problems))
 
 
 def policy_or_fallback(repo_root: Path, paths: ProjectPaths, config: PhilConfig) -> PolicySet:
@@ -113,7 +194,7 @@ def policy_or_fallback(repo_root: Path, paths: ProjectPaths, config: PhilConfig)
         problem = PolicyProblem(paths.policy_path, f"couldn't load the permission rules: {exc!r}", None)
     try:
         config_allow = [] if _repo_set(config, "allow") else list(config.shell.allow)
-        policy = _load(repo_root, paths, config_allow, [])
+        policy = _load(repo_root, paths, config_allow, RepoShellSettings())
         return dataclasses.replace(policy, problems=(*policy.problems, problem))
     except Exception as exc:
         logger.warning("couldn't load the permission rules for %s; no rule allows anything this call",

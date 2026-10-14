@@ -291,8 +291,9 @@ def _shell_for(
 ) -> Callable[[str], str]:
     """The shell tool for `spec`. A read-only spec gets no rules, plan commands or approvals:
     only the built-in reads run. The repo's own [shell] allow, pass_env and bash never apply here
-    untrusted (R14): without a `policy`, the allow list is config's alone."""
-    shell = trusted_shell(config, repo_root)
+    untrusted (R14): without a `policy`, the allow list is config's alone, and pass_env and bash
+    are the repo's only when the policy says the user trusted them."""
+    shell = trusted_shell(config, repo_root, policy)
     if spec.read_only_shell:
         shell, extra_allow, approved, policy = shell.model_copy(update={"allow": []}), (), (), None
     return make_shell_tool(
@@ -334,8 +335,9 @@ def invoke_agent(
     tools: list[Callable[..., str]] = []
     if "shell" in spec.tools and ctx.workdir is not None:
         # Loaded once per agent call, so a rule saved mid-run applies from the next call.
+        # A read-only agent's tool takes no rules, but its pass_env and bash still follow the trust.
         policy = None
-        if not spec.read_only_shell and ctx.repo_root is not None and ctx.paths is not None:
+        if ctx.repo_root is not None and ctx.paths is not None:
             policy = policy_or_fallback(ctx.repo_root, ctx.paths, ctx.config)
         tools.append(
             _shell_for(

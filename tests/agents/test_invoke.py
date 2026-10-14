@@ -287,6 +287,27 @@ def test_the_repos_pass_env_is_not_applied_r14(tmp_path, monkeypatch):
     assert "absent" in output and "s3cret" not in output
 
 
+def test_a_trusted_repos_pass_env_is_applied_r14(tmp_path, monkeypatch):
+    from phil.agents.invoke import _shell_for
+    from phil.agents.tools import CommandLog
+    from phil.config import load_config
+    from phil.permissions.load import policy_for, repo_shell_settings
+    from phil.permissions.store import record_repo_decision, repo_shell_hash
+    from phil.store.paths import ProjectPaths
+
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("REPO_TOKEN", "s3cret")
+    repo = _repo_with(tmp_path, '[shell]\npass_env = ["REPO_TOKEN"]\n')
+    (repo / "env.py").write_text("import os\nprint(os.environ.get('REPO_TOKEN', 'absent'))\n")
+    paths = ProjectPaths("calc-1")
+    record_repo_decision(paths.policy_path, "trust", repo_shell_hash(repo_shell_settings(repo)))
+    config = load_config(repo)
+    command = f"{shlex.quote(sys.executable)} env.py"
+    run_shell = _shell_for(get_spec("implementer"), config, repo, CommandLog(), extra_allow=(command,),
+                           repo_root=repo, policy=policy_for(repo, paths, config))
+    assert "s3cret" in run_shell(command)
+
+
 def test_a_policy_that_fails_to_load_falls_back_to_the_config_allow_list(conn, artifacts, tmp_path, monkeypatch, caplog):
     from phil.permissions import load
     from phil.store.paths import ProjectPaths
