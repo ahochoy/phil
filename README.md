@@ -541,7 +541,9 @@ ask instead), keeps the deny rules it can read, and won't write to the file unti
 A repo's own `phil.toml` can ship `[shell] allow`, `pass_env` and `bash` settings. Phil doesn't
 use them until you trust them: the chat asks before it shows a plan or starts a quick run, or run
 `phil permissions trust` (or `ignore`). If the settings change, Phil asks again. Once trusted, a
-repo's `[shell] allow` patterns match exactly as your config's do (`npm run test*` included). Deny
+repo's `[shell] allow` patterns match as your config's do (`npm run test*` included), except that
+a pattern covers a dangerous form (an interpreter, a forced push, `docker run`…) only when its own
+words spell that form out: `git push -f *` covers `git push -f origin`, `git *` doesn't. Deny
 rules still win over them, and over the plan's test, check and setup commands, which a deny rule
 stops before they run.
 

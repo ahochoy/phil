@@ -898,9 +898,8 @@ class RunEngine:
         if not self._attempt_changed(state, changed):
             return self._failed_attempt(state, [f"no changes were made for {task.id}", *refused], None)
         report = self._test(state, artifact_name("verify", task.id, state["call_seq"]))
-        if self._is_blocked(report):  # the test command never ran: that is the attempt's problem
-            problems = list(dict.fromkeys([report.failures[0], *refused]))
-            return self._failed_attempt(state, problems, report.model_dump())
+        if self._is_blocked(report):  # the test command never ran, and no attempt can change that
+            return self._blocked_escalation(state, "test", report.command, refused, report.model_dump())
         if state["phase"] == "red":
             problems = verify_red(changed, report, globs, state.get("base_passed"), state.get("base_skipped"))
             if not problems:
@@ -933,6 +932,8 @@ class RunEngine:
                         duration_ms=check.duration_ms)
                 except Exception:
                     logger.warning("couldn't record the gate line for %s", check.command, exc_info=True)
+            if check.exit_code == BLOCKED_EXIT and check.stderr == f"{BLOCKED_PREFIX}{check.command}":
+                return self._blocked_escalation(state, "check", check.command, refused, report.model_dump())
             if check.exit_code == COMMAND_NOT_FOUND:
                 output = check.stdout + (f"\n{check.stderr}" if check.stderr else "")
                 log = str(self.deps.artifacts.log_path(check_name))
@@ -961,6 +962,24 @@ class RunEngine:
                 self._milestone("gate", task=task.id, name="check" if task.verify == "check" else "green")
                 return {"last_report": report.model_dump(), "last_problems": [], "verdict": "green_ok"}
         return self._failed_attempt(state, [*problems, *refused], report.model_dump())
+
+    def _blocked_escalation(self, state: RunState, which: str, cmd: str, refused: list[str],
+                            report: dict | None) -> dict:
+        """A deny rule blocks the plan's test or check command (F7): escalate at once on the
+        attempts path, since no attempt can lift the block; no attempt is counted."""
+        task = load_plan(state).tasks[state["task_index"]]
+        problems = list(dict.fromkeys([f"{BLOCKED_PREFIX}{cmd}", *refused]))
+        escalation = {
+            "reason": "attempts",
+            "task_id": task.id,
+            "phase": state["phase"],
+            "problems": problems,
+            "options": self._escalation_options(state),
+            "summary": (f"{task.id} is blocked: your rule denies the {which} command {cmd} — "
+                        f"change the rule or the {which} command, then retry"),
+            "log": (report or {}).get("log_path") or None,
+        }
+        return {"last_problems": problems, "last_report": report, "verdict": "escalate", "escalation": escalation}
 
     def _attempt_changed(self, state: RunState, changed: list[str]) -> bool:
         """Whether the attempt under judgement left any change: a gate that passes on an untouched

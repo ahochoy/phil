@@ -11,7 +11,7 @@ from typing import Literal
 
 from phil import platform
 from phil.permissions.catalog import catalog_reads, label_for
-from phil.permissions.rules import deny_matches, folded_name, rule_matches, slashed
+from phil.permissions.rules import deny_matches, exact_only, folded_name, rule_matches, slashed
 from phil.permissions.store import PolicySet, config_policy
 
 # Root pids of the commands running now, for kill_active_groups().
@@ -504,6 +504,20 @@ def _config_matches(pattern: str, match_argv: list[str]) -> bool:
     return _matches_pattern(match_argv, pattern_tokens)
 
 
+def _literal_words(pattern: str) -> list[str]:
+    """A glob pattern's words before the first one holding a glob character: what it spells out."""
+    try:
+        words = shlex.split(pattern)
+    except ValueError:
+        return []
+    literal = []
+    for word in words:
+        if _GLOB_CHARS & set(word):
+            break
+        literal.append(word)
+    return literal
+
+
 class ShellPolicy:
     def __init__(
         self,
@@ -573,6 +587,10 @@ class ShellPolicy:
         for entry in self.policy.allow:
             if entry.glob:  # config's and a trusted repo's `[shell] allow` (R17)
                 matched = _config_matches(entry.rule.text, match_argv)
+                if matched and entry.scope != "config" and exact_only(argv):
+                    # R17 amended: a repo's pattern covers an exact-only form only when its own
+                    # literal words name one (`git push -f *`), never through its glob (`git *`).
+                    matched = exact_only(_literal_words(entry.rule.text))
             else:
                 matched = rule_matches(entry.rule, argv)
             if matched:

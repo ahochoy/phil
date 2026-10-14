@@ -428,6 +428,26 @@ def test_the_answerer_reads_a_working_tree_snapshot_not_the_live_root(calc_repo)
     assert not tree.exists()  # removed after the answer
 
 
+def test_a_deny_rule_blocks_the_answerers_read_through_the_chat(calc_repo):
+    # B1: the chat's own agent context carries the rules, so the read-only answerer meets deny rules too.
+    from datetime import date
+
+    from phil.permissions.store import add_rule
+    from phil.store.paths import global_policy_path
+
+    add_rule(global_policy_path(), "deny", "git status *", "manual", today=date(2026, 10, 13))
+    seen = {}
+
+    def answer(turn):
+        seen["status"] = turn.tools["run_shell"]("git status")
+        seen["ls"] = turn.tools["run_shell"]("ls")
+        return Answer(text="Done.")
+
+    run_chat(calc_repo, ["/ask what changed?"], {"answer": [answer], **FULL_SCRIPT})
+    assert seen["status"] == 'DENIED: `git status` is blocked by your deny rule "git status *" (everywhere). Don\'t use it.'
+    assert seen["ls"].startswith("exit_code: 0")
+
+
 def test_jev_judgements_use_the_jev_detail_threshold(calc_repo, monkeypatch):
     judgement = Judgement(
         task_class="simple_change", probabilities={"simple_change": 0.9}, confidence=0.9, needs_detail=0.55,

@@ -231,8 +231,9 @@ class ChatController:
         extra = {"sleep": sleep} if sleep is not None else {}
         self.ctx = AgentContext(
             config=config, conn=conn, layer="chat", artifacts=self.session.artifacts, factory=factory,
-            chat_id=self.session.id, **extra
+            chat_id=self.session.id, repo_root=info.root, paths=ProjectPaths(info.slug), **extra
         )  # jobs copy this context (with their own connection), so their telemetry is tagged with the chat
+        # repo_root and paths: the chat's read-only agents get the rules in effect, so deny rules block them too.
         self.overview = repo_overview(info.root)
         self.planner = Planner(self.ctx, self.overview)
         self._intake_calls = 0

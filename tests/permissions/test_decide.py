@@ -116,6 +116,24 @@ def test_a_trusted_repo_pattern_matches_as_config_does_r17(tmp_path, pattern, co
     assert (decision.outcome, decision.reason) == ("allow", f'rule "{pattern}" (calc phil.toml)')
 
 
+@pytest.mark.parametrize(("pattern", "command", "outcome"), [
+    ("git *", "git status --short", "allow"),
+    ("git *", "git push origin feat", "allow"),
+    ("git *", "git push -f origin", "ask"),  # R17 amended: the pattern's words aren't exact-only
+    ("git *", "git config core.pager x", "ask"),
+    ("docker *", "docker run x", "ask"),
+    ("git push -f *", "git push -f origin", "allow"),  # its own words already name the forced push
+    ("git *", "/usr/bin/git push origin feat", "ask"),  # R3: a path never matches a bare name
+])
+def test_a_trusted_repo_pattern_covers_an_exact_only_form_only_by_name(tmp_path, pattern, command, outcome):
+    assert ShellPolicy(_trusted(tmp_path, [pattern])).decide(command).outcome == outcome
+
+
+def test_a_config_pattern_keeps_its_old_matching_for_exact_only_forms(tmp_path):
+    decision = ShellPolicy(load(tmp_path, config_allow=["git *"])).decide("git push -f")
+    assert (decision.outcome, decision.reason) == ("allow", 'rule "git *" (config)')
+
+
 @pytest.mark.parametrize(("pattern", "label"), [
     ("git log *", "may change things"),  # an open read reaches more than reads (F5)
     ("cat *", "may change things"),
