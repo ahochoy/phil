@@ -26,6 +26,8 @@ from phil import platform
 from phil.permissions.rules import Rule, RuleError, parse_rule
 
 KINDS = ("allow", "deny")
+# The comment a newly created policy file starts with; `scope` is a repo name or `everywhere`.
+POLICY_HEADER = "# Phil permissions — {scope}. `phil permissions` shows what's in effect."
 
 
 class PolicyWriteError(Exception):
@@ -355,6 +357,12 @@ def record_repo_decision(path: Path, decision: Literal["trust", "ignore"], rules
             del doc["repo_rules"]
         doc.add("repo_rules", table)
         _write(path, doc)
+
+
+def file_problems(path: Path) -> tuple[PolicyProblem, ...]:
+    """What's wrong with one policy file; empty when it's fine or missing. Any problem switches
+    off every saved allow rule, and Phil won't write to the file until it's fixed."""
+    return tuple(_read_file(path, "").problems)
 
 
 def repo_decision(path: Path, rules_hash: str) -> str | None:

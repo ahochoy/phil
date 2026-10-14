@@ -204,6 +204,24 @@ def test_slash_commands(calc_repo):
     assert "Unknown command /nope" in text
 
 
+def test_permissions_prints_the_listing_and_points_to_the_cli(calc_repo):
+    from datetime import date
+
+    from phil.permissions.listing import listing_lines
+    from phil.permissions.store import add_rule
+
+    info = resolve_repo(calc_repo)
+    path = ProjectPaths(info.slug).policy_path
+    add_rule(path, "deny", "git push *", "manual", today=date(2026, 10, 13))
+    config = PhilConfig(models=TEST_MODELS)
+    text, *_ = run_chat(calc_repo, ["/permissions", "/help"], {}, config=config)
+    for line in listing_lines(info.root, ProjectPaths(info.slug), config):
+        assert line in text
+    assert "  deny   git push *   manual · 2026-10-13" in text
+    assert "Change rules with `phil permissions allow|deny|remove`." in text
+    assert "/permissions" in text.split("Commands:", 1)[1]  # listed in /help
+
+
 def test_transcript_keeps_raw_text(calc_repo):
     run_chat(calc_repo, ["add  *subtract*", "n"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]})
     info = resolve_repo(calc_repo)

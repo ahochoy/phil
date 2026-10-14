@@ -37,7 +37,7 @@ from phil.packets import Packet, PacketTooLarge, build_packet
 from phil.permissions.catalog import label_for
 from phil.permissions.load import policy_or_fallback, trusted_shell
 from phil.permissions.rules import RuleError, exact_only, suggest_rule
-from phil.permissions.store import PolicyWriteError, add_rule, normalised_rule
+from phil.permissions.store import POLICY_HEADER, PolicyWriteError, add_rule, normalised_rule
 from phil.repo_detect import effective_setup_cmd
 from phil.run.gates import (
     COMMAND_NOT_FOUND,
@@ -744,7 +744,7 @@ class RunEngine:
         saved: list[str] = []
         failed: list[str] = []
         error: Exception | None = None
-        header = f"# Phil permissions — {scope}. `phil permissions` shows what's in effect."
+        header = POLICY_HEADER.format(scope=scope)
         source = f"approval in {repo} ({self.deps.run_id})"
         for rule in rules:
             try:

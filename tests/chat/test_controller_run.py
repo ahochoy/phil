@@ -186,6 +186,17 @@ def test_a_test_cmd_change_is_printed_escaped(calc_repo):
     assert "Using the updated test command: make [bold]test[/bold]." in text
 
 
+def test_the_workers_notice_is_printed_with_hidden_characters_shown(calc_repo):
+    def notice(controller):
+        paths, run_id, conn = _run(controller)
+        run_events(paths, run_id).append("notice", message="Ignoring [shell] bash from phil.toml\x1b[31m")
+        controller._watcher.poll_once()
+        return WAKE
+
+    text, *_ = run_chat(calc_repo, ["add subtract", "y", notice, to_state("completed", tasks_done=1)], FULL_SCRIPT)
+    assert "Ignoring [shell] bash from phil.toml?[31m" in text
+
+
 def test_progress_goes_to_the_toolbar(calc_repo):
     seen = {}
     before = {}

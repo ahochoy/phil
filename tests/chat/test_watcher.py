@@ -319,6 +319,16 @@ def test_test_cmd_changed_is_posted_once_per_event(calc_repo):
     assert [e.data for e in changes] == [{"cmd": "make test"}]
 
 
+def test_the_workers_notice_is_posted_once(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    events.append("notice", message="Ignoring 1 rule(s) from phil.toml that you haven't trusted")
+    watcher.poll_once()
+    watcher.poll_once()
+    notices = [e for e in posted if e.kind == "notice"]
+    assert [e.data for e in notices] == [{"message": "Ignoring 1 rule(s) from phil.toml that you haven't trusted"}]
+
+
 def test_a_test_cmd_change_from_before_the_watcher_started_is_not_reposted(calc_repo):
     paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
     update_run(conn, run_id, state="running")

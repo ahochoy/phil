@@ -60,7 +60,8 @@ from phil.contracts.results import AttemptWorklog
 from phil.contracts.routing import Answer
 from phil.publish import publisher as publishing
 from phil.publish.service import PrChange, PublishRefused, change_line, publish_run, sweep_prs
-from phil.permissions.load import current_repo_shell_hash, policy_or_fallback, rule_label, undecided_repo_shell
+from phil.permissions.listing import CHANGE_HINT, listing_lines
+from phil.permissions.load import current_repo_shell_hash,policy_or_fallback, rule_label, undecided_repo_shell
 from phil.permissions.store import PolicySet, RepoShellSettings, record_repo_decision
 from phil.repo import RepoInfo, resolve_repo
 from phil.repo_detect import detect_test_cmd
@@ -99,7 +100,8 @@ HELP = (
     "Commands: /runs, /btw <question> (ask while work continues), "
     "/answer (a paused run's question), /resume (a failed or stopped run), /show (the chat's run: usage "
     "and numbered details), /more <n> (print detail n), /more #<step> (a feed step's detail), "
-    "/feed <agent> (show one agent's lines; /feed to show all), /park <note> (set an idea aside), /help, "
+    "/feed <agent> (show one agent's lines; /feed to show all), /park <note> (set an idea aside), "
+    "/permissions (the rules for agents' commands), /help, "
     "/quit (or Ctrl-D)."
 )
 FEED_AGENTS = ("implementer", "tester", "reviewer", "architect", "sub-agent", "engine")
@@ -130,7 +132,7 @@ GOAL_JOB_STAGES = ("routing", "intake", "planning", "answering", "designing")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
 RUN_EVENTS = (
     "run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning",
-    "budget_raised", "test_cmd_changed", "activity", "milestone", "live_step", "live_agents",
+    "budget_raised", "test_cmd_changed", "notice", "activity", "milestone", "live_step", "live_agents",
 )
 RECENT_EVENTS = 10  # run events a /btw answer sees
 NOTICE_REFS = 3  # details a completion notice lists
@@ -799,6 +801,8 @@ class ChatController:
             self._feed_command(text[len(command):].strip())
         elif command == "/park":
             self._park_command(text[len(command):].strip())
+        elif command == "/permissions":
+            self._permissions_command()
         else:
             self.console.print(f"Unknown command {escape(command)}. Try /help.")
         return True
@@ -1709,6 +1713,10 @@ class ChatController:
     def _on_test_cmd_changed(self, data: dict) -> None:
         self.console.print(f"[phil.warn]{escape(test_cmd_changed_line(str(data.get('cmd'))))}[/]")
 
+    def _on_notice(self, data: dict) -> None:
+        """A line the worker wrote for the user, such as phil.toml settings nobody has trusted yet."""
+        self.console.print(f"[phil.warn]{escape(printable(data.get('message', '')))}[/]")
+
     def _on_activity(self, data: dict) -> None:
         records = data.get("records", [])
         agent = self._feed_filter
@@ -2095,6 +2103,11 @@ class ChatController:
         self._safe_note("parked", id=item.id, note=note)
         self._refresh_parked()
         self.console.print(f"Parked [phil.id]{escape(item.id)}[/].")
+
+    def _permissions_command(self) -> None:
+        """What `phil permissions` lists; changes are made with the CLI (spec 2026-10-13 §3.7)."""
+        for line in [*listing_lines(self.info.root, ProjectPaths(self.info.slug), self.config), CHANGE_HINT]:
+            self.console.print(Text(line), soft_wrap=True)
 
     # --- /feed -----------------------------------------------------------------------------------
 

@@ -57,12 +57,17 @@ quick.
   - Then the Jev benchmark is revisited under a revised decision rule.
   [Spec](specs/2026-10-03-phil-ask-before-acting-design.md).
 
-### M4 — Permissions
+### M4 — Permissions (done)
 
-- Approval scopes: once, session, repository or folder, all repositories, persistent.
-- Targets: an exact command, a prefix, a tool, the read-only class, or a directory.
-- A policy file separate from config and memory.
-- The exact scope is shown before confirming. Read-only is never confused with mutating (for example `gh pr view` versus `gh pr merge`).
+Saved allow and deny rules, for one repo or everywhere, in policy files separate from config
+(`~/.phil/policy.toml` and `~/.phil/projects/<slug>/policy.toml`). A rule's trailing `*` covers
+plain arguments only. Built-in read-only subcommands run without asking, and every decision
+carries a reason and a label (`reads only`, `changes things`, `may change things`), so `gh pr view`
+is never confused with `gh pr merge`. The approval callout shows each command and the exact rule it
+would save, for this run, this repo or everywhere. A repo's `phil.toml` shell settings apply only
+once trusted. `phil permissions` lists, checks, adds and removes rules, and `/permissions` lists
+them in the chat. [Plan](plans/2026-10-13-phil-permissions.md) ·
+[spec](specs/2026-10-13-phil-permissions-design.md).
 
 ### M5 — Terminal experience and visibility
 
@@ -113,7 +118,7 @@ A public release needs at least M1–M4, plus keeping internal diagnostics out o
 The goal is to reach a publishable state first.
 
 **First public release, in this order:**
-1. M4 permissions. This also settles where config, policies and memory live on disk.
+1. ✓ M4 permissions (done, 2026-10-13). This also settles where config, policies and memory live on disk.
 2. Memory at the repository level: facts learned in a repo that later runs reuse, visible and editable.
 3. Skills, a basic version: Phil and its sub-agents use the `SKILL.md` skills the user already has installed, from folders the user approves.
 4. Release work:

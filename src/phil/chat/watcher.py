@@ -24,7 +24,7 @@ ENDED_IF_IDLE = ("failed", "stopped")
 
 CONSECUTIVE_FAILURES_BEFORE_REPORT = 5
 # Run events posted to the chat as they are, once each: the latest of each kind since the last poll.
-NOTICES = ("budget_warning", "test_cmd_changed")
+NOTICES = ("budget_warning", "test_cmd_changed", "notice")
 
 
 def _live_of(record: dict) -> dict:

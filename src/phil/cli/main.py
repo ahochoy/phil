@@ -19,6 +19,7 @@ from rich.text import Text
 from phil import __version__, platform
 from phil.chat.approval import effective_setup_cmd, git_policy_note, launch_problems, terminated
 from phil.chat.decision import approval_lines
+from phil.cli.permissions import permissions_app
 from phil.config import (
     CHAT_ROLES,
     ROLES,
@@ -54,6 +55,7 @@ models_app = typer.Typer(help="Check the configured models.")
 app.add_typer(models_app, name="models")
 keys_app = typer.Typer(help="Store, list and remove provider API keys.")
 app.add_typer(keys_app, name="keys")
+app.add_typer(permissions_app, name="permissions")
 console = make_console()
 
 # `getpass.getpass` itself, as a module attribute tests can monkeypatch.
