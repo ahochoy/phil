@@ -345,7 +345,7 @@ def invoke_agent(
         if text:
             spec = dataclasses.replace(spec, context=text)
     retry_attempts = MODEL_CALL_ATTEMPTS if transient_retries else 1
-    log =ctx.command_log if ctx.command_log is not None else CommandLog()
+    log = ctx.command_log if ctx.command_log is not None else CommandLog()
     effective_node = node if call == 1 else f"{node}-c{call}"
     log_prefix = artifact_name(effective_node, task_id, 1)
     tools: list[Callable[..., str]] = []

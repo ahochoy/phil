@@ -1,4 +1,8 @@
+import os
 from dataclasses import replace
+from pathlib import Path
+
+import pytest
 
 from phil.agents.registry import SPECS
 from phil.agents.spec import load_prompt
@@ -55,17 +59,85 @@ def test_big_memory_text_is_cut_with_a_note(tmp_path):
 
 def test_an_unreadable_agent_file_is_a_problem_not_an_error(tmp_path, monkeypatch):
     (tmp_path / "AGENTS.md").write_text("x\n", encoding="utf-8")
-    real = type(tmp_path / "AGENTS.md").read_bytes
+    real = open
 
-    def boom(self):
-        if self.name == "AGENTS.md":
+    def boom(file, *args, **kwargs):
+        if Path(file).name == "AGENTS.md":
             raise PermissionError("denied")
-        return real(self)
+        return real(file, *args, **kwargs)
 
-    monkeypatch.setattr(type(tmp_path), "read_bytes", boom)
+    monkeypatch.setattr("phil.memory.context.open", boom, raising=False)
     built = build_repo_context(tmp_path, ProjectPaths("x", home=tmp_path / "home"))
     assert built.problems == ["couldn't read AGENTS.md: PermissionError: denied"]
     assert built.text == ""
+
+
+def symlink(link: Path, target: Path) -> None:
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks can't be created here")
+
+
+def test_a_link_inside_the_repo_is_accepted(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "docs").mkdir()
+    (repo / "docs" / "a.md").write_text("inside\n", encoding="utf-8")
+    symlink(repo / "CLAUDE.md", repo / "docs" / "a.md")
+    built = build_repo_context(repo, ProjectPaths("x", home=tmp_path / "home"))
+    assert "### From CLAUDE.md\ninside" in built.text and built.problems == []
+
+
+def test_a_link_outside_the_repo_is_skipped_and_the_next_name_is_tried(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP SECRET\n", encoding="utf-8")
+    symlink(repo / "AGENTS.md", secret)
+    (repo / "CLAUDE.md").write_text("claude notes\n", encoding="utf-8")
+    built = build_repo_context(repo, ProjectPaths("x", home=tmp_path / "home"))
+    assert "TOP SECRET" not in built.text and "### From CLAUDE.md\nclaude notes" in built.text
+    assert built.problems == ["skipped AGENTS.md: it points outside the repository"]
+
+
+def test_a_dangling_link_is_skipped(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    symlink(repo / "AGENTS.md", repo / "missing.md")
+    built = build_repo_context(repo, ProjectPaths("x", home=tmp_path / "home"))
+    assert built.text == "" and len(built.problems) == 1 and built.problems[0].startswith("skipped AGENTS.md")
+
+
+def test_a_directory_is_reported_as_not_a_regular_file(tmp_path):
+    (tmp_path / "AGENTS.md").mkdir()
+    built = build_repo_context(tmp_path, ProjectPaths("x", home=tmp_path / "home"))
+    assert built.problems == ["skipped AGENTS.md: not a regular file"]
+
+
+def test_a_huge_agent_file_is_read_with_a_bound(tmp_path, monkeypatch):
+    (tmp_path / "AGENTS.md").write_bytes(b"line of text\n" * (1024 * 1024 // 13))
+    sizes = []
+    real = open
+
+    def spy(file, *args, **kwargs):
+        handle = real(file, *args, **kwargs)
+        if Path(file).name != "AGENTS.md":
+            return handle
+        inner = handle.read
+        handle.read = lambda n=-1: (sizes.append(n), inner(n))[1]
+        return handle
+
+    monkeypatch.setattr("phil.memory.context.open", spy, raising=False)
+    text = build_repo_context(tmp_path, ProjectPaths("x", home=tmp_path / "home")).text
+    assert sizes == [AGENT_FILE_MAX_BYTES + 1]
+    assert text.rstrip().endswith(TRUNCATED_NOTE)
+
+
+def test_line_endings_are_normalised(tmp_path):
+    (tmp_path / "AGENTS.md").write_bytes(b"one\r\ntwo\rthree\n")
+    text = build_repo_context(tmp_path, ProjectPaths("x", home=tmp_path / "home")).text
+    assert "\r" not in text and "one\ntwo\nthree" in text
 
 
 def test_load_prompt_is_unchanged_without_context_and_appends_it_with():
