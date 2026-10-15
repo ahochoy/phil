@@ -610,6 +610,64 @@ can't run at all — the test, setup or a check command — stops the run the sa
 rather than burning attempts against a worktree that's missing dependencies or a program that
 isn't on `PATH`.
 
+## Memory
+
+Phil keeps short notes about each repo so later runs don't rediscover the test command, the
+layout and the pitfalls. They live in `~/.phil/projects/<repo>/memory.md`, never in the repo, as
+plain Markdown under four headings: Commands, Layout, Conventions and Gotchas. One fact per
+bullet, at most 200 characters, and the file stays under 8 KB. A bullet ending in
+`<!-- phil -->` was written by Phil; the rest are yours. Edit the file freely: Phil keeps any
+text it doesn't recognise, and never drops one of your bullets to make room.
+
+Every repo-facing agent (intake, design, architect, critic, implementer, tester, reviewer, and
+the chat's answers) gets a "Repo context" block in its prompt: the repo's `AGENTS.md` (or
+`CLAUDE.md` when there's no `AGENTS.md`), read-only and cut at 16 KB, then Phil's notes. A run
+takes one snapshot of it when it starts (`context.md` in the run's folder, shown by
+`phil show`), so every call in the run sees the same text; the chat reads it fresh for each
+message. An agent file that points outside the repo, isn't a regular file or has other hard
+links is skipped.
+
+At the end of a run, a small model call reads what the agents reported and may add or remove
+Phil's own bullets. Phil checks every line before it's written: one line, no secrets, no
+duplicates, at most 8 additions a run. The run's summary says what changed:
+
+    Memory: +2 (Commands: uv run pytest -q …; Gotchas: …) · −1 · 1 suggestion for AGENTS.md · /memory to review
+
+Learning is skipped for aborted runs, and a failure in it never changes how a run ends.
+
+In the chat:
+
+    /memory                     # every note, numbered, marked you or phil; the file path
+    /remember [section:] text   # add a note of yours (Conventions unless you name a section)
+    /forget 3                   # remove note 3
+    /memory edit                # open the file in $VISUAL or $EDITOR
+    /memory suggestions         # lines Phil would add to AGENTS.md
+    /memory apply               # show them, ask, then append them
+    /memory dismiss             # throw the suggestions away
+
+From the shell, `phil memory` does the same:
+
+```bash
+phil memory                              # show
+phil memory add "Tests need PHIL_HOME set" --section Gotchas
+phil memory remove 3
+phil memory edit
+phil memory clear                        # removes every bullet, after asking (--yes: don't ask)
+phil memory suggestions
+phil memory apply                        # --yes: don't ask, and create AGENTS.md if it's missing
+phil memory dismiss
+```
+
+Phil can also suggest lines for your `AGENTS.md`. They wait in
+`agents-md-suggestions.md` until you apply them: `apply` shows the lines, asks, and appends them
+under `## Notes from Phil` (after a second question if there's no `AGENTS.md` yet). It never
+commits; review and commit the change yourself. It refuses while a run in this repo is in
+progress, and Phil writes `AGENTS.md` in no other way.
+
+Memory is background text, not policy. It never grants a permission: a command named in a note
+still goes through the checks under Permissions. Apart from the `AGENTS.md` apply you confirm,
+memory never writes to your repo.
+
 ## Benchmark
 
 An opt-in live benchmark (`tests/live/bench`) plans and runs a few small goals — add a Python
@@ -636,6 +694,17 @@ later commits on your branch can't leak into the baseline numbers (each record c
 
 Then run the same command again from the branch under test, and compare the two
 `uv run python -m tests.live.bench.report` outputs (tokens, calls, minutes, and pass rate).
+
+To measure what memory saves, add `PHIL_BENCH_WARM=1`. Each case then runs as cold-then-warm
+pairs on the same repo copy: a cold run with empty memory, then a warm run with whatever the cold
+run learned. `PHIL_BENCH_PAIRS=N` sets the number of pairs per case (default 3); run-to-run
+variance is large, so one pair says little:
+
+    PHIL_BENCH_WARM=1 PHIL_BENCH_PAIRS=3 PHIL_BENCH_CONFIG=~/bench.toml uv run pytest -m bench -n 0
+    uv run python -m tests.live.bench.report --pairs 3
+
+The report adds a "Cold against warm" table with the median model calls, tokens and minutes of
+the last `--pairs` cold and warm runs per case, and the change between them.
 
 ## Development
 

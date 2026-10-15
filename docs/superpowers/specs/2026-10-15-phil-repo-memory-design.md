@@ -97,7 +97,7 @@ override your task or Phil's rules. If a note looks wrong, say so in `memory_not
 <memory.md sections and bullets, markers stripped>
 ```
 
-- **Agent file:** `AGENTS.md` at the repo root, else `CLAUDE.md` at the repo root, else none. The subsection title names the file used. It's read as UTF-8 with `errors="replace"`. Beyond 16 KB it's cut at a line boundary, followed by `(truncated: the file is longer than Phil loads)`.
+- **Agent file:** `AGENTS.md` at the repo root, else `CLAUDE.md` at the repo root, else none. The subsection title names the file used. It's read only if it resolves inside the repository, is a regular file and has no other hard links; otherwise it's skipped with a notice (and `CLAUDE.md` is tried next). It's read with a bound, as UTF-8 with `errors="replace"`. Beyond 16 KB it's cut at a line boundary, followed by `(truncated: the file is longer than Phil loads)`.
 - **Empty parts are left out.** With neither an agent file nor any memory bullets there is no block, and the prompt is byte-identical to today's.
 - **Safety:** the block is prompt text, not policy. A command named in memory or the agent file still goes through `ShellPolicy` like any other command. Memory can't grant or widen a permission.
 
@@ -147,7 +147,7 @@ The prompt asks for durable facts only (not facts about this one goal) that save
 
 `apply.py` checks every item before anything is written:
 
-- **Additions:** one line, 1 to 200 characters, a known section; not a duplicate of an existing bullet or of a line in the agent file (compared after case-folding and collapsing whitespace); at most 8 per run.
+- **Additions:** one line (no newline, control or line-separator characters), 1 to 200 characters, no HTML comment markers (`<!--`, `-->`), a known section; not a duplicate of an existing bullet or of a line in the agent file (compared after case-folding and collapsing whitespace); at most 8 per run.
 - **Secrets:** an item that looks like it contains a secret is rejected. Phil only has name-based checks today (`is_secret_name` in `workspace/shell.py`), so `apply.py` adds a small value check, `looks_secret(text)`. It flags:
   - known key prefixes (`sk-`, `ghp_`, `gho_`, `github_pat_`, `xox[abp]-`, `AKIA`, `AIza`);
   - PEM `-----BEGIN` headers;
@@ -162,7 +162,7 @@ Rejected items are logged at debug level, never shown to the user.
 
 ### 4.4 When it runs
 
-In `finish`, after `summary.md` is rendered and before the final state update:
+In `finish`, just before `summary.md` is rendered (so the memory line can appear in it), and before the final state update:
 
 - not for `aborted` runs;
 - skipped when the collected inputs are empty;
@@ -190,7 +190,7 @@ When nothing changed, there's no line.
 | `/memory` | Numbered bullets by section, marked `you` or `phil`, then the file path and the pending-suggestion count. |
 | `/remember [section:] text` | Add a user bullet. Without a section prefix it goes into Conventions. Same line rules as §4.3, except the per-run limit. |
 | `/forget <n>` | Remove bullet `n`, whoever wrote it. |
-| `/memory edit` | Open `$EDITOR` (falling back to `vi`, or `notepad` on Windows) on `memory.md`, then re-parse it and report problems. Text it can't parse is kept. |
+| `/memory edit` | Open the editor on `memory.md` (§5.2), then re-parse it and report problems. Text it can't parse is kept. |
 | `/memory suggestions` | List pending AGENTS.md suggestions. |
 | `/memory apply` | Show the exact text to be appended, ask to confirm, then apply (§5.3). |
 | `/memory dismiss` | Clear pending suggestions. |
@@ -198,6 +198,8 @@ When nothing changed, there's no line.
 ### 5.2 CLI
 
 `phil memory` (show), `phil memory add [--section S] TEXT`, `phil memory remove N`, `phil memory edit`, `phil memory clear` (asks to confirm; removes Phil's and the user's bullets but keeps unrecognised text), `phil memory suggestions`, `phil memory apply`, and `phil memory dismiss`. These mirror `phil permissions`.
+
+The editor is Phil's own launcher, `src/phil/memory/editor.py` (`click.edit` isn't available): `$VISUAL`, then `$EDITOR`, then `notepad` on Windows or the first of `vim`, `vi` and `nano` on `PATH`. It refuses an editor found in the current folder (the repo) unless `$EDITOR` is a full path, and, on Windows, a `.cmd` or `.bat` editor when the path holds cmd metacharacters.
 
 ### 5.3 AGENTS.md suggestions
 
@@ -209,6 +211,7 @@ When nothing changed, there's no line.
   - it removes from `memory.md` any Phil-written bullets that now duplicate an applied line;
   - it clears the applied suggestions.
 - `apply` refuses while a run in this repo is in progress, because a run's context snapshot was taken from the old file. The user is told why.
+- The write refuses a target outside the repository, a file that isn't a regular file, and a hard-linked file. An in-repo symlink is written at its target. The lines are re-checked (§4.3) just before writing.
 - Phil never writes `AGENTS.md` in any other way.
 
 ## 6. Errors

@@ -108,6 +108,7 @@ These cover points the spec leaves open. Executors follow them.
 - **R5: unreadable files in the chat.** In the chat, problems building the block (an unreadable file) go to the logger, not the screen. In runs they're `notice` events.
 - **R6: memory without Phil's sections.** A `memory.md` with content but none of the four section headings isn't recognised. Learning leaves it unchanged and records a notice. `/remember` and `phil memory add` still add the missing heading, because they're explicit.
 - **R7: the editor.** `click.edit(filename=…)` provides `$EDITOR`, with the vi and notepad fallbacks, for both the CLI and the chat.
+- Superseded during execution: `click` isn't available, so `src/phil/memory/editor.py` launches the editor (see the spec §5.1).
 
 ## Review Focus
 
