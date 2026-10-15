@@ -114,6 +114,13 @@ def test_clear_with_yes_keeps_the_other_lines(calc_repo, monkeypatch):
     assert "## Commands" in text and "## Gotchas" in text and "one" not in text and "two" not in text
 
 
+def test_clear_with_no_bullets_does_not_prompt(calc_repo, monkeypatch):
+    wide(monkeypatch)
+    result = phil(calc_repo, "clear")
+    assert result.exit_code == 0, result.output
+    assert result.output == "Cleared 0 bullet(s).\n"
+
+
 def test_clear_asks_first(calc_repo, monkeypatch):
     wide(monkeypatch)
     remember(calc_repo, "Commands", "one")
@@ -170,7 +177,7 @@ def test_apply_with_nothing_pending_exits_1(calc_repo, monkeypatch):
     wide(monkeypatch)
     result = phil(calc_repo, "apply", "--yes")
     assert result.exit_code == 1
-    assert result.output == "no suggestions\n"
+    assert result.output == "No suggestions for AGENTS.md.\n"
 
 
 def test_apply_is_refused_while_a_run_is_in_progress(calc_repo, monkeypatch, tmp_path):

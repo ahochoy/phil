@@ -14,7 +14,7 @@ from phil.memory.apply import check_line
 from phil.memory.doc import SECTIONS, Bullet, MemoryDoc
 from phil.memory.editor import EditorError, edit_file
 from phil.memory.listing import memory_lines
-from phil.memory.store import MemoryWriteError, update_memory, write_atomic
+from phil.memory.store import MemoryWriteError, read_memory, update_memory, write_atomic
 from phil.repo import RepoInfo
 from phil.store.db import connect
 from phil.store.paths import ProjectPaths
@@ -132,6 +132,13 @@ def clear(
 ) -> None:
     """Remove every line from Phil's memory (headings and other text stay)."""
     _, paths = _project(ctx)
+    try:
+        empty = not read_memory(paths).bullets()
+    except OSError as exc:
+        _fail(f"Can't read {paths.memory_path}: {printable(exc)}")
+    if empty:
+        _say("Cleared 0 bullet(s).")
+        return
     if not yes and not _confirm("Remove every bullet from Phil's memory for this repo?"):
         _say("Nothing changed.")
         return
@@ -172,7 +179,7 @@ def apply(
         _fail(f"Run {running} is in progress; apply suggestions when it finishes.")
     pending = read_suggestions(paths)
     if not pending:
-        _fail("no suggestions")
+        _fail("No suggestions for AGENTS.md.")
     for n, line in enumerate(pending, 1):
         _say(f"{n}. {printable(line)}")
     if not yes and not _confirm("Append these to AGENTS.md?"):
