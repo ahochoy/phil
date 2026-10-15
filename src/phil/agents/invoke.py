@@ -19,6 +19,7 @@ from phil.agents.tools import CommandLog, make_shell_tool
 from phil.agents.usage import extract_usage
 from phil.config import PhilConfig
 from phil.contracts import Contract, Ref
+from phil.memory.context import build_repo_context
 from phil.packets import Packet
 from phil.permissions.load import policy_or_fallback, trusted_shell
 from phil.permissions.store import PolicySet
@@ -58,6 +59,9 @@ class AgentContext:
     # tool uses [shell] allow alone.
     repo_root: Path | None = None
     paths: ProjectPaths | None = None
+    # The Repo context block (phil.memory.context) for repo-facing agents. None: build it fresh
+    # from repo_root and paths at each call; "": no block.
+    repo_context: str | None = None
 
 
 class ContractViolation(Exception):
@@ -331,8 +335,17 @@ def invoke_agent(
         provider = provider_for_model(ctx.config, model, ctx.config.model_owner(spec.role))
     else:
         provider = provider_for_model(ctx.config, model, spec.role)
+    if spec.repo_context:
+        text = ctx.repo_context
+        if text is None and ctx.repo_root is not None and ctx.paths is not None:
+            built = build_repo_context(ctx.repo_root, ctx.paths)
+            for problem in built.problems:
+                logger.info("repo context: %s", problem)  # R5: chat problems go to the log
+            text = built.text
+        if text:
+            spec = dataclasses.replace(spec, context=text)
     retry_attempts = MODEL_CALL_ATTEMPTS if transient_retries else 1
-    log = ctx.command_log if ctx.command_log is not None else CommandLog()
+    log =ctx.command_log if ctx.command_log is not None else CommandLog()
     effective_node = node if call == 1 else f"{node}-c{call}"
     log_prefix = artifact_name(effective_node, task_id, 1)
     tools: list[Callable[..., str]] = []
