@@ -1,0 +1,157 @@
+---
+import { SITE_CONFIG } from "../config";
+
+interface ArticleItem {
+  num: string;
+  title: string;
+  date?: string;
+  summary: string;
+  url?: string;
+  status: "live" | "coming_soon";
+}
+
+const ARTICLES: ArticleItem[] = [
+  {
+    num: "01",
+    title: "Stop the Waste",
+    date: "Oct 8, 2026",
+    summary:
+      "Fifty minutes and 3 million tokens on a one-line meta tag. Where they went, and the benchmark harness that came out of it.",
+    url: SITE_CONFIG.links.devlogPart1,
+    status: "live",
+  },
+  {
+    num: "02",
+    title: "Configure Once, Any Model",
+    summary:
+      "Six internal model roles become two tiers. API keys move to the OS keychain and stay out of agent shells.",
+    status: "coming_soon",
+  },
+  {
+    num: "03",
+    title: "The Right Amount of Process",
+    summary:
+      "Routing with TypeSafe Jev, a small decision model, and deciding how much process each request deserves.",
+    status: "coming_soon",
+  },
+  {
+    num: "04",
+    title: "Paying for What You Use",
+    summary:
+      "How planning a small change cost $3.17, and the call caps, prompt caching, and intake questions that fixed it.",
+    status: "coming_soon",
+  },
+  {
+    num: "05",
+    title: "A Rule Written First",
+    summary:
+      "Setting classifier thresholds on 50 live runs, with the pass/fail rule written down before the first one.",
+    status: "coming_soon",
+  },
+];
+---
+
+<section id="devlog" class="py-20 md:py-28 border-t border-[#E5DDD3] bg-[#F4EFEA]/40">
+  <div class="max-w-5xl mx-auto px-6">
+    <!-- Section Label -->
+    <div class="flex items-center gap-2 mb-4 font-mono text-xs uppercase tracking-wider text-[#7A7268]">
+      <span class="w-2 h-2 rounded-full bg-[#1E40AF]"></span>
+      <span>Devlog</span>
+      <span class="text-[#D5CCC0]">·</span>
+      <span>A five-part series</span>
+    </div>
+
+    <!-- Section Heading -->
+    <div class="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-12">
+      <div class="max-w-2xl">
+        <h2 class="font-serif text-3xl sm:text-4xl lg:text-[44px] font-normal text-[#26221E] leading-[1.2] mb-4">
+          A rule written first.
+        </h2>
+        <p class="text-base sm:text-lg text-[#6B635B] leading-relaxed">
+          Every change to Phil runs against a live benchmark, and I write down what I expect before I run it. This series is the record: what broke, what I changed, and what it cost.
+        </p>
+      </div>
+
+      <a
+        href={SITE_CONFIG.links.devlog}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="inline-flex items-center gap-2 px-4 py-2.5 rounded-full border border-[#D5CCC0] bg-[#FAF8F5] text-xs font-mono font-medium text-[#26221E] hover:border-[#B8ADA0] hover:bg-[#EFE9E2] transition-all self-start md:self-auto"
+      >
+        <span>All devlog posts</span>
+        <span>↗</span>
+      </a>
+    </div>
+
+    <!-- Series list: live and coming-soon cards -->
+    <div class="space-y-4">
+      {ARTICLES.map((article) => {
+        const isLive = article.status === "live";
+
+        return isLive ? (
+          /* LIVE ARTICLE CARD */
+          <a
+            href={article.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="block p-6 sm:p-7 rounded-2xl bg-[#FAF8F5] border-2 border-[#B89B7D] hover:border-[#6B503D] shadow-xs hover:shadow-md transition-all group relative overflow-hidden"
+          >
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2.5">
+              <div class="flex items-center gap-3 flex-wrap">
+                <span class="font-mono text-xs text-[#6B503D] font-bold">
+                  PART {article.num}
+                </span>
+                <span class="text-[#D5CCC0] hidden sm:inline">·</span>
+                <h3 class="font-serif text-xl sm:text-2xl font-medium text-[#26221E] group-hover:text-[#6B503D] transition-colors">
+                  {article.title}
+                </h3>
+              </div>
+
+              <!-- Live Badge (Warm Taupe / Brown) -->
+              <div class="flex items-center gap-2 self-start sm:self-auto">
+                {article.date && (
+                  <span class="text-xs font-mono text-[#7A7268] hidden md:inline">
+                    {article.date} ·
+                  </span>
+                )}
+                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#EFE8DE] border border-[#D5C7B5] text-[#5C4533] font-mono text-[11px] font-semibold group-hover:bg-[#5C4533] group-hover:text-[#FAF8F5] group-hover:border-[#5C4533] transition-colors">
+                  <span class="w-1.5 h-1.5 rounded-full bg-[#7A5C43] group-hover:bg-[#FAF8F5] animate-pulse"></span>
+                  <span>Read</span>
+                  <span class="text-xs">↗</span>
+                </span>
+              </div>
+            </div>
+
+            <p class="text-xs sm:text-sm text-[#4A443D] leading-relaxed max-w-3xl">
+              {article.summary}
+            </p>
+          </a>
+        ) : (
+          /* COMING SOON CARD */
+          <div class="p-6 rounded-2xl bg-[#F7F3EE]/70 border border-[#E5DDD3] opacity-80">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2.5">
+              <div class="flex items-center gap-3 flex-wrap">
+                <span class="font-mono text-xs text-[#8C827A] font-medium">
+                  PART {article.num}
+                </span>
+                <span class="text-[#D5CCC0] hidden sm:inline">·</span>
+                <h3 class="font-serif text-xl font-normal text-[#6B635B]">
+                  {article.title}
+                </h3>
+              </div>
+
+              <!-- Coming Soon Badge -->
+              <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#EFE9E2] border border-[#E0D7CC] text-[#8C827A] font-mono text-[11px] font-medium self-start sm:self-auto">
+                <span>Coming soon</span>
+              </span>
+            </div>
+
+            <p class="text-xs sm:text-sm text-[#7A7268] leading-relaxed max-w-3xl font-light">
+              {article.summary}
+            </p>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+</section>

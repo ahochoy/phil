@@ -1,0 +1,90 @@
+---
+---
+
+<section id="architecture" class="py-20 md:py-28 max-w-5xl mx-auto px-6">
+  <!-- Section Tag -->
+  <div class="flex items-center gap-2 mb-4 font-mono text-xs uppercase tracking-wider text-[#7A7268]">
+    <span class="w-2 h-2 rounded-full bg-[#0B7A5A]"></span>
+    <span>Architecture</span>
+    <span class="text-[#D5CCC0]">·</span>
+    <span>LangGraph and DeepAgents</span>
+  </div>
+
+  <div class="max-w-2xl mb-12">
+    <h2 class="font-serif text-3xl sm:text-4xl lg:text-[44px] font-normal text-[#26221E] leading-[1.2] mb-4">
+      Every step is a node you can inspect.
+    </h2>
+    <p class="text-base sm:text-lg text-[#6B635B] leading-relaxed">
+      Phil runs each job as a LangGraph state machine. Intake, planning, implementation, and review are separate nodes, and each one hands the next a contract it can check. When something goes wrong, you can see which step did it.
+    </p>
+  </div>
+
+  <!-- Cards -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+    <!-- Component 1: LangGraph State Machine -->
+    <div class="p-6 rounded-2xl bg-[#F4EFEA] border border-[#E5DDD3] shadow-xs flex flex-col justify-between">
+      <div>
+        <div class="w-10 h-10 rounded-xl bg-[#FAF8F5] border border-[#D5CCC0] flex items-center justify-center text-sm font-mono text-[#0B7A5A] mb-4 font-bold">
+          01
+        </div>
+        <h3 class="font-serif text-xl font-medium text-[#26221E] mb-2">LangGraph Core</h3>
+        <p class="text-xs text-[#6B635B] leading-relaxed mb-4">
+          Intake, routing, planning, implementation, verification, and PR creation are LangGraph nodes with conditional edges between them.
+        </p>
+      </div>
+      <div class="pt-4 border-t border-[#E5DDD3] text-[11px] font-mono text-[#7A7268] space-y-1">
+        <div>• SQLite state checkpointing</div>
+        <div>• <code class="text-[#26221E]">/resume</code> after a crash or stop</div>
+        <div>• Serializable run telemetry</div>
+      </div>
+    </div>
+
+    <!-- Component 2: DeepAgents Delegation -->
+    <div class="p-6 rounded-2xl bg-[#F4EFEA] border border-[#E5DDD3] shadow-xs flex flex-col justify-between">
+      <div>
+        <div class="w-10 h-10 rounded-xl bg-[#FAF8F5] border border-[#D5CCC0] flex items-center justify-center text-sm font-mono text-[#6D28D9] mb-4 font-bold">
+          02
+        </div>
+        <h3 class="font-serif text-xl font-medium text-[#26221E] mb-2">DeepAgents Delegation</h3>
+        <p class="text-xs text-[#6B635B] leading-relaxed mb-4">
+          An agent can hand a search to a subagent. The subagent spends the tool-call tokens, and the parent gets back a short answer.
+        </p>
+      </div>
+      <div class="pt-4 border-t border-[#E5DDD3] text-[11px] font-mono text-[#7A7268] space-y-1">
+        <div>• Subagent token isolation</div>
+        <div>• Context summarized at a set limit</div>
+        <div>• Cost logged per call</div>
+      </div>
+    </div>
+
+    <!-- Component 3: Worktree Isolation -->
+    <div class="p-6 rounded-2xl bg-[#F4EFEA] border border-[#E5DDD3] shadow-xs flex flex-col justify-between">
+      <div>
+        <div class="w-10 h-10 rounded-xl bg-[#FAF8F5] border border-[#D5CCC0] flex items-center justify-center text-sm font-mono text-[#C26910] mb-4 font-bold">
+          03
+        </div>
+        <h3 class="font-serif text-xl font-medium text-[#26221E] mb-2">Worktree Sandboxing</h3>
+        <p class="text-xs text-[#6B635B] leading-relaxed mb-4">
+          Phil never touches your working directory. Each run gets its own <code class="text-[#26221E]">.phil/worktrees/&lt;id&gt;</code> on its own branch.
+        </p>
+      </div>
+      <div class="pt-4 border-t border-[#E5DDD3] text-[11px] font-mono text-[#7A7268] space-y-1">
+        <div>• Your uncommitted work stays put</div>
+        <div>• Cleanup after merge</div>
+        <div>• Several runs at once, in the background</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stack -->
+  <div class="p-6 rounded-2xl bg-[#FAF8F5] border border-[#E5DDD3] flex flex-wrap items-center justify-between gap-6 text-xs font-mono text-[#6B635B]">
+    <div class="text-[#26221E] font-medium font-sans text-sm">Stack:</div>
+    <div class="flex flex-wrap items-center gap-6">
+      <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#0B7A5A]"></span>Python 3.14+</span>
+      <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#6D28D9]"></span>LangGraph 1.2</span>
+      <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#C26910]"></span>DeepAgents 0.7</span>
+      <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#B45309]"></span>Rich and Typer</span>
+      <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#1E40AF]"></span>prompt_toolkit</span>
+    </div>
+  </div>
+</section>

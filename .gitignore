@@ -16,3 +16,12 @@ wheels/
 
 # Superpowers working files (brainstorm mockups, SDD ledgers and briefs)
 .superpowers/
+
+# Node / Astro website build artifacts
+site/node_modules/
+site/dist/
+site/.astro/
+site/.wrangler/
+node_modules/
+.astro/
+.wrangler/
