@@ -6,10 +6,18 @@ import shlex
 import shutil
 import subprocess
 import sys
+from pathlib import Path
+
+
+_BATCH_UNSAFE = frozenset('"&|<>^%!\n\r')
 
 
 class EditorError(Exception):
     pass
+
+
+def _inside_cwd(found: str) -> bool:
+    return Path(found).resolve().is_relative_to(Path.cwd().resolve())
 
 
 def _is_windows() -> bool:
@@ -47,10 +55,27 @@ def edit_file(path: str) -> None:
     """Open `path` in the editor and wait for it to close. Raises EditorError when there's no usable
     editor or it exits with an error."""
     command = _editor_command()
+    name = command[0]
+    explicit = os.path.isabs(name)  # a full path is the user's choice, allowed anywhere
     # which() finds Windows shims such as code.cmd, which CreateProcess won't find from a bare name.
-    found = shutil.which(command[0])
+    if _is_windows() and not os.path.dirname(name):
+        # Windows searches the current folder first, and that's the repo: look on PATH only.
+        search = os.pathsep.join(
+            entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry.strip() not in ("", ".")
+        )
+        found = shutil.which(name, path=search)
+    else:
+        found = shutil.which(name)
     if found is None:
-        raise EditorError(f"can't find the editor {command[0]}; set $EDITOR")
+        raise EditorError(f"can't find the editor {name}; set $EDITOR")
+    if not explicit and _inside_cwd(found):
+        raise EditorError(f"won't start {name} from the current folder; set $EDITOR to a full path")
+    if _is_windows() and found.lower().endswith((".cmd", ".bat")):
+        # cmd.exe re-parses the arguments, and Python's quoting doesn't stop its metacharacters.
+        if any(char in arg for arg in (*command[1:], path) for char in _BATCH_UNSAFE):
+            raise EditorError(
+                f"won't start {name} (a batch file) with this path; set $EDITOR to the editor's .exe"
+            )
     try:
         result = subprocess.run([found, *command[1:], path], check=False)
     except OSError as exc:

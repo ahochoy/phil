@@ -1,3 +1,4 @@
+import os
 import subprocess
 
 import pytest
@@ -17,9 +18,22 @@ def fake_run(monkeypatch, returncode=0):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def outside_cwd(monkeypatch):
+    # The fake programs below have Windows-style paths, which a POSIX Path would read as inside the cwd.
+    monkeypatch.setattr(editor, "_inside_cwd", lambda found: False)
+
+
 def installed(monkeypatch, **programs):
-    """Make shutil.which find exactly these programs, by name."""
-    monkeypatch.setattr(editor.shutil, "which", lambda name: programs.get(name))
+    """Make shutil.which find exactly these programs, by name. Returns the `path=` values it was given."""
+    searched = []
+
+    def which(name, path=None):
+        searched.append(path)
+        return programs.get(name)
+
+    monkeypatch.setattr(editor.shutil, "which", which)
+    return searched
 
 
 def windows(monkeypatch, on=True):
@@ -123,3 +137,80 @@ def test_windows_falls_back_to_notepad(monkeypatch):
     calls = fake_run(monkeypatch)
     edit_file(r"C:\memory.md")
     assert calls == [[r"C:\Windows\notepad.exe", r"C:\memory.md"]]
+
+
+SHIM = r"C:\x\code.cmd"
+
+
+@pytest.mark.parametrize("bad", ["&", "|", "<", ">", "^", "%", "!", '"', "\n"])
+def test_a_batch_file_editor_refuses_cmd_metacharacters_in_the_path(monkeypatch, bad):
+    monkeypatch.setenv("VISUAL", "code --wait")
+    windows(monkeypatch)
+    installed(monkeypatch, code=SHIM)
+    calls = fake_run(monkeypatch)
+    with pytest.raises(EditorError, match=r"won't start code \(a batch file\) with this path"):
+        edit_file(f"C:\\repos\\a{bad}b\\memory.md")
+    assert calls == []
+
+
+def test_a_batch_file_editor_refuses_metacharacters_in_its_own_arguments(monkeypatch):
+    monkeypatch.setenv("VISUAL", "code --wait&calc")
+    windows(monkeypatch)
+    installed(monkeypatch, code=SHIM)
+    calls = fake_run(monkeypatch)
+    with pytest.raises(EditorError, match="a batch file"):
+        edit_file(r"C:\memory.md")
+    assert calls == []
+
+
+def test_a_batch_file_editor_launches_with_a_clean_path(monkeypatch):
+    monkeypatch.setenv("VISUAL", "code --wait")
+    windows(monkeypatch)
+    installed(monkeypatch, code=SHIM.upper())
+    calls = fake_run(monkeypatch)
+    edit_file(r"C:\repos\calc\memory.md")
+    assert calls == [[SHIM.upper(), "--wait", r"C:\repos\calc\memory.md"]]
+
+
+def test_an_exe_may_have_metacharacters_in_the_path(monkeypatch):
+    monkeypatch.setenv("VISUAL", "notepad")
+    windows(monkeypatch)
+    installed(monkeypatch, notepad=r"C:\Windows\notepad.exe")
+    calls = fake_run(monkeypatch)
+    edit_file(r"C:\a&b\memory.md")
+    assert len(calls) == 1
+
+
+def test_windows_searches_path_without_the_current_folder(monkeypatch):
+    monkeypatch.setenv("VISUAL", "code")
+    monkeypatch.setenv("PATH", os.pathsep.join(["", ".", r"C:\bin", " ", r"D:\tools"]))
+    windows(monkeypatch)
+    searched = installed(monkeypatch, code=r"C:\bin\code.exe")
+    fake_run(monkeypatch)
+    edit_file(r"C:\memory.md")
+    assert searched == [os.pathsep.join([r"C:\bin", r"D:\tools"])]
+
+
+def test_an_editor_found_in_the_current_folder_is_refused(monkeypatch, tmp_path):
+    monkeypatch.undo()  # drop the autouse stub so the real check runs
+    fake = tmp_path / "myeditor"
+    fake.write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VISUAL", "myeditor --wait")
+    monkeypatch.setattr(editor.shutil, "which", lambda name, path=None: str(fake))
+    calls = fake_run(monkeypatch)
+    with pytest.raises(EditorError, match="won't start myeditor from the current folder; set \\$EDITOR to a full path"):
+        edit_file("memory.md")
+    assert calls == []
+
+
+def test_an_explicit_absolute_path_is_allowed_in_the_current_folder(monkeypatch, tmp_path):
+    monkeypatch.undo()
+    fake = tmp_path / "myeditor"
+    fake.write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VISUAL", str(fake))
+    monkeypatch.setattr(editor.shutil, "which", lambda name, path=None: name)
+    calls = fake_run(monkeypatch)
+    edit_file("memory.md")
+    assert calls == [[str(fake), "memory.md"]]
