@@ -225,9 +225,10 @@ When nothing changed, there's no line.
 
 The live benchmark gives every case a fresh repo copy, so its slug (and memory) is new every time. Add a warm mode:
 
-- `PHIL_BENCH_WARM=1` runs each case twice in the **same** repo copy and project directory: first cold (no memory), then warm (with whatever the first run wrote). The repo is reset to its starting commit between the two runs.
-- Each record gains `memory: "cold" | "warm"` and `memory_bullets: int` (the count at the start of the run).
-- `tests.live.bench.report` groups by `memory` when the field is present.
+- `PHIL_BENCH_WARM=1` runs each case as cold-then-warm pairs. Within a pair, both runs use the **same** repo copy and project directory: first cold (memory cleared), then warm (with whatever the cold run wrote). The repo is reset to its starting commit between the two runs.
+- `PHIL_BENCH_PAIRS=N` sets the number of pairs per case (default 3). Each pair starts from a fresh copy, so pairs are independent. Run-to-run variance is large: on the 2026-10-15 baseline, `site-meta-tag` ranged from 9 to 35 model calls on unchanged code, so a single pair says little.
+- Each record gains `memory: "cold" | "warm"`, `pair: int` and `memory_bullets: int` (the count at the start of the run).
+- When the field is present, `tests.live.bench.report` groups by `memory` and adds a per-case summary row: the **median** cold and warm model calls, tokens and minutes, and the warm-against-cold change.
 - Offline harness tests cover the warm loop with the scripted factory.
 
 The user runs the benchmark; agents never run `-m live` or `-m bench`. The before and after go in the journey docs.
