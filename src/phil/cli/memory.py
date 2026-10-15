@@ -4,13 +4,19 @@ them, and apply or dismiss the suggestions for AGENTS.md. Memory text is plain t
 import typer
 from rich.text import Text
 
-from phil.memory.agents_md import (
-    active_run,
-    apply_suggestions,
-    clear_suggestions,
-    read_suggestions,
+from phil.memory.agents_md import active_run
+from phil.memory.commands import (
+    DEFAULT_SECTION,
+    NO_SUGGESTIONS,
+    MemoryCommandError,
+    add_line,
+    apply_lines,
+    dismiss_line,
+    remove_line,
+    running_message,
+    section_named,
+    suggestion_lines,
 )
-from phil.memory.apply import check_line
 from phil.memory.doc import SECTIONS, Bullet, MemoryDoc
 from phil.memory.editor import EditorError, edit_file
 from phil.memory.listing import memory_lines
@@ -23,8 +29,6 @@ from phil.ui.theme import make_console
 
 memory_app = typer.Typer(help="Show and change what Phil remembers about this repo.")
 console = make_console()
-
-DEFAULT_SECTION = "Conventions"
 
 
 def _say(line: str) -> None:
@@ -80,13 +84,13 @@ def add(
 ) -> None:
     """Add a line of your own to Phil's memory."""
     _, paths = _project(ctx)
-    name = next((known for known in SECTIONS if known.casefold() == section.strip().casefold()), None)
+    name = section_named(section)
     if name is None:
         _fail(f"Unknown section {printable(section)}. Sections: {', '.join(SECTIONS)}.")
-    problem = check_line(text)
-    if problem is not None:
-        _fail(f"Not added: {problem}.")
-    _update(paths, lambda doc: doc.add(Bullet(name, text.strip(), False)))
+    try:
+        add_line(paths, name, text)
+    except MemoryCommandError as exc:
+        _fail(str(exc))
     _say(f"Added to {name}.")
 
 
@@ -94,17 +98,13 @@ def add(
 def remove(ctx: typer.Context, number: int = typer.Argument(..., help="The bullet's number, as `phil memory` lists it.")) -> None:
     """Remove one line from Phil's memory."""
     _, paths = _project(ctx)
-
-    def take(doc: MemoryDoc) -> Bullet | None:
-        try:
-            return doc.remove_index(number)
-        except IndexError:
-            return None
-
-    removed = _update(paths, take)
+    try:
+        removed = remove_line(paths, number)
+    except MemoryCommandError as exc:
+        _fail(str(exc))
     if removed is None:
         _fail(f"No bullet {number}. phil memory lists them.")
-    _say(f"Removed: {printable(removed.text)}")
+    _say(f"Removed: {printable(removed)}")
 
 
 @memory_app.command()
@@ -155,12 +155,12 @@ def clear(
 def suggestions(ctx: typer.Context) -> None:
     """List the lines Phil suggests adding to AGENTS.md."""
     _, paths = _project(ctx)
-    pending = read_suggestions(paths)
+    pending = suggestion_lines(paths)
     if not pending:
-        _say("No suggestions for AGENTS.md.")
+        _say(NO_SUGGESTIONS)
         return
-    for n, line in enumerate(pending, 1):
-        _say(f"{n}. {printable(line)}")
+    for line in pending:
+        _say(line)
 
 
 @memory_app.command()
@@ -176,12 +176,12 @@ def apply(
     finally:
         conn.close()
     if running is not None:
-        _fail(f"Run {running} is in progress; apply suggestions when it finishes.")
-    pending = read_suggestions(paths)
+        _fail(running_message(running))
+    pending = suggestion_lines(paths)
     if not pending:
-        _fail("No suggestions for AGENTS.md.")
-    for n, line in enumerate(pending, 1):
-        _say(f"{n}. {printable(line)}")
+        _fail(NO_SUGGESTIONS)
+    for line in pending:
+        _say(line)
     if not yes and not _confirm("Append these to AGENTS.md?"):
         _say("Nothing changed.")
         return
@@ -192,12 +192,11 @@ def apply(
             return
         create = True
     try:
-        result = apply_suggestions(info.root, paths, create=create)
-    except (ValueError, FileNotFoundError, MemoryWriteError) as exc:
-        _fail(printable(exc))
-    _say(f"Added {len(result.lines)} line(s) to {result.path}. Not committed: review and commit it yourself.")
-    if result.memory_error:
-        _say(f"Couldn't tidy memory: {printable(result.memory_error)}")
+        done = apply_lines(info.root, paths, create=create)
+    except MemoryCommandError as exc:
+        _fail(str(exc))
+    for line in done:
+        _say(line)
 
 
 @memory_app.command()
@@ -205,7 +204,6 @@ def dismiss(ctx: typer.Context) -> None:
     """Throw away the pending AGENTS.md suggestions."""
     _, paths = _project(ctx)
     try:
-        count = clear_suggestions(paths)
-    except MemoryWriteError as exc:
-        _fail(printable(exc))
-    _say(f"Dismissed {count} suggestion(s).")
+        _say(dismiss_line(paths))
+    except MemoryCommandError as exc:
+        _fail(str(exc))
