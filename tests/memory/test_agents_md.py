@@ -11,7 +11,7 @@ from phil.memory.agents_md import (
     read_suggestions,
 )
 from phil.memory.doc import Bullet
-from phil.memory.store import read_memory, update_memory
+from phil.memory.store import MemoryWriteError, read_memory, update_memory
 from phil.store.db import connect
 from phil.store.paths import ProjectPaths
 from phil.store.runs import create_run, update_run
@@ -135,6 +135,73 @@ def test_a_symlink_to_outside_the_repo_is_refused(repo, paths, tmp_path):
     with pytest.raises(ValueError, match="not a regular file"):
         apply_suggestions(repo, paths, create=True)
     assert outside.read_bytes() == b"secret\n"
+
+
+def test_a_planted_temp_symlink_is_not_written_through(repo, paths, tmp_path):
+    outside = tmp_path / "bashrc"
+    outside.write_bytes(b"keep me\n")
+    try:
+        os.symlink(outside, repo / "AGENTS.md.phil.tmp")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    (repo / "AGENTS.md").write_bytes(b"# Repo\n")
+    add_suggestions(paths, ["a note"])
+    apply_suggestions(repo, paths, create=False)
+    assert outside.read_bytes() == b"keep me\n"
+    assert (repo / "AGENTS.md").read_bytes() == f"# Repo\n\n{NOTES_HEADING}\n- a note\n".encode()
+    assert sorted(p.name for p in repo.iterdir()) == ["AGENTS.md", "AGENTS.md.phil.tmp"]
+
+
+def test_a_memory_failure_is_reported_and_the_notes_are_still_written(repo, paths, monkeypatch):
+    def boom(*args, **kwargs):
+        raise MemoryWriteError("disk full")
+
+    monkeypatch.setattr("phil.memory.agents_md.update_memory", boom)
+    add_suggestions(paths, ["a note"])
+    result = apply_suggestions(repo, paths, create=True)
+    assert result.memory_error == "MemoryWriteError: disk full"
+    assert result.removed_from_memory == 0
+    assert (repo / "AGENTS.md").read_bytes() == f"{NOTES_HEADING}\n- a note\n".encode()
+    assert read_suggestions(paths) == []
+
+
+def test_no_memory_error_normally(repo, paths):
+    add_suggestions(paths, ["a note"])
+    assert apply_suggestions(repo, paths, create=True).memory_error is None
+
+
+def test_an_in_repo_symlink_is_written_at_its_target_and_stays_a_link(repo, paths):
+    (repo / "docs").mkdir()
+    (repo / "docs" / "AGENTS.md").write_bytes(b"# Docs\n")
+    try:
+        os.symlink(repo / "docs" / "AGENTS.md", repo / "AGENTS.md")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    add_suggestions(paths, ["a note"])
+    apply_suggestions(repo, paths, create=False)
+    assert (repo / "AGENTS.md").is_symlink()
+    assert (repo / "docs" / "AGENTS.md").read_bytes() == f"# Docs\n\n{NOTES_HEADING}\n- a note\n".encode()
+
+
+def test_a_hard_linked_file_is_refused(repo, paths, tmp_path):
+    (repo / "other.md").write_bytes(b"x\n")
+    try:
+        os.link(repo / "other.md", repo / "AGENTS.md")
+    except (OSError, NotImplementedError):
+        pytest.skip("hard links unavailable")
+    add_suggestions(paths, ["a note"])
+    with pytest.raises(ValueError, match="not a regular file"):
+        apply_suggestions(repo, paths, create=False)
+    assert (repo / "other.md").read_bytes() == b"x\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+def test_the_file_mode_is_kept(repo, paths):
+    (repo / "AGENTS.md").write_bytes(b"# Repo\n")
+    os.chmod(repo / "AGENTS.md", 0o664)
+    add_suggestions(paths, ["a note"])
+    apply_suggestions(repo, paths, create=False)
+    assert (repo / "AGENTS.md").stat().st_mode & 0o777 == 0o664
 
 
 def test_clear_suggestions_returns_the_count(paths):

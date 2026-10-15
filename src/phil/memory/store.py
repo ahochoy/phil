@@ -3,6 +3,8 @@ to the text on disk under a lock, then written atomically, so a second Phil or a
 between a read and a write is never lost."""
 
 import os
+import stat
+import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -32,6 +34,24 @@ def read_memory(paths: ProjectPaths) -> MemoryDoc:
     return _load(paths)
 
 
+def write_atomic(path: Path, data: bytes) -> None:
+    """Replace `path` with `data` through a fresh, uniquely named temp file in the same directory (never a
+    fixed name, which a planted symlink could redirect). Keeps the file's mode, else 0o644. Raises OSError."""
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        mode = 0o644
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".phil.tmp")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.chmod(tmp_name, mode)
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+
 @contextmanager
 def _locked(path: Path) -> Iterator[None]:
     """Hold an exclusive lock on `<path>.lock` for a whole read-modify-write. The lock file always
@@ -56,7 +76,6 @@ def update_memory(paths: ProjectPaths, change: Callable[[MemoryDoc], T]) -> T:
     when `change` altered it. Returns whatever `change` returns. Raises MemoryWriteError when the
     file can't be locked, read or written."""
     path = paths.memory_path
-    tmp = path.with_name(path.name + ".tmp")
     try:
         with _locked(path):
             doc = _load(paths)
@@ -64,12 +83,7 @@ def update_memory(paths: ProjectPaths, change: Callable[[MemoryDoc], T]) -> T:
             result = change(doc)
             after = doc.render()
             if after != before:
-                try:
-                    tmp.write_text(after, encoding="utf-8", newline="\n")
-                    os.replace(tmp, path)
-                except OSError:
-                    tmp.unlink(missing_ok=True)
-                    raise
+                write_atomic(path, after.encode("utf-8"))
             return result
     except OSError as exc:
         raise MemoryWriteError(f"can't write {path}: {exc}") from exc

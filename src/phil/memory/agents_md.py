@@ -2,14 +2,13 @@
 own for the user to apply later. One `- ` bullet per line, written under the same lock and atomic
 replace as the memory file."""
 
-import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
 from phil.memory.apply import check_line, normalise
 from phil.memory.doc import MemoryDoc
-from phil.memory.store import MemoryWriteError, _locked, update_memory
+from phil.memory.store import MemoryWriteError, _locked, update_memory, write_atomic
 from phil.store.paths import ProjectPaths
 from phil.store.runs import list_runs
 
@@ -41,7 +40,6 @@ def add_suggestions(paths: ProjectPaths, lines: list[str]) -> list[str]:
     if not lines:
         return []
     path = paths.agents_md_suggestions_path
-    tmp = path.with_name(path.name + ".tmp")
     try:
         with _locked(path):
             try:
@@ -58,12 +56,7 @@ def add_suggestions(paths: ProjectPaths, lines: list[str]) -> list[str]:
             if added:
                 body = text if not text or text.endswith("\n") else text + "\n"
                 body += "".join(f"{_BULLET}{line}\n" for line in added)
-                try:
-                    tmp.write_text(body, encoding="utf-8", newline="\n")
-                    os.replace(tmp, path)
-                except OSError:
-                    tmp.unlink(missing_ok=True)
-                    raise
+                write_atomic(path, body.encode("utf-8"))
             return added
     except OSError as exc:
         raise MemoryWriteError(f"can't write {path}: {exc}") from exc
@@ -94,18 +87,22 @@ class AppliedSuggestions:
     created: bool
     path: Path
     removed_from_memory: int
+    memory_error: str | None = None
 
 
 def _target(repo_root: Path) -> Path:
-    """The AGENTS.md to write: a regular file inside the repository, or the place for a new one."""
+    """The AGENTS.md to write: a single-link regular file inside the repository, or the place for a new one."""
+    refuse = ValueError("AGENTS.md is not a regular file in this repository")
     path = repo_root / "AGENTS.md"
     if path.is_symlink():
         resolved = path.resolve()
         if not resolved.is_relative_to(repo_root.resolve()) or not resolved.is_file():
-            raise ValueError("AGENTS.md is not a regular file in this repository")
-        return resolved
-    if path.exists() and not path.is_file():
-        raise ValueError("AGENTS.md is not a regular file in this repository")
+            raise refuse
+        path = resolved
+    elif path.exists() and not path.is_file():
+        raise refuse
+    if path.exists() and path.stat().st_nlink > 1:
+        raise refuse
     return path
 
 
@@ -144,13 +141,7 @@ def apply_suggestions(repo_root: Path, paths: ProjectPaths, *, create: bool) -> 
                     addition += "\n"
                 addition += NOTES_HEADING + "\n"
             addition += "".join(f"{_BULLET}{line}\n" for line in lines)
-            tmp = target.with_name(target.name + ".phil.tmp")
-            try:
-                tmp.write_bytes(raw + addition.encode("utf-8"))
-                os.replace(tmp, target)
-            except OSError:
-                tmp.unlink(missing_ok=True)
-                raise
+            write_atomic(target, raw + addition.encode("utf-8"))
             _remove_file(sugg_path)
     except OSError as exc:
         if missing:
@@ -166,11 +157,13 @@ def apply_suggestions(repo_root: Path, paths: ProjectPaths, *, create: bool) -> 
                 removed += 1
         return removed
 
+    removed_from_memory = 0
+    memory_error = None
     try:
         removed_from_memory = update_memory(paths, tidy)
-    except MemoryWriteError:
-        removed_from_memory = 0  # AGENTS.md is written; a duplicate left in memory is harmless
-    return AppliedSuggestions(lines, not existed, target, removed_from_memory)
+    except (MemoryWriteError, OSError) as exc:  # AGENTS.md is already written, so report instead of raising
+        memory_error = f"{type(exc).__name__}: {exc}"
+    return AppliedSuggestions(lines, not existed, target, removed_from_memory, memory_error)
 
 
 def active_run(conn: sqlite3.Connection) -> str | None:
