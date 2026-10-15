@@ -2,6 +2,7 @@
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from phil.contracts.memory import MemoryUpdate
@@ -35,8 +36,10 @@ def check_line(text: str) -> str | None:
     stripped = text.strip()
     if not stripped:
         return "empty"
-    if "\n" in stripped:
+    if any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in stripped):
         return "more than one line"
+    if "<!--" in stripped or "-->" in stripped:
+        return "contains an HTML comment marker"
     if len(stripped) > MAX_BULLET_CHARS:
         return "longer than 200 characters"
     if looks_secret(stripped):
