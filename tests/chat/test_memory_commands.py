@@ -144,8 +144,18 @@ def test_apply_is_refused_while_a_run_is_in_progress(calc_repo, tmp_path):
     assert "Append these" not in text
 
 
-def test_apply_is_refused_while_this_chats_run_has_not_ended(calc_repo):
+def make_run(repo, tmp_path, state):
+    conn = connect(paths_of(repo).db_path)
+    try:
+        create_run(conn, run_id="r-0042", keyword="a", base_sha="x", worktree=tmp_path / "w", tasks_total=1)
+        update_run(conn, "r-0042", state=state)
+    finally:
+        conn.close()
+
+
+def test_apply_is_refused_while_this_chats_run_has_not_ended(calc_repo, tmp_path):
     suggest(calc_repo, "Run make before pushing")
+    make_run(calc_repo, tmp_path, "running")
 
     def follow(controller):
         controller._run_id = "r-0042"
@@ -155,6 +165,51 @@ def test_apply_is_refused_while_this_chats_run_has_not_ended(calc_repo):
     assert "Run r-0042 is in progress; apply suggestions when it finishes." in text
     assert "Append these" not in text
     assert not (calc_repo / "AGENTS.md").exists()
+
+
+def test_a_failed_run_this_chat_still_follows_does_not_block_apply(calc_repo, tmp_path):
+    suggest(calc_repo, "Run make before pushing")
+    make_run(calc_repo, tmp_path, "failed")
+
+    def follow(controller):
+        controller._run_id = "r-0042"
+        return "/memory apply"
+
+    text, *_ = run_chat(calc_repo, [follow, "n"], {})
+    assert "in progress" not in text
+    assert "Append these to AGENTS.md? (y/n)" in text
+
+
+def test_a_file_deleted_between_the_prompts_is_not_created_unasked(calc_repo):
+    agents = calc_repo / "AGENTS.md"
+    agents.write_text("# Notes\n", encoding="utf-8", newline="\n")
+    suggest(calc_repo, "Run make before pushing")
+
+    def delete_then_confirm(controller):
+        agents.unlink()
+        return "y"
+
+    text, *_ = run_chat(calc_repo, ["/memory apply", delete_then_confirm], {})
+    assert not agents.exists()
+    assert "Added" not in text
+
+
+def test_apply_outside_idle_is_refused_and_keeps_the_stage(calc_repo):
+    suggest(calc_repo, "Run make before pushing")
+    seen = []
+
+    def at_approval(controller):
+        controller._set_stage("approval")
+        return "/memory apply"
+
+    def check(controller):
+        seen.append(controller.stage)
+        return None
+
+    text, *_ = run_chat(calc_repo, [at_approval, check], {})
+    assert "Finish or cancel the current step first, then /memory apply." in text
+    assert "Append these" not in text
+    assert seen == ["approval"]
 
 
 def test_dismiss_throws_the_suggestions_away(calc_repo):

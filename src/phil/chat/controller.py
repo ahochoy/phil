@@ -2205,7 +2205,10 @@ class ChatController:
     def _memory_apply(self) -> None:
         running = active_run(self.conn)
         if running is None and self._run_id is not None:
-            running = self._run_id  # this chat's own run, whose record hasn't ended
+            # This chat's own run, unless it ended (a failed or stopped run keeps its id for /resume).
+            record = get_run(self.conn, self._run_id)
+            if record is not None and record.state in ("pending", "running", "escalated"):
+                running = self._run_id
         if running is not None:
             self._say(running_message(running))
             return
@@ -2233,10 +2236,10 @@ class ChatController:
             self._agents_md_create = True  # asked to create it; the next y applies
             self._say("There's no AGENTS.md. Create it? (y/n)")
             return
-        self._agents_md_create = False
+        create, self._agents_md_create = self._agents_md_create, False
         self._set_stage("idle")
         try:
-            self._say(*apply_lines(self.info.root, self._memory_paths(), create=not (self.info.root / "AGENTS.md").exists()))
+            self._say(*apply_lines(self.info.root, self._memory_paths(), create=create))
         except MemoryCommandError as exc:
             self._say(str(exc))
 
