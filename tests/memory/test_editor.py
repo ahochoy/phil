@@ -25,12 +25,17 @@ def outside_cwd(monkeypatch):
 
 
 def installed(monkeypatch, **programs):
-    """Make shutil.which find exactly these programs, by name. Returns the `path=` values it was given."""
+    """Make shutil.which find exactly these programs: a lookup matches a program when it is the name or
+    ends in it after a separator (the Windows lookup asks about `<PATH entry>/<name>`). Returns the
+    names it was asked about."""
     searched = []
 
-    def which(name, path=None):
-        searched.append(path)
-        return programs.get(name)
+    def which(name):
+        searched.append(name)
+        for key, found in programs.items():
+            if name == key or (name.endswith(key) and name[-len(key) - 1] in "/\\"):
+                return found
+        return None
 
     monkeypatch.setattr(editor.shutil, "which", which)
     return searched
@@ -183,12 +188,53 @@ def test_an_exe_may_have_metacharacters_in_the_path(monkeypatch):
 
 def test_windows_searches_path_without_the_current_folder(monkeypatch):
     monkeypatch.setenv("VISUAL", "code")
-    monkeypatch.setenv("PATH", os.pathsep.join(["", ".", r"C:\bin", " ", r"D:\tools"]))
+    monkeypatch.setenv("PATH", os.pathsep.join(["", ".", "bin1", " ", "bin2"]))
     windows(monkeypatch)
-    searched = installed(monkeypatch, code=r"C:\bin\code.exe")
+    searched = installed(monkeypatch, **{"bin2/code": r"C:\bin2\code.exe"})
     fake_run(monkeypatch)
     edit_file(r"C:\memory.md")
-    assert searched == [os.pathsep.join([r"C:\bin", r"D:\tools"])]
+    assert searched == [os.path.join("bin1", "code"), os.path.join("bin2", "code")]
+
+
+def test_a_lookup_on_windows_never_reaches_a_planted_editor_in_the_current_folder(monkeypatch, tmp_path):
+    monkeypatch.undo()  # drop the autouse stub so the real lookup and cwd check run
+    on_windows = os.name == "nt"
+    filename = "phil_fake_editor.cmd" if on_windows else "phil_fake_editor"
+    repo, bindir = tmp_path / "repo", tmp_path / "bin"
+    for folder in (repo, bindir):
+        folder.mkdir()
+        stub = folder / filename
+        stub.write_text("@echo off\n" if on_windows else "#!/bin/sh\n", encoding="utf-8", newline="\n")
+        stub.chmod(0o755)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(bindir)]))
+    monkeypatch.setenv("VISUAL", "phil_fake_editor")
+    monkeypatch.setattr(editor, "_is_windows", lambda: True)  # the Windows lookup, on any OS
+    calls = fake_run(monkeypatch)
+    edit_file("memory.md")
+    assert [os.path.normcase(os.path.abspath(call)) for call in calls[0][:1]] == [
+        os.path.normcase(os.path.abspath(bindir / filename))
+    ]
+
+
+def test_a_symlink_in_the_current_folder_to_an_outside_editor_is_refused(monkeypatch, tmp_path):
+    monkeypatch.undo()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside_editor"
+    outside.write_text("", encoding="utf-8")
+    link = repo / "myeditor"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks aren't supported here")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("VISUAL", "myeditor")
+    monkeypatch.setattr(editor.shutil, "which", lambda name: str(link))
+    calls = fake_run(monkeypatch)
+    with pytest.raises(EditorError, match="from the current folder"):
+        edit_file("memory.md")
+    assert calls == []
 
 
 def test_an_editor_found_in_the_current_folder_is_refused(monkeypatch, tmp_path):

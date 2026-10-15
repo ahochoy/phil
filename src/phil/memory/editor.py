@@ -17,7 +17,14 @@ class EditorError(Exception):
 
 
 def _inside_cwd(found: str) -> bool:
-    return Path(found).resolve().is_relative_to(Path.cwd().resolve())
+    """Whether the editor lies in the current folder, as named (a symlink in the repo) or as resolved."""
+    cwd = Path.cwd().resolve()
+    named = Path(os.path.abspath(found))
+    return (
+        named.is_relative_to(cwd)
+        or (named.parent.resolve() / named.name).is_relative_to(cwd)
+        or Path(found).resolve().is_relative_to(cwd)
+    )
 
 
 def _is_windows() -> bool:
@@ -59,11 +66,15 @@ def edit_file(path: str) -> None:
     explicit = os.path.isabs(name)  # a full path is the user's choice, allowed anywhere
     # which() finds Windows shims such as code.cmd, which CreateProcess won't find from a bare name.
     if _is_windows() and not os.path.dirname(name):
-        # Windows searches the current folder first, and that's the repo: look on PATH only.
-        search = os.pathsep.join(
-            entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry.strip() not in ("", ".")
-        )
-        found = shutil.which(name, path=search)
+        # shutil.which puts the current folder (the repo) first even with path=, so ask it about one
+        # PATH entry at a time: a name with a directory part searches only that directory.
+        found = None
+        for entry in os.environ.get("PATH", "").split(os.pathsep):
+            if entry.strip() in ("", "."):
+                continue
+            found = shutil.which(os.path.join(entry, name))
+            if found is not None:
+                break
     else:
         found = shutil.which(name)
     if found is None:
