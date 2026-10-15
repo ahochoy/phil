@@ -76,6 +76,16 @@ def test_prompt_text_strips_title_comments_marks_and_empty_sections():
     assert "## Layout" not in MemoryDoc.new("x").prompt_text()
 
 
+def test_prompt_text_keeps_text_under_its_heading_in_order():
+    text = "## Commands\nRun from the root:\n- make\n\n## Gotchas\nNever touch vendor/."
+    assert MemoryDoc.parse(text + "\n").prompt_text() == text
+
+
+def test_prompt_text_drops_a_known_heading_only_when_its_section_is_empty():
+    doc = MemoryDoc.parse("## Commands\n\n## Layout\n\nsrc/ holds it\n\n## Gotchas\n\n")
+    assert doc.prompt_text() == "## Layout\n\nsrc/ holds it"
+
+
 def test_annotated_marks_owners_for_the_memory_agent():
     assert "[phil] Tests: `uv run pytest -q`" in MemoryDoc.parse(SAMPLE).annotated()
     assert "[you] Lint: `ruff check`" in MemoryDoc.parse(SAMPLE).annotated()

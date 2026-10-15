@@ -122,25 +122,41 @@ class MemoryDoc:
         return "\n".join(lines) + "\n" if lines else ""
 
     def prompt_text(self) -> str:
-        """What agents see: no title, comments or marks, and no known section left empty."""
+        """What agents see: no title, comments or marks, and no known section left empty. A known
+        heading waits (with the blank lines after it) until its section shows a bullet or other text,
+        and is dropped only when the section ends with neither."""
         out: list[str] = []
-        pending_heading: str | None = None
+        pending: list[str] = []  # a known heading, then the blank lines that followed it
+
+        def flush() -> None:
+            out.extend(pending)
+            pending.clear()
+
+        def drop() -> None:
+            out.extend(pending[1:])  # keep the blank lines, lose the empty section's heading
+            pending.clear()
+
         for entry in self.entries:
             if isinstance(entry, Bullet):
-                if pending_heading is not None:
-                    out.append(pending_heading)
-                    pending_heading = None
+                flush()
                 out.append(f"- {entry.text}")
                 continue
             stripped = entry.strip()
             if entry.startswith("# ") or (stripped.startswith("<!--") and stripped.endswith("-->")):
                 continue
             if _section_of(entry):
-                pending_heading = entry
+                drop()
+                pending.append(entry)
                 continue
             if entry.startswith("#"):
-                pending_heading = None
+                drop()
+            elif not stripped and pending:
+                pending.append(entry)
+                continue
+            else:
+                flush()
             out.append(entry)
+        drop()
         text = "\n".join(out)
         while "\n\n\n" in text:
             text = text.replace("\n\n\n", "\n\n")

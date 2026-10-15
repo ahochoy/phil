@@ -9,7 +9,7 @@ from typing import BinaryIO
 from pathlib import Path
 
 from phil.memory.doc import MAX_FILE_BYTES
-from phil.memory.store import read_memory
+from phil.memory.store import read_memory, write_atomic
 from phil.store.paths import ProjectPaths
 
 AGENT_FILE_MAX_BYTES = 16 * 1024
@@ -57,12 +57,6 @@ def _candidates(repo_root: Path, problems: list[str]) -> Iterator[tuple[str, Pat
             problems.append(f"skipped {name}: not a regular file")
             continue
         yield name, resolved, info
-
-
-def find_agent_file(repo_root: Path) -> Path | None:
-    for name, _, _ in _candidates(repo_root, []):
-        return repo_root / name
-    return None
 
 
 def cap_text(text: str, max_bytes: int) -> str:
@@ -156,7 +150,7 @@ def write_run_context(run_dir: Path, repo_root: Path, paths: ProjectPaths) -> li
     a resume never builds one. Returns the problems met building it."""
     context = build_repo_context(repo_root, paths)
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / RUN_CONTEXT_FILE).write_text(context.text, encoding="utf-8", newline="\n")
+    write_atomic(run_dir / RUN_CONTEXT_FILE, context.text.encode("utf-8"))
     return context.problems
 
 

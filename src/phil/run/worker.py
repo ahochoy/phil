@@ -242,7 +242,7 @@ def run_worker(
             try:
                 for problem in write_run_context(deps.artifacts.run_dir, info.root, paths):
                     events.append("notice", message=f"Repo context: {problem}")
-            except OSError as exc:  # memory never breaks a run: it goes on with no context
+            except Exception as exc:  # memory never breaks a run: it goes on with no context
                 events.append("notice", message=f"Repo context: couldn't write it: {type(exc).__name__}: {exc}")
             plan = deps.artifacts.read_plan()
             test_cmd = plan.test_cmd or config.project.test_cmd or _detect(engine, record.base_sha) or ""

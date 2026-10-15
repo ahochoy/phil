@@ -8,7 +8,7 @@ from pathlib import Path
 
 from phil.memory.apply import check_line, normalise
 from phil.memory.doc import MemoryDoc
-from phil.memory.store import MemoryWriteError, _locked, update_memory, write_atomic
+from phil.memory.store import UMASK_MODE, MemoryWriteError, _locked, update_memory, write_atomic
 from phil.store.paths import ProjectPaths
 from phil.store.runs import list_runs
 
@@ -91,15 +91,14 @@ class AppliedSuggestions:
 
 
 def _target(repo_root: Path) -> Path:
-    """The AGENTS.md to write: a single-link regular file inside the repository, or the place for a new one."""
+    """The AGENTS.md to write: a single-link regular file at the repository root, or the place for a new
+    one. A symbolic link is refused whatever it points at (even inside the repository, `.git/` included),
+    because the confirmation names AGENTS.md, not the link's target."""
     refuse = ValueError("AGENTS.md is not a regular file in this repository")
     path = repo_root / "AGENTS.md"
     if path.is_symlink():
-        resolved = path.resolve()
-        if not resolved.is_relative_to(repo_root.resolve()) or not resolved.is_file():
-            raise refuse
-        path = resolved
-    elif path.exists() and not path.is_file():
+        raise ValueError("AGENTS.md is a symbolic link; Phil only appends to a regular AGENTS.md file")
+    if path.exists() and not path.is_file():
         raise refuse
     if path.exists() and path.stat().st_nlink > 1:
         raise refuse
@@ -141,7 +140,7 @@ def apply_suggestions(repo_root: Path, paths: ProjectPaths, *, create: bool) -> 
                     addition += "\n"
                 addition += NOTES_HEADING + "\n"
             addition += "".join(f"{_BULLET}{line}\n" for line in lines)
-            write_atomic(target, raw + addition.encode("utf-8"))
+            write_atomic(target, raw + addition.encode("utf-8"), new_mode=UMASK_MODE)
             _remove_file(sugg_path)
     except OSError as exc:
         if missing:

@@ -132,7 +132,7 @@ def test_a_symlink_to_outside_the_repo_is_refused(repo, paths, tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("symlinks unavailable")
     add_suggestions(paths, ["a note"])
-    with pytest.raises(ValueError, match="not a regular file"):
+    with pytest.raises(ValueError, match="is a symbolic link"):
         apply_suggestions(repo, paths, create=True)
     assert outside.read_bytes() == b"secret\n"
 
@@ -170,17 +170,23 @@ def test_no_memory_error_normally(repo, paths):
     assert apply_suggestions(repo, paths, create=True).memory_error is None
 
 
-def test_an_in_repo_symlink_is_written_at_its_target_and_stays_a_link(repo, paths):
-    (repo / "docs").mkdir()
-    (repo / "docs" / "AGENTS.md").write_bytes(b"# Docs\n")
+_LINK_REFUSED = "AGENTS.md is a symbolic link; Phil only appends to a regular AGENTS.md file"
+
+
+@pytest.mark.parametrize("target", ["docs/AGENTS.md", ".git/config"])
+def test_an_in_repo_symlink_is_refused_and_its_target_unchanged(repo, paths, target):
+    (repo / target).parent.mkdir(parents=True)
+    (repo / target).write_bytes(b"# keep me\n")
     try:
-        os.symlink(repo / "docs" / "AGENTS.md", repo / "AGENTS.md")
+        os.symlink(repo / target, repo / "AGENTS.md")
     except (OSError, NotImplementedError):
         pytest.skip("symlinks unavailable")
     add_suggestions(paths, ["a note"])
-    apply_suggestions(repo, paths, create=False)
+    with pytest.raises(ValueError, match=_LINK_REFUSED):
+        apply_suggestions(repo, paths, create=True)
+    assert (repo / target).read_bytes() == b"# keep me\n"
     assert (repo / "AGENTS.md").is_symlink()
-    assert (repo / "docs" / "AGENTS.md").read_bytes() == f"# Docs\n\n{NOTES_HEADING}\n- a note\n".encode()
+    assert read_suggestions(paths) == ["a note"]
 
 
 def test_a_hard_linked_file_is_refused(repo, paths, tmp_path):
@@ -193,6 +199,24 @@ def test_a_hard_linked_file_is_refused(repo, paths, tmp_path):
     with pytest.raises(ValueError, match="not a regular file"):
         apply_suggestions(repo, paths, create=False)
     assert (repo / "other.md").read_bytes() == b"x\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+@pytest.mark.parametrize("umask", [0o022, 0o077])
+def test_a_new_agents_md_honours_the_umask(repo, paths, umask):
+    add_suggestions(paths, ["a note"])
+    old = os.umask(umask)
+    try:
+        apply_suggestions(repo, paths, create=True)
+    finally:
+        os.umask(old)
+    assert (repo / "AGENTS.md").stat().st_mode & 0o777 == 0o666 & ~umask
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+def test_the_suggestions_file_is_private(paths):
+    add_suggestions(paths, ["a note"])
+    assert paths.agents_md_suggestions_path.stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX modes")

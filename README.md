@@ -660,8 +660,10 @@ phil memory dismiss
 
 Phil can also suggest lines for your `AGENTS.md`. They wait in
 `agents-md-suggestions.md` until you apply them: `apply` shows the lines, asks, and appends them
-under `## Notes from Phil` (after a second question if there's no `AGENTS.md` yet). It never
-commits; review and commit the change yourself. It refuses while a run in this repo is in
+under `## Notes from Phil` (after a second question if there's no `AGENTS.md` yet). It only
+appends to a regular `AGENTS.md` file: a symbolic link is refused wherever it points, even
+inside the repo, and so is a file with other hard links. A new `AGENTS.md` gets the usual
+permissions for your umask. It never commits; review and commit the change yourself. It refuses while a run in this repo is in
 progress, and Phil writes `AGENTS.md` in no other way.
 
 Memory is background text, not policy. It never grants a permission: a command named in a note

@@ -211,7 +211,7 @@ The editor is Phil's own launcher, `src/phil/memory/editor.py` (`click.edit` isn
   - it removes from `memory.md` any Phil-written bullets that now duplicate an applied line;
   - it clears the applied suggestions.
 - `apply` refuses while a run in this repo is in progress, because a run's context snapshot was taken from the old file. The user is told why.
-- The write refuses a target outside the repository, a file that isn't a regular file, and a hard-linked file. An in-repo symlink is written at its target. The lines are re-checked (§4.3) just before writing.
+- The write refuses a symlinked `AGENTS.md` wherever it points, inside the repository (`.git/` included) or out of it, with "AGENTS.md is a symbolic link; Phil only appends to a regular AGENTS.md file", because the confirmation names `AGENTS.md`, not the link's target. It also refuses a file that isn't a regular file and a hard-linked file. Reading the agent file for context (§3) may still follow an in-repo link. A new `AGENTS.md` is created with mode 0o666 minus the user's umask. The lines are re-checked (§4.3) just before writing.
 - Phil never writes `AGENTS.md` in any other way.
 
 ## 6. Errors
@@ -231,7 +231,8 @@ The live benchmark gives every case a fresh repo copy, so its slug (and memory) 
 - `PHIL_BENCH_WARM=1` runs each case as cold-then-warm pairs. Within a pair, both runs use the **same** repo copy and project directory: first cold (memory cleared), then warm (with whatever the cold run wrote). The repo is reset to its starting commit between the two runs.
 - `PHIL_BENCH_PAIRS=N` sets the number of pairs per case (default 3). Each pair starts from a fresh copy, so pairs are independent. Run-to-run variance is large: on the 2026-10-15 baseline, `site-meta-tag` ranged from 9 to 35 model calls on unchanged code, so a single pair says little.
 - Each record gains `memory: "cold" | "warm"`, `pair: int` and `memory_bullets: int` (the count at the start of the run).
-- When the field is present, `tests.live.bench.report` groups by `memory` and adds a per-case summary row: the **median** cold and warm model calls, tokens and minutes, and the warm-against-cold change.
+- Every pair runs even when a run fails; the test collects the failures and reports them all at the end.
+- When the field is present, `tests.live.bench.report` adds a per-case summary row: the **median** cold and warm model calls, tokens and minutes, and the warm-against-cold change. It uses only records that passed, pairs a cold record with a warm one only when they share `(phil_sha, pair)`, keeps only complete pairs (the latest `--pairs` per case, newest `phil_sha` first), shows how many pairs each row uses, and notes "cold run learned nothing" on a row where a warm run started with `memory_bullets == 0`.
 - Offline harness tests cover the warm loop with the scripted factory.
 
 The user runs the benchmark; agents never run `-m live` or `-m bench`. The before and after go in the journey docs.

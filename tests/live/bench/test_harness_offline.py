@@ -432,27 +432,93 @@ def test_planning_agents_get_the_repo_context_block(tmp_path, results, config):
     assert "Run the tests with python -m pytest -q" in contexts["architect"]
 
 
-def test_the_cold_against_warm_section_uses_medians_over_the_last_pairs():
-    def rec(memory, calls, tokens, minutes, case_name="a"):
-        return {
-            "case": case_name, "memory": memory, "model_calls": calls,
-            "tokens_in": tokens, "tokens_out": 10, "minutes": minutes,
-        }
+def _pair_rec(memory, calls, tokens, minutes, *, case_name="a", sha="s1", pair=0, passed=True, bullets=2):
+    record = {
+        "case": case_name, "memory": memory, "model_calls": calls, "tokens_in": tokens, "tokens_out": 10,
+        "minutes": minutes, "phil_sha": sha, "pair": pair, "passed": passed,
+    }
+    if memory == "warm":
+        record["memory_bullets"] = bullets
+    return record
 
+
+_PAIR_HEADER = (
+    "case", "pairs", "cold calls", "warm calls", "change", "cold tokens", "warm tokens", "change",
+    "cold min", "warm min", "change", "note",
+)
+
+
+def test_the_cold_against_warm_section_uses_medians_over_the_last_pairs():
     records = [
-        rec("cold", 99, 999, 9.0),  # older than the last two pairs: ignored
-        rec("cold", 10, 100, 2.0), rec("warm", 4, 40, 1.0),
-        rec("cold", 20, 200, 4.0), rec("warm", 6, 60, 1.0),
-        rec("cold", 0, 0, 0.0, "b"), rec("warm", 3, 30, 1.0, "b"),
+        _pair_rec("cold", 99, 999, 9.0, pair=0), _pair_rec("warm", 1, 1, 0.1, pair=0),  # older: ignored
+        _pair_rec("cold", 10, 100, 2.0, pair=1), _pair_rec("warm", 4, 40, 1.0, pair=1),
+        _pair_rec("cold", 20, 200, 4.0, pair=2), _pair_rec("warm", 6, 60, 1.0, pair=2),
+        _pair_rec("cold", 0, 0, 0.0, case_name="b"), _pair_rec("warm", 3, 30, 1.0, case_name="b"),
     ]
     header, a_row, b_row = report.cold_against_warm(records, pairs=2)
-    assert header == (
-        "case", "cold calls", "warm calls", "change", "cold tokens", "warm tokens", "change",
-        "cold min", "warm min", "change",
-    )
+    assert header == _PAIR_HEADER
     # cold calls 10 and 20 -> 15, warm 4 and 6 -> 5; tokens (110, 210) -> 160, (50, 70) -> 60; minutes 3.0 and 1.0
-    assert a_row == ("a", "15", "5", "-67%", "160", "60", "-62%", "3.0", "1.0", "-67%")
-    assert b_row == ("b", "0", "3", "n/a", "10", "40", "+300%", "0.0", "1.0", "n/a")
+    assert a_row == ("a", "2", "15", "5", "-67%", "160", "60", "-62%", "3.0", "1.0", "-67%", "")
+    assert b_row == ("b", "1", "0", "3", "n/a", "10", "40", "+300%", "0.0", "1.0", "n/a", "")
+
+
+def test_a_failed_or_unpaired_record_is_left_out_of_the_comparison():
+    records = [
+        _pair_rec("cold", 10, 100, 2.0, pair=0), _pair_rec("warm", 4, 40, 1.0, pair=0),
+        _pair_rec("cold", 50, 500, 9.0, pair=1), _pair_rec("warm", 1, 1, 0.1, pair=1, passed=False),
+        _pair_rec("cold", 70, 700, 9.0, pair=2, passed=False), _pair_rec("warm", 2, 2, 0.2, pair=2),
+        _pair_rec("cold", 90, 900, 9.0, pair=3),  # its warm run never happened
+        _pair_rec("warm", 3, 3, 0.3, pair=4),  # its cold run never happened
+    ]
+    _, row = report.cold_against_warm(records, pairs=5)
+    assert row == ("a", "1", "10", "4", "-60%", "110", "50", "-55%", "2.0", "1.0", "-50%", "")
+
+
+def test_pairs_from_different_phil_shas_are_never_combined_and_the_newest_sha_comes_first():
+    records = [
+        _pair_rec("cold", 10, 100, 2.0, sha="old", pair=0), _pair_rec("warm", 4, 40, 1.0, sha="old", pair=0),
+        _pair_rec("cold", 30, 300, 6.0, sha="new", pair=0),
+        _pair_rec("warm", 99, 999, 9.0, sha="old", pair=1),  # pair 1 of "old" has no cold: never matched
+        _pair_rec("warm", 6, 60, 3.0, sha="new", pair=0),
+    ]
+    _, row = report.cold_against_warm(records, pairs=1)
+    assert row == ("a", "1", "30", "6", "-80%", "310", "70", "-77%", "6.0", "3.0", "-50%", "")
+    _, row = report.cold_against_warm(records, pairs=5)
+    assert row[1] == "2"
+
+
+def test_bench_runs_every_pair_and_reports_every_failure_at_the_end(tmp_path, monkeypatch):
+    from tests.live.bench import test_bench as bench_module
+
+    py = case("py-multiply")
+    runs = []
+
+    def fake_run_case(c, config_path, work, *, memory=None, pair=None, reuse_repo=False):
+        runs.append((memory, pair))
+        passed = (memory, pair) not in {("cold", 0), ("warm", 1)}
+        return {"routed_depth": c.expect_depth, "passed": passed, "state": "failed" if not passed else "completed",
+                "error": "boom" if not passed else None}
+
+    monkeypatch.setattr(bench_module, "run_case", fake_run_case)
+    monkeypatch.setenv("PHIL_BENCH_CONFIG", str(tmp_path / "bench.toml"))
+    monkeypatch.setenv("PHIL_BENCH_WARM", "1")
+    monkeypatch.setenv("PHIL_BENCH_PAIRS", "3")
+    with pytest.raises(AssertionError) as raised:
+        bench_module.test_bench(py, tmp_path)
+    assert runs == [("cold", 0), ("warm", 0), ("cold", 1), ("warm", 1), ("cold", 2), ("warm", 2)]
+    message = str(raised.value)
+    assert "py-multiply cold#0: failed: boom" in message and "py-multiply warm#1: failed: boom" in message
+
+
+def test_a_warm_run_that_started_with_no_memory_is_noted():
+    records = [_pair_rec("cold", 10, 100, 2.0), _pair_rec("warm", 9, 90, 2.0, bullets=0)]
+    _, row = report.cold_against_warm(records, pairs=3)
+    assert row[-1] == "cold run learned nothing"
+
+
+def test_a_case_with_no_complete_pair_shows_zero_pairs():
+    _, row = report.cold_against_warm([_pair_rec("cold", 10, 100, 2.0)], pairs=3)
+    assert row == ("a", "0", "-", "-", "-", "-", "-", "-", "-", "-", "-", "no complete passing pair")
 
 
 @pytest.mark.parametrize(
@@ -464,19 +530,23 @@ def test_change_is_a_whole_percent_or_not_applicable(cold, warm, text):
 
 
 def test_report_adds_the_mem_column_and_the_cold_against_warm_section(results, capsys):
-    base = {"case": "a", "state": "completed", "passed": True, "model_calls": 8, "tokens_in": 5, "tokens_out": 5}
+    base = {"case": "a", "state": "completed", "passed": True, "model_calls": 8, "tokens_in": 5, "tokens_out": 5,
+            "phil_sha": "s1"}
     records = [
-        {**base, "memory": "cold", "pair": 0, "minutes": 2.0},
-        {**base, "memory": "warm", "pair": 2, "model_calls": 4, "minutes": 1.0},
+        {**base, "memory": "cold", "pair": 2, "minutes": 2.0},
+        {**base, "memory": "warm", "pair": 2, "model_calls": 4, "minutes": 1.0, "memory_bullets": 1},
         {**base, "case": "plain"},
     ]
     results.write_text("".join(json.dumps(r) + "\n" for r in records))
     report.main(["--pairs", "3"])
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].split()[:3] == ["case", "sha", "mem"]
-    assert "cold#0" in lines[1] and "warm#2" in lines[2]
+    assert "cold#2" in lines[1] and "warm#2" in lines[2]
     assert lines[3].split()[2] == "-"
-    assert "Cold against warm (medians over the last 3 pairs)" in "\n".join(lines)
+    text = "\n".join(lines)
+    assert "Cold against warm (medians over the last 3 pairs" in text
+    header = next(line for line in lines if line.startswith("case  pairs"))
+    assert lines[lines.index(header) + 1].split()[:2] == ["a", "1"]  # the n behind the medians
 
 
 def test_report_without_memory_records_has_no_cold_against_warm_section(results, capsys):

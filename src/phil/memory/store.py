@@ -3,6 +3,7 @@ to the text on disk under a lock, then written atomically, so a second Phil or a
 between a read and a write is never lost."""
 
 import os
+import secrets
 import stat
 import tempfile
 from collections.abc import Callable, Iterator
@@ -34,18 +35,39 @@ def read_memory(paths: ProjectPaths) -> MemoryDoc:
     return _load(paths)
 
 
-def write_atomic(path: Path, data: bytes) -> None:
+UMASK_MODE = None  # `new_mode` for a file of the user's own: 0o666 less their umask, as the OS applies it
+
+
+def _umask_temp(path: Path) -> tuple[int, str]:
+    """A fresh, uniquely named temp file created with 0o666, which the OS reduces by the umask (reading
+    the umask would mean changing it, which races with other threads)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    for _ in range(100):
+        name = str(path.parent / f".{path.name}.{secrets.token_hex(6)}.phil.tmp")
+        try:
+            return os.open(name, flags, 0o666), name
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"no free temp name next to {path}")
+
+
+def write_atomic(path: Path, data: bytes, *, new_mode: int | None = 0o600) -> None:
     """Replace `path` with `data` through a fresh, uniquely named temp file in the same directory (never a
-    fixed name, which a planted symlink could redirect). Keeps the file's mode, else 0o644. Raises OSError."""
+    fixed name, which a planted symlink could redirect). An existing file keeps its mode; a new one gets
+    `new_mode` (0o600 for Phil's own files; UMASK_MODE for 0o666 less the umask). Raises OSError."""
     try:
-        mode = stat.S_IMODE(os.stat(path).st_mode)
+        mode: int | None = stat.S_IMODE(os.stat(path).st_mode)
     except FileNotFoundError:
-        mode = 0o644
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".phil.tmp")
+        mode = new_mode
+    if mode is None:
+        fd, tmp_name = _umask_temp(path)
+    else:
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".phil.tmp")
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
-        os.chmod(tmp_name, mode)
+        if mode is not None:
+            os.chmod(tmp_name, mode)
         os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
@@ -78,7 +100,13 @@ def update_memory(paths: ProjectPaths, change: Callable[[MemoryDoc], T]) -> T:
     path = paths.memory_path
     try:
         with _locked(path):
-            doc = _load(paths)
+            try:
+                # Strict, unlike read_memory: replacing bad bytes and writing back would change the user's file.
+                doc = MemoryDoc.parse(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                doc = MemoryDoc.new(paths.slug)
+            except UnicodeDecodeError as exc:
+                raise MemoryWriteError("memory.md isn't valid UTF-8; not updated") from exc
             before = doc.render()
             result = change(doc)
             after = doc.render()

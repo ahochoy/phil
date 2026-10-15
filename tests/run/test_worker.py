@@ -124,15 +124,16 @@ def test_a_resumed_run_sees_the_context_it_started_with(calc_repo):
     assert (paths.run_dir(record.run_id) / "context.md").read_text(encoding="utf-8") == snapshot
 
 
-def test_a_failure_writing_the_context_is_a_notice_and_the_run_continues(calc_repo, monkeypatch):
+@pytest.mark.parametrize("error", [OSError("disk full"), ValueError("disk full"), RuntimeError("disk full")])
+def test_a_failure_writing_the_context_is_a_notice_and_the_run_continues(calc_repo, monkeypatch, error):
     def boom(*args, **kwargs):
-        raise OSError("disk full")
+        raise error
 
     monkeypatch.setattr(worker_module, "write_run_context", boom)
     info, record = new_run(calc_repo)
     assert run_worker(calc_repo, record.run_id, "start", factory=happy()).status == "completed"
     notices = [e["message"] for e in events_of(info, record.run_id, "notice")]
-    assert any(m.startswith("Repo context:") and "disk full" in m for m in notices)
+    assert any(m.startswith("Repo context: couldn't write it:") and "disk full" in m for m in notices)
 
 
 def test_mode_guards_do_not_touch_the_row(calc_repo):

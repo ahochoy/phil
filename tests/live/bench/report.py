@@ -68,12 +68,43 @@ def change(cold: float, warm: float) -> str:
     return f"{percent:+d}%" if percent else "0%"
 
 
+NOTHING_LEARNED = "cold run learned nothing"
+
+
+def complete_pairs(records: list[dict], name: str) -> list[tuple[dict, dict]]:
+    """Case `name`'s passing (cold, warm) pairs, newest first: the newest `phil_sha` first, then the
+    newest pair. A warm record pairs only with the passing cold record before it that shares its
+    `(phil_sha, pair)`; a failed record, or one left without its partner, is in no pair."""
+    open_cold: dict[tuple, tuple[int, dict]] = {}
+    found: list[tuple[int, dict, dict]] = []  # (file position of the warm record, cold, warm)
+    for index, record in enumerate(records):
+        if record.get("case") != name or record.get("memory") not in ("cold", "warm"):
+            continue
+        key = (record.get("phil_sha"), record.get("pair"))
+        if record["memory"] == "cold":
+            if record.get("passed") is True:
+                open_cold[key] = (index, record)
+            else:
+                open_cold.pop(key, None)  # a later warm run can't be this cold run's partner
+        elif key in open_cold:
+            _, cold = open_cold.pop(key)
+            if record.get("passed") is True:
+                found.append((index, cold, record))
+    newest_of_sha: dict[object, int] = {}
+    for index, cold, _ in found:
+        newest_of_sha[cold.get("phil_sha")] = index
+    found.sort(key=lambda item: (newest_of_sha[item[1].get("phil_sha")], item[0]), reverse=True)
+    return [(cold, warm) for _, cold, warm in found]
+
+
 def cold_against_warm(records: list[dict], pairs: int) -> list[tuple[str, ...]]:
     """The header, then one row per case that has warm-mode records: the medians of model calls,
-    tokens (in plus out) and minutes over the last `pairs` cold and warm records, with the change."""
+    tokens (in plus out) and minutes over its latest `pairs` complete passing pairs (complete_pairs),
+    with the change, the number of pairs behind them, and a note when a warm run started with no
+    memory (its cold run learned nothing, so the pair shows no effect of memory)."""
     header = (
-        "case", "cold calls", "warm calls", "change", "cold tokens", "warm tokens", "change",
-        "cold min", "warm min", "change",
+        "case", "pairs", "cold calls", "warm calls", "change", "cold tokens", "warm tokens", "change",
+        "cold min", "warm min", "change", "note",
     )
     measures = (
         (lambda r: r.get("model_calls", 0), "{:g}"),
@@ -82,14 +113,16 @@ def cold_against_warm(records: list[dict], pairs: int) -> list[tuple[str, ...]]:
     )
     rows = [header]
     for name in sorted({r["case"] for r in records if r.get("memory")}):
-        medians = {}
-        for memory in ("cold", "warm"):
-            picked = [r for r in records if r["case"] == name and r.get("memory") == memory][-pairs:]
-            medians[memory] = [statistics.median(measure(r) for r in picked) if picked else 0 for measure, _ in measures]
-        cells = [name]
-        for index, (_, fmt) in enumerate(measures):
-            cold, warm = medians["cold"][index], medians["warm"][index]
+        picked = complete_pairs(records, name)[:pairs]
+        if not picked:
+            rows.append((name, "0", *["-"] * 9, "no complete passing pair"))
+            continue
+        cells = [name, str(len(picked))]
+        for measure, fmt in measures:
+            cold = statistics.median(measure(c) for c, _ in picked)
+            warm = statistics.median(measure(w) for _, w in picked)
             cells += [fmt.format(cold), fmt.format(warm), change(cold, warm)]
+        cells.append(NOTHING_LEARNED if any(w.get("memory_bullets") == 0 for _, w in picked) else "")
         rows.append(tuple(cells))
     return rows
 
@@ -133,7 +166,8 @@ def main(argv: list[str] | None = None) -> None:
         return
     _print_table([COLUMNS, *(row(record) for record in records)])
     if any(record.get("memory") for record in all_records):
-        print(f"\nCold against warm (medians over the last {args.pairs} pairs)")
+        print(f"\nCold against warm (medians over the last {args.pairs} pairs that both passed, "
+              "matched by phil sha and pair; `pairs` is how many each row uses)")
         _print_table(cold_against_warm(all_records, args.pairs))
 
 

@@ -7,11 +7,12 @@ import pytest
 
 from phil.agents.registry import SPECS
 from phil.agents.spec import load_prompt
+import phil.memory.context as context_module
 from phil.memory.context import (
     AGENT_FILE_MAX_BYTES,
     TRUNCATED_NOTE,
     build_repo_context,
-    find_agent_file,
+    read_agent_file,
     read_run_context,
     write_run_context,
 )
@@ -22,14 +23,30 @@ from phil.store.paths import ProjectPaths
 
 def test_agents_md_is_preferred_over_claude_md(tmp_path):
     (tmp_path / "CLAUDE.md").write_text("claude\n", encoding="utf-8")
-    assert find_agent_file(tmp_path).name == "CLAUDE.md"
+    assert read_agent_file(tmp_path) == ("CLAUDE.md", "claude\n")
     (tmp_path / "AGENTS.md").write_text("agents\n", encoding="utf-8")
-    assert find_agent_file(tmp_path).name == "AGENTS.md"
+    assert read_agent_file(tmp_path) == ("AGENTS.md", "agents\n")
 
 
 def test_a_directory_named_agents_md_is_not_an_agent_file(tmp_path):
     (tmp_path / "AGENTS.md").mkdir()
-    assert find_agent_file(tmp_path) is None
+    assert read_agent_file(tmp_path) == ("", "")
+    assert build_repo_context(tmp_path, ProjectPaths("x", home=tmp_path / "home")).problems == [
+        "skipped AGENTS.md: not a regular file"
+    ]
+
+
+def test_run_context_is_written_atomically(tmp_path, monkeypatch):
+    (tmp_path / "AGENTS.md").write_text("Run `make test`.\n", encoding="utf-8")
+    paths = ProjectPaths("x", home=tmp_path / "home")
+    run_dir = tmp_path / "run"
+    calls = []
+    real = context_module.write_atomic
+    monkeypatch.setattr(context_module, "write_atomic", lambda path, data, **kw: (calls.append(path), real(path, data, **kw)))
+    write_run_context(run_dir, tmp_path, paths)
+    assert calls == [run_dir / "context.md"]
+    assert "Run `make test`." in read_run_context(run_dir)
+    assert not list(run_dir.glob("*.tmp"))
 
 
 def test_run_context_is_written_and_read_back(tmp_path):
