@@ -9,7 +9,8 @@ from phil.store.paths import phil_home
 from phil.tomlw import dump_toml
 
 ROLES = (
-    "orchestrator", "architect", "critic", "implementer", "tester", "reviewer", "classifier", "answerer", "designer"
+    "orchestrator", "architect", "critic", "implementer", "tester", "reviewer", "classifier", "answerer", "designer",
+    "memory",
 )
 TIERS = ("high", "low", "classifier")
 # Tier each role resolves through when it has no model of its own (and [tiers] doesn't remap it).
@@ -23,11 +24,13 @@ DEFAULT_TIERS: dict[str, str] = {
     "classifier": "classifier",
     "answerer": "low",
     "designer": "high",
+    "memory": "low",
 }
 # Roles the chat calls; `phil` checks these have models before the conversation starts. The
 # classifier isn't one: routing falls back to the low model, then to intake. Nor is the answerer:
 # without a model of its own (a legacy per-role config has no low tier) it uses the orchestrator's.
-# Nor is the designer: without a model of its own it uses the architect's.
+# Nor is the designer: without a model of its own it uses the architect's. Nor is the memory
+# keeper: without a model of its own it uses the orchestrator's, like the answerer.
 CHAT_ROLES = ("orchestrator", "architect", "critic")
 # Roles the run graph calls; `phil run` checks these have models before starting.
 RUN_ROLES = ("implementer", "tester", "reviewer")

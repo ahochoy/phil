@@ -10,12 +10,12 @@ def test_registry_covers_chat_and_run_roles():
     # Check registered agent names
     assert set(SPECS) == {
         "intake", "architect", "critic", "implementer", "tester", "reviewer", "btw", "route", "answer",
-        "quick_implementer", "design",
+        "quick_implementer", "design", "memory",
     }
-    # Check that agents reference the correct roles. "classifier", "answerer" and "designer" are not
-    # checked chat or run roles, but "route", "answer" and "design" register them here.
+    # Check that agents reference the correct roles. "classifier", "answerer", "designer" and "memory"
+    # are not checked chat or run roles, but "route", "answer", "design" and "memory" register them here.
     agent_roles = {spec.role for spec in SPECS.values()}
-    assert agent_roles == set(CHAT_ROLES) | set(RUN_ROLES) | {"classifier", "answerer", "designer"}
+    assert agent_roles == set(CHAT_ROLES) | set(RUN_ROLES) | {"classifier", "answerer", "designer", "memory"}
 
 
 @pytest.mark.parametrize(
@@ -74,7 +74,7 @@ def test_unknown_spec_raises():
 
 def test_only_judging_and_intake_roles_use_the_lean_harness():
     lean = {name for name, spec in SPECS.items() if spec.harness == "lean"}
-    assert lean == {"intake", "critic", "reviewer", "route"}
+    assert lean == {"intake", "critic", "reviewer", "route", "memory"}
     assert all(not SPECS[name].tools and not SPECS[name].writes_files for name in lean)
 
 

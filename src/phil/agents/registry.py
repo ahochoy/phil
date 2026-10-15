@@ -17,6 +17,7 @@ from phil.contracts import (
     TesterInput,
     TesterReport,
 )
+from phil.contracts.memory import MemoryInput, MemoryUpdate
 from phil.contracts.routing import Answer, AnswerInput, RouteInput, RouteJudgement
 
 # The answerer's model-call budget: its last allowed call must answer (see phil.agents.factory).
@@ -73,6 +74,9 @@ SPECS: dict[str, AgentSpec] = {
         "design", "designer", DesignInput, Approaches, tools=("shell",), harness="light", shared_prompt=False,
         read_only_shell=True, max_model_calls=DESIGN_MAX_MODEL_CALLS, cap_message=PROPOSE_NOW,
         repo_context=True,
+    ),
+    "memory": AgentSpec(
+        "memory", "memory", MemoryInput, MemoryUpdate, harness="lean", shared_prompt=False, end_on_text=True
     ),
 }
 
