@@ -36,11 +36,15 @@ from phil.chat.decision import (
     answered_elsewhere,
     approach_decision,
     approval_decision,
+    approval_lines,
     fix_decision,
     pause_decision,
     pr_decision,
     question_decision,
     replace_decision,
+    repo_shell_decision,
+    repo_shell_lines,
+    repo_shell_title,
     settled_line,
 )
 from phil.chat.design import propose_approaches
@@ -57,6 +61,9 @@ from phil.contracts.results import AttemptWorklog
 from phil.contracts.routing import Answer
 from phil.publish import publisher as publishing
 from phil.publish.service import PrChange, PublishRefused, change_line, publish_run, sweep_prs
+from phil.permissions.listing import CHANGE_HINT, listing_lines, problem_lines
+from phil.permissions.load import current_repo_shell_hash,policy_or_fallback, rule_label, undecided_repo_shell
+from phil.permissions.store import PolicySet, RepoShellSettings, record_repo_decision
 from phil.repo import RepoInfo, resolve_repo
 from phil.repo_detect import detect_test_cmd
 from phil.routing import Route, decide, parse_override, route_state, skips_design
@@ -67,7 +74,8 @@ from phil.run.state import blocking_count
 from phil.store.activity import activity_log
 from phil.store.db import connect
 from phil.store.events import MILESTONE_KINDS, run_events, test_cmd_changed_line
-from phil.store.paths import ProjectPaths
+from phil.text import printable
+from phil.store.paths import ProjectPaths, global_policy_path
 from phil.store.parked import open_count, park
 from phil.store.runs import get_run, list_runs
 from phil.store.telemetry import budget_warning_line, chat_cost_since, chat_usage, last_telemetry_id, run_totals
@@ -94,7 +102,8 @@ HELP = (
     "Commands: /runs, /btw <question> (ask while work continues), "
     "/answer (a paused run's question), /resume (a failed or stopped run), /show (the chat's run: usage "
     "and numbered details), /more <n> (print detail n), /more #<step> (a feed step's detail), "
-    "/feed <agent> (show one agent's lines; /feed to show all), /park <note> (set an idea aside), /help, "
+    "/feed <agent> (show one agent's lines; /feed to show all), /park <note> (set an idea aside), "
+    "/permissions (the rules for agents' commands), /help, "
     "/quit (or Ctrl-D)."
 )
 FEED_AGENTS = ("implementer", "tester", "reviewer", "architect", "sub-agent", "engine")
@@ -108,6 +117,7 @@ PROMPTS = {
     "confirm_pr": "Open a PR? [y / n] › ",
     "confirm_fix": "Fix it? [Enter = quick fix / full = plan it / n] › ",
     "choose_approach": "Pick an approach [Enter = 1 / number / describe your own] › ",
+    "trust_repo": "Trust phil.toml's settings? [trust / ignore] › ",
 }
 PR_ANYWAY_PROMPT = "Open a PR anyway? [y / n] › "  # confirm_pr, for a run finished with blocking issues
 QUICK_FALLBACK = "Couldn't plan this as a quick change; planning it fully."
@@ -124,7 +134,7 @@ GOAL_JOB_STAGES = ("routing", "intake", "planning", "answering", "designing")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
 RUN_EVENTS = (
     "run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning",
-    "budget_raised", "test_cmd_changed", "activity", "milestone", "live_step", "live_agents",
+    "budget_raised", "test_cmd_changed", "notice", "activity", "milestone", "live_step", "live_agents",
 )
 RECENT_EVENTS = 10  # run events a /btw answer sees
 NOTICE_REFS = 3  # details a completion notice lists
@@ -158,6 +168,18 @@ CLASS_LABELS = {
     "simple_change": "Simple change", "focused_fix": "Focused fix", "feature": "Feature", "refactor": "Refactor",
     "design": "Design", "broad_project": "Broad project", "other": "Unclear",
 }
+
+
+@dataclass(frozen=True)
+class TrustAsk:
+    """The trust question about a repo's phil.toml shell settings (spec 2026-10-13 §3.5, R14):
+    what is shown, the hash of exactly that (recorded with the answer), and where the chat goes
+    next: plan approval, or the quick run of `goal`."""
+
+    settings: RepoShellSettings
+    digest: str
+    then: str  # "approval" | "quick"
+    goal: Goal | None = None
 
 
 @dataclass
@@ -209,8 +231,9 @@ class ChatController:
         extra = {"sleep": sleep} if sleep is not None else {}
         self.ctx = AgentContext(
             config=config, conn=conn, layer="chat", artifacts=self.session.artifacts, factory=factory,
-            chat_id=self.session.id, **extra
+            chat_id=self.session.id, repo_root=info.root, paths=ProjectPaths(info.slug), **extra
         )  # jobs copy this context (with their own connection), so their telemetry is tagged with the chat
+        # repo_root and paths: the chat's read-only agents get the rules in effect, so deny rules block them too.
         self.overview = repo_overview(info.root)
         self.planner = Planner(self.ctx, self.overview)
         self._intake_calls = 0
@@ -301,6 +324,7 @@ class ChatController:
         # A settled line that waits for its answer to take effect: an approved plan's run starting,
         # or a pause's resume being sent (a retry's, past its hint prompt).
         self._settled: str | None = None
+        self._trust: TrustAsk | None = None  # the repo's phil.toml settings the trust_repo stage asks about
 
     # --- events and jobs -------------------------------------------------------------------------
 
@@ -520,6 +544,10 @@ class ChatController:
             return approach_decision([(a.name, a.summary) for a in self._approach_order])
         if stage == "approval":
             return approval_decision()
+        if stage == "trust_repo" and self._trust is not None:
+            rules, labels, pass_env, bash = self._trust_parts(self._trust)
+            decision = repo_shell_decision(self.info.root.name, rules, labels, pass_env, bash)
+            return self._with_details(decision, repo_shell_lines(rules, labels, pass_env, bash))
         if stage == "confirm_pr" and self._pr_offer is not None:
             return pr_decision(self._pr_offer, self._pr_force)
         if stage == "confirm_fix":
@@ -533,7 +561,9 @@ class ChatController:
     def _pause_decision(self, pause: dict) -> Decision:
         """The pause's decision, with its details as detail 1: the escalation's log when it has
         one, else the summary and every problem."""
-        lines = [str(pause.get("summary", "")), *(str(p) for p in pause.get("problems") or [])]
+        lines = [printable(pause.get("summary", "")), *(str(p) for p in pause.get("problems") or [])]
+        if pause.get("reason") == "approval":
+            lines += approval_lines(pause)  # every command and rule in full (R15)
         log = pause.get("log")
         return self._with_details(pause_decision(self._run_id, pause), lines, log=str(log) if log else None)
 
@@ -581,6 +611,8 @@ class ChatController:
                 stage = "idle"  # the question isn't asked again (`phil pr` opens a PR later)
             elif stage == "edit" or (stage == "planning" and self._revising and self._draft is not None):
                 stage = "approval"  # a reopened chat returns to the draft being revised
+            elif stage == "trust_repo" and self._draft is not None:
+                stage = "approval"  # a reopened chat asks about phil.toml again before approval
             draft = self._draft
             planner_calls, planner_version = self.planner.counters()
             self.session.save_state(
@@ -627,6 +659,7 @@ class ChatController:
 
     def run(self) -> None:
         try:
+            self._report_policy_problems()
             if self._resume:
                 self._reopen()
             self._refresh_cost()
@@ -729,6 +762,8 @@ class ChatController:
             self._choose_approach(text)
         elif stage == "approval":
             self._approval(text)
+        elif stage == "trust_repo":
+            self._trust_answer(text)
         elif stage == "edit":
             self._edit(text)
         elif stage == "confirm_replace":
@@ -770,6 +805,8 @@ class ChatController:
             self._feed_command(text[len(command):].strip())
         elif command == "/park":
             self._park_command(text[len(command):].strip())
+        elif command == "/permissions":
+            self._permissions_command()
         else:
             self.console.print(f"Unknown command {escape(command)}. Try /help.")
         return True
@@ -783,7 +820,7 @@ class ChatController:
             self._set_stage("approval")
             self.console.print("[phil.muted]Cancelled the revision.[/]")
             self._show_plan(self._draft)
-        elif self.stage in (*GOAL_JOB_STAGES, "questions", "choose_approach"):
+        elif self.stage in (*GOAL_JOB_STAGES, "questions", "choose_approach", "trust_repo"):
             self._next_generation()  # an in-flight result is dropped when it lands
             self.state.set_cancelling(True)
             self._reset_goal()
@@ -815,6 +852,7 @@ class ChatController:
         self._pending, self._replies, self._typing_other = [], [], False
         self._skip_design, self._approach_order, self._approach, self._approach_note = False, [], None, ""
         self._describing, self._budget_warned = False, False
+        self._trust = None
 
     def _forced_input(self, raw: str, forced: str, rest: str) -> None:
         """A message prefixed with /ask, /quick, /full or /full!: a goal whose depth skips the router."""
@@ -1041,8 +1079,11 @@ class ChatController:
         didn't start with /full! (spec §3.4)."""
         return goal.approach_open and not goal.open_questions and not self._skip_design
 
-    def _quick(self, goal: Goal) -> None:
-        """Start the goal's one-task run straight away, or fall back to full planning (spec §4.1)."""
+    def _quick(self, goal: Goal, *, ask_trust: bool = True) -> None:
+        """Start the goal's one-task run straight away, or fall back to full planning (spec §4.1).
+        First, the repo's phil.toml settings are trusted or ignored (2026-10-13 §3.5)."""
+        if ask_trust and self._ask_trust("quick", goal):
+            return
         plan, setup_cmd, reasons = self._quick_plan(goal)
         if plan is None:
             self.console.print(f"[phil.muted]{QUICK_FALLBACK}[/]")
@@ -1076,7 +1117,7 @@ class ChatController:
         if plan is None:
             return None, None, ["the quick task doesn't make a valid plan"]
         setup_cmd, _ = effective_setup_cmd(self.config, root)
-        problems = launch_problems(plan, self.config, root, check_root=root or self.info.root)
+        problems = launch_problems(plan, self.config, root, check_root=root or self.info.root, policy=self._rules())
         return (None, None, problems) if problems else (plan, setup_cmd, [])
 
     def _design_job(self, goal: Goal) -> None:
@@ -1281,14 +1322,13 @@ class ChatController:
         self._record_draft(draft)
         self._draft = draft
         self._revising = False
-        self._set_stage("approval")
         if draft.budget_stopped:
             self.console.print(
                 "[phil.muted]Skipped the critic's revision: this goal reached its planning budget "
                 "(chat.max_cost_usd).[/]"
             )
         self._budget_note()
-        self._show_plan(draft)
+        self._to_approval()
 
     def _on_job_failed(self, data: dict) -> None:
         self._failed(data["error"], data.get("failure"))
@@ -1309,11 +1349,79 @@ class ChatController:
             self._set_stage(self._parent_stage)
         self._replacement, self._replacement_forced, self._replacement_skip = "", None, False
 
+    # --- trusting the repo's phil.toml ------------------------------------------------------------
+
+    def _to_approval(self, *, ask_trust: bool = True) -> None:
+        """Show the draft for approval, once the repo's phil.toml settings are trusted or ignored."""
+        if ask_trust and self._ask_trust("approval"):
+            return
+        self._set_stage("approval")
+        self._show_plan(self._draft)
+
+    def _ask_trust(self, then: str, goal: Goal | None = None) -> bool:
+        """Ask whether to trust the repo's phil.toml shell settings, when nothing recorded covers
+        their hash (spec 2026-10-13 §3.5, R14). True when the trust_repo stage now waits for it."""
+        pending = undecided_repo_shell(self.info.root, ProjectPaths(self.info.slug))
+        if pending is None:
+            return False
+        self._trust = TrustAsk(*pending, then=then, goal=goal)
+        self._set_stage("trust_repo")
+        if self.io.choose is None:  # no menu shows it: print what is being trusted
+            rules, labels, pass_env, bash = self._trust_parts(self._trust)
+            self.console.print(Text(repo_shell_title(self.info.root.name, rules)))
+            for line in repo_shell_lines(rules, labels, pass_env, bash):
+                self.console.print(Text(f"  {line}"))
+        return True
+
+    @staticmethod
+    def _trust_parts(ask: TrustAsk) -> tuple[list[str], list[str], tuple[str, ...], str | None]:
+        rules = list(ask.settings.allow)
+        return rules, [rule_label(rule) for rule in rules], ask.settings.pass_env, ask.settings.bash
+
+    def _trust_answer(self, text: str) -> None:
+        """Record trust or ignore under the hash of what was shown. If phil.toml changed since,
+        nothing is recorded and the chat asks about what it says now."""
+        ask = self._trust
+        choice = text.strip().lower()
+        if ask is None:
+            self._set_stage("idle")
+            return
+        if choice not in ("trust", "ignore"):
+            self.console.print("Answer trust or ignore.")
+            return
+        self._trust = None
+        if current_repo_shell_hash(self.info.root) != ask.digest:
+            self.console.print("[phil.warn]phil.toml changed while you were deciding, so nothing was recorded.[/]")
+            self._continue_after_trust(ask)
+            return
+        try:
+            record_repo_decision(ProjectPaths(self.info.slug).policy_path, choice, ask.digest)
+        except Exception as exc:  # recording never stops the goal; the settings stay off
+            logger.warning("couldn't record the phil.toml decision", exc_info=True)
+            self._safe_note("repo_settings", decision=choice, hash=ask.digest, error=f"{type(exc).__name__}: {exc}")
+            self.console.print(
+                f"[phil.warn]Couldn't save your answer ({escape(str(exc))}): phil.toml's settings stay off, "
+                "and Phil will ask again next time.[/]"
+            )
+            self._continue_after_trust(ask, ask_trust=False)
+            return
+        self._safe_note("repo_settings", decision=choice, hash=ask.digest)
+        self._continue_after_trust(ask)
+
+    def _continue_after_trust(self, ask: TrustAsk, *, ask_trust: bool = True) -> None:
+        if ask.then == "quick" and ask.goal is not None:
+            self._quick(ask.goal, ask_trust=ask_trust)
+        elif self._draft is not None:
+            self._to_approval(ask_trust=ask_trust)
+        else:
+            self._reset_goal()
+            self._set_stage("idle")
+
     # --- approval and start ----------------------------------------------------------------------
 
     def _show_plan(self, draft: PlanDraft) -> None:
         root = self._detection_root(draft.plan)
-        problem = test_cmd_problem(draft.plan, self.config, root)
+        problem = test_cmd_problem(draft.plan, self.config, root, policy=self._rules())
         differs = test_cmd_differs(draft.plan, self.config)
         origin = self.config.sources.get("project.test_cmd")  # the file that set [project] test_cmd
         note = problem or (
@@ -1339,6 +1447,10 @@ class ChatController:
             setup_cmd=setup_cmd,
             setup_cmd_source=setup_cmd_source,
         )
+
+    def _rules(self) -> PolicySet:
+        """The permission rules in effect now, read fresh: their deny rules block a plan's commands."""
+        return policy_or_fallback(self.info.root, ProjectPaths(self.info.slug), self.config)
 
     def _detection_root(self, plan: Plan) -> Path | None:
         """Where a missing test or setup command is detected from: the base commit's snapshot,
@@ -1366,7 +1478,9 @@ class ChatController:
             root = self._detection_root(draft.plan)
             # Check commands' paths must stay inside the tree: the base commit's snapshot when it was
             # exported for detection, else the repo itself.
-            problems = launch_problems(draft.plan, self.config, root, check_root=root or self.info.root)
+            problems = launch_problems(
+                draft.plan, self.config, root, check_root=root or self.info.root, policy=self._rules()
+            )
             if problems:
                 for item in problems:
                     self.console.print(f"[phil.error]{escape(terminated(item))}[/]")
@@ -1603,6 +1717,10 @@ class ChatController:
     def _on_test_cmd_changed(self, data: dict) -> None:
         self.console.print(f"[phil.warn]{escape(test_cmd_changed_line(str(data.get('cmd'))))}[/]")
 
+    def _on_notice(self, data: dict) -> None:
+        """A line the worker wrote for the user, such as phil.toml settings nobody has trusted yet."""
+        self.console.print(f"[phil.warn]{escape(printable(data.get('message', '')))}[/]")
+
     def _on_activity(self, data: dict) -> None:
         records = data.get("records", [])
         agent = self._feed_filter
@@ -1648,7 +1766,7 @@ class ChatController:
         self.state.set_paused(True)
         self._safe_note("run_paused", run_id=self._run_id, escalation=escalation)
         self.console.print(
-            f"[phil.warn]⏸ {escape(self._run_id)} needs you: {escape(str(escalation.get('summary', '')))}[/]"
+            f"[phil.warn]⏸ {escape(self._run_id)} needs you: {escape(printable(escalation.get('summary', '')))}[/]"
         )
         if self.stage in RUN_STAGES:
             self._set_stage("paused")
@@ -1695,8 +1813,12 @@ class ChatController:
         return self._worker_alive(record) or self._worker_starting(events)
 
     def _resume_run(self, decision: dict) -> None:
-        """Answer the pause: spawn a resume worker, unless the run already moved on."""
+        """Answer the pause: spawn a resume worker, unless the run already moved on. The answer
+        carries the pause's id, so the engine applies it to this pause only (R16)."""
         run_id = self._run_id
+        pause_id = (self._pause or {}).get("id")
+        if pause_id is not None:
+            decision = {**decision, "id": pause_id}
         record = get_run(self.conn, run_id)
         if record is None or record.state != "escalated" or self._worker_active(record):
             self._settled = None  # nothing was answered: no settled line
@@ -1985,6 +2107,23 @@ class ChatController:
         self._safe_note("parked", id=item.id, note=note)
         self._refresh_parked()
         self.console.print(f"Parked [phil.id]{escape(item.id)}[/].")
+
+    def _report_policy_problems(self) -> None:
+        """At chat start, right after the banner: each problem with the permission rules, once, in
+        the line the listing shows (spec 2026-10-13 §3.6). `/permissions` lists them again."""
+        try:
+            paths = ProjectPaths(self.info.slug)
+            lines = problem_lines(self._rules(), (global_policy_path(), paths.policy_path))
+        except Exception:
+            logger.warning("couldn't check the permission rules for problems", exc_info=True)
+            return
+        for line in lines:
+            self.console.print(Text(line, style="phil.warn"), soft_wrap=True)
+
+    def _permissions_command(self) -> None:
+        """What `phil permissions` lists; changes are made with the CLI (spec 2026-10-13 §3.7)."""
+        for line in [*listing_lines(self.info.root, ProjectPaths(self.info.slug), self.config), CHANGE_HINT]:
+            self.console.print(Text(line), soft_wrap=True)
 
     # --- /feed -----------------------------------------------------------------------------------
 
@@ -2283,8 +2422,7 @@ class ChatController:
             self.console.print(f"[phil.muted]Following run {escape(self._run_id)}.[/]")
             self._follow()
         elif stage in ("approval", "planning", "edit") and self._draft is not None:
-            self._set_stage("approval")
-            self._show_plan(self._draft)
+            self._to_approval()
         else:
             self._reset_goal()
             self._set_stage("idle")

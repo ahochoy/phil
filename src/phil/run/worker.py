@@ -22,8 +22,10 @@ from phil.run.launch import is_worker_alive
 from phil.store.activity import activity_log
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect, utcnow
-from phil.store.events import run_events
-from phil.store.paths import ProjectPaths
+from phil.permissions.listing import problem_lines
+from phil.permissions.load import policy_or_fallback, untrusted_notice
+from phil.store.events import EventLog, run_events
+from phil.store.paths import ProjectPaths, global_policy_path
 from phil.store.runs import TRANSITIONS, claim_run, get_run, release_run, update_run
 from phil.workspace.shell import kill_active_groups
 
@@ -91,6 +93,21 @@ def _test_cmd_switch(values: dict, config: PhilConfig, run_id: str) -> dict | No
         return None
     _logger.info("run %s: switching the test command from %r to %r", run_id, values.get("test_cmd"), current)
     return {"test_cmd": current, "rebaseline": True, "config_test_cmd": current}
+
+
+def _note_policy(events: EventLog, repo_root: Path, paths: ProjectPaths, config: PhilConfig) -> None:
+    """At run start, once, in the run log: each problem with the permission rules (spec 2026-10-13
+    §3.6), in the line the listing shows, and (§3.5, with no one to ask) that the repo's phil.toml
+    shell settings nobody has trusted or ignored are ignored. They already are: the rules come
+    from `policy_or_fallback`, which leaves them out. Never fails the run."""
+    try:
+        policy = policy_or_fallback(repo_root, paths, config)
+        notices = problem_lines(policy, (global_policy_path(), paths.policy_path))
+        untrusted = untrusted_notice(policy)
+        for notice in [*notices, *([untrusted] if untrusted is not None else [])]:
+            events.append("notice", message=notice)
+    except Exception:
+        _logger.warning("couldn't write the permission rules' notices", exc_info=True)
 
 
 class Heartbeat:
@@ -183,6 +200,7 @@ def run_worker(
         sleep=sleep,
         events=events,
         activity=activity_log(paths, run_id),
+        paths=paths,
     )
     engine = RunEngine(deps)
     saver = open_checkpointer(paths.db_path)
@@ -219,6 +237,7 @@ def run_worker(
             # stopped right after the checkpoint): surface it again instead of refusing to run.
             outcome = runner.settle(engine, snapshot)
         elif not snapshot.values:
+            _note_policy(events, info.root, paths, config)
             plan = deps.artifacts.read_plan()
             test_cmd = plan.test_cmd or config.project.test_cmd or _detect(engine, record.base_sha) or ""
             outcome = runner.start(

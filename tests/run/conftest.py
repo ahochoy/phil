@@ -111,8 +111,14 @@ class Harness:
         return self.graph.invoke(initial_state(self.deps.run_id, self.plan, self.base_sha, TEST_CMD), self.thread)
 
     def resume(self, decision: dict) -> dict:
+        """Answer the pending pause as the chat does: with the pause's id (R16), unless the
+        decision names one itself."""
         from langgraph.types import Command
 
+        pending = self.graph.get_state(self.thread).interrupts
+        pause_id = pending[0].value.get("id") if pending else None
+        if pause_id is not None and "id" not in decision:
+            decision = {**decision, "id": pause_id}
         return self.graph.invoke(Command(resume=decision), self.thread)
 
     def run_record(self):
@@ -142,7 +148,7 @@ def make_harness(calc_repo: Path):
             config=_with_test_models(config or PhilConfig()), conn=conn, repo_root=calc_repo, run_id=RUN_ID,
             worktree=paths.worktree_dir(RUN_ID), artifacts=ArtifactStore(paths.run_dir(RUN_ID)),
             factory=factory, sleep=lambda _: None,
-            events=EventLog(paths.run_dir(RUN_ID) / "events.jsonl"), activity=activity,
+            events=EventLog(paths.run_dir(RUN_ID) / "events.jsonl"), activity=activity, paths=paths,
         )
         engine = RunEngine(deps)
         return Harness(engine, engine.build(open_checkpointer(paths.db_path)), deps, factory, plan, base_sha)

@@ -431,6 +431,10 @@ def _read_layer(path: Path, label: str) -> dict:
         return tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"Invalid {label}: {exc}") from exc
+    except RecursionError as exc:
+        raise ConfigError(f"Invalid {label}: it is nested too deeply to read") from exc
+    except Exception as exc:  # unreadable, not UTF-8, or any other failure: never a crash
+        raise ConfigError(f"Can't read {label}: {exc}") from exc
 
 
 def _precedence(source: str) -> int:
@@ -452,8 +456,10 @@ def _source_of(loc: tuple, sources: Mapping[str, str]) -> str:
     return "config"
 
 
-def load_config(repo_root: Path, *, overrides: Sequence[str] = ()) -> PhilConfig:
-    """Settings in layers: defaults, then ~/.phil/config.toml, then the repo's phil.toml, then `--set`."""
+def load_config(repo_root: Path, *, overrides: Sequence[str] = (), include_repo: bool = True) -> PhilConfig:
+    """Settings in layers: defaults, then ~/.phil/config.toml, then the repo's phil.toml, then `--set`.
+    Without `include_repo`, the repo's phil.toml is left out (the permission rules use this: a repo's
+    own `[shell] allow` needs the user's trust, spec 2026-10-13 §3.5)."""
     parsed_overrides = [parse_override(text) for text in overrides]
     merged: dict = {}
     sources: dict[str, str] = dict.fromkeys(_leaves(PhilConfig().model_dump()), DEFAULT_SOURCE)
@@ -461,7 +467,7 @@ def load_config(repo_root: Path, *, overrides: Sequence[str] = ()) -> PhilConfig
     if global_path.is_file():
         _merge(merged, _read_layer(global_path, str(global_path)), str(global_path), sources)
     repo_path = repo_root / "phil.toml"
-    if repo_path.is_file():
+    if include_repo and repo_path.is_file():
         _merge(merged, _read_layer(repo_path, REPO_SOURCE), REPO_SOURCE, sources)
     for path, value in parsed_overrides:
         layer: object = value

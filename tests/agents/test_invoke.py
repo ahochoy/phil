@@ -218,6 +218,109 @@ def test_shell_log_prefix_matches_artifact_base_name(conn, artifacts, tmp_path):
     assert (artifacts.run_dir / "logs" / "implement-CALC-001-1-shell-1.log").exists()
 
 
+def _implementer_shell(ctx_values: dict, conn, artifacts, tmp_path) -> object:
+    captured: dict = {}
+
+    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None):
+        captured["tools"] = tools
+        return FakeAgent([TaskResult(phase="red", summary="s", files_changed=[], tests_added=[], self_check=self_check())])
+
+    task = Task(id="CALC-001", description="Add subtract", acceptance_criteria=["subtract(3, 1) == 2"])
+    packet = build_packet("implementer", ImplementInput(task=task, phase="red", test_cmd="pytest"), budget_tokens=4000)
+    config = PhilConfig(shell=ShellConfig(allow=["make *"]), models=TEST_MODELS)
+    ctx = AgentContext(config=config, conn=conn, layer="run", run_id="r-0001", artifacts=artifacts, factory=factory,
+                       workdir=tmp_path, **ctx_values)
+    invoke_agent(get_spec("implementer"), packet, ctx, node="implement", task_id="CALC-001")
+    [run_shell] = captured["tools"]
+    return run_shell
+
+
+def test_invoke_loads_the_policy_once_per_agent_call(conn, artifacts, tmp_path, monkeypatch):
+    from datetime import date
+
+    from phil.permissions import load
+    from phil.permissions.store import add_rule
+    from phil.store.paths import ProjectPaths
+
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    paths = ProjectPaths("calc-1")
+    add_rule(paths.policy_path, "deny", "make deploy", "manual", today=date(2026, 10, 13))
+    calls = []
+    real = load.policy_for
+    monkeypatch.setattr(load, "policy_for", lambda *args: calls.append(args) or real(*args))
+    run_shell = _implementer_shell({"repo_root": tmp_path, "paths": paths}, conn, artifacts, tmp_path)
+    assert run_shell("make deploy").startswith("DENIED: `make deploy` is blocked by your deny rule")
+    run_shell("make deploy")
+    assert len(calls) == 1
+
+
+def _repo_with(tmp_path, phil_toml: str):
+    repo = tmp_path / "calc"
+    repo.mkdir()
+    (repo / "phil.toml").write_text(phil_toml, encoding="utf-8", newline="\n")
+    return repo
+
+
+def test_without_a_policy_the_repos_allow_list_is_not_config(tmp_path):
+    # M1: a shell tool built without the rules must not take the repo's untrusted list as config.
+    from phil.agents.invoke import _shell_for
+    from phil.agents.tools import CommandLog
+    from phil.config import load_config
+
+    repo = _repo_with(tmp_path, '[shell]\nallow = ["make *"]\n')
+    run_shell = _shell_for(get_spec("implementer"), load_config(repo), repo, CommandLog())
+    assert run_shell("make deploy").startswith("DENIED: `make deploy` is not on the allowlist")
+
+
+def test_the_repos_pass_env_is_not_applied_r14(tmp_path, monkeypatch):
+    from phil.agents.invoke import _shell_for
+    from phil.agents.tools import CommandLog
+    from phil.config import load_config
+
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "s3cret")
+    repo = _repo_with(tmp_path, '[shell]\npass_env = ["AWS_SECRET_ACCESS_KEY"]\n')
+    (repo / "env.py").write_text("import os\nprint(os.environ.get('AWS_SECRET_ACCESS_KEY', 'absent'))\n")
+    command = f"{shlex.quote(sys.executable)} env.py"
+    run_shell = _shell_for(get_spec("implementer"), load_config(repo), repo, CommandLog(), extra_allow=(command,),
+                           repo_root=repo)
+    output = run_shell(command)
+    assert "absent" in output and "s3cret" not in output
+
+
+def test_a_trusted_repos_pass_env_is_applied_r14(tmp_path, monkeypatch):
+    from phil.agents.invoke import _shell_for
+    from phil.agents.tools import CommandLog
+    from phil.config import load_config
+    from phil.permissions.load import policy_for, repo_shell_settings
+    from phil.permissions.store import record_repo_decision, repo_shell_hash
+    from phil.store.paths import ProjectPaths
+
+    monkeypatch.setenv("PHIL_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("REPO_TOKEN", "s3cret")
+    repo = _repo_with(tmp_path, '[shell]\npass_env = ["REPO_TOKEN"]\n')
+    (repo / "env.py").write_text("import os\nprint(os.environ.get('REPO_TOKEN', 'absent'))\n")
+    paths = ProjectPaths("calc-1")
+    record_repo_decision(paths.policy_path, "trust", repo_shell_hash(repo_shell_settings(repo)))
+    config = load_config(repo)
+    command = f"{shlex.quote(sys.executable)} env.py"
+    run_shell = _shell_for(get_spec("implementer"), config, repo, CommandLog(), extra_allow=(command,),
+                           repo_root=repo, policy=policy_for(repo, paths, config))
+    assert "s3cret" in run_shell(command)
+
+
+def test_a_policy_that_fails_to_load_falls_back_to_the_config_allow_list(conn, artifacts, tmp_path, monkeypatch, caplog):
+    from phil.permissions import load
+    from phil.store.paths import ProjectPaths
+
+    def broken(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(load, "policy_for", broken)
+    run_shell = _implementer_shell({"repo_root": tmp_path, "paths": ProjectPaths("calc-1")}, conn, artifacts, tmp_path)
+    assert "allowed: rule \"make *\" (config)" in run_shell("make --version")
+    assert "couldn't load the permission rules" in caplog.text
+
+
 # --- plan 4c: usage accounting -------------------------------------------------------------
 
 OPENROUTER_MODEL = "openrouter:openai/gpt-6-sol"

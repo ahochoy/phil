@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import sqlite3
 import threading
@@ -19,8 +20,11 @@ from phil.agents.usage import extract_usage
 from phil.config import PhilConfig
 from phil.contracts import Contract, Ref
 from phil.packets import Packet
+from phil.permissions.load import policy_or_fallback, trusted_shell
+from phil.permissions.store import PolicySet
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.parked import park
+from phil.store.paths import ProjectPaths
 from phil.store.telemetry import CallRow, CostSource, TelemetryRow, record, record_calls, weakest
 
 if TYPE_CHECKING:
@@ -50,6 +54,10 @@ class AgentContext:
     chat_id: str | None = None
     prices: PriceBook | None = None  # None: the process-wide default book, created on first use
     activity: "ActivityLog | None" = None  # the run's activity log: every tool call is recorded into it
+    # Where the permission rules come from (permissions.load.policy_for). Without both, the shell
+    # tool uses [shell] allow alone.
+    repo_root: Path | None = None
+    paths: ProjectPaths | None = None
 
 
 class ContractViolation(Exception):
@@ -279,14 +287,21 @@ def _shell_for(
     log_prefix: str = "",
     extra_allow: tuple[str, ...] = (),
     approved: tuple[str, ...] = (),
+    policy: PolicySet | None = None,
+    repo_root: Path | None = None,
 ) -> Callable[[str], str]:
-    """The shell tool for `spec`. A read-only spec gets no project allowlist, plan commands or
-    approvals: only M1's read-only commands run."""
-    shell = config.shell
+    """The shell tool for `spec`. A read-only spec gets no allow rules, plan commands or approvals:
+    only the built-in reads run, and the deny rules still block (spec §4). The repo's own [shell]
+    allow, pass_env and bash never apply here untrusted (R14): without a `policy`, the allow list
+    is config's alone, and pass_env and bash are the repo's only when the policy says the user
+    trusted them."""
+    shell = trusted_shell(config, repo_root, policy)
     if spec.read_only_shell:
         shell, extra_allow, approved = shell.model_copy(update={"allow": []}), (), ()
+        policy = dataclasses.replace(policy, allow=()) if policy is not None else None
     return make_shell_tool(
-        workdir, shell, log, artifacts, log_prefix=log_prefix, extra_allow=extra_allow, approved=approved
+        workdir, shell, log, artifacts, log_prefix=log_prefix, extra_allow=extra_allow, approved=approved,
+        policy=policy, read_only=spec.read_only_shell,
     )
 
 
@@ -322,6 +337,11 @@ def invoke_agent(
     log_prefix = artifact_name(effective_node, task_id, 1)
     tools: list[Callable[..., str]] = []
     if "shell" in spec.tools and ctx.workdir is not None:
+        # Loaded once per agent call, so a rule saved mid-run applies from the next call.
+        # A read-only agent's tool takes only the deny rules, and its pass_env and bash still follow the trust.
+        policy = None
+        if ctx.repo_root is not None and ctx.paths is not None:
+            policy = policy_or_fallback(ctx.repo_root, ctx.paths, ctx.config)
         tools.append(
             _shell_for(
                 spec,
@@ -332,6 +352,8 @@ def invoke_agent(
                 log_prefix=log_prefix,
                 extra_allow=ctx.extra_allow,
                 approved=ctx.approved,
+                policy=policy,
+                repo_root=ctx.repo_root,
             )
         )
     agent = _resolve_factory(ctx)(

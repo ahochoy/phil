@@ -3,9 +3,10 @@ from pathlib import Path
 
 from phil.store.db import utcnow
 from phil.store.paths import ProjectPaths
+from phil.text import printable
 
 # The run milestones the activity feed shows between tool lines (each carries the activity `seq`).
-MILESTONE_KINDS = ("task_started", "gate", "attempt_failed", "task_done", "verdict")
+MILESTONE_KINDS = ("task_started", "gate", "attempt_failed", "task_done", "verdict", "rule_saved")
 
 
 class EventLog:
@@ -58,6 +59,30 @@ def test_cmd_changed_line(cmd: str) -> str:
 
 
 test_cmd_changed_line.__test__ = False  # not a pytest test
+
+
+def _quoted(rules: list[str]) -> str:
+    return ", ".join(f'"{printable(rule)}"' for rule in rules)
+
+
+def saved_rules_line(rules: list[str], scope: str) -> str:
+    """The feed line after "Always allow" saved `rules` for `scope` (a repo name or `everywhere`)."""
+    noun = "rule" if len(rules) == 1 else "rules"
+    return f"Saved {noun} {_quoted(rules)} for {printable(scope)} · /permissions to review"
+
+
+def unsaved_rules_line(error: object) -> str:
+    """The feed line when "Always allow" couldn't save any of its rules: the commands still run this time."""
+    return f"Couldn't save rule: {printable(error)} · allowed for this run only"
+
+
+def partly_saved_line(saved: list[str], scope: str, failed: list[str], error: object, commands: list[str]) -> str:
+    """The feed line when some rules were saved and others weren't: `commands` (those whose rule
+    wasn't saved) still run this time."""
+    noun = "rule" if len(saved) == 1 else "rules"
+    shown = ", ".join(printable(command) for command in commands)
+    return (f"Saved {noun} {_quoted(saved)} for {printable(scope)}; couldn't save {_quoted(failed)}: "
+            f"{printable(error)} · {shown} allowed for this run only")
 
 
 def run_events(paths: ProjectPaths, run_id: str) -> EventLog:

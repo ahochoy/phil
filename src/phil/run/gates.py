@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 
 from phil.config import ShellConfig
 from phil.contracts import TestReport
+from phil.permissions.store import PolicySet
 from phil.store.artifacts import ArtifactStore
 from phil.workspace.shell import ShellPolicy, ShellResult, child_env, run_command
 
@@ -164,22 +165,29 @@ def verify_green(
 CHECK_OUTPUT_LINES = 20
 
 
-def run_check(check_cmd: str, worktree: Path, *, shell: ShellConfig, artifacts: ArtifactStore | None, name: str) -> ShellResult:
+BLOCKED_PREFIX = "blocked by your rule: "  # how a command a deny rule stopped is reported
+
+
+def run_check(
+    check_cmd: str,
+    worktree: Path,
+    *,
+    shell: ShellConfig,
+    artifacts: ArtifactStore | None,
+    name: str,
+    policy: PolicySet | None = None,
+) -> ShellResult:
     """Run a check task's `check_cmd` in the worktree with the test runner's environment, logging its output.
 
     A command the shell policy forbids outright (shell operators, risky flags, or a read-only
     command whose paths leave the worktree) is refused without running, even though plan
-    validation should already have kept it out (spec §3.2)."""
-    detail = ShellPolicy(shell.allow, root=worktree).refusal_detail(check_cmd)
-    if detail is not None:
-        return ShellResult(
-            command=check_cmd,
-            exit_code=126,
-            stdout="",
-            stderr=f"refused: the check command {detail}",
-            timed_out=False,
-            duration_ms=0,
-        )
+    validation should already have kept it out (spec §3.2). One a deny rule in `policy` (the
+    rules in effect) matches doesn't run either: it fails with `blocked by your rule: <cmd>`."""
+    decision = ShellPolicy(policy if policy is not None else shell.allow, root=worktree).decide(check_cmd)
+    if decision.outcome in ("forbidden", "deny"):
+        stderr = (f"refused: the check command {decision.detail}" if decision.outcome == "forbidden"
+                  else f"{BLOCKED_PREFIX}{check_cmd}")
+        return ShellResult(command=check_cmd, exit_code=126, stdout="", stderr=stderr, timed_out=False, duration_ms=0)
     env = child_env(os.environ, shell.pass_env) | {"PYTHONDONTWRITEBYTECODE": "1"}
     result = run_command(check_cmd, worktree, shell.timeout_s, env=env, bash=shell.bash)
     if artifacts is not None:

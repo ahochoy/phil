@@ -56,7 +56,10 @@ def summarize_result(tool: str, args: dict | None, output: str) -> tuple[str, bo
         lines = output.splitlines()
         status = lines[0] if lines else ""
         ok = status.strip() == "exit_code: 0"
-        body = [line for line in lines[1:] if not line.startswith("full log: ")]
+        body = lines[1:]
+        if body and body[0].startswith("allowed: "):  # why it ran: kept in the detail, not the summary
+            body = body[1:]
+        body = [line for line in body if not line.startswith("full log: ")]
         last = next((line.strip() for line in reversed(body) if line.strip()), status)
         return f"→ {last[:_SHORT]}", ok, output
     if tool == "edit_file":

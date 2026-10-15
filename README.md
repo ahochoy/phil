@@ -488,9 +488,9 @@ or read a list of paths from a file is refused (`find -exec`, `find -files0-from
 `git branch -D`, `grep -R`, `rg --pre`, `ls -L`, `wc --files0-from`, and similar), as is any command
 using shell operators (`;`, `&&`, `|`, backticks, redirects, newlines).
 
-Everything else needs an entry in `[shell] allow` — matched exactly, or with a trailing `*` in
-the pattern to also allow trailing arguments (e.g. `pytest *`) — or a live approval after a
-denial. A command off both says
+Everything else needs a rule (see [Permissions](#permissions)), an entry in `[shell] allow` —
+matched exactly, or with a trailing `*` in the pattern to also allow trailing arguments (e.g.
+`pytest *`) — or a live approval after a denial. A command off both says
 `DENIED: ... is not on the allowlist`; one that can never run here — a shell operator, a
 containment escape, a mutating flag on an otherwise read-only command — says
 `REFUSED: ... and can never run here`, and Phil doesn't retry variations of it.
@@ -505,6 +505,64 @@ allow = ["pytest", "pytest *", "uv run pytest", "uv run pytest *", "npm test", "
 timeout_s = 300
 max_output_lines = 200
 ```
+
+## Permissions
+
+Every command an agent runs is checked in this order, and the first match wins:
+
+1. **Forbidden** — shell operators, risky flags, paths outside the worktree. Refused, and no
+   approval can change that.
+2. **Deny rules** — everywhere, then this repo. Blocked for the run.
+3. **Built-in reads** — the read-only commands above, plus read-only subcommands such as
+   `gh pr view`, `git remote -v` and `npm ls`. They run.
+4. **Allow rules** — everywhere, then this repo, then a trusted `phil.toml`, then `[shell] allow`
+   from your config, then the plan's test and check commands. They run.
+5. **Approved earlier in this run.** It runs.
+6. **Anything else** asks you. The approval callout offers to allow it for this run, or to save
+   a rule for this repo or everywhere.
+
+A rule is a command written as words: `make test unit`, or `make test *`. A program run by its
+path (`./make`, `/usr/bin/make`) only matches an allow rule naming that exact path, so an agent
+can't plant its own `make` in the worktree. A trailing `*` covers **plain arguments only**: words that don't
+start with `-` and don't contain `=`. So `make test *` allows `make test unit` but asks again for
+`make test unit -j8` or `make test CC=gcc`. Deny rules match broadly: by program name whatever
+the path, and their `*` covers everything, options included, so deny `git push *` also blocks
+`git push -f` and `/usr/bin/git -C x push`.
+
+Rules live in two TOML files, which Phil writes and you can edit by hand:
+
+- `~/.phil/policy.toml` — rules for every repo;
+- `~/.phil/projects/<repo>/policy.toml` — rules for one repo, and your decision about its
+  `phil.toml`.
+
+If either file can't be read, Phil says so, switches off every saved allow rule (those commands
+ask instead), keeps the deny rules it can read, and won't write to the file until you fix it.
+
+A repo's own `phil.toml` can ship `[shell] allow`, `pass_env` and `bash` settings. Phil doesn't
+use them until you trust them: the chat asks before it shows a plan or starts a quick run, or run
+`phil permissions trust` (or `ignore`). If the settings change, Phil asks again. Once trusted, a
+repo's `[shell] allow` patterns match as your config's do (`npm run test*` included), except that
+a pattern covers a dangerous form (an interpreter, a forced push, `docker run`…) only when its own
+words spell that form out: `git push -f *` covers `git push -f origin`, `git *` doesn't. Deny
+rules still win over them, and over the plan's test, check and setup commands, which a deny rule
+stops before they run.
+
+```bash
+phil permissions                        # every rule in effect, and where it comes from
+phil permissions check "gh pr merge 42" # asks · changes things · no rule matches
+phil permissions allow "make test *"    # for this repo; --everywhere for every repo
+phil permissions deny "git push *"
+phil permissions remove "make test *"   # lists near matches if there's no such rule
+phil permissions trust                  # shows this repo's phil.toml shell settings, then asks (--yes: don't ask)
+phil permissions ignore                 # shows them and keeps them off
+```
+
+A bare `program *`, or an open rule for a program Phil hasn't vetted, needs `--yes`. A rule for
+something forbidden is refused. In the chat, `/permissions` prints the same list.
+
+Permissions control what agents run directly. Code that agents write and your test command runs
+still has your full rights; sandboxing that code is planned for after launch. If a policy file
+changes during a run and Phil didn't save the change, the run's summary says so.
 
 ## Plans
 

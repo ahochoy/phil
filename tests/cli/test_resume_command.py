@@ -52,6 +52,51 @@ def test_escalated_run_resumes_with_action_and_hint(run):
     assert spawned == [("resume", {"action": "retry", "hint": "use a minus sign"})]
 
 
+APPROVAL = {"reason": "approval", "id": "e-3", "task_id": "CALC-001", "summary": "CALC-001 needs approval",
+            "commands": ["gh pr merge 42", "make ‮x"], "labels": ["changes things", "may change things"],
+            "saves": ["gh pr merge *", None], "rules": ["gh pr merge *"],
+            "options": ["approve", "always_repo", "always_everywhere", "deny", "abort"]}
+
+
+def approval_paused(conn, events, run_id):
+    update_run(conn, run_id, state="running")
+    update_run(conn, run_id, state="escalated", needs_attention="CALC-001 needs approval")
+    events.append("escalation", escalation=APPROVAL)
+
+
+def test_an_approval_without_an_action_shows_each_command_and_rule(run):
+    repo, run_id, conn, events, spawned = run
+    approval_paused(conn, events, run_id)
+    result = invoke(repo, run_id)
+    assert result.exit_code == 2
+    assert "  gh pr merge 42  (changes things)  → saves gh pr merge *" in result.output
+    assert "  make ?x  (may change things)  → can't be saved" in result.output
+    assert "choose --action: approve, deny, abort" in result.output
+    assert spawned == []
+
+
+@pytest.mark.parametrize("action", ["always_repo", "always_everywhere"])
+def test_resume_refuses_to_save_rules_blind(run, action):
+    repo, run_id, conn, events, spawned = run
+    approval_paused(conn, events, run_id)
+    result = invoke(repo, run_id, "--action", action)
+    assert result.exit_code == 1
+    assert (f"Saving rules needs the full approval view: use `phil attach {run_id}` or the chat. "
+            "`--action approve` allows these commands for this run only.") in " ".join(result.output.split())
+    assert spawned == []
+
+
+def test_an_approval_answer_carries_the_pause_id(run):
+    repo, run_id, conn, events, spawned = run
+    update_run(conn, run_id, state="running")
+    update_run(conn, run_id, state="escalated", needs_attention="CALC-001 needs approval")
+    events.append("escalation", escalation={"reason": "approval", "id": "e-3", "summary": "CALC-001 needs approval",
+                                            "options": ["approve", "deny", "abort"]})
+    result = invoke(repo, run_id, "--action", "approve")
+    assert result.exit_code == 0, result.output
+    assert spawned == [("resume", {"action": "approve", "id": "e-3"})]
+
+
 def test_unknown_action_is_rejected(run):
     repo, run_id, conn, events, spawned = run
     escalate(conn, events, run_id)

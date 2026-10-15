@@ -5,6 +5,8 @@ for the docked prompt or a Rich `Group` for the scrollback and `LineIO`'s plain 
 Never pass the decision's or failure's text through Rich markup: every segment here is literal
 text, built directly into `Text` objects or plain fragments (ruling: Rendering)."""
 
+import re
+
 from rich.cells import cell_len
 from rich.console import Group
 from rich.text import Text
@@ -60,6 +62,35 @@ def _wrap(text: str, width: int) -> list[str]:
             lines.append(head)
         current = word
     lines.append(current)
+    return [indent + line for line in lines]
+
+
+def _wrap_spaced(text: str, width: int) -> list[str]:
+    """Like `_wrap`, but runs of spaces inside a line are kept as they are (an approval's
+    `<command>  (<label>)  → saves <rule>`, and a command's own spacing); only the run at a line
+    break is dropped. A word wider than the line is split, never cut with `…` (R15)."""
+    indent = text[: len(text) - len(text.lstrip(" "))]
+    inner = max(width - cell_len(indent), 1)
+    tokens = [token for token in re.split(r"( +)", text[len(indent):]) if token]
+    lines: list[str] = []
+    current = ""
+    for token in tokens:
+        if token.startswith(" "):
+            current += token  # a gap: kept unless the next word breaks the line
+            continue
+        if cell_len(current + token) <= inner:
+            current += token
+            continue
+        if current.strip():
+            lines.append(current.rstrip(" "))
+        current = ""
+        while cell_len(token) > inner:
+            head, token = _take(token, inner)
+            if not head:
+                head, token = token[:1], token[1:]
+            lines.append(head)
+        current = token
+    lines.append(current.rstrip(" "))
     return [indent + line for line in lines]
 
 
@@ -123,10 +154,60 @@ def _option_row(option: Option, index: int, highlighted: int, inner: int, live: 
 def _body_rows(decision: Decision, inner: int) -> tuple[list[str], bool]:
     """`decision`'s body wrapped to `inner` cells and capped at BODY_LINES rows (the last one
     then `… see /more 1`), so the docked box fits a 24-row terminal; and whether rows were cut."""
+    if decision.kind == "approval":
+        return _approval_rows(decision.body, inner)
     rows = [line for entry in decision.body for line in _wrap(entry, inner)]
     if len(rows) <= BODY_LINES:
         return rows, False
     return [*rows[: BODY_LINES - 1], SEE_MORE], True
+
+
+RULE_ARROW = "  → "
+
+
+def _approval_entry(entry: str, inner: int) -> list[str]:
+    """One approval body line: whole when it fits; otherwise the command and label, then its
+    `→ saves <rule>` on rows of its own, indented, so a rule is never split from its arrow."""
+    if cell_len(entry) <= inner:
+        return [entry]
+    head, arrow, tail = entry.partition(RULE_ARROW)
+    if not arrow:
+        return _wrap_spaced(entry, inner)
+    return [*_wrap_spaced(head, inner), *_wrap_spaced(f"    → {tail}", inner)]
+
+
+REST = "… see /more 1 for the rest"
+
+
+def hidden_pointer(hidden: int) -> str:
+    """The last body line of an approval that leaves `hidden` entries out (N2)."""
+    things = "command and rule" if hidden == 1 else "commands and rules"
+    return f"… {hidden} more {things} — see /more 1 before choosing Always"
+
+
+def _approval_rows(body: tuple[str, ...], inner: int) -> tuple[list[str], bool]:
+    """An approval's body (R15, N2): its first line, then one entry per command. Every line wraps,
+    keeping its spacing, and is never cut with `…`. Taller than BODY_LINES rows: the entries that
+    fit are drawn whole, then a pointer saying how many are left out. When not even the first
+    command fits, as many of its rows as fit are drawn, then `… see /more 1 for the rest`, so
+    the box always shows a command. /more 1 holds them all."""
+    entries = [_approval_entry(entry, inner) for line in body for entry in str(line).splitlines()]
+    if sum(len(rows) for rows in entries) <= BODY_LINES:
+        return [row for rows in entries for row in rows], False
+    head, commands = (entries[0], entries[1:]) if entries else ([], [])
+    room = BODY_LINES - len(head)
+    reserve = len(_wrap(hidden_pointer(len(commands)), inner))  # the widest the pointer gets
+    kept: list[str] = []
+    count = 0
+    for rows in commands:
+        if len(kept) + len(rows) > room - reserve:
+            break
+        kept.extend(rows)
+        count += 1
+    if count == 0 and commands:
+        rest = _wrap(REST, inner)
+        return [*head, *commands[0][: max(room - len(rest), 1)], *rest], True
+    return [*head, *kept, *_wrap(hidden_pointer(len(commands) - count), inner)], True
 
 
 def overflows(decision: Decision, width: int) -> bool:

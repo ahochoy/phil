@@ -41,6 +41,23 @@ def test_read_only_shell_denies_project_commands_and_writes(tmp_path):
     assert run("touch y").startswith("DENIED")
 
 
+def test_a_deny_rule_blocks_a_built_in_read_for_the_answerer(tmp_path):
+    from datetime import date
+
+    from phil.agents.invoke import _shell_for
+    from phil.permissions.store import add_rule, load_policy
+
+    add_rule(tmp_path / "global.toml", "deny", "git status *", "manual", today=date(2026, 10, 13))
+    policy = load_policy(repo_name="calc", project_policy=tmp_path / "proj.toml",
+                         global_policy=tmp_path / "global.toml", config_allow=["git *"])
+    log = CommandLog()
+    run = _shell_for(get_spec("answer"), PhilConfig(models={"low": "openrouter:l"}), tmp_path, log, policy=policy)
+    assert run("git status").startswith("DENIED: `git status` is blocked by your deny rule")
+    assert log.blocked == ["git status"]
+    assert run("git fetch").startswith("DENIED: `git fetch` is not read-only")  # no allow rule applies here...
+    assert run("ls").startswith("exit_code: 0")  # ...but built-in reads do
+
+
 def test_read_only_denial_names_the_read_only_commands(tmp_path):
     from phil.agents.invoke import _shell_for
     from phil.workspace.shell import READ_ONLY

@@ -14,9 +14,12 @@ from pathlib import Path
 import typer
 from pydantic import ValidationError
 from rich.markup import escape
+from rich.text import Text
 
 from phil import __version__, platform
 from phil.chat.approval import effective_setup_cmd, git_policy_note, launch_problems, terminated
+from phil.chat.decision import approval_lines
+from phil.cli.permissions import permissions_app
 from phil.config import (
     CHAT_ROLES,
     ROLES,
@@ -30,10 +33,12 @@ from phil.config import (
 from phil.contracts import Plan
 from phil.contracts.schema import export_schemas
 from phil.git import GitError, git
+from phil.permissions.load import policy_or_fallback, trusted_shell
 from phil.repo import RepoError, RepoInfo, resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, spawn_worker, worker_starting
 from phil.store.db import connect
 from phil.store.events import run_events
+from phil.text import printable
 from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, get_run, list_runs, update_run
@@ -51,6 +56,7 @@ models_app = typer.Typer(help="Check the configured models.")
 app.add_typer(models_app, name="models")
 keys_app = typer.Typer(help="Store, list and remove provider API keys.")
 app.add_typer(keys_app, name="keys")
+app.add_typer(permissions_app, name="permissions")
 console = make_console()
 
 # `getpass.getpass` itself, as a module attribute tests can monkeypatch.
@@ -62,6 +68,11 @@ _read_secret = getpass.getpass
 PENDING_STALE_AFTER_S = 30.0
 FORCE_STOP_WAIT_S = 5.0  # how long `phil stop` waits for a killed worker to exit
 FULL_FROM_TERMINAL = "full is only available in the chat that started this run; answer retry or abort."
+SAVING_ACTIONS = ("always_repo", "always_everywhere")
+SAVE_FROM_RESUME = (
+    "Saving rules needs the full approval view: use `phil attach {run}` or the chat. "
+    "`--action approve` allows these commands for this run only."
+)
 
 SET_HELP = "Override a setting for this command, e.g. --set run.max_cost_usd=5 (repeatable)."
 
@@ -132,9 +143,15 @@ def _load_config(root: Path, overrides: list[str]) -> PhilConfig:
         raise typer.Exit(1) from exc
 
 
-def _require_bash(config: PhilConfig) -> None:
-    """On Windows, stop unless Git Bash can be found: every agent command runs through it."""
-    if platform.IS_WINDOWS and platform.find_bash(config.shell.bash) is None:
+def _require_bash(config: PhilConfig, info: RepoInfo | None = None) -> None:
+    """On Windows, stop unless Git Bash can be found: every agent command runs through it. The
+    bash checked is the one runs use: a repo's phil.toml can't name it untrusted (R14), so
+    without `info` (whose trust decision says) the repo's bash is never the one checked."""
+    if not platform.IS_WINDOWS:
+        return
+    policy = policy_or_fallback(info.root, ProjectPaths(info.slug), config) if info is not None else None
+    root = info.root if info is not None else None
+    if platform.find_bash(trusted_shell(config, root, policy).bash) is None:
         console.print(f"[phil.error]{escape(platform.MISSING_BASH)}[/]", soft_wrap=True)
         raise typer.Exit(1)
 
@@ -302,7 +319,7 @@ def _chat(ctx: typer.Context) -> None:
     info, conn = _open_project(ctx)
     overrides = ctx.obj.get("overrides", [])
     config = _load_config(info.root, overrides)
-    _require_bash(config)
+    _require_bash(config, info)
     if _interactive() and config.missing_model_messages(CHAT_ROLES + RUN_ROLES):
         console.print("Phil isn't set up yet. Let's choose your models (about a minute).")
         if _run_setup(ctx, info.root):
@@ -491,8 +508,10 @@ def run_plan(
         console.print(f"[phil.error]invalid plan: {escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
     config = _load_config(info.root, overrides)
-    _require_bash(config)
-    problems = launch_problems(plan, config, info.root)
+    _require_bash(config, info)
+    problems = launch_problems(
+        plan, config, info.root, policy=policy_or_fallback(info.root, ProjectPaths(info.slug), config)
+    )
     if problems:
         for problem in problems:
             console.print(f"[phil.error]{escape(terminated(problem))}[/]")
@@ -579,7 +598,7 @@ def models_check(ctx: typer.Context) -> None:
 
     info = _resolve(ctx)
     config = _load_config(info.root, ctx.obj.get("overrides", []))
-    _require_bash(config)
+    _require_bash(config, info)
     try:
         factory = _factory_from_env()
     except Exception as exc:
@@ -845,12 +864,20 @@ def resume(
         latest = run_events(ProjectPaths(info.slug), run_id).latest("escalation")
         escalation = latest["escalation"] if latest else {"summary": record.needs_attention or "", "options": []}
         options = escalation["options"]
-        # `full` is listed only in the chat that started the run; an explicit --action full is refused below.
-        shown = [option for option in options if option != "full"]
+        # `full` is listed only in the chat that started the run, and saving rules only in the chat
+        # and `phil attach`, which show what they save; both are refused below.
+        shown = [option for option in options if option != "full" and option not in SAVING_ACTIONS]
         if action is None:
-            console.print(escape(escalation["summary"]))
+            console.print(escape(printable(escalation["summary"])))
+            if escalation.get("reason") == "approval":
+                for line in approval_lines(escalation):
+                    console.print(Text(line), soft_wrap=True)
             console.print(f"[phil.error]choose --action: {escape(', '.join(shown))}[/]")
             raise typer.Exit(2)
+        if action in SAVING_ACTIONS:
+            # A rule saved from here would be saved blind (R15), for whichever pause is current (R16).
+            console.print(f"[phil.error]{escape(SAVE_FROM_RESUME.format(run=run_id))}[/]")
+            raise typer.Exit(1)
         if action not in options:
             console.print(
                 f"[phil.error]unknown action {escape(repr(action))}; choose one of: {escape(', '.join(shown))}[/]"
@@ -861,6 +888,8 @@ def resume(
             console.print(f"[phil.error]{FULL_FROM_TERMINAL}[/]")
             raise typer.Exit(1)
         decision = {"action": action} | ({"hint": hint} if hint else {})
+        if escalation.get("id") is not None:
+            decision["id"] = escalation["id"]  # R16: the answer is for this pause only
         spawn_worker(info.root, run_id, "resume", decision)
         console.print(f"Resuming [phil.id]{escape(run_id)}[/] with {escape(action)}.")
         return

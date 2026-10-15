@@ -1,12 +1,16 @@
+import hashlib
 import json
 import logging
 import os
+import shlex
 import shutil
 import sqlite3
 import tempfile
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, cast
 
@@ -17,7 +21,7 @@ from phil.agents.collector import PATH_TOOLS
 from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, invoke_agent
 from phil.agents.registry import get_spec
 from phil.agents.tools import CommandLog
-from phil.config import PhilConfig
+from phil.config import PhilConfig, ShellConfig
 from phil.contracts import (
     AttemptWorklog,
     ImplementInput,
@@ -31,8 +35,14 @@ from phil.contracts import (
 )
 from phil.git import GitError, branch_for, git
 from phil.packets import Packet, PacketTooLarge, build_packet
+from phil.permissions.catalog import label_for
+from phil.permissions.listing import shown_path
+from phil.permissions.load import policy_or_fallback, trusted_shell
+from phil.permissions.rules import RuleError, exact_only, suggest_rule
+from phil.permissions.store import POLICY_HEADER, PolicySet, PolicyWriteError, add_rule, normalised_rule
 from phil.repo_detect import effective_setup_cmd
 from phil.run.gates import (
+    BLOCKED_PREFIX,  # how a command a deny rule stopped is reported: problems, notes, the run's problem
     COMMAND_NOT_FOUND,
     couldnt_run_summary,
     is_test_path,
@@ -56,11 +66,13 @@ from phil.run.state import (
 )
 from phil.store.activity import MAX_DETAIL_CHARS, ActivityLog
 from phil.store.artifacts import ArtifactStore, artifact_name
-from phil.store.events import EventLog
+from phil.store.events import EventLog, partly_saved_line, saved_rules_line, unsaved_rules_line
+from phil.store.paths import ProjectPaths, global_policy_path
 from phil.store.runs import get_run, update_run
 from phil.store.telemetry import run_usage, usage_by_role
+from phil.text import printable
 from phil.ui.plan_view import _clip
-from phil.workspace.shell import child_env, run_command
+from phil.workspace.shell import ShellPolicy, child_env, run_command
 from phil.workspace.worktree import WorktreeManager, rebaseline_path
 
 logger = logging.getLogger(__name__)
@@ -78,6 +90,7 @@ class RunDeps:
     sleep: Callable[[float], None] = time.sleep
     events: EventLog | None = None
     activity: ActivityLog | None = None
+    paths: ProjectPaths | None = None  # where the project's permission rules live; None: [shell] allow only
 
 
 def _write_json_atomic(path: Path, data: Any) -> None:
@@ -99,6 +112,8 @@ def _write_json_atomic(path: Path, data: Any) -> None:
 
 # The previous attempt's diff is cut to this many characters before it goes into the packet.
 MAX_DIFF_CHARS = 8_000
+# The exit code a blocked engine command reports, as the shell does for a command it won't run.
+BLOCKED_EXIT = 126
 DIFF_TRUNCATED = "\n…(diff truncated)"
 DIFF_OMITTED = "…(diff omitted: over the packet budget)"
 
@@ -116,6 +131,40 @@ def _tool_reads(log: CommandLog) -> list[str]:
 
 def _cap_diff(diff: str) -> str:
     return diff if len(diff) <= MAX_DIFF_CHARS else diff[:MAX_DIFF_CHARS] + DIFF_TRUNCATED
+
+
+def saveable_rule(argv: list[str]) -> str | None:
+    """The rule "Always allow" would save for `argv`, exactly as `add_rule` stores it (R15), so what
+    the callout shows is what's saved. None when there's none (R4), or the suggestion isn't a valid
+    rule (a control character in a word)."""
+    suggestion = suggest_rule(argv)
+    if suggestion is None:
+        return None
+    try:
+        return normalised_rule(suggestion)
+    except RuleError:
+        return None
+
+
+def _argv(command: str) -> list[str] | None:
+    """A denied command's words, tokenised as the shell policy tokenised it; None if it can't be."""
+    try:
+        return shlex.split(command.strip())
+    except ValueError:
+        return None
+
+
+POLICY_CHANGED = "⚠ {path} changed during this run without Phil saving a rule — review it with `phil permissions`"
+
+
+def _file_digest(path: Path) -> str | None:
+    """`path`'s sha256; None when it doesn't exist, and a marker no digest equals when unreadable."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return f"unreadable: {type(exc).__name__}"
 
 
 def _first_line(problem: str) -> str:
@@ -207,13 +256,19 @@ class RunEngine:
         if not state["test_cmd"]:
             # A run of check tasks only may have no test suite: its gates rely on each check_cmd.
             return TestReport(command="", passed=True, failures=[], log_path="")
+        if self._blocked(state["test_cmd"]):
+            # Never run: the report fails with the reason, the way a test command that fails does.
+            line = f"{BLOCKED_PREFIX}{state['test_cmd']}"
+            log = str(self.deps.artifacts.write_log(name, line + "\n"))
+            return TestReport(command=state["test_cmd"], passed=False, failures=[line], log_path=log,
+                              new_failures_vs_baseline=[line], exit_code=BLOCKED_EXIT)
         # The gate's start goes in before the tests run, so the live row shows them while they run.
         task, seq = self._gate_start(state, f"gate {state['test_cmd']}")
         started = time.monotonic()
         report = run_tests(
             state["test_cmd"],
             worktree or self.deps.worktree,
-            shell=self.deps.config.shell,
+            shell=self._shell(),
             artifacts=self.deps.artifacts,
             name=name,
             baseline=state.get("baseline_failures", []),
@@ -322,7 +377,48 @@ class RunEngine:
             extra_allow=extra_allow,
             approved=tuple(state.get("approved", [])),
             activity=self.deps.activity,
+            repo_root=self.deps.repo_root,
+            paths=self.deps.paths,
         )
+
+    def _policy(self) -> PolicySet | None:
+        """The permission rules in effect now, read fresh; None when the run has no project folder."""
+        if self.deps.paths is None:
+            return None
+        return policy_or_fallback(self.deps.repo_root, self.deps.paths, self.deps.config)
+
+    def _shell(self) -> ShellConfig:
+        """The shell settings the engine's own commands run with: the repo's phil.toml can't set
+        pass_env or bash untrusted (R14)."""
+        return trusted_shell(self.deps.config, self.deps.repo_root, self._policy())
+
+    def _blocked(self, cmd: str) -> bool:
+        """Whether a deny rule blocks `cmd`, a command the engine runs itself (the test, check or
+        setup command): the user's deny rules hold for those too (F7), checked just before each
+        run, so a rule added mid-run or a switched test command is covered."""
+        policy = self._policy()
+        return policy is not None and ShellPolicy(policy).decide(cmd).outcome == "deny"
+
+    def _policy_files(self) -> list[Path]:
+        """The policy files a run's commands could change: the everywhere file and the repo's."""
+        return [global_policy_path(), *([self.deps.paths.policy_path] if self.deps.paths is not None else [])]
+
+    def _policy_digests(self) -> dict[str, str | None]:
+        return {str(path): _file_digest(path) for path in self._policy_files()}
+
+    def _policy_changes(self, state: RunState) -> list[str]:
+        """A warning per policy file that changed since the run recorded it, other than by Phil's
+        own saves in this run (R18): code the run executed, such as the test command running what
+        an agent wrote, has the user's rights and could have written it."""
+        recorded = state.get("policy_digests")
+        if recorded is None:  # a run started before this check: nothing to compare with
+            return []
+        return [POLICY_CHANGED.format(path=printable(shown_path(Path(path))))
+                for path, digest in recorded.items() if _file_digest(Path(path)) != digest]
+
+    @staticmethod
+    def _is_blocked(report: TestReport) -> bool:
+        return report.exit_code == BLOCKED_EXIT and report.failures == [f"{BLOCKED_PREFIX}{report.command}"]
 
     def _budget(self, role: str) -> int:
         return self.deps.config.budget_for(role).max_input_tokens
@@ -486,20 +582,26 @@ class RunEngine:
             self.worktrees.create(run_id=self.deps.run_id, base_sha=state["base_sha"], path=self.deps.worktree)
         self.deps.artifacts.write_plan(plan)
         self._update_run(state="running", current_node="setup", tasks_total=len(plan.tasks))
+        # The policy files as the run starts (R18), before anything it runs; a retried setup keeps them.
+        running: dict = {"status": "running"}
+        if state.get("policy_digests") is None:
+            running["policy_digests"] = self._policy_digests()
         escalation = self._run_setup_cmd()
         if escalation is not None:
-            return {"status": "running", "escalation": escalation}
+            return {**running, "escalation": escalation}
         baseline = self._test({**state, "baseline_failures": []}, "baseline")
+        if self._is_blocked(baseline):
+            return {**running, "escalation": self._setup_failed(baseline.failures[0], baseline.log_path)}
         if baseline.exit_code == COMMAND_NOT_FOUND:
             output = Path(baseline.log_path).read_text(encoding="utf-8") if baseline.log_path else ""
             escalation = self._cmd_not_found(baseline.command, output, baseline.log_path, resume_to="setup")
-            return {"status": "running", "escalation": escalation}
+            return {**running, "escalation": escalation}
         return {
+            **running,
             "baseline_failures": baseline.failures,
             "initial_baseline": baseline.failures,
             "base_passed": baseline.passed_count,
             "base_skipped": baseline.skipped_count,
-            "status": "running",
         }
 
     def _run_setup_cmd(self) -> dict | None:
@@ -509,10 +611,12 @@ class RunEngine:
         cmd, _ = effective_setup_cmd(config, self.deps.worktree)
         if not cmd:
             return None
+        if self._blocked(cmd):
+            line = f"{BLOCKED_PREFIX}{cmd}"
+            return self._setup_failed(line, str(self.deps.artifacts.write_log("setup", line + "\n")))
         timeout_s = config.project.setup_timeout_s
-        result = run_command(
-            cmd, self.deps.worktree, timeout_s, env=child_env(os.environ, config.shell.pass_env), bash=config.shell.bash
-        )
+        shell = self._shell()
+        result = run_command(cmd, self.deps.worktree, timeout_s, env=child_env(os.environ, shell.pass_env), bash=shell.bash)
         log = self.deps.artifacts.write_log("setup", result.stdout + (f"\n{result.stderr}" if result.stderr else ""))
         if result.ok:
             # Installed dependencies git doesn't ignore would look like the task's changes (and a
@@ -531,13 +635,13 @@ class RunEngine:
             summary = f"Setup command `{cmd}` timed out after {timeout_s}s."
         else:
             summary = f"Setup command `{cmd}` failed (exit {result.exit_code}); see the setup log."
-        return {
-            "reason": "setup_failed",
-            "options": ["retry", "abort"],
-            "resume_to": "setup",
-            "summary": summary,
-            "log": str(log),
-        }
+        return self._setup_failed(summary, str(log))
+
+    @staticmethod
+    def _setup_failed(summary: str, log: str | None) -> dict:
+        """The pause for a setup that couldn't finish; retry reruns setup."""
+        return {"reason": "setup_failed", "options": ["retry", "abort"], "resume_to": "setup", "summary": summary,
+                "log": log or None}
 
     @staticmethod
     def _cmd_not_found(cmd: str, output: str, log: str | None, resume_to: str, task_id: str | None = None) -> dict:
@@ -642,6 +746,7 @@ class RunEngine:
             failed, problems = True, [f"implementer output rejected: {problem}" for problem in exc.problems]
             worklog = None
         problems += [f"refused command: {cmd}" for cmd in log.refused]
+        problems += [f"{BLOCKED_PREFIX}{cmd}" for cmd in log.blocked]
         if worklog is None:
             worklog = self._fallback_worklog(state, log, problems)
         update = {
@@ -652,15 +757,88 @@ class RunEngine:
             "worklogs": {**state.get("worklogs", {}), task.id: worklog.model_dump()},
             "keep_worktree": False,
         }
+        # Problems are cleared once an attempt passes, so blocked and refused commands are also
+        # kept as minor open issues: they always reach summary.md.
+        stopped = [f"{BLOCKED_PREFIX}{cmd}" for cmd in log.blocked] + [f"refused command: {cmd}" for cmd in log.refused]
+        if stopped:
+            update["open_issues"] = [
+                *state.get("open_issues", []),
+                *(Issue(task_id=task.id, severity="minor", note=note).model_dump() for note in stopped),
+            ]
         if log.denied:
-            update["escalation"] = {
-                "reason": "approval",
-                "task_id": task.id,
-                "commands": list(log.denied),
-                "options": ["approve", "deny", "abort"],
-                "summary": f"{task.id} needs approval for: {', '.join(log.denied)}",
-            }
+            update["escalation"] = self._approval_escalation(task.id, log)
         return {**budget_warn, **update}
+
+    def _approval_escalation(self, task_id: str, log: CommandLog) -> dict:
+        """The approval pause for the commands no rule allowed (spec §3.3, §3.4): each command's
+        label, the rules "Always allow" would save, and the answers on offer. The "always" answers
+        are left out when any command can't be saved as a rule (R4), and "everywhere" when any is
+        exact-only: an interpreter, a launcher, a destructive or remove command (R5, R8)."""
+        commands = list(log.denied)
+        argvs = [_argv(command) for command in commands]
+        labels = [log.labels.get(command) or label_for(argv or [], read_only=False)
+                  for command, argv in zip(commands, argvs)]
+        saves = [saveable_rule(argv) if argv is not None else None for argv in argvs]
+        options = ["approve"]
+        if self.deps.paths is not None and all(rule is not None for rule in saves):
+            options.append("always_repo")
+            if not any(exact_only(argv) for argv in argvs if argv is not None):
+                options.append("always_everywhere")
+        options += ["deny", "abort"]
+        return {
+            "reason": "approval",
+            "id": uuid.uuid4().hex[:12],  # R16: an answer applies only to the pause it was given for
+            "task_id": task_id,
+            "commands": commands,
+            "labels": labels,
+            "saves": saves,  # the rule each command would save, parallel to `commands`; None: none
+            "rules": list(dict.fromkeys(rule for rule in saves if rule is not None)),
+            "repo": self.deps.repo_root.name,
+            "options": options,
+            "summary": f"{task_id} needs approval for: {', '.join(commands)}",
+        }
+
+    def _save_rules(self, escalation: dict, everywhere: bool, digests: dict[str, str | None] | None) -> dict:
+        """Write an "Always allow" answer's rules and say so in the feed. Never raises: a rule that
+        can't be saved is reported, and the commands are still approved for this run. Returns the
+        state update moving the recorded policy file digests past Phil's own writes (R18); a file
+        that had already changed before the write keeps its old digest, so the change is still
+        reported."""
+        digests = dict(digests) if digests is not None else None
+        rules = [str(rule) for rule in escalation.get("rules") or []]
+        repo = str(escalation.get("repo") or self.deps.repo_root.name)
+        scope = "everywhere" if everywhere else repo
+        saved: list[str] = []
+        failed: list[str] = []
+        error: Exception | None = None
+        header = POLICY_HEADER.format(scope=scope)
+        source = f"approval in {repo} ({self.deps.run_id})"
+        for rule in rules:
+            try:
+                if everywhere:
+                    path = global_policy_path()
+                elif self.deps.paths is not None:
+                    path = self.deps.paths.policy_path
+                else:
+                    raise PolicyWriteError("this run has no project folder to save to")
+                before = _file_digest(path)
+                add_rule(path, "allow", rule, source, today=date.today(), header=header)
+                saved.append(rule)
+                if digests is not None and digests.get(str(path), "absent") == before:
+                    digests[str(path)] = _file_digest(path)
+            except Exception as exc:  # PolicyWriteError, or anything else: saving never fails the run
+                logger.warning("couldn't save the approved rule %r", rule, exc_info=True)
+                failed.append(rule)
+                error = error or exc
+        if not failed:
+            self._milestone("rule_saved", line=saved_rules_line(saved, scope), ok=True)
+        elif not saved:
+            self._milestone("rule_saved", line=unsaved_rules_line(error), ok=False)
+        else:
+            commands = [str(command) for command, rule in zip(escalation.get("commands") or [],
+                                                              escalation.get("saves") or []) if rule in failed]
+            self._milestone("rule_saved", line=partly_saved_line(saved, scope, failed, error, commands), ok=False)
+        return {"policy_digests": digests} if digests is not None else {}
 
     def _no_test_cmd_escalation(self, state: RunState) -> dict:
         task = load_plan(state).tasks[state["task_index"]]
@@ -716,10 +894,12 @@ class RunEngine:
         if state.get("implement_failed"):
             return self._failed_attempt(state, state.get("last_problems", []), state.get("last_report"))
         changed = self.worktrees.changed_files(worktree, since=state["task_base_sha"])
-        refused = [p for p in state.get("last_problems", []) if p.startswith("refused command: ")]
+        refused = [p for p in state.get("last_problems", []) if p.startswith(("refused command: ", BLOCKED_PREFIX))]
         if not self._attempt_changed(state, changed):
             return self._failed_attempt(state, [f"no changes were made for {task.id}", *refused], None)
         report = self._test(state, artifact_name("verify", task.id, state["call_seq"]))
+        if self._is_blocked(report):  # the test command never ran, and no attempt can change that
+            return self._blocked_escalation(state, "test", report.command, refused, report.model_dump())
         if state["phase"] == "red":
             problems = verify_red(changed, report, globs, state.get("base_passed"), state.get("base_skipped"))
             if not problems:
@@ -740,7 +920,8 @@ class RunEngine:
             check_name = artifact_name("check", task.id, state["call_seq"])
             _, gate_seq = self._gate_start(state, f"gate {task.check_cmd}")
             check = run_check(
-                task.check_cmd, worktree, shell=self.deps.config.shell, artifacts=self.deps.artifacts, name=check_name
+                task.check_cmd, worktree, shell=self._shell(), artifacts=self.deps.artifacts, name=check_name,
+                policy=self._policy(),
             )
             if self.deps.activity is not None and gate_seq is not None:
                 try:
@@ -751,6 +932,8 @@ class RunEngine:
                         duration_ms=check.duration_ms)
                 except Exception:
                     logger.warning("couldn't record the gate line for %s", check.command, exc_info=True)
+            if check.exit_code == BLOCKED_EXIT and check.stderr == f"{BLOCKED_PREFIX}{check.command}":
+                return self._blocked_escalation(state, "check", check.command, refused, report.model_dump())
             if check.exit_code == COMMAND_NOT_FOUND:
                 output = check.stdout + (f"\n{check.stderr}" if check.stderr else "")
                 log = str(self.deps.artifacts.log_path(check_name))
@@ -779,6 +962,24 @@ class RunEngine:
                 self._milestone("gate", task=task.id, name="check" if task.verify == "check" else "green")
                 return {"last_report": report.model_dump(), "last_problems": [], "verdict": "green_ok"}
         return self._failed_attempt(state, [*problems, *refused], report.model_dump())
+
+    def _blocked_escalation(self, state: RunState, which: str, cmd: str, refused: list[str],
+                            report: dict | None) -> dict:
+        """A deny rule blocks the plan's test or check command (F7): escalate at once on the
+        attempts path, since no attempt can lift the block; no attempt is counted."""
+        task = load_plan(state).tasks[state["task_index"]]
+        problems = list(dict.fromkeys([f"{BLOCKED_PREFIX}{cmd}", *refused]))
+        escalation = {
+            "reason": "attempts",
+            "task_id": task.id,
+            "phase": state["phase"],
+            "problems": problems,
+            "options": self._escalation_options(state),
+            "summary": (f"{task.id} is blocked: your rule denies the {which} command {cmd} — "
+                        f"change the rule or the {which} command, then retry"),
+            "log": (report or {}).get("log_path") or None,
+        }
+        return {"last_problems": problems, "last_report": report, "verdict": "escalate", "escalation": escalation}
 
     def _attempt_changed(self, state: RunState, changed: list[str]) -> bool:
         """Whether the attempt under judgement left any change: a gate that passes on an untouched
@@ -830,6 +1031,12 @@ class RunEngine:
         while True:
             decision = interrupt(payload)
             action = decision.get("action") if isinstance(decision, dict) else None
+            # R16: an answer applies only to the pause it was given for. A pause from before ids
+            # (no `id`) takes only an answer without one, so old paused runs still resume.
+            answered = decision.get("id") if isinstance(decision, dict) else None
+            if answered != escalation.get("id"):
+                payload = {**escalation, "error": "that answer was for an earlier pause; answer this one"}
+                continue
             if action in escalation["options"]:
                 break
             payload = {
@@ -837,7 +1044,7 @@ class RunEngine:
                 "error": f"unknown escalation action {action!r}; expected one of {escalation['options']}",
             }
         self._update_run(state="running", needs_attention=None)
-        cleared = {"escalation": None}
+        cleared: dict[str, Any] = {"escalation": None}
         if action == "retry":
             return {**cleared, "attempts": 0, "hint": decision.get("hint"), "next": escalation.get("resume_to", "implement")}
         if action == "bypass":
@@ -849,6 +1056,9 @@ class RunEngine:
             self.worktrees.reset_to(self.deps.worktree, state["task_base_sha"])
             plan = with_task_status(load_plan(state), state["task_index"], "SKIPPED")
             return {**cleared, "plan": plan.model_dump(), "next": "pick_task"}
+        if action in ("always_repo", "always_everywhere"):
+            cleared |= self._save_rules(escalation, action == "always_everywhere", state.get("policy_digests"))
+            action = "approve"  # then exactly what approving does
         if action == "approve":
             # No gate judged the approved call, so implement continues that attempt on the worktree
             # as it was left (keep_worktree), with the approval in place. The call's own problems
@@ -968,6 +1178,7 @@ class RunEngine:
         after = self._test(state, artifact_name(f"{node}-after", None, seq))
         notes += [Issue(severity="minor", note=f"tester command not approved: {cmd}") for cmd in log.denied]
         notes += [Issue(severity="minor", note=f"tester command refused: {cmd}") for cmd in log.refused]
+        notes += [Issue(severity="minor", note=f"tester command {BLOCKED_PREFIX}{cmd}") for cmd in log.blocked]
         blocking = [issue for issue in issues if issue.severity in ("blocker", "major")]
         minor = [issue for issue in issues if issue.severity == "minor"]
         plan = issues_to_tasks(plan, blocking, "tester", state["test_cmd"]) if blocking else plan
@@ -1093,6 +1304,13 @@ class RunEngine:
             status = "incomplete"
         totals = run_usage(self.deps.conn, self.deps.run_id)
         usage = usage_by_role(self.deps.conn, self.deps.run_id)
+        changed = self._policy_changes(state)
+        for line in changed:
+            if self.deps.events is not None:
+                try:
+                    self.deps.events.append("notice", message=line)
+                except Exception:
+                    logger.warning("couldn't record that a policy file changed", exc_info=True)
         summary = render_summary(
             run_id=self.deps.run_id,
             plan=plan,
@@ -1103,6 +1321,7 @@ class RunEngine:
             open_issues=open_issues,
             usage=usage,
             totals=totals,
+            warnings=changed,
         )
         self.deps.artifacts.write_text("summary.md", summary)
         _write_json_atomic(self.deps.artifacts.run_dir / "open_issues.json", open_issues)

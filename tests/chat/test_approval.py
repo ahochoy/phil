@@ -1,5 +1,6 @@
 import shutil
 import sys
+from datetime import date
 from pathlib import Path
 
 from phil.chat.approval import (
@@ -14,6 +15,7 @@ from phil.chat.approval import (
 )
 from phil.config import PhilConfig
 from phil.contracts import Task
+from phil.permissions.store import add_rule, load_policy
 from tests.chat.conftest import plan
 from tests.helpers import TEST_MODELS
 
@@ -269,3 +271,30 @@ def test_launch_problems_includes_program_problems(monkeypatch):
     monkeypatch.setattr("phil.chat.approval._which", lambda prog: None)
     problems = launch_problems(plan(test_cmd="ghostprog test"), config())
     assert "`ghostprog` (from the test command `ghostprog test`) isn't on PATH for Phil's runs" in problems
+
+
+def deny_policy(tmp_path: Path, rule: str):
+    add_rule(tmp_path / "global.toml", "deny", rule, "manual", today=date(2026, 10, 13))
+    return load_policy(repo_name="calc", project_policy=tmp_path / "proj.toml", global_policy=tmp_path / "global.toml",
+                       config_allow=[])
+
+
+def test_a_deny_rule_on_the_plans_test_command_blocks_approval(tmp_path):
+    # R2: a deny rule is never approvable, so approving the plan can't approve its test command.
+    policy = deny_policy(tmp_path, "make test *")
+    expected = 'test command \'make test\' is blocked by your deny rule "make test *" (everywhere)'
+    assert test_cmd_problem(plan(test_cmd="make test"), config(), policy=policy) == expected
+    assert expected in launch_problems(plan(test_cmd="make test"), config(), policy=policy)
+    assert test_cmd_problem(plan(test_cmd="make check"), config(), policy=policy) is None
+
+
+def test_a_deny_rule_on_the_configured_test_command_blocks_approval_too(tmp_path):
+    policy = deny_policy(tmp_path, "make test")
+    configured = config(project={"test_cmd": "make test"})
+    assert "is blocked by your deny rule" in test_cmd_problem(plan(test_cmd="make test"), configured, policy=policy)
+
+
+def test_a_deny_rule_on_a_check_command_blocks_approval(tmp_path):
+    policy = deny_policy(tmp_path, "npm run build")
+    problems = launch_problems(check_plan("npm run build"), config(), policy=policy)
+    assert problems == ['check command \'npm run build\' is blocked by your deny rule "npm run build" (everywhere)']

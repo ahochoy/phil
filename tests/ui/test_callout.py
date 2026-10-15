@@ -149,3 +149,84 @@ def test_body_line_keeps_its_leading_indent():
     (the "│ " before the content), so this substring only appears if the indent survived."""
     lines = text(callout_lines(D, 0, 80, live=True))
     assert any("  node build.mjs" in l for l in lines)
+
+
+LONG_RULE = "docker compose --project-name integration-suite --file compose.ci.yml up --wait"
+def approval(commands, labels, rules):
+    return {
+        "reason": "approval", "task_id": "CALC-001", "commands": commands, "labels": labels, "saves": rules,
+        "rules": list(dict.fromkeys(rules)), "repo": "calc",
+        "options": ["approve", "always_repo", "always_everywhere", "deny", "abort"], "summary": "x",
+    }
+
+
+APPROVAL = approval(["gh pr merge 42", "make test-unit calc", LONG_RULE],
+                    ["changes things", "may change things", "changes things"],
+                    ["gh pr merge *", "make test-unit *", LONG_RULE])
+
+
+def _box_body(lines):
+    """The drawn box's rows between the title and the options, borders and padding stripped."""
+    rows = [l.strip("│").strip() for l in lines[1:-1]]
+    return rows[1:rows.index("")]
+
+
+TWO_RULES = approval(["gh pr merge 42", LONG_RULE], ["changes things"] * 2, ["gh pr merge *", LONG_RULE])
+
+
+# At width 60 three entries are too tall for the box: test_a_tall_approval_keeps_whole_entries.
+@pytest.mark.parametrize("width, shown", [(60, TWO_RULES), (120, TWO_RULES), (120, APPROVAL)])
+def test_the_drawn_approval_callout_shows_every_rule_in_full(width, shown):
+    """R15: every rule the "always" answers save is drawn whole: body lines wrap, never `…`."""
+    lines = text(callout_lines(pause_decision("r-1", shown), 0, width, live=True))
+    assert not any("…" in l for l in lines)
+    assert all(cell_len(l) <= width - 1 for l in lines)
+    body = " ".join(_box_body(lines))
+    for command, label, rule in zip(shown["commands"], shown["labels"], shown["saves"]):
+        assert f"{command}  ({label})" in body or f"{command} ({label})" in body
+        assert f"→ saves {rule}" in body
+    assert any("2 Always allow in calc" in l for l in lines)
+    assert any("3 Always allow everywhere" in l for l in lines)
+
+
+FIVE = approval([f"make target-{n} calc" for n in range(5)], ["may change things"] * 5,
+                [f"make target-{n} *" for n in range(5)])
+
+
+def test_a_tall_approval_keeps_whole_entries_and_says_what_it_hides():
+    """N2: five commands at width 60. The entries that fit are drawn whole, then a pointer that
+    says how many commands and rules are hidden, and the "always" options count the rules."""
+    decision = pause_decision("r-1", FIVE)
+    lines = text(callout_lines(decision, 0, 60, live=True))
+    assert all(cell_len(l) <= 59 for l in lines)
+    joined = " ".join(_box_body(lines))
+    shown = [n for n in range(5) if f"→ saves make target-{n} *" in joined]
+    assert shown == list(range(len(shown))) and 0 < len(shown) < 5
+    hidden = 5 - len(shown)
+    assert joined.endswith(f"… {hidden} more commands and rules — see /more 1 before choosing Always")
+    for n in range(len(shown), 5):
+        assert f"make target-{n}" not in joined  # left out whole, not drawn in part
+    assert any("2 Always allow in calc (5 rules)" in l for l in lines)
+    assert any("3 Always allow everywhere (5 rules)" in l for l in lines)
+    assert overflows(decision, 60)
+
+
+def test_one_command_taller_than_the_box_shows_what_fits_then_points_at_the_rest():
+    """N2: one very long command: as many of its rows as fit, then `… see /more 1 for the rest`;
+    never the title alone."""
+    command = "make " + " ".join(f"argument-{n}" for n in range(60))
+    decision = pause_decision("r-1", approval([command], ["may change things"], [None]))
+    for width in (60, 120):
+        lines = text(callout_lines(decision, 0, width, live=True))
+        body = _box_body(lines)
+        assert body[0] == "CALC-001 wants to run:"
+        assert body[1].startswith("make argument-0 argument-1")  # _box_body strips the indent
+        assert body[-1] == "… see /more 1 for the rest"
+        assert len(body) == BODY_LINES
+        assert all(cell_len(l) <= width - 1 for l in lines)
+
+
+def test_the_drawn_approval_callout_keeps_its_spacing_when_a_line_fits():
+    decision = pause_decision("r-1", APPROVAL)
+    lines = text(callout_lines(decision, 0, 120, live=True))
+    assert any("  gh pr merge 42  (changes things)  → saves gh pr merge *" in l for l in lines)

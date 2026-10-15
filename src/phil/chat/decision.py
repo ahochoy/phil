@@ -2,7 +2,10 @@
 callout and answered from a menu. Each option's `answer` is the text the chat's existing input
 handlers already accept, so picking from the menu and typing are the same thing to the chat."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+
+from phil.text import printable
 
 BODY_LINES = 8
 SEE_MORE = "… see /more 1"  # a capped body's last line: the full body is detail 1
@@ -77,11 +80,50 @@ def answered_elsewhere(run_id: str) -> str:
     return f"{run_id} was answered elsewhere."
 
 
+# An approval pause's own labels (spec 2026-10-13 §3.4, R15); other pauses keep LABELS.
+_APPROVAL_LABELS = {"approve": "Allow for this run", "deny": "Deny", "abort": "Stop the run"}
+
+
+def approval_lines(escalation: dict) -> list[str]:
+    """Each denied command in full, with its label and the rule it would save (R15):
+    `  <command>  (<label>)  → saves <rule>`, or `→ can't be saved`. Display text only: control
+    characters show as `?`."""
+    commands = [str(c) for c in escalation.get("commands") or []]
+    labels = [str(label) for label in escalation.get("labels") or []]
+    saves = list(escalation.get("saves") or [])
+    lines = []
+    for index, command in enumerate(commands):
+        line = f"  {printable(command)}"
+        if index < len(labels):
+            line += f"  ({labels[index]})"
+        if index < len(saves):
+            rule = saves[index]
+            line += f"  → saves {printable(rule)}" if rule is not None else "  → can't be saved"
+        lines.append(line)
+    return lines
+
+
+def _approval_options(escalation: dict, words: list[str]) -> tuple[Option, ...]:
+    """The approval's answers. With more than one rule, the "always" answers say how many they save
+    (N2), so a box that can't show every rule still says what choosing one does."""
+    count = len(escalation.get("rules") or [])
+    rules = f" ({count} rules)" if count > 1 else ""
+    labels = {
+        **_APPROVAL_LABELS,
+        "always_repo": f"Always allow in {printable(escalation.get('repo', 'this repo'))}{rules}",
+        "always_everywhere": f"Always allow everywhere{rules}",
+    }
+    return tuple(Option(labels.get(w) or LABELS.get(w, w.capitalize()), w) for w in words)
+
+
 def pause_decision(run_id: str, escalation: dict) -> Decision:
     reason = str(escalation.get("reason", ""))
     words = [str(w) for w in escalation.get("options") or ["abort"]]
     words = [w for w in words if w != "abort"] + ["abort"]  # abort always last
-    options = tuple(Option(LABELS.get(w, w.capitalize()), w) for w in words)
+    if reason == "approval":
+        options = _approval_options(escalation, words)
+    else:
+        options = tuple(Option(LABELS.get(w, w.capitalize()), w) for w in words)
     wanted = DEFAULT_FOR.get(reason)
     default = next((i for i, o in enumerate(options) if o.answer == wanted), 0)
     if options[default].answer == "abort":
@@ -97,9 +139,8 @@ def pause_decision(run_id: str, escalation: dict) -> Decision:
     elif reason == "approval":
         commands = [str(c) for c in escalation.get("commands") or []]
         title_end = _TITLES[reason]
-        body = [f"{escalation.get('task_id', 'The task')} wants to run:", *(f"  {c}" for c in commands),
-                "Approving allows these exact commands for the rest of this run only."]
-        note = ", ".join(commands)
+        body = [f"{escalation.get('task_id', 'The task')} wants to run:", *approval_lines(escalation)]
+        note = ", ".join(printable(command) for command in commands)
     elif reason == "no_test_cmd":
         title_end = _TITLES[reason]
         body = [*problems, "Set [project] test_cmd in phil.toml, then retry."]
@@ -113,7 +154,9 @@ def pause_decision(run_id: str, escalation: dict) -> Decision:
         title_end = summary or "a decision"
         body = problems
     kind = "approval" if reason == "approval" else "pause"
-    return Decision(kind, f"⏸ {run_id} needs you · {title_end}", _capped(body), options, default, note=note)
+    # An approval's body is never capped here: the callout renderer counts the entries it leaves out (N2).
+    shown = tuple(body) if kind == "approval" else _capped(body)
+    return Decision(kind, f"⏸ {run_id} needs you · {title_end}", shown, options, default, note=note)
 
 
 def question_decision(index: int, total: int, text: str, why: str, options: list[str]) -> Decision | None:
@@ -130,6 +173,38 @@ def approach_decision(approaches: list[tuple[str, str]]) -> Decision:
             for n, (name, summary) in enumerate(approaches, 1)]
     opts.append(Option("Describe your own", str(len(approaches) + 1), typed=True))
     return Decision("question", "Pick an approach", (), tuple(opts))
+
+
+def repo_shell_title(repo: str, rules: Sequence[str]) -> str:
+    """The trust prompt's title: what the repo's phil.toml settings do (F9). Display text only."""
+    name = printable(repo)
+    return f"{name}'s phil.toml allows these commands" if rules else f"{name}'s phil.toml changes how commands run"
+
+
+def repo_shell_lines(rules: Sequence[str], labels: Sequence[str], pass_env: Sequence[str] = (),
+                     bash: str | None = None) -> list[str]:
+    """Everything a repo's phil.toml asks to be trusted (spec 2026-10-13 §3.5, R14): each allow
+    pattern, verbatim, with its label, then pass_env and bash when set. Display text only: hidden
+    characters show as `?`."""
+    shown = [printable(rule) for rule in rules]
+    width = max((len(rule) for rule in shown), default=0)
+    lines = [f"{rule.ljust(width)}  {label}" if label else rule for rule, label in zip(shown, labels, strict=True)]
+    if pass_env:
+        lines.append(f"passes these environment variables to agent commands: {', '.join(printable(n) for n in pass_env)}")
+    if bash is not None:
+        lines.append(f"runs every command through: {printable(bash)}")
+    return lines
+
+
+def repo_shell_decision(repo: str, rules: Sequence[str], labels: Sequence[str], pass_env: Sequence[str] = (),
+                        bash: str | None = None) -> Decision:
+    """Whether to trust the shell settings a repo's phil.toml ships, asked before plan approval
+    and before a quick run starts. A long body is capped; the full list is detail 1."""
+    name = printable(repo)
+    return Decision(
+        "confirm", repo_shell_title(repo, rules), _capped(repo_shell_lines(rules, labels, pass_env, bash)),
+        (Option(f"Trust these for {name}", "trust"), Option("Ignore them", "ignore")),
+    )
 
 
 def approval_decision() -> Decision:
