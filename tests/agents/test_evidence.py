@@ -63,6 +63,36 @@ def test_claim_naming_run_shell_still_needs_a_matching_command():
     assert check_evidence(output, commands=["run_shell ls"], workdir=None, tools=["run_shell"]) == []
 
 
+def _claims(*commands: str) -> TaskResult:
+    return result(self_check=self_check(evidence=[Claim(statement="ran it", command=c) for c in commands]))
+
+
+def test_claim_prefixed_with_the_shell_tool_name_matches_the_command_it_ran():
+    # From a live run (r-d1c7): the tester named the tool before each command it really ran.
+    output = _claims("run_shell npm run build", "run_shell cat dist/index.html")
+    ran = ["npm run build", "cat dist/index.html"]
+    assert check_evidence(output, commands=ran, workdir=None, tools=["run_shell"]) == []
+
+
+def test_claim_joining_commands_passes_only_when_every_part_ran():
+    joined = _claims(
+        "git status --short; git show --stat HEAD", "run_shell git show --stat HEAD ; run_shell git status --short"
+    )
+    ran = ["git status --short", "git show --stat HEAD"]
+    assert check_evidence(joined, commands=ran, workdir=None) == []
+    assert check_evidence(_claims("npm ci && npm test"), commands=["npm test"], workdir=None) == [
+        "claimed command was never run: npm ci && npm test"
+    ]
+
+
+def test_claim_with_a_trailing_note_matches_the_command_before_it():
+    output = _claims("cat dist/index.html (after running node build.mjs)")
+    assert check_evidence(output, commands=["cat dist/index.html"], workdir=None) == []
+    assert check_evidence(output, commands=[], workdir=None) == [
+        "claimed command was never run: cat dist/index.html (after running node build.mjs)"
+    ]
+
+
 def test_tests_added_must_exist(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_a.py").write_text("")

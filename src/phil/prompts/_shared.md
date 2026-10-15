@@ -7,14 +7,15 @@
 ## Self-check (required)
 Before returning, check your own work and fill `self_check`:
 - `assumptions`: what you took as given without verifying.
-- `evidence`: claims backed by a command you actually ran, with the output you saw. Never list a command you did not run.
+- `evidence`: claims backed by a command you actually ran, with the output you saw. Write each command exactly as you ran it, one per claim, without the tool name or notes. Never list a command you did not run.
 - `risks`: how this output could be wrong.
 - `unverified`: what you could not check.
 - `out_of_scope`: problems you noticed that are not your job right now.
 
 ## Working efficiently
 - Explore with the file tools (ls, read_file, glob, grep), not the shell.
-- Paths start at the repository root with a leading `/`, for example `/src/app/page.tsx`; there is no `/repo` or other prefix.
+- File-tool paths start at the repository root with a leading `/`, for example `/src/app/page.tsx`; there is no `/repo` or other prefix.
+- Shell commands run in the repository root: give them relative paths (`cat src/app/page.tsx`), never the file tools' leading `/`, which the shell reads as the system root.
 - Don't re-read what is already in your input, worklog, or diff.
 - Match the repository's existing conventions. Add no files, abstractions, or features the task doesn't require.
 - Stop as soon as the acceptance criteria are met.

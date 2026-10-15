@@ -15,6 +15,7 @@ def test_ask_answer_returns_the_answer(tmp_path):
         seen.append(turn)
         return Answer(text="calc.add sums two ints.", files=["calc.py"])
 
+    (tmp_path / "calc.py").write_text("def add(a, b): ...\n")
     factory = ScriptedAgentFactory({"answer": [answer]})
     ctx = AgentContext(config=PhilConfig(models={"low": "openrouter:l", "high": "openrouter:h"}),
                        conn=connect(tmp_path / "t.db"), layer="chat", factory=factory)
@@ -23,6 +24,27 @@ def test_ask_answer_returns_the_answer(tmp_path):
     assert seen[0].workdir == tmp_path and set(seen[0].tools) == {"run_shell"}
     packet = seen[0].payload["messages"][0]["content"]
     assert "what does add do?" in packet and "Tracked files:" in packet
+
+
+def test_answer_files_come_from_what_the_answerer_read(tmp_path):
+    # A live answer (bench explain-module) named its file only in the text: `files` came back empty.
+    (tmp_path / "calc").mkdir()
+    (tmp_path / "calc" / "__init__.py").write_text("def divide(a, b): ...\n")
+    (tmp_path / "README.md").write_text("calc\n")
+    log = CommandLog()
+
+    def answer(turn: Turn) -> Answer:
+        # What the file tools record while the answerer works (virtual paths, rooted at `/`).
+        log.tool_paths["read_file"] = ["/calc/__init__.py", "/gone.py"]
+        log.tool_paths["ls"] = ["/"]
+        return Answer(text="divide raises ZeroDivisionError.", files=["/README.md"])
+
+    factory = ScriptedAgentFactory({"answer": [answer]})
+    ctx = AgentContext(config=PhilConfig(models={"low": "openrouter:l", "high": "openrouter:h"}),
+                       conn=connect(tmp_path / "t.db"), layer="chat", factory=factory, command_log=log)
+    out = ask_answer(ctx, "what does divide do?", root=tmp_path, overview="")
+    # The model's own list first (made repo-relative), then files it read; listings and missing files left out.
+    assert out.files == ["README.md", "calc/__init__.py"]
 
 
 def test_the_answer_cap_has_one_source():
