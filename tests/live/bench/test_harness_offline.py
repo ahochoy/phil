@@ -12,7 +12,8 @@ import pytest
 from phil.agents.fake import ScriptedAgentFactory, Turn
 from phil.chat.approval import launch_problems
 from phil.config import PhilConfig, load_config
-from phil.contracts import Goal, Plan, Task
+from phil.contracts import Goal, Plan, SelfCheck, Task, TesterReport
+from phil.contracts.memory import MemoryAdd, MemoryUpdate
 from phil.contracts.routing import Answer
 from phil.store.db import connect
 from phil.store.telemetry import TelemetryRow
@@ -369,6 +370,119 @@ def test_report_prints_the_last_records_per_case(tmp_path, results, config, caps
 def test_report_says_when_there_are_no_results(results, capsys):
     report.main([])
     assert "no benchmark results" in capsys.readouterr().out
+
+
+def learning_factory() -> ScriptedAgentFactory:
+    """A scripted run whose tester leaves a memory note and whose memory agent turns it into one bullet."""
+    noting = SelfCheck(
+        assumptions=[], evidence=[], risks=[], unverified=[], out_of_scope=[],
+        memory_notes=["tests run with python -m pytest -q"],
+    )
+    factory = scripted()
+    factory.scripts["tester"] = [TesterReport(tests_added=[], issues=[], self_check=noting)]
+    factory.scripts["memory"] = [
+        MemoryUpdate(add=[MemoryAdd(section="Commands", text="Run the tests with python -m pytest -q")])
+    ]
+    return factory
+
+
+def test_a_cold_run_then_a_warm_run_on_the_same_repo_both_pass(tmp_path, results, config):
+    work = tmp_path / "work"
+    calc = case("py-multiply")
+    cold = run_case(calc, config, work, factory=learning_factory(), memory="cold", pair=0)
+    assert cold["passed"] is True
+    assert (cold["memory"], cold["pair"], cold["memory_bullets"]) == ("cold", 0, 0)
+    leftover = work / "py-multiply" / "leftover.txt"
+    leftover.write_text("from the cold run\n")  # untracked: a reused repo must not keep it
+    warm = run_case(calc, config, work, factory=scripted(), memory="warm", pair=0, reuse_repo=True)
+    assert warm["passed"] is True
+    assert not leftover.exists()
+    assert (warm["memory"], warm["pair"]) == ("warm", 0)
+    # what the cold run's memory agent added is what the warm run starts with
+    assert warm["memory_bullets"] == 1
+    assert len(results.read_text().splitlines()) == 2
+
+
+def test_a_cold_run_starts_without_the_memory_an_earlier_run_left(tmp_path, results, config):
+    work = tmp_path / "work"
+    calc = case("py-multiply")
+    run_case(calc, config, work, factory=learning_factory(), memory="cold", pair=0)
+    again = run_case(calc, config, work, factory=scripted(), memory="cold", pair=1, reuse_repo=True)
+    assert again["memory_bullets"] == 0
+
+
+def test_a_record_without_a_memory_mode_has_no_memory_fields(tmp_path, results, config):
+    record = run_case(case("py-multiply"), config, tmp_path / "work", factory=scripted())
+    assert not {"memory", "pair", "memory_bullets"} & set(record)
+
+
+def test_planning_agents_get_the_repo_context_block(tmp_path, results, config):
+    contexts: dict[str, str] = {}
+
+    class Recording(ScriptedAgentFactory):
+        def __call__(self, spec, *args, **kwargs):
+            contexts[spec.name] = spec.context
+            return super().__call__(spec, *args, **kwargs)
+
+    work = tmp_path / "work"
+    run_case(case("py-multiply"), config, work, factory=learning_factory(), memory="cold", pair=0)
+    warm = Recording(scripted().scripts)
+    run_case(case("py-multiply"), config, work, factory=warm, memory="warm", pair=0, reuse_repo=True)
+    assert "## Repo context" in contexts["architect"]
+    assert "Run the tests with python -m pytest -q" in contexts["architect"]
+
+
+def test_the_cold_against_warm_section_uses_medians_over_the_last_pairs():
+    def rec(memory, calls, tokens, minutes, case_name="a"):
+        return {
+            "case": case_name, "memory": memory, "model_calls": calls,
+            "tokens_in": tokens, "tokens_out": 10, "minutes": minutes,
+        }
+
+    records = [
+        rec("cold", 99, 999, 9.0),  # older than the last two pairs: ignored
+        rec("cold", 10, 100, 2.0), rec("warm", 4, 40, 1.0),
+        rec("cold", 20, 200, 4.0), rec("warm", 6, 60, 1.0),
+        rec("cold", 0, 0, 0.0, "b"), rec("warm", 3, 30, 1.0, "b"),
+    ]
+    header, a_row, b_row = report.cold_against_warm(records, pairs=2)
+    assert header == (
+        "case", "cold calls", "warm calls", "change", "cold tokens", "warm tokens", "change",
+        "cold min", "warm min", "change",
+    )
+    # cold calls 10 and 20 -> 15, warm 4 and 6 -> 5; tokens (110, 210) -> 160, (50, 70) -> 60; minutes 3.0 and 1.0
+    assert a_row == ("a", "15", "5", "-67%", "160", "60", "-62%", "3.0", "1.0", "-67%")
+    assert b_row == ("b", "0", "3", "n/a", "10", "40", "+300%", "0.0", "1.0", "n/a")
+
+
+@pytest.mark.parametrize(
+    ("cold", "warm", "text"),
+    [(100, 66, "-34%"), (100, 100, "0%"), (100, 150, "+50%"), (0, 5, "n/a"), (0, 0, "n/a"), (3, 2, "-33%")],
+)
+def test_change_is_a_whole_percent_or_not_applicable(cold, warm, text):
+    assert report.change(cold, warm) == text
+
+
+def test_report_adds_the_mem_column_and_the_cold_against_warm_section(results, capsys):
+    base = {"case": "a", "state": "completed", "passed": True, "model_calls": 8, "tokens_in": 5, "tokens_out": 5}
+    records = [
+        {**base, "memory": "cold", "pair": 0, "minutes": 2.0},
+        {**base, "memory": "warm", "pair": 2, "model_calls": 4, "minutes": 1.0},
+        {**base, "case": "plain"},
+    ]
+    results.write_text("".join(json.dumps(r) + "\n" for r in records))
+    report.main(["--pairs", "3"])
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].split()[:3] == ["case", "sha", "mem"]
+    assert "cold#0" in lines[1] and "warm#2" in lines[2]
+    assert lines[3].split()[2] == "-"
+    assert "Cold against warm (medians over the last 3 pairs)" in "\n".join(lines)
+
+
+def test_report_without_memory_records_has_no_cold_against_warm_section(results, capsys):
+    results.write_text(json.dumps({"case": "a", "state": "completed", "passed": True}) + "\n")
+    report.main([])
+    assert "Cold against warm" not in capsys.readouterr().out
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")

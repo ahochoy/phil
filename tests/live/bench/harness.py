@@ -31,6 +31,7 @@ from phil.chat.approval import effective_test_cmd, launch_problems
 from phil.chat.overview import repo_overview
 from phil.chat.planning import Planner, intake, quick_plan
 from phil.chat.snapshot import export_tree, export_worktree
+from phil.memory.store import read_memory
 import phil.config
 from phil.config import ROLES, ConfigError, PhilConfig, load_config
 from phil.contracts import Goal, Plan
@@ -188,25 +189,54 @@ def _quick_plan_for(goal: Goal, config: PhilConfig, tree: Path, root: Path) -> t
     return (None, problems) if problems else (plan, [])
 
 
-def run_case(case: Case, config_path: Path, work: Path, *, factory: AgentFactory | None = None) -> dict:
+def _reset_repo(root: Path) -> Path:
+    """Put a repo a case already ran in back to its `Configure phil` commit, with nothing untracked."""
+    found = subprocess.run(
+        ["git", "rev-list", "-n1", "--grep", "^Configure phil$", "HEAD"],
+        cwd=root, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    _git(root, "reset", "--hard", found)
+    _git(root, "clean", "-fd")
+    return root.resolve()
+
+
+def run_case(
+    case: Case, config_path: Path, work: Path, *, factory: AgentFactory | None = None,
+    memory: str | None = None, pair: int | None = None, reuse_repo: bool = False,
+) -> dict:
     """Plan and run `case` end to end, then append and return its record. `factory=None` uses real models.
+
+    Warm mode: `memory` ("cold" or "warm") and `pair` are recorded. "cold" deletes the project's memory
+    files before planning, and `reuse_repo` keeps the repo (and so its project memory) from an earlier
+    run, reset to its starting commit, instead of making a fresh one.
 
     The user's global config is ignored: the case's phil.toml alone decides its settings."""
     with without_global_config(work):
-        return _run_case(case, config_path, work, factory=factory)
+        return _run_case(case, config_path, work, factory=factory, memory=memory, pair=pair, reuse_repo=reuse_repo)
 
 
-def _run_case(case: Case, config_path: Path, work: Path, *, factory: AgentFactory | None) -> dict:
+def _run_case(
+    case: Case, config_path: Path, work: Path, *, factory: AgentFactory | None,
+    memory: str | None, pair: int | None, reuse_repo: bool,
+) -> dict:
     config_data = case_config(case, tomllib.loads(Path(config_path).read_text()))
-    root = _init_repo(case, Path(work), config_data)
+    existing = Path(work) / case.name
+    if reuse_repo and (existing / ".git").exists():
+        root = _reset_repo(existing)
+    else:
+        root = _init_repo(case, Path(work), config_data)
     info = resolve_repo(root)
     paths = ProjectPaths(info.slug)
+    if memory == "cold":
+        paths.memory_path.unlink(missing_ok=True)
+        paths.agents_md_suggestions_path.unlink(missing_ok=True)
+    memory_bullets = len(read_memory(paths).bullets())
     chat_id = f"bench-{case.name}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(2)}"
     conn = connect(paths.db_path)
     chat_dir = paths.project_dir / "chats" / chat_id
     ctx = AgentContext(
         config=load_config(info.root), conn=conn, layer="chat", chat_id=chat_id,
-        artifacts=ArtifactStore(chat_dir), factory=factory,
+        artifacts=ArtifactStore(chat_dir), factory=factory, repo_root=info.root, paths=paths,
     )
     ts = datetime.now(UTC).isoformat(timespec="seconds")
     started = time.monotonic()
@@ -313,6 +343,8 @@ def _run_case(case: Case, config_path: Path, work: Path, *, factory: AgentFactor
             "chat_id": chat_id,
             "error": error,
         }
+        if memory is not None:
+            record |= {"memory": memory, "pair": pair, "memory_bullets": memory_bullets}
     finally:
         conn.close()
     append_record(record)

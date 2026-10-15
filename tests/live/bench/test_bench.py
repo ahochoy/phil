@@ -5,6 +5,10 @@ Each case plans and runs a small goal with real models and appends a record to
 
 For comparable `minutes`, run the cases one at a time: `... uv run pytest -m bench -n 0`. The default
 `-n auto` runs them in parallel, and contention inflates each case's wall-clock time.
+
+Warm mode compares a run with no repo memory against one that starts with what the cold run learned:
+`PHIL_BENCH_WARM=1 PHIL_BENCH_PAIRS=3 PHIL_BENCH_CONFIG=~/bench.toml uv run pytest -m bench -n 0`
+runs each case as that many cold-then-warm pairs (default 3), and the report shows the medians.
 """
 
 import json
@@ -26,7 +30,17 @@ def test_bench(case: Case, tmp_path: Path) -> None:
         pytest.skip("PHIL_BENCH_CONFIG is unset: point it at a phil.toml with the [models] to benchmark")
     if case.fixture == "static-site" and shutil.which("node") is None:
         pytest.skip("node is not installed; the static-site cases build with `node build.mjs`")
-    record = run_case(case, Path(config).expanduser(), tmp_path / "work")
+    config_path = Path(config).expanduser()
+    if os.environ.get("PHIL_BENCH_WARM") != "1":
+        _check(case, run_case(case, config_path, tmp_path / "work"))
+        return
+    for pair in range(int(os.environ.get("PHIL_BENCH_PAIRS", "3"))):
+        work = tmp_path / f"pair{pair}"
+        _check(case, run_case(case, config_path, work, memory="cold", pair=pair))
+        _check(case, run_case(case, config_path, work, memory="warm", pair=pair, reuse_repo=True))
+
+
+def _check(case: Case, record: dict) -> None:
     print(json.dumps(record, indent=2))
     assert record["routed_depth"] == case.expect_depth, (
         f"{case.name}: routed {record['routed_depth']!r}, expected {case.expect_depth!r}"
