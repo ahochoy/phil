@@ -87,6 +87,54 @@ def test_escalate_then_resume(calc_repo):
     assert run_worker(calc_repo, record.run_id, "resume", {"action": "retry"}, factory=finishing).status == "completed"
 
 
+def recording(inner, seen):
+    """A factory that records each agent's `spec.context`, then delegates to `inner`."""
+
+    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None):
+        seen.append((spec.name, spec.context))
+        return inner(spec, model, workdir, tools, timeout_s=timeout_s, provider=provider)
+
+    return factory
+
+
+def test_a_resumed_run_sees_the_context_it_started_with(calc_repo):
+    info, record = new_run(calc_repo)
+    paths = ProjectPaths(info.slug)
+    (calc_repo / "AGENTS.md").write_text("ORIGINAL NOTE\n", encoding="utf-8")
+    seen_start: list = []
+    escalating = ScriptedAgentFactory({"implementer": [write_red, bad_green, bad_green, bad_green]})
+    assert run_worker(calc_repo, record.run_id, "start", factory=recording(escalating, seen_start)).status == "escalated"
+    snapshot = (paths.run_dir(record.run_id) / "context.md").read_text(encoding="utf-8")
+    assert "ORIGINAL NOTE" in snapshot
+    assert all("ORIGINAL NOTE" in context for name, context in seen_start if name == "implementer")
+
+    (calc_repo / "AGENTS.md").write_text("CHANGED NOTE\n", encoding="utf-8")
+    seen_resume: list = []
+    finishing = ScriptedAgentFactory(
+        {"implementer": [write_green], "tester": [tester_report()], "reviewer": [review()]}
+    )
+    outcome = run_worker(
+        calc_repo, record.run_id, "resume", {"action": "retry"}, factory=recording(finishing, seen_resume)
+    )
+    assert outcome.status == "completed"
+    assert seen_resume
+    for name, context in seen_resume:
+        if name in {"implementer", "tester", "reviewer"}:
+            assert "ORIGINAL NOTE" in context and "CHANGED NOTE" not in context
+    assert (paths.run_dir(record.run_id) / "context.md").read_text(encoding="utf-8") == snapshot
+
+
+def test_a_failure_writing_the_context_is_a_notice_and_the_run_continues(calc_repo, monkeypatch):
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(worker_module, "write_run_context", boom)
+    info, record = new_run(calc_repo)
+    assert run_worker(calc_repo, record.run_id, "start", factory=happy()).status == "completed"
+    notices = [e["message"] for e in events_of(info, record.run_id, "notice")]
+    assert any(m.startswith("Repo context:") and "disk full" in m for m in notices)
+
+
 def test_mode_guards_do_not_touch_the_row(calc_repo):
     info, record = new_run(calc_repo)
     with pytest.raises(WorkerError, match="not waiting for a decision"):

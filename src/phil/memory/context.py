@@ -145,3 +145,25 @@ def build_repo_context(repo_root: Path, paths: ProjectPaths) -> RepoContext:
     if not parts:
         return RepoContext("", problems)
     return RepoContext("\n\n".join([CONTEXT_INTRO, *parts]), problems)
+
+
+RUN_CONTEXT_FILE = "context.md"
+
+
+def write_run_context(run_dir: Path, repo_root: Path, paths: ProjectPaths) -> list[str]:
+    """Snapshot the Repo context block into the run's directory, once, at the run's start, so every
+    agent call in the run (and a resume) sees the same text. An empty file when there's no block, so
+    a resume never builds one. Returns the problems met building it."""
+    context = build_repo_context(repo_root, paths)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / RUN_CONTEXT_FILE).write_text(context.text, encoding="utf-8", newline="\n")
+    return context.problems
+
+
+def read_run_context(run_dir: Path) -> str:
+    """The run's snapshot; "" when the file is missing, empty or unreadable (a run created before the
+    snapshot existed runs with no block)."""
+    try:
+        return (run_dir / RUN_CONTEXT_FILE).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""

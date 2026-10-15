@@ -34,6 +34,7 @@ from phil.contracts import (
     TestReport,
 )
 from phil.git import GitError, branch_for, git
+from phil.memory.context import read_run_context
 from phil.packets import Packet, PacketTooLarge, build_packet
 from phil.permissions.catalog import label_for
 from phil.permissions.listing import shown_path
@@ -178,6 +179,13 @@ class RunEngine:
         self.deps = deps
         self.worktrees = WorktreeManager(deps.repo_root)
         self._milestone_warned = False
+        self._repo_context: str | None = None
+
+    def _run_context(self) -> str:
+        """The run's context snapshot, read once. Always a string, so a run never builds a block."""
+        if self._repo_context is None:
+            self._repo_context = read_run_context(self.deps.artifacts.run_dir)
+        return self._repo_context
 
     # --- graph -------------------------------------------------------------
 
@@ -379,6 +387,7 @@ class RunEngine:
             activity=self.deps.activity,
             repo_root=self.deps.repo_root,
             paths=self.deps.paths,
+            repo_context=self._run_context(),
         )
 
     def _policy(self) -> PolicySet | None:

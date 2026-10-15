@@ -7,7 +7,14 @@ import pytest
 
 from phil.agents.registry import SPECS
 from phil.agents.spec import load_prompt
-from phil.memory.context import AGENT_FILE_MAX_BYTES, TRUNCATED_NOTE, build_repo_context, find_agent_file
+from phil.memory.context import (
+    AGENT_FILE_MAX_BYTES,
+    TRUNCATED_NOTE,
+    build_repo_context,
+    find_agent_file,
+    read_run_context,
+    write_run_context,
+)
 from phil.memory.doc import MAX_FILE_BYTES, Bullet
 from phil.memory.store import update_memory
 from phil.store.paths import ProjectPaths
@@ -23,6 +30,31 @@ def test_agents_md_is_preferred_over_claude_md(tmp_path):
 def test_a_directory_named_agents_md_is_not_an_agent_file(tmp_path):
     (tmp_path / "AGENTS.md").mkdir()
     assert find_agent_file(tmp_path) is None
+
+
+def test_run_context_is_written_and_read_back(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("Run `make test`.\n", encoding="utf-8")
+    paths = ProjectPaths("x", home=tmp_path / "home")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    assert write_run_context(run_dir, tmp_path, paths) == []
+    assert read_run_context(run_dir) == build_repo_context(tmp_path, paths).text
+    assert "Run `make test`." in read_run_context(run_dir)
+
+
+def test_run_context_is_an_empty_file_when_there_is_no_block(tmp_path):
+    paths = ProjectPaths("x", home=tmp_path / "home")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    write_run_context(run_dir, tmp_path, paths)
+    assert (run_dir / "context.md").read_text(encoding="utf-8") == ""
+    assert read_run_context(run_dir) == ""
+
+
+def test_read_run_context_is_empty_for_a_missing_or_unreadable_file(tmp_path):
+    assert read_run_context(tmp_path) == ""
+    (tmp_path / "context.md").mkdir()  # reading a directory fails
+    assert read_run_context(tmp_path) == ""
 
 
 def test_no_files_no_block(tmp_path):
