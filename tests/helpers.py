@@ -31,6 +31,9 @@ def build_template_repo(repo: Path, files: dict[str, str]) -> Path:
     run_git(repo, "config", "user.email", "test@example.com", env=env)
     run_git(repo, "config", "user.name", "Test", env=env)
     run_git(repo, "config", "commit.gpgsign", "false", env=env)
+    # No background maintenance after the commit: its lock file can vanish mid-copy.
+    run_git(repo, "config", "maintenance.auto", "false", env=env)
+    run_git(repo, "config", "gc.auto", "0", env=env)
     for name, text in files.items():
         (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_text(text)
