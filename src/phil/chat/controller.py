@@ -59,6 +59,22 @@ from phil.config import ConfigError, PhilConfig, load_config
 from phil.contracts import Approach, Approaches, Goal, Plan, PlanCritique, Question, Ref, RunStatus
 from phil.contracts.results import AttemptWorklog
 from phil.contracts.routing import Answer
+from phil.memory.agents_md import active_run
+from phil.memory.commands import (
+    NO_SUGGESTIONS,
+    MemoryCommandError,
+    add_line,
+    apply_lines,
+    dismiss_line,
+    remove_line,
+    running_message,
+    split_section,
+    suggestion_lines,
+)
+from phil.memory.doc import MemoryDoc
+from phil.memory.editor import EditorError, edit_file
+from phil.memory.listing import memory_lines
+from phil.memory.store import write_atomic
 from phil.publish import publisher as publishing
 from phil.publish.service import PrChange, PublishRefused, change_line, publish_run, sweep_prs
 from phil.permissions.listing import CHANGE_HINT, listing_lines, problem_lines
@@ -103,7 +119,8 @@ HELP = (
     "/answer (a paused run's question), /resume (a failed or stopped run), /show (the chat's run: usage "
     "and numbered details), /more <n> (print detail n), /more #<step> (a feed step's detail), "
     "/feed <agent> (show one agent's lines; /feed to show all), /park <note> (set an idea aside), "
-    "/permissions (the rules for agents' commands), /help, "
+    "/permissions (the rules for agents' commands), "
+    "/memory (what Phil remembers about this repo), /remember <fact>, /forget <n>, /help, "
     "/quit (or Ctrl-D)."
 )
 FEED_AGENTS = ("implementer", "tester", "reviewer", "architect", "sub-agent", "engine")
@@ -118,7 +135,10 @@ PROMPTS = {
     "confirm_fix": "Fix it? [Enter = quick fix / full = plan it / n] › ",
     "choose_approach": "Pick an approach [Enter = 1 / number / describe your own] › ",
     "trust_repo": "Trust phil.toml's settings? [trust / ignore] › ",
+    "confirm_agents_md": "[y / n] › ",
 }
+MEMORY_TRY = "Try /memory, /memory edit, /memory suggestions, /memory apply or /memory dismiss."
+LEFT_AGENTS_MD = "Left AGENTS.md as it is."
 PR_ANYWAY_PROMPT = "Open a PR anyway? [y / n] › "  # confirm_pr, for a run finished with blocking issues
 QUICK_FALLBACK = "Couldn't plan this as a quick change; planning it fully."
 MOVING_TO_FULL = "Moving this to a full plan, with what the quick attempt learned."
@@ -245,6 +265,7 @@ class ChatController:
         self._clarifications: list[str] = []  # the user's answers to intake's questions for this goal
         self._prior_turns: list[str] = []  # the chat turns before this goal's message
         self._fix_offer: tuple[str, str] | None = None  # (question, diagnosis) the confirm_fix question is about
+        self._agents_md_create = False  # confirm_agents_md: the "create it?" question has been asked
         self.state = ChatState()
         self._run_id: str | None = None
         self._watcher = None  # follows the chat's run; a daemon thread (the worker is independent)
@@ -607,7 +628,7 @@ class ChatController:
             stage = self.stage
             if stage == "confirm_replace":
                 stage = self._parent_stage
-            elif stage in ("confirm_pr", "confirm_fix"):
+            elif stage in ("confirm_pr", "confirm_fix", "confirm_agents_md"):
                 stage = "idle"  # the question isn't asked again (`phil pr` opens a PR later)
             elif stage == "edit" or (stage == "planning" and self._revising and self._draft is not None):
                 stage = "approval"  # a reopened chat returns to the draft being revised
@@ -772,6 +793,8 @@ class ChatController:
             self._confirm_pr(text)
         elif stage == "confirm_fix":
             self._confirm_fix(text)
+        elif stage == "confirm_agents_md":
+            self._confirm_agents_md(text)
         elif stage == "paused":
             self._pause_answer(text)
         elif stage == "hint":
@@ -807,6 +830,12 @@ class ChatController:
             self._park_command(text[len(command):].strip())
         elif command == "/permissions":
             self._permissions_command()
+        elif command == "/memory":
+            self._memory_command(text[len(command):].strip())
+        elif command == "/remember":
+            self._remember_command(text[len(command):].strip())
+        elif command == "/forget":
+            self._forget_command(text[len(command):].strip())
         else:
             self.console.print(f"Unknown command {escape(command)}. Try /help.")
         return True
@@ -840,6 +869,8 @@ class ChatController:
         elif self.stage == "confirm_fix":
             self._fix_offer = None
             self._set_stage("idle")
+        elif self.stage == "confirm_agents_md":
+            self._leave_agents_md()
         else:
             self.console.print("[phil.muted]Cancelled.[/]")
 
@@ -2124,6 +2155,118 @@ class ChatController:
         """What `phil permissions` lists; changes are made with the CLI (spec 2026-10-13 §3.7)."""
         for line in [*listing_lines(self.info.root, ProjectPaths(self.info.slug), self.config), CHANGE_HINT]:
             self.console.print(Text(line), soft_wrap=True)
+
+    # --- /memory, /remember, /forget (spec 2026-10-15 §2.4) ----------------------------------------
+
+    def _say(self, *lines: str) -> None:
+        for line in lines:
+            self.console.print(Text(line), soft_wrap=True)
+
+    def _memory_paths(self) -> ProjectPaths:
+        return ProjectPaths(self.info.slug)
+
+    def _memory_listing(self) -> None:
+        try:
+            self._say(*memory_lines(self._memory_paths()))
+        except OSError as exc:
+            self._say(f"Can't read {self._memory_paths().memory_path}: {printable(exc)}")
+
+    def _memory_command(self, arg: str) -> None:
+        paths = self._memory_paths()
+        if arg == "":
+            self._memory_listing()
+        elif arg == "edit":
+            path = paths.memory_path
+            if not path.exists():
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    write_atomic(path, MemoryDoc.new(self.info.slug).render().encode("utf-8"))
+                except OSError as exc:
+                    self._say(f"Can't write {path}: {printable(exc)}")
+                    return
+            try:
+                edit_file(str(path))
+            except EditorError as exc:
+                self._say(f"Couldn't open the editor: {printable(exc)}")
+                return
+            self._memory_listing()
+        elif arg == "suggestions":
+            self._say(*(suggestion_lines(paths) or [NO_SUGGESTIONS]))
+        elif arg == "dismiss":
+            try:
+                self._say(dismiss_line(paths))
+            except MemoryCommandError as exc:
+                self._say(str(exc))
+        elif arg == "apply":
+            self._memory_apply()
+        else:
+            self._say(MEMORY_TRY)
+
+    def _memory_apply(self) -> None:
+        running = active_run(self.conn)
+        if running is None and self._run_id is not None:
+            # This chat's own run, unless it ended (a failed or stopped run keeps its id for /resume).
+            record = get_run(self.conn, self._run_id)
+            if record is not None and record.state in ("pending", "running", "escalated"):
+                running = self._run_id
+        if running is not None:
+            self._say(running_message(running))
+            return
+        if self.stage != "idle":
+            self._say("Finish or cancel the current step first, then /memory apply.")
+            return
+        pending = suggestion_lines(self._memory_paths())
+        if not pending:
+            self._say(NO_SUGGESTIONS)
+            return
+        self._agents_md_create = False
+        self._say(*pending, "Append these to AGENTS.md? (y/n)")
+        self._set_stage("confirm_agents_md")
+
+    def _leave_agents_md(self) -> None:
+        self._agents_md_create = False
+        self._set_stage("idle")
+        self.console.print(Text(LEFT_AGENTS_MD, style="phil.muted"))
+
+    def _confirm_agents_md(self, text: str) -> None:
+        if text.lower() not in ("y", "yes"):
+            self._leave_agents_md()
+            return
+        if not self._agents_md_create and not (self.info.root / "AGENTS.md").exists():
+            self._agents_md_create = True  # asked to create it; the next y applies
+            self._say("There's no AGENTS.md. Create it? (y/n)")
+            return
+        create, self._agents_md_create = self._agents_md_create, False
+        self._set_stage("idle")
+        try:
+            self._say(*apply_lines(self.info.root, self._memory_paths(), create=create))
+        except MemoryCommandError as exc:
+            self._say(str(exc))
+
+    def _remember_command(self, arg: str) -> None:
+        section, text = split_section(arg)
+        if not text:
+            self._say("Usage: /remember [section:] text")
+            return
+        try:
+            add_line(self._memory_paths(), section, text)
+        except MemoryCommandError as exc:
+            self._say(str(exc))
+            return
+        self._say(f"Remembered under {section}.")
+
+    def _forget_command(self, arg: str) -> None:
+        try:
+            number = int(arg)
+        except ValueError:
+            self._say("Usage: /forget <n>")
+            return
+        try:
+            removed = remove_line(self._memory_paths(), number)
+        except MemoryCommandError as exc:
+            self._say(str(exc))
+            return
+        self._say(f"No bullet {number}. /memory lists them." if removed is None else f"Forgot: {printable(removed)}")
 
     # --- /feed -----------------------------------------------------------------------------------
 

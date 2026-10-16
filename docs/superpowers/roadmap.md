@@ -119,7 +119,7 @@ The goal is to reach a publishable state first.
 
 **First public release, in this order:**
 1. ✓ M4 permissions (done, 2026-10-13). This also settles where config, policies and memory live on disk.
-2. Memory at the repository level: facts learned in a repo that later runs reuse, visible and editable.
+2. ✓ Memory at the repository level: facts learned in a repo that later runs reuse, visible and editable (done, 2026-10-15; [plan](plans/2026-10-15-phil-repo-memory.md), [spec](specs/2026-10-15-phil-repo-memory-design.md)).
 3. Skills, a basic version: Phil and its sub-agents use the `SKILL.md` skills the user already has installed, from folders the user approves.
 4. Release work:
    - keep internal diagnostics out of users' terminals;

@@ -17,6 +17,7 @@ from phil.contracts import (
     TesterInput,
     TesterReport,
 )
+from phil.contracts.memory import MemoryInput, MemoryUpdate
 from phil.contracts.routing import Answer, AnswerInput, RouteInput, RouteJudgement
 
 # The answerer's model-call budget: its last allowed call must answer (see phil.agents.factory).
@@ -33,35 +34,49 @@ ARCHITECT_MAX_MODEL_CALLS = 10
 ARCHITECT_REVISE_MAX_MODEL_CALLS = 4
 
 SPECS: dict[str, AgentSpec] = {
-    "intake": AgentSpec("intake", "orchestrator", IntakeInput, Goal, harness="lean", end_on_text=True),
+    "intake": AgentSpec(
+        "intake", "orchestrator", IntakeInput, Goal, harness="lean", end_on_text=True, repo_context=True
+    ),
     # Light, not deep: it reads a handful of files, so it needs no sub-agent (whose calls the cap
     # can't see; live, one added 3 uncapped calls), no to-do tool and no summarization.
     "architect": AgentSpec(
         "architect", "architect", ArchitectInput, Plan, harness="light", max_model_calls=ARCHITECT_MAX_MODEL_CALLS,
-        cap_message=PLAN_NOW,
+        cap_message=PLAN_NOW, repo_context=True,
     ),
-    "critic": AgentSpec("critic", "critic", CriticInput, PlanCritique, harness="lean", end_on_text=True),
+    "critic": AgentSpec(
+        "critic", "critic", CriticInput, PlanCritique, harness="lean", end_on_text=True, repo_context=True
+    ),
     "implementer": AgentSpec(
-        "implementer", "implementer", ImplementInput, TaskResult, tools=("shell",), writes_files=True
+        "implementer", "implementer", ImplementInput, TaskResult, tools=("shell",), writes_files=True,
+        repo_context=True,
     ),
-    "tester": AgentSpec("tester", "tester", TesterInput, TesterReport, tools=("shell",), writes_files=True),
-    "reviewer": AgentSpec("reviewer", "reviewer", ReviewInput, Review, harness="lean", end_on_text=True),
-    "btw": AgentSpec("btw", "orchestrator", BtwInput, Brief, writes_files=False),
+    "tester": AgentSpec(
+        "tester", "tester", TesterInput, TesterReport, tools=("shell",), writes_files=True, repo_context=True
+    ),
+    "reviewer": AgentSpec(
+        "reviewer", "reviewer", ReviewInput, Review, harness="lean", end_on_text=True, repo_context=True
+    ),
+    "btw": AgentSpec("btw", "orchestrator", BtwInput, Brief, writes_files=False, repo_context=True),
     "route": AgentSpec(
         "route", "classifier", RouteInput, RouteJudgement, harness="lean", shared_prompt=False, end_on_text=True
     ),
     "answer": AgentSpec(
         "answer", "answerer", AnswerInput, Answer, tools=("shell",), harness="light", shared_prompt=False,
         read_only_shell=True, max_model_calls=ANSWER_MAX_MODEL_CALLS, cap_message=ANSWER_NOW,
+        repo_context=True,
     ),
     "quick_implementer": AgentSpec(
         "quick_implementer", "implementer", ImplementInput, TaskResult, tools=("shell",), writes_files=True,
         harness="light", max_model_calls=QUICK_IMPLEMENTER_MAX_MODEL_CALLS, prompt_name="implementer",
-        cap_message=FINISH_NOW,
+        cap_message=FINISH_NOW, repo_context=True,
     ),
     "design": AgentSpec(
         "design", "designer", DesignInput, Approaches, tools=("shell",), harness="light", shared_prompt=False,
         read_only_shell=True, max_model_calls=DESIGN_MAX_MODEL_CALLS, cap_message=PROPOSE_NOW,
+        repo_context=True,
+    ),
+    "memory": AgentSpec(
+        "memory", "memory", MemoryInput, MemoryUpdate, harness="lean", shared_prompt=False, end_on_text=True
     ),
 }
 

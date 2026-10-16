@@ -268,14 +268,17 @@ def render_summary(
     usage: list[UsageLine] | None = None,
     totals: Totals | None = None,
     warnings: list[str] | None = None,
+    memory: str | None = None,
 ) -> str:
-    """`warnings` (a policy file changed outside Phil, say) go right under the status line."""
+    """`warnings` (a policy file changed outside Phil, say) go right under the status line, then
+    `memory` (what the run taught Phil's memory)."""
     blocking = f" · {blocking_count(open_issues)} blocking issue(s) open" if status == "incomplete" else ""
     lines = [
         f"# Run {run_id} · {plan.keyword}",
         "",
         f"Status: {status}{blocking} · branch {branch} · {base_sha[:8]}..{head_sha[:8]}",
         *([""] + list(warnings) if warnings else []),
+        *(["", memory] if memory else []),
         "",
         "## Tasks",
         *task_lines(plan),

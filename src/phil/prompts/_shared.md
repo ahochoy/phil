@@ -11,6 +11,7 @@ Before returning, check your own work and fill `self_check`:
 - `risks`: how this output could be wrong.
 - `unverified`: what you could not check.
 - `out_of_scope`: problems you noticed that are not your job right now.
+- `memory_notes`: durable facts about this repository a later run would want (commands, layout, conventions, pitfalls), or Repo context notes that proved wrong. Usually empty.
 
 ## Working efficiently
 - Explore with the file tools (ls, read_file, glob, grep), not the shell.

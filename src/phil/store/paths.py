@@ -31,6 +31,16 @@ class ProjectPaths:
         return self.project_dir / "policy.toml"
 
     @property
+    def memory_path(self) -> Path:
+        """Phil's private memory for this repo (spec 2026-10-15 §2.1): `memory.md` next to its database."""
+        return self.project_dir / "memory.md"
+
+    @property
+    def agents_md_suggestions_path(self) -> Path:
+        """Suggested additions to the repo's AGENTS.md (spec 2026-10-15 §2.1), kept for the user to apply."""
+        return self.project_dir / "agents-md-suggestions.md"
+
+    @property
     def runs_dir(self) -> Path:
         return self.project_dir / "runs"
 

@@ -329,6 +329,36 @@ def test_the_workers_notice_is_posted_once(calc_repo):
     assert [e.data for e in notices] == [{"message": "Ignoring 1 rule(s) from phil.toml that you haven't trusted"}]
 
 
+def test_every_notice_written_between_two_polls_is_posted_in_order(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    watcher.poll_once()
+    events.append("notice", message="Ignoring 1 rule(s) from phil.toml that you haven't trusted")
+    events.append("budget_warning", tokens=600, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0,
+                  cost_source="reported")
+    events.append("notice", message="Repo context: skipped AGENTS.md: it points outside the repository")
+    watcher.poll_once()
+    shown = [(e.kind, e.data.get("message")) for e in posted if e.kind in ("notice", "budget_warning")]
+    assert shown == [
+        ("notice", "Ignoring 1 rule(s) from phil.toml that you haven't trusted"),
+        ("budget_warning", None),
+        ("notice", "Repo context: skipped AGENTS.md: it points outside the repository"),
+    ]
+
+
+def test_a_notice_from_before_the_watcher_started_is_not_reposted(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
+    update_run(conn, run_id, state="running")
+    events.append("notice", message="old one")
+    events.append("notice", message="old two")
+    reopened_posts = []
+    reopened = RunWatcher(paths, run_id, reopened_posts.append, alive=lambda r: True, starting=lambda e: False)
+    reopened.poll_once()
+    events.append("notice", message="new")
+    reopened.poll_once()
+    assert [e.data for e in reopened_posts if e.kind == "notice"] == [{"message": "new"}]
+
+
 def test_a_test_cmd_change_from_before_the_watcher_started_is_not_reposted(calc_repo):
     paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
     update_run(conn, run_id, state="running")
