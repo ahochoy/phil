@@ -1,9 +1,7 @@
 """The benchmark harness, driven offline with scripted agents (runs in the default suite)."""
 
 import json
-import shlex
 import shutil
-import sys
 import tomllib
 from pathlib import Path
 
@@ -23,9 +21,7 @@ from tests.helpers import MODELS_TOML, TEST_MODELS
 from tests.live.bench import report
 from tests.live.bench.cases import CASES, FIXTURES, Case
 from tests.live.bench.harness import _init_repo, _quick_plan_for, _usage, case_config, deep_merge, phil_sha, run_case
-from tests.run.conftest import review, task_result, tester_report
-
-TEST_CMD = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider"
+from tests.run.conftest import TEST_CMD, review, task_result, tester_report
 
 RECORD_FIELDS = {
     "case", "ts", "phil_sha", "models", "tasks", "modes", "expect_modes", "routed_depth", "expect_depth",

@@ -1,6 +1,9 @@
 import shlex
 import sys
 
+import pytest
+
+import tests.run.conftest as run_conftest
 from phil.config import ShellConfig
 from phil.run.gates import (
     MAX_FAILURES,
@@ -13,7 +16,9 @@ from phil.run.gates import (
 )
 from phil.store.artifacts import ArtifactStore
 
+# Real pytest here (the other end-to-end tests use the stand-in, STAND_IN_CMD).
 TEST_CMD = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider"
+STAND_IN_CMD = run_conftest.TEST_CMD
 GLOBS = ["tests/*", "test/*", "test_*.py", "*_test.py"]
 
 
@@ -106,6 +111,34 @@ def test_couldnt_run_summary_still_adds_a_period_with_none_to_strip():
         "`npm test` couldn't run: sh: npm: command not found. Dependencies may be missing in the "
         "run's worktree — set [project] setup_cmd (e.g. npm ci) — or the program isn't on PATH."
     )
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"test_calc.py": "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"},
+        {
+            "test_calc.py": "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+            "test_more.py": "def test_ok():\n    pass\n\n\ndef test_bad():\n    assert False\n",
+        },
+        {"test_broken.py": "import nothing_here\n\n\ndef test_x():\n    pass\n"},
+        {},
+    ],
+    ids=["passing", "one-failing", "import-error", "none"],
+)
+def test_the_stand_in_runner_reads_like_pytest(tmp_path, files):
+    # The end-to-end tests use tests/support/minitest.py instead of pytest; the gates must read
+    # its output exactly as they read pytest's.
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "__init__.py").write_text("")
+    (tmp_path / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    for name, text in files.items():
+        (tmp_path / "tests" / name).write_text(text)
+    reports = [
+        run_tests(cmd, tmp_path, shell=ShellConfig(), artifacts=None, name="v") for cmd in (TEST_CMD, STAND_IN_CMD)
+    ]
+    real, stand_in = ((r.passed, r.exit_code, r.failures, r.passed_count, r.skipped_count) for r in reports)
+    assert stand_in == real
 
 
 def test_run_tests_failing_with_baseline(tmp_path):

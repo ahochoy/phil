@@ -20,8 +20,8 @@ jobs:
   test:
     name: tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Windows runs the suite about five times slower (process start-up through Git Bash).
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 30 }}
+    # Windows runs the suite a few times slower (process start-up through Git Bash).
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 20 }}
     strategy:
       fail-fast: false
       matrix:
@@ -41,6 +41,14 @@ jobs:
           git config --global user.email "ci@phil.invalid"
           git config --global init.defaultBranch main
           git config --global core.autocrlf false
+
+      # The suite starts thousands of short processes and writes many small files; Defender scanning
+      # each one is a large share of the Windows time. The runner is throwaway, and the job reads no
+      # secrets, so turning real-time scanning off for it costs nothing.
+      - name: Turn off Defender real-time scanning
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
 
       - name: Install
         run: uv sync --locked
