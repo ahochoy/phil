@@ -7,6 +7,13 @@ These items came up in the per-task and final reviews of the `plan-memory` branc
 - **The warm benchmark stops at a harness crash.** Failed checks no longer stop the remaining pairs, but an exception raised inside `run_case` still ends the loop. If live runs crash often, catch the exception per run and record it as a failure.
 - **Rounding.** The report rounds half to even, so a -62.5% change shows as -62%. This is cosmetic.
 - **A missing repo is silently replaced.** If `reuse_repo` finds no repo, it quietly makes a fresh one. It would be better to raise.
+- **Site cases fail in check mode, with or without memory (warm bench at 731e1d2, 2026-10-16).** 6 of the 12 site-typo and site-meta-tag runs didn't pass:
+  - *Check commands refused at launch (3 runs).* The planner wrote `node -e '…;…'` and `! grep …`; the policy rejects shell operators and treats `!` as a program. Tell the planner which check commands are allowed (one program, no shell operators), or offer a small check-script convention.
+  - *`node --version` escalated (2 runs).* An agent asked to run a version probe, which needs approval, and an unattended run has no approver. Allow read-only version probes (`<program> --version`) of programs the plan already uses.
+  - *Completed without the check passing, or incomplete (2 runs).*
+
+  Rerun with `PHIL_BENCH_PAIRS=5` after these, since one pair per case says nothing about memory.
+- **The "cold run learned nothing" note is per row.** `report.py:125` adds it when any counted pair learned nothing, so a row where 2 of 3 cold runs learned still carries it. Count the pairs that learned instead (e.g. "2 of 3 cold runs learned").
 - **`read_memory` isn't guarded in the harness.** An unreadable memory file crashes a bench run. That crash is visible, and it only affects the benchmark.
 
 ## Memory file and learning
