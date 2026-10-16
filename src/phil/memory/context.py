@@ -48,6 +48,9 @@ def _candidates(repo_root: Path, problems: list[str]) -> Iterator[tuple[str, Pat
         if not resolved.is_relative_to(root):
             problems.append(f"skipped {name}: it points outside the repository")
             continue
+        if _inside_git_dir(resolved.relative_to(root)):
+            problems.append(f"skipped {name}: it points into .git")
+            continue
         try:
             info = os.stat(resolved)
         except OSError:
@@ -57,6 +60,13 @@ def _candidates(repo_root: Path, problems: list[str]) -> Iterator[tuple[str, Pat
             problems.append(f"skipped {name}: not a regular file")
             continue
         yield name, resolved, info
+
+
+def _inside_git_dir(relative: Path) -> bool:
+    """Whether a repo-relative path is under `.git`, which holds the user's own data (a remote URL
+    can carry a token), never the repo's. Compared loosely, as case-insensitive filesystems
+    (macOS, Windows) and Windows' dropped trailing dots and spaces would reach the same folder."""
+    return bool(relative.parts) and relative.parts[0].rstrip(". ").casefold() == ".git"
 
 
 def cap_text(text: str, max_bytes: int) -> str:

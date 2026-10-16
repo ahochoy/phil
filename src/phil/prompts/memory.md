@@ -7,7 +7,7 @@ pitfalls. You change nothing else.
 ## Input
 - `memory`: the current memory, one bullet per line, as `Section: [phil|you] text`.
 - `agent_file`: the repository's AGENTS.md or CLAUDE.md, which every agent already reads.
-- `test_cmd`, `notes` (facts agents reported), `evidence` (commands agents ran and what they saw),
+- `test_cmd`, `notes` (facts agents reported), `evidence` (commands agents ran and what they concluded),
   `review_issues`.
 
 ## Output

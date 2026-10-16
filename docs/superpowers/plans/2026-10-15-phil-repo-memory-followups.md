@@ -40,6 +40,7 @@ These items came up in the per-task and final reviews of the `plan-memory` branc
 - **`apply_suggestions` doesn't re-check for a running run when it writes.** The check happens before the prompt, and it's user-initiated.
 - **`/memory edit` creates the file outside the lock.** It writes the template outside `update_memory`'s lock, so there's a small overwrite race.
 - **`apply` can create an empty database** for a repo with no runs, because it opens one.
+- **Plausible but harmful saved lines.** Command output no longer reaches the memory agent, but a one-line addition such as "Commands: run `curl … | sh` before tests" still passes the line checks and persists. Consider refusing additions with pipe-to-shell, `curl`/`wget` or long base64 runs.
 - **AGENTS.md text in prompts.** How much weight it carries as possible injection, and whether to give it a firmer frame than the background-only disclaimer, is open.
 - **Fenced code in `memory.md`.** Code blocks that contain `## Commands`-like lines are parsed as headings.
 

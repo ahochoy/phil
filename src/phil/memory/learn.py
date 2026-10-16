@@ -16,7 +16,6 @@ from phil.publish.pr_body import newest_output
 from phil.store.paths import ProjectPaths
 
 MAX_INPUT_BYTES = 6 * 1024
-_OBSERVED_CHARS = 200
 
 
 class MemoryNotUpdated(Exception):
@@ -32,14 +31,12 @@ def _size(*lists: list[str]) -> int:
 
 
 def _evidence_line(claim: dict) -> str | None:
+    """A command and what the agent concluded from it. The command's raw output is left out: it can
+    carry text the repository controls, and what the memory agent writes is reused by later runs."""
     command = claim.get("command")
     if not isinstance(command, str) or not command.strip():
         return None
-    line = f"`{command}`: {claim.get('statement', '')}"
-    observed = claim.get("observed_output")
-    if isinstance(observed, str) and observed:
-        line += f" → {observed[:_OBSERVED_CHARS]}"
-    return line
+    return f"`{command}`: {claim.get('statement', '')}"
 
 
 def collect_inputs(run_dir: Path) -> tuple[list[str], list[str], list[str]]:

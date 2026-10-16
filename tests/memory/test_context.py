@@ -204,6 +204,42 @@ def test_a_link_outside_the_repo_is_skipped_and_the_next_name_is_tried(tmp_path)
     assert built.problems == ["skipped AGENTS.md: it points outside the repository"]
 
 
+def test_a_link_into_git_is_skipped_and_the_next_name_is_tried(tmp_path):
+    # .git/config can hold a remote URL with a token; a cloned repo must not pull it into prompts.
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".git" / "config").write_text("url = https://TOKEN@github.com/x/y\n", encoding="utf-8")
+    symlink(repo / "AGENTS.md", repo / ".git" / "config")
+    (repo / "CLAUDE.md").write_text("claude notes\n", encoding="utf-8")
+    built = build_repo_context(repo, ProjectPaths("x", home=tmp_path / "home"))
+    assert "TOKEN" not in built.text and "### From CLAUDE.md\nclaude notes" in built.text
+    assert built.problems == ["skipped AGENTS.md: it points into .git"]
+
+
+@pytest.mark.parametrize(
+    ("relative", "inside"),
+    [
+        (".git/config", True),
+        (".GIT/config", True),
+        (".git./config", True),
+        (".git", True),
+        (".github/AGENTS.md", False),
+        ("docs/.git/notes.md", False),
+    ],
+)
+def test_inside_git_dir(relative, inside):
+    assert context_module._inside_git_dir(Path(relative)) is inside
+
+
+def test_a_link_into_github_is_accepted(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".github").mkdir(parents=True)
+    (repo / ".github" / "AGENTS.md").write_text("from github dir\n", encoding="utf-8")
+    symlink(repo / "AGENTS.md", repo / ".github" / "AGENTS.md")
+    built = build_repo_context(repo, ProjectPaths("x", home=tmp_path / "home"))
+    assert "### From AGENTS.md\nfrom github dir" in built.text and built.problems == []
+
+
 def test_a_dangling_link_is_skipped(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
