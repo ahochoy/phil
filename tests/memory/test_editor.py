@@ -190,7 +190,7 @@ def test_windows_searches_path_without_the_current_folder(monkeypatch):
     monkeypatch.setenv("VISUAL", "code")
     monkeypatch.setenv("PATH", os.pathsep.join(["", ".", "bin1", " ", "bin2"]))
     windows(monkeypatch)
-    searched = installed(monkeypatch, **{"bin2/code": r"C:\bin2\code.exe"})
+    searched = installed(monkeypatch, **{os.path.join("bin2", "code"): r"C:\bin2\code.exe"})
     fake_run(monkeypatch)
     edit_file(r"C:\memory.md")
     assert searched == [os.path.join("bin1", "code"), os.path.join("bin2", "code")]

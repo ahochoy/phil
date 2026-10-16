@@ -233,19 +233,20 @@ def test_inside_git_dir(tmp_path, relative, inside):
 
 def test_inside_git_dir_by_identity_catches_other_spellings(tmp_path, monkeypatch):
     # A spelling the filesystem maps to .git (a Windows short name such as GIT~1, a case fold
-    # Python's casefold doesn't match) is caught because it is the same folder.
+    # Python's casefold doesn't match) is caught because it is the same folder. The alias is faked
+    # with a plain name: on Windows, GIT~1 really is .git's short name, so it can't be created.
     (tmp_path / ".git").mkdir()
-    (tmp_path / "GIT~1").mkdir()
+    (tmp_path / "alias").mkdir()
     (tmp_path / "docs").mkdir()
     real_stat = os.stat
 
     def stat(path, *args, **kwargs):
-        if Path(path).name == "GIT~1":
+        if Path(path).name == "alias":
             path = tmp_path / ".git"
         return real_stat(path, *args, **kwargs)
 
     monkeypatch.setattr(context_module.os, "stat", stat)
-    assert context_module._inside_git_dir(tmp_path, Path("GIT~1/config"))
+    assert context_module._inside_git_dir(tmp_path, Path("alias/config"))
     assert not context_module._inside_git_dir(tmp_path, Path("docs/a.md"))
 
 
