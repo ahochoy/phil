@@ -50,6 +50,16 @@ def test_show_refs_includes_the_worker_log_right_after_the_summary_when_present(
     assert [refs[0].label, refs[1].label] == ["summary", "worker log"]
 
 
+def test_show_refs_lists_the_context_second_when_it_is_not_empty(calc_repo):
+    info, record, paths = finished_run(calc_repo)
+    context = paths.run_dir(record.run_id) / "context.md"
+    context.write_text("## Repo context\nnotes\n", encoding="utf-8")
+    labels = [r.label for r in show_refs(paths, record.run_id)]
+    assert labels[:2] == ["summary", "context"]
+    context.write_text("", encoding="utf-8")
+    assert "context" not in [r.label for r in show_refs(paths, record.run_id)]
+
+
 def test_show_refs_caps_each_category_at_five(calc_repo):
     info, record, paths = finished_run(calc_repo)
     logs_dir = paths.run_dir(record.run_id) / "logs"

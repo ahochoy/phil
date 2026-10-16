@@ -13,6 +13,7 @@ from phil import platform
 from phil.agents.failures import classify_failure
 from phil.agents.invoke import AgentFactory
 from phil.config import PhilConfig, load_config
+from phil.memory.context import write_run_context
 from phil.repo import resolve_repo
 from phil.repo_detect import detect_test_cmd
 from phil.run import runner
@@ -238,6 +239,11 @@ def run_worker(
             outcome = runner.settle(engine, snapshot)
         elif not snapshot.values:
             _note_policy(events, info.root, paths, config)
+            try:
+                for problem in write_run_context(deps.artifacts.run_dir, info.root, paths):
+                    events.append("notice", message=f"Repo context: {problem}")
+            except Exception as exc:  # memory never breaks a run: it goes on with no context
+                events.append("notice", message=f"Repo context: couldn't write it: {type(exc).__name__}: {exc}")
             plan = deps.artifacts.read_plan()
             test_cmd = plan.test_cmd or config.project.test_cmd or _detect(engine, record.base_sha) or ""
             outcome = runner.start(

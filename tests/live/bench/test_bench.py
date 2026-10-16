@@ -5,6 +5,10 @@ Each case plans and runs a small goal with real models and appends a record to
 
 For comparable `minutes`, run the cases one at a time: `... uv run pytest -m bench -n 0`. The default
 `-n auto` runs them in parallel, and contention inflates each case's wall-clock time.
+
+Warm mode compares a run with no repo memory against one that starts with what the cold run learned:
+`PHIL_BENCH_WARM=1 PHIL_BENCH_PAIRS=3 PHIL_BENCH_CONFIG=~/bench.toml uv run pytest -m bench -n 0`
+runs each case as that many cold-then-warm pairs (default 3), and the report shows the medians.
 """
 
 import json
@@ -26,9 +30,28 @@ def test_bench(case: Case, tmp_path: Path) -> None:
         pytest.skip("PHIL_BENCH_CONFIG is unset: point it at a phil.toml with the [models] to benchmark")
     if case.fixture == "static-site" and shutil.which("node") is None:
         pytest.skip("node is not installed; the static-site cases build with `node build.mjs`")
-    record = run_case(case, Path(config).expanduser(), tmp_path / "work")
+    config_path = Path(config).expanduser()
+    failures: list[str] = []
+    if os.environ.get("PHIL_BENCH_WARM") != "1":
+        failures += _check(case, run_case(case, config_path, tmp_path / "work"))
+    else:
+        # Every pair runs even when one fails, so the report still has the pairs that passed.
+        for pair in range(int(os.environ.get("PHIL_BENCH_PAIRS", "3"))):
+            work = tmp_path / f"pair{pair}"
+            failures += _check(case, run_case(case, config_path, work, memory="cold", pair=pair), f"cold#{pair}")
+            failures += _check(
+                case, run_case(case, config_path, work, memory="warm", pair=pair, reuse_repo=True), f"warm#{pair}"
+            )
+    assert not failures, "\n".join(failures)
+
+
+def _check(case: Case, record: dict, label: str = "") -> list[str]:
+    """What's wrong with one run's record, as messages (none when it routed as expected and passed)."""
     print(json.dumps(record, indent=2))
-    assert record["routed_depth"] == case.expect_depth, (
-        f"{case.name}: routed {record['routed_depth']!r}, expected {case.expect_depth!r}"
-    )
-    assert record["passed"], f"{case.name}: {record['state']}: {record['error']}"
+    name = f"{case.name} {label}".rstrip()
+    failures = []
+    if record["routed_depth"] != case.expect_depth:
+        failures.append(f"{name}: routed {record['routed_depth']!r}, expected {case.expect_depth!r}")
+    if not record["passed"]:
+        failures.append(f"{name}: {record['state']}: {record['error']}")
+    return failures

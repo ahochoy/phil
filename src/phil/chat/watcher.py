@@ -23,7 +23,8 @@ ENDED_UNCONDITIONALLY = ("completed", "incomplete", "aborted", "cleaned")
 ENDED_IF_IDLE = ("failed", "stopped")
 
 CONSECUTIVE_FAILURES_BEFORE_REPORT = 5
-# Run events posted to the chat as they are, once each: the latest of each kind since the last poll.
+# Run events posted to the chat as they are, once each: every one written since the last poll, in log
+# order (only the latest would let a memory notice hide a security notice written just before it).
 NOTICES = ("budget_warning", "test_cmd_changed", "notice")
 
 
@@ -81,9 +82,10 @@ class RunWatcher:
         self._paused = False
         self._idle_since: float | None = None
         self._lost_posted = False
-        # Seeded from the log so a reopened/resumed chat's new watcher posts only the notices
-        # (budget warnings, test command switches) written after it started, not ones already shown.
-        self._notice_ts: dict[str, str | None] = {kind: self._latest_ts(kind) for kind in NOTICES}
+        # Notices read from the log by _poll_feed and not yet posted. The log is read from
+        # `_event_offset`, seeded at its end above, so a reopened/resumed chat's new watcher posts only
+        # the notices (budget warnings, test command switches, worker notices) written after it started.
+        self._notices: list[dict] = []
         # Unlike the notices above, a raised budget is shown even if it's already in the log when
         # the chat reopens, so the user still sees the limit that's in effect. Taken from
         # `events_so_far` above (not a separate `latest()` call) so it can't race with `_event_offset`.
@@ -96,14 +98,6 @@ class RunWatcher:
         self._error_posted = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-
-    def _latest_ts(self, kind: str) -> str | None:
-        try:
-            latest = self.events.latest(kind)
-        except Exception:  # an unreadable log: poll_once reports it through its own error path
-            logger.debug("couldn't read the %s events for %s", kind, self.run_id, exc_info=True)
-            return None
-        return latest.get("ts") if latest else None
 
     def poll_once(self) -> None:
         if self.done:
@@ -128,12 +122,10 @@ class RunWatcher:
                     "tasks_total": record.tasks_total, "keyword": record.keyword, "started": started,
                     "tokens": totals.tokens, "cost_usd": totals.cost_usd, "cost_source": totals.cost_source,
                 }))
-            for kind in NOTICES:
-                latest_notice = self.events.latest(kind)
-                if latest_notice and latest_notice.get("ts") != self._notice_ts[kind]:
-                    self._notice_ts[kind] = latest_notice.get("ts")
-                    data = {k: v for k, v in latest_notice.items() if k not in ("kind", "ts")}
-                    self.post(ChatEvent(kind, data))
+            while self._notices:
+                notice = self._notices.pop(0)
+                data = {k: v for k, v in notice.items() if k not in ("kind", "ts")}
+                self.post(ChatEvent(notice["kind"], data))
             active = self.alive(record) or self.starting(self.events)
             if record.state == "escalated":
                 latest = self.events.latest("escalation")
@@ -178,6 +170,8 @@ class RunWatcher:
         for event in new_events:
             if event.get("kind") == "budget_raised":
                 self._post_budget_raised(event)
+        # Kept until poll_once posts them, so a poll that stops early (no row yet) loses none.
+        self._notices += [event for event in new_events if event.get("kind") in NOTICES]
         records, self._activity_offset = self.activity.read(self._activity_offset)
         milestones = [event for event in new_events if event.get("kind") in MILESTONE_KINDS]
         for item, value in interleave(milestones, records):

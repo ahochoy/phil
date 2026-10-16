@@ -64,6 +64,14 @@ def show_refs(paths: ProjectPaths, run_id: str) -> list[Ref]:
     if summary.exists():
         refs.append(Ref(label="summary", path=str(summary)))
 
+    context = run_dir / "context.md"
+    try:
+        has_context = context.is_file() and context.stat().st_size > 0
+    except OSError:
+        has_context = False
+    if has_context:
+        refs.append(Ref(label="context", path=str(context)))
+
     worker_log = run_dir / "logs" / "worker.log"
     if worker_log.exists():
         refs.append(Ref(label="worker log", path=str(worker_log)))

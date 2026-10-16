@@ -38,7 +38,9 @@ def prose(n: int) -> list[AIMessage]:
 
 
 def test_every_lean_production_spec_ends_on_text():
-    assert {name for name, spec in SPECS.items() if spec.harness == "lean"} == {"intake", "critic", "reviewer", "route"}
+    assert {name for name, spec in SPECS.items() if spec.harness == "lean"} == {
+        "intake", "critic", "reviewer", "route", "memory",
+    }
     assert all(spec.end_on_text for spec in SPECS.values() if spec.harness == "lean")
 
 

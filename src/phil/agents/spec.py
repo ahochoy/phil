@@ -40,6 +40,10 @@ class AgentSpec:
     # The prompt file's stem when it differs from `name`, for a spec that reuses another's prompt
     # (the quick implementer reads implementer.md).
     prompt_name: str | None = None
+    # Whether invoke_agent gives this role the Repo context block, and the block it filled in
+    # (load_prompt appends it). Empty: the prompt is exactly the role's own.
+    repo_context: bool = False
+    context: str = ""
 
 
 def _read_prompt(filename: str) -> str:
@@ -48,6 +52,7 @@ def _read_prompt(filename: str) -> str:
 
 def load_prompt(spec: AgentSpec) -> str:
     own = _read_prompt(f"{spec.prompt_name or spec.name}.md").rstrip()
-    if not spec.shared_prompt:
-        return f"{own}\n"
-    return f"{own}\n\n{_read_prompt('_shared.md').rstrip()}\n"
+    text = f"{own}\n\n{_read_prompt('_shared.md').rstrip()}" if spec.shared_prompt else own
+    if spec.context:
+        text = f"{text}\n\n{spec.context.rstrip()}"
+    return f"{text}\n"

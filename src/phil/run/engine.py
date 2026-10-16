@@ -34,6 +34,8 @@ from phil.contracts import (
     TestReport,
 )
 from phil.git import GitError, branch_for, git
+from phil.memory.context import read_run_context
+from phil.memory.learn import learn_from_run
 from phil.packets import Packet, PacketTooLarge, build_packet
 from phil.permissions.catalog import label_for
 from phil.permissions.listing import shown_path
@@ -178,6 +180,13 @@ class RunEngine:
         self.deps = deps
         self.worktrees = WorktreeManager(deps.repo_root)
         self._milestone_warned = False
+        self._repo_context: str | None = None
+
+    def _run_context(self) -> str:
+        """The run's context snapshot, read once. Always a string, so a run never builds a block."""
+        if self._repo_context is None:
+            self._repo_context = read_run_context(self.deps.artifacts.run_dir)
+        return self._repo_context
 
     # --- graph -------------------------------------------------------------
 
@@ -379,6 +388,7 @@ class RunEngine:
             activity=self.deps.activity,
             repo_root=self.deps.repo_root,
             paths=self.deps.paths,
+            repo_context=self._run_context(),
         )
 
     def _policy(self) -> PolicySet | None:
@@ -1287,6 +1297,15 @@ class RunEngine:
             return self._finish(state)  # runs no tests, so a pending rebaseline would be wasted
         return self._rebased(state, self._finish)
 
+    def _notice(self, message: str) -> None:
+        """Record a notice for the chat; failing to record it never affects the run."""
+        if self.deps.events is None:
+            return
+        try:
+            self.deps.events.append("notice", message=message)
+        except Exception:
+            logger.warning("couldn't record a notice", exc_info=True)
+
     def _finish(self, state: RunState) -> dict:
         plan = load_plan(state)
         status = "aborted" if state.get("status") == "aborted" else "completed"
@@ -1306,11 +1325,18 @@ class RunEngine:
         usage = usage_by_role(self.deps.conn, self.deps.run_id)
         changed = self._policy_changes(state)
         for line in changed:
-            if self.deps.events is not None:
-                try:
-                    self.deps.events.append("notice", message=line)
-                except Exception:
-                    logger.warning("couldn't record that a policy file changed", exc_info=True)
+            self._notice(line)
+        memory = None
+        if status != "aborted" and self.deps.paths is not None:
+            try:
+                memory = learn_from_run(
+                    self._context(state, CommandLog()), run_dir=self.deps.artifacts.run_dir,
+                    repo_root=self.deps.repo_root, paths=self.deps.paths, test_cmd=state.get("test_cmd", ""),
+                )
+            except Exception as exc:  # memory never changes a run's outcome (spec §4.4)
+                self._notice(f"Memory wasn't updated: {type(exc).__name__}: {exc}")
+            if memory:
+                self._notice(memory)
         summary = render_summary(
             run_id=self.deps.run_id,
             plan=plan,
@@ -1322,6 +1348,7 @@ class RunEngine:
             usage=usage,
             totals=totals,
             warnings=changed,
+            memory=memory,
         )
         self.deps.artifacts.write_text("summary.md", summary)
         _write_json_atomic(self.deps.artifacts.run_dir / "open_issues.json", open_issues)

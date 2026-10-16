@@ -25,6 +25,13 @@ class SelfCheck(Part):
     out_of_scope: list[str] = Field(
         description="Problems you noticed that are not your job now. Record them here instead of acting on them."
     )
+    memory_notes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Durable facts about this repository a later run would want (commands, layout, conventions, "
+            "pitfalls), or notes in the Repo context that turned out to be wrong. Leave empty when there are none."
+        ),
+    )
 
 
 class Issue(Part):
