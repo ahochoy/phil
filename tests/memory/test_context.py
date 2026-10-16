@@ -227,8 +227,26 @@ def test_a_link_into_git_is_skipped_and_the_next_name_is_tried(tmp_path):
         ("docs/.git/notes.md", False),
     ],
 )
-def test_inside_git_dir(relative, inside):
-    assert context_module._inside_git_dir(Path(relative)) is inside
+def test_inside_git_dir(tmp_path, relative, inside):
+    assert context_module._inside_git_dir(tmp_path, Path(relative)) is inside
+
+
+def test_inside_git_dir_by_identity_catches_other_spellings(tmp_path, monkeypatch):
+    # A spelling the filesystem maps to .git (a Windows short name such as GIT~1, a case fold
+    # Python's casefold doesn't match) is caught because it is the same folder.
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "GIT~1").mkdir()
+    (tmp_path / "docs").mkdir()
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if Path(path).name == "GIT~1":
+            path = tmp_path / ".git"
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(context_module.os, "stat", stat)
+    assert context_module._inside_git_dir(tmp_path, Path("GIT~1/config"))
+    assert not context_module._inside_git_dir(tmp_path, Path("docs/a.md"))
 
 
 def test_a_link_into_github_is_accepted(tmp_path):
