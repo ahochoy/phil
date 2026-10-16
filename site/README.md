@@ -23,14 +23,20 @@ npm run preview
 
 This website is structured as a monorepo subfolder inside `site/`. When deploying via the Cloudflare dashboard:
 
-1. In Cloudflare, go to **Workers & Pages** → **Create application** → **Pages** → **Connect to Git**.
-2. Select your repository: `ahochoy/phil`.
-3. Set the build settings:
-   - **Framework preset**: `Astro`
-   - **Root directory**: `site`
-   - **Build command**: `npm run build`
-   - **Build output directory**: `dist/client` (or `dist` for standard static)
-4. Click **Save and Deploy**.
+### Option A: Cloudflare Workers Builds (CI/CD)
+When connected as a Worker (e.g. named `phil`):
+- **Worker name**: `phil` (must match `name` in `package.json` and `wrangler.json`)
+- **Root directory**: `site`
+- **Build command**: `npm run build`
+- **Deploy command**: `npx wrangler deploy`
+
+### Option B: Cloudflare Pages
+When connected as a Pages project:
+- **Framework preset**: `Astro`
+- **Root directory**: `site`
+- **Build command**: `npm run build`
+- **Build output directory**: `dist/client` (or `dist` for standard static)
+
 
 ### Custom Domain
 
