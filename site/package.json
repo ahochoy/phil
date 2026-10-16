@@ -1,5 +1,5 @@
 {
-  "name": "phil-site",
+  "name": "phil",
   "type": "module",
   "version": "0.1.0",
   "scripts": {
@@ -7,7 +7,7 @@
     "start": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "deploy": "astro build && npx wrangler pages deploy dist/client"
+    "deploy": "astro build && npx wrangler deploy"
   },
   "dependencies": {
     "@astrojs/cloudflare": "^14.3.4",
