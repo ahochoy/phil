@@ -19,7 +19,7 @@ The chat screen "competes with a lot of information" (user, 2026-10-16). Looking
 
 | Topic | Decision |
 |---|---|
-| Run names | A 2–3 word name for each run, written by intake as a new field of the goal it already returns. No extra model call. |
+| Run names | A lowercase slug of 2–3 hyphen-separated keywords for each run (`newsletter-cta`), written by intake as a new field of the goal it already returns. No extra model call. |
 | Name use | Display only. Screens show the name; command hints keep the ID (`phil resume r-4f1c`). |
 | Split of facts | The status bar tracks the **task**. The live rows and feed show **which agent is acting**. |
 | Status bar during a run | Run name and task, elapsed time, cost against budget. The step dots, model and tokens are dropped. |
@@ -37,21 +37,26 @@ The chat screen "competes with a lot of information" (user, 2026-10-16). Looking
 ```python
 name: str | None = Field(
     default=None,
-    description="2 to 3 lowercase words naming the goal, e.g. `newsletter cta`. Leave null while `open_questions` is non-empty.",
+    description="2 to 3 lowercase keywords naming the goal, joined by hyphens, e.g. `newsletter-cta`. Leave null while `open_questions` is non-empty.",
 )
 ```
 
-`phil.runs.naming.run_name(goal) -> str` decides the name that is stored:
+`phil.runs.naming.run_name(goal, run_id) -> str` decides the name that is stored:
 
-- **Intake's name is used when it passes these checks:**
-  - after trimming and lower-casing, it has 2 or 3 words;
-  - each word contains only letters, digits or hyphens;
-  - it is at most 32 characters long.
-- **Otherwise a name is built from `goal.objective`:**
-  - take its words, lower-cased, with punctuation removed;
+A name is a **slug**: 2 or 3 lowercase keywords joined by hyphens, such as `newsletter-cta`. It always matches `^[a-z0-9]+(-[a-z0-9]+){1,2}$` and is at most 32 characters long.
+
+- **Intake's name is normalised, then used if it is a slug:**
+  - trim it and lower-case it;
+  - turn spaces and underscores into hyphens;
+  - collapse repeated hyphens;
+  - use it if the result matches the pattern.
+- **Otherwise a slug is built from `goal.objective`:**
+  - take its words, lower-cased, keeping only `a-z` and `0-9`;
   - drop stop words (`a an the to of for and or in on with add make create update fix change new some our my`);
-  - keep the first three words that are left;
-  - if fewer than two words are left, take the first two or three words of the objective instead.
+  - keep the first three words that are left, joined by hyphens;
+  - if fewer than two words are left, take the first two or three words of the objective instead;
+  - if that still gives fewer than two words, use `run-<id>` (for example `run-4f1c`);
+  - cut it at a hyphen so it fits in 32 characters.
 - **The name never fails a goal.** A bad name is only replaced, never rejected. The intake prompt gets one line asking for the field.
 
 Run names can repeat across runs, so the ID stays the run's identity.
@@ -59,31 +64,28 @@ Run names can repeat across runs, so the ID stays the run's identity.
 ### 3.2 Storage
 
 - **New column:** a migration appends `ALTER TABLE runs ADD COLUMN name TEXT` to the list in `src/phil/store/db.py`.
-- **When it's written:** `create_run` takes `name: str | None = None` and stores it. The chat passes `run_name(goal)` when it starts a run from a goal. `phil run` passes the same when it has a goal.
+- **When it's written:** `create_run` takes `name: str | None = None` and stores it. The chat passes `run_name(goal, run_id)` when it starts a run from a goal. `phil run` passes the same when it has a goal.
 - **Old runs:** runs created before this have `NULL` and are shown by ID, as today.
 - **Model:** `RunRecord.name: str | None`.
 
 ### 3.3 Display
 
 `phil.ui.runs.run_label(record, *, first: bool) -> str` returns:
-- `newsletter cta (r-4f1c)` on the first mention of a run in a chat;
-- `newsletter cta` on later mentions;
+- `newsletter-cta (r-4f1c)` on the first mention of a run in a chat;
+- `newsletter-cta` on later mentions;
 - the ID when the run has no name.
 
 The chat remembers which run IDs it has already labelled (`ChatState.labelled_runs: set[str]`). Within a chat:
 
 - Every rendered mention of a run uses `run_label`. That covers milestone bands that name the run, the run-start and run-end lines, pause notices, the status bar, and the open-chats list.
 - Command hints still print the ID: `phil resume r-4f1c`, `phil diff r-4f1c`, `phil attach r-4f1c`.
-- `phil show`, `/show` and `phil runs` list both, as `newsletter cta (r-4f1c)`.
-
-**Capitals:** `run_name` lower-cases the name, except that a word appearing in all capitals in the goal's objective keeps its capitals (`CTA`, `API`). This is decided once, when the name is stored, so screens show the stored value as it is (`newsletter CTA`).
-
+- `phil show`, `/show` and `phil runs` list both, as `newsletter-cta (r-4f1c)`.
 ## 4. Status bar and live rows
 
 ### 4.1 Status bar during a run
 
 ```
-roi-calculator @ main │ newsletter CTA · task 2 of 4 · Add signup form │ 3m 12s │ $0.42 / $2.00
+roi-calculator @ main │ newsletter-cta · task 2 of 4 · Add signup form │ 3m 12s │ $0.42 / $2.00
 ```
 
 - **Segments, left to right:**
@@ -103,8 +105,8 @@ roi-calculator @ main │ newsletter CTA · task 2 of 4 · Add signup form │ 3
   5. run name and task.
 
   Before any segment drops, the task title is shortened with `…`, down to 12 characters. A pause notice never drops.
-- **A run with no tasks yet** (planning) shows `newsletter CTA · planning` in place of the task.
-- **Paused:** `repo @ branch │ ⏸ newsletter CTA needs you`.
+- **A run with no tasks yet** (planning) shows `newsletter-cta · planning` in place of the task.
+- **Paused:** `repo @ branch │ ⏸ newsletter-cta needs you`.
 - **The idle status bar is unchanged.**
 
 ### 4.2 Live rows above the prompt
@@ -190,7 +192,7 @@ A tool call that fails is printed as its own line in the feed straight away, in 
 
   ```
   Open chats:
-  1. newsletter CTA · run failed · Add a CTA section below the lead capture form…
+  1. newsletter-cta · run failed · Add a CTA section below the lead capture form…
   Reopen one? [number / Enter for a new chat] ›
   ```
 
@@ -217,7 +219,7 @@ The banner drops `· N parked`. The status bar keeps it.
 
 ## 8. Testing
 
-- **Names:** `run_name` keeps a valid intake name, replaces a bad one with the fallback, and builds the fallback correctly, including stop words, too few words and capitals kept.
+- **Names:** `run_name` keeps a valid intake name, replaces a bad one with the fallback, and builds the fallback correctly, including normalising intake's name, stop words, too few words, the `run-<id>` fallback and the 32-character cut.
 - **Contracts:** `Goal.name` is optional, so old outputs still validate.
 - **Storage:** the `runs.name` migration runs on an existing database, `create_run` stores the name, and `RunRecord` reads it back.
 - **Labels:** `run_label` gives the first and later mentions, and the ID when there's no name. Command hints keep the ID.
