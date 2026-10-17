@@ -99,6 +99,7 @@ from phil.tomlw import toml_value
 from phil.ui.answer_view import render_answer
 from phil.ui.brief_view import render_brief
 from phil.ui.callout import failure_lines, overflows, to_rich
+from phil.ui.bursts import FeedItem
 from phil.ui.feed_view import FeedRenderer
 from phil.ui.plan_view import _clip, render_goal, render_plan
 from phil.ui.runs import label_for
@@ -1722,6 +1723,7 @@ class ChatController:
     def _clear_run(self) -> None:
         """The watcher is stopped: drop the run's toolbar state (its progress, live step, sub-agents
         and pause) and the feed filter."""
+        self.state.set_rolling(())
         self.state.set_live(None)
         self.state.set_subs(())
         self._set_feed_filter(None)
@@ -1780,19 +1782,28 @@ class ChatController:
         """A line the worker wrote for the user, such as phil.toml settings nobody has trusted yet."""
         self.console.print(f"[phil.warn]{escape(printable(data.get('message', '')))}[/]")
 
+    def _print_feed(self, items: list[FeedItem]) -> None:
+        """Print feed items the /feed filter shows: a summary shows when any of its calls would (R19)."""
+        agent = self._feed_filter
+        for item in items:
+            if agent is None or any(_shows(record, agent) for record in item.records):
+                self.console.print(item.line, soft_wrap=True)
+
+    def _end_burst(self) -> None:
+        """The open burst ended (a milestone, a pause, the run's end): its summary, and no rolling view."""
+        self._print_feed(self._feed.end_burst(self.console.width))
+        self.state.set_rolling(())
+
     def _on_activity(self, data: dict) -> None:
         records = data.get("records", [])
         agent = self._feed_filter
-        if agent is not None:
-            # Before folding and the burst cap, so they count only shown lines. Start records pass:
-            # the renderer draws only end records.
-            shown = [r for r in records if r.get("phase") != "end" or _shows(r, agent)]
-            self._hidden += len(records) - len(shown)
-            records = shown
-        for line in self._feed.tool_lines(records, self.console.width):
-            self.console.print(line, soft_wrap=True)
+        if agent is not None:  # steps (end records) from other agents; start records aren't steps
+            self._hidden += sum(1 for r in records if r.get("phase") == "end" and not _shows(r, agent))
+        self._print_feed(self._feed.activity(records, self.console.width))
+        self.state.set_rolling(self._feed.rolling())
 
     def _on_milestone(self, data: dict) -> None:
+        self._end_burst()
         self.console.print(self._feed.milestone(data, self.console.width))
 
     def _on_live_step(self, data: dict) -> None:
@@ -1815,6 +1826,7 @@ class ChatController:
         ))
 
     def _on_run_paused(self, data: dict) -> None:
+        self._end_burst()
         escalation = data["escalation"]
         if self._answer_sent:
             log = ProjectPaths(self.info.slug).run_dir(self._run_id) / "logs" / "worker.log"
@@ -1911,6 +1923,7 @@ class ChatController:
     def _on_run_done(self, data: dict) -> None:
         # Settle the chat first, so a notice that fails to print can't leave it following a finished run.
         self._stop_watcher()
+        self._end_burst()  # while the filter is still set: the summary comes before the notice
         self._clear_run()  # the watcher is stopped: the place is the repo's again
         self._pause, self._lost, self._answer_sent = None, False, False
         run_id, state = self._run_id, data.get("state", "")
@@ -2134,16 +2147,22 @@ class ChatController:
         self.console.print(Text(text))  # plain text: never markup
 
     def _more_step(self, seq: int) -> None:
-        """`/more #n`: a feed step's detail, in a panel. Looks in the run this chat follows, else the
-        most recent run it followed (so details keep working after a run ends and is forgotten)."""
+        """`/more #n`: a burst's calls when n numbers one, then step n's detail in a panel. Looks in
+        the run this chat follows, else the most recent run it followed (so details keep working
+        after a run ends and is forgotten)."""
         run_id = self._chat_run()
         if run_id is None:
             self.console.print("No run to look in.")
             return
         log = activity_log(ProjectPaths(self.info.slug), run_id)
+        calls = self._feed.burst(seq)  # a burst's number first (Ruling R15)
+        if calls is not None:
+            for line in self._feed.tool_lines(calls, self.console.width, cap=None):
+                self.console.print(line, soft_wrap=True)
         path = log.detail_for(seq)
         if path is None:
-            self.console.print(f"#{seq} has no details.")
+            if calls is None:
+                self.console.print(f"#{seq} has no details.")
             return
         try:
             text = detail_text(path)

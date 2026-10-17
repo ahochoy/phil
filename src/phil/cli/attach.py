@@ -57,6 +57,11 @@ def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRend
         console.print(f"[phil.warn]{escape(printable(event.get('message', '')))}[/]")
 
 
+def _print_items(console: Console, items) -> None:
+    for item in items:
+        console.print(item.line, soft_wrap=True)
+
+
 def _prompt(escalation: dict) -> str:
     """An approval lists each command in full with its label and the rule it would save, as the
     chat's callout does; any other pause is its summary. Control characters show as `?`."""
@@ -92,7 +97,7 @@ def attach(
     offset = 0
     idle_since = time.monotonic()
     proc: object = None
-    feed = FeedRenderer()
+    feed = FeedRenderer(more_hint=False)
     activity = ActivityLog(events.path.parent)
     activity_offset = activity.end_offset()
 
@@ -106,13 +111,15 @@ def attach(
         records, activity_offset = activity.read(activity_offset)
         for item, value in interleave(new, records):
             if item == "event":
+                if value["kind"] in MILESTONE_KINDS or value["kind"] == "escalation":
+                    _print_items(console, feed.end_burst(console.width))
                 render_event(console, value, run_id, feed)
             else:
-                for line in feed.tool_lines(value, console.width):
-                    console.print(line, soft_wrap=True)
+                _print_items(console, feed.activity(value, console.width))
         record = get_run(conn, run_id)
         assert record is not None
         if record.state in TERMINAL:
+            _print_items(console, feed.end_burst(console.width))
             # soft_wrap: a long path stays whole (copyable) instead of wrapping mid-name.
             console.print(f"[phil.muted]Summary: {escape(str(events.path.parent / 'summary.md'))}[/]", soft_wrap=True)
             return record.state
@@ -151,6 +158,7 @@ def attach(
             idle_since = time.monotonic()
             continue
         if record.state in ("failed", "stopped"):
+            _print_items(console, feed.end_burst(console.width))
             console.print(f"Continue with `phil resume {escape(run_id)}`.")
             return record.state
         if record.state in ("running", "pending") and not alive:

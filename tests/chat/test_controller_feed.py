@@ -9,6 +9,7 @@ from phil.chat.state import LiveStep, SubAgent
 from phil.run.worker import run_worker
 from phil.store.activity import ActivityLog
 from phil.store.paths import ProjectPaths
+from phil.ui.feed_view import FeedRenderer
 from tests.chat.conftest import critique, goal, plan
 from tests.chat.test_controller import run_chat
 from tests.run.conftest import TEST_CMD, review, tester_report, write_green, write_red
@@ -30,7 +31,7 @@ def controller_with_run(calc_repo):
     return controller
 
 
-def test_activity_and_milestones_print_feed_lines(controller_with_run):
+def test_calls_roll_live_and_a_milestone_prints_the_bursts_summary_first(controller_with_run):
     controller = controller_with_run
     controller._handle(ChatEvent("milestone", {
         "kind": "task_started", "task": "CALC-001", "title": "Add multiply", "ts": "2026-10-07T10:00:00Z", "seq": 2,
@@ -41,10 +42,48 @@ def test_activity_and_milestones_print_feed_lines(controller_with_run):
         "detail": "3.txt",
     }]}))
     text = controller.console.export_text()
-    band = text.index("▸ CALC-001 Add multiply")
-    line = text.index("run   pytest -q  → 7 passed")
-    assert band < line
-    assert "#3" in text[line:]
+    assert "▸ CALC-001 Add multiply" in text and "pytest -q" not in text
+    assert controller.state.view().rolling == ("    run    pytest -q  → 7 passed · 1.2s",)
+    controller._handle(ChatEvent("milestone", {"kind": "gate", "task": "CALC-001", "name": "green", "seq": 3}))
+    text = controller.console.export_text()
+    assert text.index("implementer ran 1 tool · ran pytest -q  (/more #3)") < text.index("✓ CALC-001 green")
+    assert controller.state.view().rolling == ()
+
+
+def test_a_failed_call_prints_at_once(controller_with_run):
+    text = _activity(controller_with_run, {**_end(3, "implementer", "pytest -q"), "ok": False, "result": "→ 1 failed"})
+    assert "run   pytest -q  → 1 failed" in text
+
+
+def test_the_run_end_prints_an_open_bursts_summary_once_before_its_notice(controller_with_run):
+    controller = controller_with_run
+    _activity(controller, _end(3, "implementer", "make"))
+    controller._handle(ChatEvent("run_done", {"state": "failed", "needs_attention": "boom"}))
+    text = controller.console.export_text()
+    assert text.index("implementer ran 1 tool · ran make") < text.index("failed: boom")
+    assert text.count("implementer ran 1 tool") == 1
+    assert controller.state.view().rolling == ()
+
+
+def test_a_pause_ends_the_burst_before_its_notice(controller_with_run):
+    controller = controller_with_run
+    _activity(controller, _end(3, "implementer", "make"))
+    controller._handle(ChatEvent("run_paused", {"escalation": {"summary": "CALC-001 failed", "options": ["abort"]}}))
+    text = controller.console.export_text()
+    assert text.index("implementer ran 1 tool · ran make") < text.index("needs you: CALC-001 failed")
+
+
+def test_more_hash_prints_a_bursts_calls_then_its_last_steps_detail(controller_with_run):
+    controller = controller_with_run
+    run_dir = ProjectPaths(controller.info.slug).run_dir(controller._run_id)
+    ActivityLog(run_dir).end(4, task="CALC-001", role="implementer", tool="run_shell", summary="run make",
+                             result="→ ok", ok=True, detail="made it\n", duration_ms=10)
+    _activity(controller, _end(3, "implementer", "npm ci"), _end(4, "implementer", "make", detail="4.txt"))
+    _flush(controller)
+    controller._more_command("#4")
+    text = controller.console.export_text()
+    assert text.index("run   npm ci  → ok") < text.index("run   make  → ok") < text.index("made it")
+    assert "#4 has no details." not in text
 
 
 def test_live_step_sets_and_clears_the_live_row(controller_with_run):
@@ -81,6 +120,7 @@ def test_forgetting_the_run_clears_the_live_step_and_the_feed(controller_with_ru
     feed = controller._feed
     controller._forget_run()
     assert controller.state.view().live is None
+    assert controller.state.view().rolling == ()
     assert controller._feed is not feed and controller._feed._task_started == {}
 
 
@@ -205,6 +245,12 @@ def _activity(controller, *records: dict) -> str:
     return controller.console.export_text()
 
 
+def _flush(controller) -> str:
+    """A milestone ends the open burst; returns what printed since the last export."""
+    controller._handle(ChatEvent("milestone", {"kind": "task_done", "task": "CALC-001", "seq": 99}))
+    return controller.console.export_text()
+
+
 def test_feed_filter_shows_only_that_agent(controller_with_run):
     """/feed tester prints the 'Showing only the tester's lines…' line and sets state.view().feed_filter;
     an activity batch with an implementer end record and a tester end record prints only the tester's tool
@@ -215,14 +261,14 @@ def test_feed_filter_shows_only_that_agent(controller_with_run):
     assert controller.console.export_text().strip() == "Showing only the tester's lines. /feed to show everything."
     assert controller.state.view().feed_filter == "tester"
 
-    text = _activity(controller, _end(3, "implementer", "impl-cmd"), _end(4, "tester", "tester-cmd"))
-    assert "tester-cmd" in text
-    assert "impl-cmd" not in text
-
+    _activity(controller, _end(3, "implementer", "impl-cmd"), _end(4, "tester", "tester-cmd"))
     controller._handle(ChatEvent("milestone", {
         "kind": "task_started", "task": "CALC-001", "title": "Add multiply", "ts": "2026-10-07T10:00:00Z", "seq": 5,
     }))
-    assert "▸ CALC-001 Add multiply" in controller.console.export_text()
+    text = controller.console.export_text()
+    assert "tester ran 1 tool · ran tester-cmd" in text
+    assert "impl-cmd" not in text
+    assert "▸ CALC-001 Add multiply" in text
 
     controller._command("/feed")
     assert controller.console.export_text().strip() == "Showing everything again. 1 step from other agents was hidden."
@@ -234,7 +280,8 @@ def test_feed_counts_several_hidden_steps(controller_with_run):
     controller._command("/feed reviewer")
     controller.console.export_text()
     text = _activity(controller, _end(3, "implementer", "a"), _end(4, "tester", "b"), _end(5, "reviewer", "c"))
-    assert "run   c" in text and "run   a" not in text and "run   b" not in text
+    text += _flush(controller)  # summaries print both as a batch closes a burst and at the milestone
+    assert "reviewer ran 1 tool · ran c" in text and "ran a" not in text and "ran b" not in text
     controller._command("/feed")
     assert controller.console.export_text().strip() == "Showing everything again. 2 steps from other agents were hidden."
 
@@ -275,24 +322,27 @@ def test_feed_sub_agent_and_engine(controller_with_run):
 
     controller._command("/feed sub-agent")
     controller.console.export_text()
-    text = _activity(controller, *records)
-    assert "sub-cmd" in text
+    controller._feed = FeedRenderer()
+    text = _activity(controller, *records) + _flush(controller)
+    assert "implementer ran 2 tools · ran sub-cmd" in text
     assert not any(other in text for other in ("own-cmd", "gate-cmd", "tester-cmd"))
 
     controller._command("/feed engine")
     controller.console.export_text()
-    text = _activity(controller, *records)
+    controller._feed = FeedRenderer()
+    text = _activity(controller, *records) + _flush(controller)
     assert "gate-cmd" in text
-    assert not any(other in text for other in ("own-cmd", "sub-cmd", "tester-cmd"))
+    assert not any(other in text for other in ("implementer ran", "sub-cmd", "tester-cmd"))
 
     controller._command("/feed implementer")
     controller.console.export_text()
-    text = _activity(controller, *records)
-    assert "own-cmd" in text and "sub-cmd" in text
+    controller._feed = FeedRenderer()
+    text = _activity(controller, *records) + _flush(controller)
+    assert "implementer ran 2 tools" in text
     assert "gate-cmd" not in text and "tester-cmd" not in text
 
 
-def test_feed_filter_applies_before_folding_and_keeps_start_records(controller_with_run):
+def test_feed_hides_other_agents_summaries_and_counts_only_end_records(controller_with_run):
     controller = controller_with_run
     controller._command("/feed tester")
     controller.console.export_text()
@@ -304,8 +354,8 @@ def test_feed_filter_applies_before_folding_and_keeps_start_records(controller_w
         {**read, "seq": 5, "role": "tester", "summary": "read c.py"},
         {"seq": 6, "phase": "start", "task": "CALC-001", "role": "implementer", "tool": "run_shell", "summary": "x"},
     )
-    assert "read  a.py · c.py" in text  # the hidden read doesn't split the tester's fold
-    assert "b.py" not in text
+    assert text.count("tester ran 1 tool") == 2
+    assert "implementer ran" not in text
     controller._command("/feed")
     assert "1 step from other agents was hidden." in controller.console.export_text()  # start records aren't steps
 
@@ -343,7 +393,8 @@ def test_the_filter_resets_when_the_run_ends(controller_with_run):
     controller.console.export_text()
 
     text = _activity(controller, _end(3, "implementer", "impl-cmd"), _end(4, "tester", "tester-cmd"))
-    assert "impl-cmd" in text and "tester-cmd" in text
+    text += _flush(controller)
+    assert "ran impl-cmd" in text and "ran tester-cmd" in text
 
 
 def test_forgetting_the_run_clears_the_filter(controller_with_run):
@@ -381,5 +432,5 @@ def test_a_scripted_run_shows_its_feed_in_the_chat(calc_repo):
     )
     assert runs[0].state == "completed"
     assert "▸ CALC-001" in text
-    assert "run   pytest -q  → 7 passed" in text
+    assert "implementer ran " in text and "(/more #" in text
     assert "✓ CALC-001 done" in text

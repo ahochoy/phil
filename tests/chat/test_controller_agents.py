@@ -115,7 +115,7 @@ def test_sub_agent_end_to_end(calc_repo):
         controller._watcher.poll_once()  # the rest of the run, and its end
         return WAKE
 
-    *_, runs, _, _ = run_chat(
+    text, _, runs, _, _ = run_chat(
         calc_repo,
         ["add subtract", "y", run_it, look],
         {"intake": [goal()], "architect": [plan(test_cmd=TEST_CMD)], "critic": [critique()]},
@@ -128,5 +128,7 @@ def test_sub_agent_end_to_end(calc_repo):
     assert len(reads) == 1
     assert isinstance(reads[0].get("sub_id"), int)
     assert reads[0].get("sub") == "explore tests"
-    assert "read  test_calc.py" in printed  # its feed line printed while the sub-agent was open
+    feed = printed + text
+    assert "read  test_calc.py" not in feed  # a sub-agent's call is in its parent's burst, not its own line
+    assert "implementer ran " in feed
     assert runs[0].state == "completed"
