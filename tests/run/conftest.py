@@ -17,30 +17,17 @@ from phil.store.db import connect
 from phil.store.events import EventLog
 from phil.store.paths import ProjectPaths
 from phil.store.runs import create_run, get_run
-from tests.helpers import MODELS_TOML, TEST_MODELS, run_git
+from tests.helpers import MODELS_TOML, TEST_MODELS, copy_repo, run_git
 
-TEST_CMD = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider"
+# A stand-in for `pytest -q`: these tests run it about seven times each (see tests/support/minitest.py).
+TEST_CMD = f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).parents[1] / 'support' / 'minitest.py'))}"
 RUN_ID = "r-0001"
 
 
 @pytest.fixture
-def calc_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "calc"
-    repo.mkdir()
-    repo = repo.resolve()
-    run_git(repo, "init", "-b", "main")
-    run_git(repo, "config", "user.email", "test@example.com")
-    run_git(repo, "config", "user.name", "Test")
-    run_git(repo, "config", "commit.gpgsign", "false")
-    (repo / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n")
-    (repo / "calc.py").write_text("def add(a, b):\n    return a + b\n")
-    (repo / "tests").mkdir()
-    (repo / "tests" / "__init__.py").write_text("")
-    (repo / "tests" / "test_calc.py").write_text("from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n")
-    (repo / "phil.toml").write_text(MODELS_TOML)
-    run_git(repo, "add", "-A")
-    run_git(repo, "commit", "-m", "init")
-    return repo
+def calc_repo(tmp_path: Path, calc_repo_template: Path) -> Path:
+    # calc_repo_template is in tests/conftest.py, so every folder that imports this fixture sees it.
+    return copy_repo(calc_repo_template, tmp_path / "calc")
 
 
 def _with_test_models(config: PhilConfig) -> PhilConfig:

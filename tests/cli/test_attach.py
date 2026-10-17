@@ -137,7 +137,11 @@ def test_attach_renders_a_budget_warning_from_the_run(calc_repo):
     )
     io = AttachIO(choose=lambda p, o: "abort", ask_hint=lambda: None, spawn=lambda m, d: None, sleep=lambda _: None)
     console = make_console(record=True, width=120)
-    attach(connect(paths.db_path), record.run_id, run_events(paths, record.run_id), console, io, poll_s=0)
+    # The fake spawn starts nothing, so don't wait the real 30 s for the worker to start.
+    attach(
+        connect(paths.db_path), record.run_id, run_events(paths, record.run_id), console, io,
+        poll_s=0, start_timeout_s=0,
+    )
     text = console.export_text()
     assert f"{record.run_id} has used 86% of its budget (600 of 700 tokens)." in text
 
@@ -353,5 +357,9 @@ def test_attach_renders_a_test_cmd_change_from_the_run(calc_repo):
     run_events(paths, record.run_id).append("test_cmd_changed", cmd="make test")
     io = AttachIO(choose=lambda p, o: "abort", ask_hint=lambda: None, spawn=lambda m, d: None, sleep=lambda _: None)
     console = make_console(record=True, width=120)
-    attach(connect(paths.db_path), record.run_id, run_events(paths, record.run_id), console, io, poll_s=0)
+    # The fake spawn starts nothing, so don't wait the real 30 s for the worker to start.
+    attach(
+        connect(paths.db_path), record.run_id, run_events(paths, record.run_id), console, io,
+        poll_s=0, start_timeout_s=0,
+    )
     assert "Using the updated test command: make test." in console.export_text()

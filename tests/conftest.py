@@ -5,7 +5,7 @@ import pytest
 from keyring.backend import KeyringBackend
 from keyring.errors import PasswordDeleteError, PasswordSetError
 
-from tests.helpers import run_git
+from tests.helpers import MODELS_TOML, build_template_repo, copy_repo
 
 
 def _is_live(request: pytest.FixtureRequest) -> bool:
@@ -177,16 +177,28 @@ def memory_keyring(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPat
     keyring.set_keyring(previous)
 
 
+@pytest.fixture(scope="session")
+def git_repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return build_template_repo(
+        tmp_path_factory.mktemp("templates") / "target", {"app.py": "def add(a, b):\n    return a + b\n"}
+    )
+
+
 @pytest.fixture
-def git_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "target"
-    repo.mkdir()
-    repo = repo.resolve()
-    run_git(repo, "init", "-b", "main")
-    run_git(repo, "config", "user.email", "test@example.com")
-    run_git(repo, "config", "user.name", "Test")
-    run_git(repo, "config", "commit.gpgsign", "false")
-    (repo / "app.py").write_text("def add(a, b):\n    return a + b\n")
-    run_git(repo, "add", "-A")
-    run_git(repo, "commit", "-m", "init")
-    return repo
+def git_repo(tmp_path: Path, git_repo_template: Path) -> Path:
+    return copy_repo(git_repo_template, tmp_path / "target")
+
+
+@pytest.fixture(scope="session")
+def calc_repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The sample repo behind tests/run/conftest.py's `calc_repo`, built once per session."""
+    return build_template_repo(
+        tmp_path_factory.mktemp("templates") / "calc",
+        {
+            ".gitignore": "__pycache__/\n.pytest_cache/\n",
+            "calc.py": "def add(a, b):\n    return a + b\n",
+            "tests/__init__.py": "",
+            "tests/test_calc.py": "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+            "phil.toml": MODELS_TOML,
+        },
+    )
