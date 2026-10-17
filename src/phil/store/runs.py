@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 from phil.git import branch_for
-from phil.store.db import utcnow
+from phil.store.db import retry_when_locked, utcnow
 
 # `incomplete`: the run finished, but with a blocker or major issue still open (nothing to merge).
 RunState = Literal[
@@ -136,9 +136,11 @@ def update_run(conn: sqlite3.Connection, run_id: str, **fields: object) -> RunRe
         if new_state != current.state and new_state not in TRANSITIONS.get(current.state, set()):
             raise InvalidTransition(f"run {run_id} cannot go from {current.state} to {new_state}")
     assignments = ", ".join(f"{name} = ?" for name in fields)
-    cursor = conn.execute(
-        f"UPDATE runs SET {assignments}, updated_at = ? WHERE run_id = ?",
-        (*fields.values(), utcnow(), run_id),
+    cursor = retry_when_locked(
+        lambda: conn.execute(
+            f"UPDATE runs SET {assignments}, updated_at = ? WHERE run_id = ?",
+            (*fields.values(), utcnow(), run_id),
+        )
     )
     if cursor.rowcount == 0:
         raise KeyError(run_id)

@@ -4,6 +4,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from phil.run.checkpoint import open_checkpointer
+from phil.store.db import BUSY_TIMEOUT_S
 
 
 class CounterState(TypedDict):
@@ -38,3 +39,8 @@ def test_interrupted_run_resumes_from_a_fresh_checkpointer(tmp_path):
     assert second.get_state(config).next == ("ask",)
     final = second.invoke(Command(resume="yes"), config)
     assert final == {"n": 1, "answers": ["yes"]}
+
+
+def test_the_checkpointer_waits_for_a_lock_as_long_as_phil_does(tmp_path):
+    saver = open_checkpointer(tmp_path / "phil.db")
+    assert saver.conn.execute("PRAGMA busy_timeout").fetchone()[0] == BUSY_TIMEOUT_S * 1000

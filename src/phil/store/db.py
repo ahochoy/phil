@@ -1,6 +1,16 @@
 import sqlite3
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+
+# How long a statement waits for another connection's lock before SQLite gives up (seconds). Every
+# connection to a project's database uses it, the checkpointer's included.
+BUSY_TIMEOUT_S = 30
+# A write that still finds the database locked after a whole busy wait is tried this many times in
+# all, with this pause between tries.
+LOCK_TRIES = 3
+LOCK_RETRY_PAUSE_S = 1.0
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -105,9 +115,22 @@ def utcnow() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def retry_when_locked[T](write: Callable[[], T], *, sleep: Callable[[float], None] = time.sleep) -> T:
+    """`write()`, tried again after a pause while another connection still holds the database
+    lock past a whole busy wait (a slow disk on a loaded machine). Other errors raise at once."""
+    for attempt in range(1, LOCK_TRIES + 1):
+        try:
+            return write()
+        except sqlite3.OperationalError as exc:
+            if getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_BUSY or attempt == LOCK_TRIES:
+                raise
+            sleep(LOCK_RETRY_PAUSE_S)
+    raise AssertionError("unreachable")
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=10, isolation_level=None)
+    conn = sqlite3.connect(db_path, timeout=BUSY_TIMEOUT_S, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     _migrate(conn)
