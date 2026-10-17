@@ -7,7 +7,7 @@ from phil.ui.toolbar import budget_style, render_live_rows, render_toolbar, shor
 
 RUN = RunView(run_id="r-4f2a", keyword="calc", node="implement", tasks_done=1, tasks_total=3, started=0.0,
               name="calc-subtract", title="Add a subtract function")
-FULL =ToolbarView(repo="calc", branch="phil/r-4f2a", run=RUN, model=("low", "gemini-3.8-flash"),
+FULL = ToolbarView(repo="calc", branch="phil/r-4f2a", run=RUN, model=("low", "gemini-3.8-flash"),
                    tokens=182_000, run_cost=(0.41, "reported"), budget_usd=1.0)
 
 
@@ -204,6 +204,19 @@ def test_the_live_area_is_capped_at_six_lines_rolling_lines_first():
 def test_under_a_callout_the_rolling_lines_collapse_without_counting_as_agents():
     text = toolbar_text(render_live_rows(ToolbarView(run=RUN2, live=MAIN, rolling=ROLL), 100.0, max_lines=1))
     assert "\n" not in text and "more" not in text
+
+
+def test_a_multi_line_summary_keeps_the_live_area_within_its_lines():
+    from phil.ui.bursts import Burst, rolling_lines
+
+    heredoc = "run cat <<EOF > a.txt\nline one\n\x1b[31mred\x1b[0m\nEOF"
+    calls = [{"seq": i, "phase": "end", "task": "T", "role": "implementer", "tool": "run_shell", "summary": heredoc,
+              "result": "→ ok", "ok": True, "detail": None, "duration_ms": 0} for i in range(1, 8)]
+    live = LiveStep(task="T", role="implementer", summary=heredoc, started=98.0)
+    subs = (SubAgent(1, "a\nb", "run x\ny", 90.0), SubAgent(2, "y", None, 90.0))
+    view = ToolbarView(run=RUN2, live=live, rolling=rolling_lines(Burst("T", "implementer", calls)), subs=subs)
+    rendered = toolbar_text(render_live_rows(view, 100.0))
+    assert "\x1b" not in rendered and len(rendered.split("\n")) <= 6
 
 
 def test_goal_step_without_a_run():

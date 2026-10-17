@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from pydantic import ValidationError
+from rich.cells import cell_len
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
@@ -99,7 +100,7 @@ from phil.tomlw import toml_value
 from phil.ui.answer_view import render_answer
 from phil.ui.brief_view import render_brief
 from phil.ui.callout import failure_lines, overflows, to_rich
-from phil.ui.bursts import FeedItem
+from phil.ui.bursts import FeedItem, one_line
 from phil.ui.feed_view import FeedRenderer
 from phil.ui.plan_view import _clip, render_goal, render_plan
 from phil.ui.runs import label_for
@@ -113,6 +114,7 @@ WAKE = object()  # ChatIO.ask returns this when a background event interrupted t
 TYPE = object()  # ChatIO.choose returns this when the user left the menu to type (Esc)
 MAX_QUESTION_ROUNDS = 2
 SOMETHING_ELSE = "Something else (type it)"
+PLAN_NOW = "go"  # the answer that plans with what's known (decision.py's "Plan with what you know")
 OTHER_PROMPT = "Your answer › "  # after picking "Something else"
 HELP = (
     "Type a goal or a question. Prefix with /ask, /quick or /full to choose the path "
@@ -622,7 +624,12 @@ class ChatController:
         if decision.kind in ("pause", "approval") and self._run_id is not None:
             reminder = f"⏸ {self._short_label(self._run_id)} needs you"
         elif self.stage == "questions" and self._pending:
-            reminder = f"Question {min(len(self._replies) + 1, len(self._pending))} of {len(self._pending)}"
+            number = min(len(self._replies) + 1, len(self._pending))
+            head, tail = f"Question {number} of {len(self._pending)}: ", " · /answer to choose"
+            # The question's text is nowhere else on screen once its callout is folded.
+            text = one_line(self._pending[number - 1].text)
+            room = max(self.console.width - 1 - cell_len(head) - cell_len(tail), 0)
+            return f"{head}{_fit(text, room)}{tail}\n{self._prompt()}"
         else:
             reminder = decision.title
         return f"{reminder} · /answer to choose\n{self._prompt()}"
@@ -715,7 +722,7 @@ class ChatController:
                     if isinstance(raw, str):
                         option = next((o for o in decision.options if o.answer == raw), None)
                         # A clarifying question's answer leaves its record line instead (_answers; R21).
-                        recorded = option is not None and self.stage == "questions" and option.answer != "go"
+                        recorded = option is not None and self._records_answer(option.answer)
                         if option is not None and not option.typed and not recorded:  # a typed option's answer comes next
                             settled = settled_line(decision, option)
                             # An approved plan settles once its run starts; a pause once its resume is sent.
@@ -1250,7 +1257,7 @@ class ChatController:
         intake call gets every answer. `go` plans with what's known (Ruling R2)."""
         if not text:
             return
-        if text.lower() == "go" and not self._typing_other:
+        if self._plans_now(text):
             if self._replies:
                 self._rounds = MAX_QUESTION_ROUNDS  # send what was answered; ask nothing more
                 self._finish_questions()
@@ -1261,7 +1268,7 @@ class ChatController:
         answer = self._pick(question, text)
         if answer is None:
             return
-        if self.io.choose is not None and question.options:
+        if self.io.choose is not None and question.options and self._records_answer(text):
             self._record_answer(question.text, answer)  # its callout is gone: one line says what was chosen
         self._typing_other = False
         self._replies.append(f"{question.text}: {answer}")
@@ -1270,6 +1277,14 @@ class ChatController:
             self._ask_next()
         else:
             self._finish_questions()
+
+    def _plans_now(self, text: str) -> bool:
+        """The reply is the "Plan with what you know" answer, not an answer typed under "Something else"."""
+        return text.lower() == PLAN_NOW and not self._typing_other
+
+    def _records_answer(self, text: str) -> bool:
+        """A clarifying question's reply leaves a record line (R21); "plan with what you know" doesn't."""
+        return self.stage == "questions" and not self._plans_now(text)
 
     def _record_answer(self, question: str, answer: str) -> None:
         """`? question → answer`, muted, cut to the width with … (spec 2026-10-16 §6.1; R22)."""
@@ -2063,6 +2078,7 @@ class ChatController:
 
     def _on_worker_lost(self, data: dict) -> None:
         self._lost = True
+        self._end_burst()  # its summary comes before the notice
         self.state.set_live(None)  # the step it was running isn't running any more
         self.state.set_subs(())  # nor its sub-agents
         self.console.print(

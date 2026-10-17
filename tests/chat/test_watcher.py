@@ -46,6 +46,20 @@ def test_run_progress_carries_the_name_and_the_current_tasks_title(calc_repo):
     assert [e for e in posted if e.kind == "run_progress"][-1].data["title"] is None  # every task done
 
 
+def test_a_failed_plan_read_is_retried_on_the_next_poll(calc_repo):
+    paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo, alive=lambda r: True)
+    plan_file = paths.run_dir(run_id) / "plan.json"
+    good = plan_file.read_text(encoding="utf-8")
+    plan_file.write_text(good[: len(good) // 2], encoding="utf-8", newline="\n")  # caught mid-write
+    update_run(conn, run_id, state="running", current_node="implement")
+    watcher.poll_once()
+    assert [e for e in posted if e.kind == "run_progress"][-1].data["title"] is None
+    plan_file.write_text(good, encoding="utf-8", newline="\n")
+    update_run(conn, run_id, current_node="review")  # something changed, so progress is posted again
+    watcher.poll_once()
+    assert [e for e in posted if e.kind == "run_progress"][-1].data["title"] == "Add subtract"
+
+
 def test_progress_then_done(calc_repo):
     paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo, alive=lambda r: True)
     update_run(conn, run_id, state="running", current_node="implement")

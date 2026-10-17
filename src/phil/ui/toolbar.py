@@ -4,6 +4,7 @@ from rich.cells import cell_len, set_cell_size
 
 from phil.chat.state import RunView, ToolbarView
 from phil.store.telemetry import format_cost
+from phil.ui.bursts import one_line
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 SEP = " │ "
@@ -191,7 +192,7 @@ def render_live_rows(
     if view.run is not None:
         if view.live is not None:
             live = view.live
-            parts = [p for p in (live.role, live.summary, elapsed(now - live.started)) if p]
+            parts = [p for p in (live.role, one_line(live.summary), elapsed(now - live.started)) if p]
             rows.append([_Part(*_spin("class:phil.agent", live.started, now)), _Part("", " " + " · ".join(parts), 0)])
         else:
             node = view.run.node or "starting"
@@ -202,9 +203,9 @@ def render_live_rows(
             rows.append([
                 _Part(*_spin("class:phil.sub", sub.started, now)),
                 _Part("", "  └ sub-agent · "),
-                _Part("", sub.summary or "working", 1, floor=1),  # cut second
+                _Part("", one_line(sub.summary or "working"), 1, floor=1),  # cut second
                 _Part("", " · "),
-                _Part("", sub.description, 0, floor=8),  # cut first, down to 8 cells
+                _Part("", one_line(sub.description), 0, floor=8),  # cut first, down to 8 cells
                 _Part("", f" · {elapsed(now - sub.started)}"),  # the time always survives a cut
             ])
     if view.step:

@@ -29,6 +29,16 @@ def test_ran_names_the_last_shell_command_cut_to_40_characters():
     assert burst_text(b) == f"implementer ran 2 tools · ran {long[:39]}…"
 
 
+def test_a_multi_line_command_and_an_escape_stay_on_one_line():
+    heredoc = "cat <<EOF > a.txt\nline one\n\x1b[31mred\x1b[0m\nEOF"
+    b = burst(end(1, "run_shell", f"run {heredoc}", "→ ok\nlater"))
+    [line] = rolling_lines(b)
+    for text in (line, burst_text(b)):
+        assert "\n" not in text and "\x1b" not in text
+    assert burst_text(b).startswith("implementer ran 1 tool · ran cat <<EOF > a.txt line one")
+    assert line.endswith("→ ok later")
+
+
 def test_neither_is_the_count_alone_and_one_tool_is_singular():
     assert burst_text(burst(end(1, "read_file", "read a.py"))) == "implementer ran 1 tool"
 

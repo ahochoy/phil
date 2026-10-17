@@ -7,10 +7,10 @@ from datetime import datetime
 from phil.chat.events import ChatEvent
 from phil.run.launch import is_worker_alive, worker_starting
 from phil.store.activity import activity_log
+from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
 from phil.store.events import MILESTONE_KINDS, run_events
 from phil.store.paths import ProjectPaths
-from phil.store.artifacts import ArtifactStore
 from phil.store.runs import get_run
 from phil.store.telemetry import run_totals, run_usage
 from phil.ui.feed_view import _int_seq, _seconds, interleave
@@ -167,8 +167,9 @@ class RunWatcher:
                 plan = ArtifactStore(self.paths.run_dir(self.run_id)).read_plan()
                 self._tasks = [" ".join(task.description.split()) for task in plan.tasks]
             except Exception:
+                # plan.json is rewritten in place, so a read can land mid-write: ask again next poll.
                 logger.debug("couldn't read the plan of %s", self.run_id, exc_info=True)
-                self._tasks = []
+                return None
         return self._tasks[done] if 0 <= done < len(self._tasks) else None
 
     def _poll_feed(self) -> None:

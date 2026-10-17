@@ -9,7 +9,7 @@ from rich.text import Text
 
 from phil.ui.bursts import (
     ENGINE, INDENT, LOOKS, TIMED, Burst, FeedItem, burst_text, fold, group_summary, is_failure, key_of,
-    rolling_lines,
+    one_line, rolling_lines,
 )
 from phil.ui.toolbar import elapsed
 
@@ -74,7 +74,7 @@ class FeedRenderer:
         self._bursts: dict[int, list[dict]] = {}  # closed bursts by number, for /more #n
 
     def _line(self, record: dict, width: int, summary: str | None = None, style: str = "phil.muted") -> Text:
-        summary = summary if summary is not None else str(record.get("summary", ""))
+        summary = one_line(summary if summary is not None else record.get("summary", ""))
         verb, _, rest = summary.partition(" ")
         if record.get("tool") == "gate":
             verb = "gate"
@@ -82,7 +82,7 @@ class FeedRenderer:
             # no clean short verb (e.g. a spaceless fallback summary): show the whole
             # summary as the body instead of letting an oversized verb blow the width.
             verb, rest = "", summary
-        result_part = f"  {record['result']}" if record.get("result") else ""
+        result_part = f"  {one_line(record['result'])}" if record.get("result") else ""
         duration_part = ""
         if record.get("tool") in TIMED and record.get("duration_ms"):
             duration_part = f" · {record['duration_ms'] / 1000:.1f}s"

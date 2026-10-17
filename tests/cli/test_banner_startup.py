@@ -184,6 +184,38 @@ def test_a_run_outside_the_listed_chats_keeps_its_labelled_run_line(calc_repo, m
     assert "nightly-docs (r-0007) failed · phil resume r-0007" in _plain(result.output)
 
 
+def test_an_unheld_pick_up_run_shows_behind_a_newer_one_a_chat_holds(calc_repo, monkeypatch):
+    paths = _add_run(calc_repo, "r-9001", "running", "failed")  # older; no chat holds it
+    conn = connect(paths.db_path)
+    create_run(conn, run_id="r-9002", keyword="calc", base_sha="0" * 40, worktree=paths.project_dir / "wt2",
+               tasks_total=1)
+    update_run(conn, "r-9002", state="running")
+    update_run(conn, "r-9002", state="failed")
+    _open_chat(paths, 2)  # newer; its run is r-9002
+    _tty(monkeypatch)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="\n", env={"COLUMNS": "120"})
+    assert result.exit_code == 0, result.output
+    output = _plain(result.output)
+    assert "r-9001 failed · phil resume r-9001" in output
+    assert "phil resume r-9002" not in output
+
+
+def test_a_failing_open_chats_lookup_leaves_the_list_out_and_the_chat_starts(calc_repo, monkeypatch):
+    import phil.chat.session as session
+
+    _add_run(calc_repo, "r-0001", "running", "completed")
+    _tty(monkeypatch)
+
+    def broken(paths, conn):
+        raise RuntimeError("chats are unreadable")
+
+    monkeypatch.setattr(session, "list_open_chats", broken)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="", env={"COLUMNS": "120"})
+    assert result.exit_code == 0, result.output
+    output = _plain(result.output)
+    assert "Open chats:" not in output and "you › " in output
+
+
 def test_the_banner_has_no_parked_count(calc_repo):
     _add_run(calc_repo, "r-0001", "running", "completed")
     from phil.contracts import Ref

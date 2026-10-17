@@ -1,4 +1,5 @@
 import os
+import time
 
 from typer.testing import CliRunner
 
@@ -276,6 +277,33 @@ def test_attach_prints_failures_at_once_and_a_summary_when_the_run_fails(calc_re
     failure, summary = text.index("run   pytest -q  → 1 failed"), text.index("implementer ran 2 tools · edited calc.py")
     assert failure < summary < text.index("Continue with `phil resume")
     assert text.count("implementer ran 2 tools") == 1
+
+
+def test_attach_closes_an_open_burst_before_saying_no_worker_is_running(calc_repo):
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha)
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    update_run(conn, record.run_id, state="running")
+    activity = ActivityLog(paths.run_dir(record.run_id))
+    wrote = []
+
+    def sleep(_):
+        if not wrote:
+            wrote.append(True)
+            activity.end(1, task="CALC-001", role="implementer", tool="edit_file", summary="edit calc.py",
+                         result="+1 −0", ok=True, detail=None, duration_ms=5)
+        time.sleep(0.05)  # past start_timeout_s, so the next pass gives up on the worker
+
+    io = AttachIO(choose=lambda p, o: "abort", ask_hint=lambda: None, spawn=lambda m, d: None, sleep=sleep,
+                  alive=lambda r: False, starting=lambda e: False)
+    console = make_console(record=True, width=120)
+    state = attach(conn, record.run_id, run_events(paths, record.run_id), console, io, poll_s=0,
+                   start_timeout_s=0.02)
+    assert state == "running"
+    text = console.export_text()
+    assert text.count("implementer ran 1 tool · edited calc.py") == 1
+    assert text.index("implementer ran 1 tool") < text.index("No worker is running")
 
 
 def test_attach_prints_a_gate_line_before_the_milestones_that_follow_it(calc_repo):

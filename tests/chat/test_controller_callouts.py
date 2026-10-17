@@ -146,6 +146,18 @@ def test_type_folds_and_answer_reopens(controller_with_choose):
     assert (run_id, "resume", {"action": "skip"}) in spawned
 
 
+def test_a_folded_question_still_shows_its_text(controller_with_choose):
+    """Esc folds the question's callout; its text is nowhere else on screen, so the folded line has it."""
+    calls = []
+    question = Question(text="Which module?", options=["calc.py", "ops.py"])
+    scripts = {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()], "critic": [critique()]}
+    controller_with_choose(["add subtract", TYPE, "/answer", "1", "n"], scripts, calls=calls)
+    at = next(i for i, call in enumerate(calls) if call[0] == "choose" and call[2].kind == "question")
+    assert calls[at + 1][0] == "ask"
+    assert calls[at + 1][1].startswith("Question 1 of 1: Which module? · /answer to choose")
+    assert calls[at + 2][0] == "choose" and calls[at + 2][2].kind == "question"
+
+
 def test_a_typed_option_goes_to_its_typed_prompt(controller_with_choose):
     """At the questions stage choose returns the "Something else" answer (n+1): the next call is ask()
     with the existing OTHER_PROMPT; its reply becomes the answer."""

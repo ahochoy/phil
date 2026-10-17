@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from rich.cells import cell_len
 from rich.text import Text
 
+from phil.text import printable
+
 INDENT = "    "
 READS = ("read_file",)
 LOOKS = ("read_file", "ls", "glob", "grep")  # consecutive look-only calls by one task and role fold into one
@@ -42,6 +44,11 @@ class Burst:
         """What `/more #n` calls it: its last call's seq (Ruling R15)."""
         seq = self.calls[-1].get("seq") if self.calls else None
         return seq if isinstance(seq, int) and not isinstance(seq, bool) else None
+
+
+def one_line(text: object) -> str:
+    """`text` as one printable line: whitespace (newlines too) collapsed, hidden characters shown as `?`."""
+    return printable(" ".join(str(text).split()))
 
 
 def key_of(record: dict) -> tuple[str | None, str]:
@@ -80,14 +87,14 @@ def group_summary(group: list[dict]) -> str:
 def call_text(group: list[dict]) -> str:
     """One rolling-view line: verb, target, result and a timed call's duration (plain text)."""
     record = group[-1]
-    summary = group_summary(group)
+    summary = one_line(group_summary(group))
     verb, _, rest = summary.partition(" ")
     if record.get("tool") == "gate":
         verb = "gate"
     elif cell_len(verb) > 6:  # no short verb (a sub-agent, a fallback summary): the summary alone
         verb, rest = "", summary
     head = f"{INDENT}{verb:<6} " if verb else INDENT
-    result = f"  {record['result']}" if record.get("result") else ""
+    result = f"  {one_line(record['result'])}" if record.get("result") else ""
     duration = ""
     if record.get("tool") in TIMED and record.get("duration_ms"):
         duration = f" · {record['duration_ms'] / 1000:.1f}s"
@@ -121,7 +128,7 @@ def edited_files(calls: list[dict]) -> list[str]:
 def last_command(calls: list[dict]) -> str | None:
     for call in reversed(calls):
         if call.get("tool") == "run_shell":
-            command = str(call.get("summary", "")).removeprefix("run ").strip()
+            command = one_line(call.get("summary", "")).removeprefix("run ").strip()
             if command:
                 return command
     return None

@@ -285,13 +285,11 @@ def _banner_facts(info, config, conn, paths, base_label, header_sha, base, sessi
         runs = list_runs(conn)  # the db is per project, so these are this repo's runs
     except Exception:
         runs = None
-    try:
-        record = next((r for r in runs or () if r.state in _PICK_UP_STATES), None)
+    listed_runs = {chat.run_id for chat in listed or () if chat.run_id}
+    try:  # a run an open chat holds is named by the open-chats list; the first one it doesn't hold shows
+        record = next((r for r in runs or () if r.state in _PICK_UP_STATES and r.run_id not in listed_runs), None)
     except Exception:
         record = None
-    listed_runs = {chat.run_id for chat in listed or () if chat.run_id}
-    if record is not None and record.run_id in listed_runs:
-        record = None  # the open-chats list names it
     run = None
     label = ""
     if record is not None:
@@ -379,7 +377,12 @@ def _chat(ctx: typer.Context) -> None:
     tty = _is_tty()
     # Under patch_stdout, stdout is a proxy; force colour so Rich keeps emitting it.
     out = make_console(force_terminal=True) if tty else console
-    listed = list_open_chats(paths, conn) if session is None and not new and tty else []
+    listed = []
+    if session is None and not new and tty:
+        try:  # like the banner's other lookups: a failure here must not stop the chat from starting
+            listed = list_open_chats(paths, conn)
+        except Exception:
+            logger.debug("couldn't list the open chats", exc_info=True)
     facts = _banner_facts(info, config, conn, paths, base_label, header_sha, base, session, listed=listed or None)
     try:  # the mascot is hand-edited; a card that can't be drawn falls back to the plain lines
         card = render_banner(facts, out.width) if tty else None

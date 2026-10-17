@@ -112,6 +112,29 @@ def test_worker_lost_clears_the_live_step(controller_with_run):
     assert "stopped responding" in controller.console.export_text()
 
 
+def test_worker_lost_ends_the_open_burst_before_its_notice(controller_with_run):
+    controller = controller_with_run
+    _activity(controller, _end(3, "implementer", "make"))
+    assert controller.state.view().rolling != ()
+    controller._handle(ChatEvent("worker_lost", {}))
+    text = controller.console.export_text()
+    assert text.count("implementer ran 1 tool · ran make") == 1
+    assert text.index("implementer ran 1 tool") < text.index("stopped responding")
+    assert controller.state.view().rolling == ()
+
+
+def test_a_multi_line_command_and_an_escape_stay_on_one_line_each(controller_with_run):
+    controller = controller_with_run
+    heredoc = "cat <<EOF > a.txt\nline one\n\x1b[31mred\x1b[0m\nEOF"
+    text = _activity(controller, _end(3, "implementer", heredoc))
+    assert "\x1b" not in text
+    rolling = controller.state.view().rolling
+    assert len(rolling) == 1 and "\n" not in rolling[0] and "\x1b" not in rolling[0]
+    summary = _flush(controller)
+    [line] = [line for line in summary.splitlines() if "implementer ran 1 tool" in line]
+    assert "ran cat <<EOF > a.txt line one" in line
+
+
 def test_forgetting_the_run_clears_the_live_step_and_the_feed(controller_with_run):
     controller = controller_with_run
     controller._handle(ChatEvent("milestone", {"kind": "task_started", "task": "CALC-001", "title": "x",

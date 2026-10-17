@@ -13,6 +13,7 @@ from phil.store.events import EventLog, MILESTONE_KINDS, test_cmd_changed_line
 from phil.text import printable
 from phil.store.runs import RunRecord, get_run
 from phil.store.telemetry import budget_warning_line
+from phil.ui.bursts import FeedItem
 from phil.ui.feed_view import FeedRenderer, interleave
 
 TERMINAL = ("completed", "incomplete", "aborted", "cleaned")
@@ -57,7 +58,7 @@ def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRend
         console.print(f"[phil.warn]{escape(printable(event.get('message', '')))}[/]")
 
 
-def _print_items(console: Console, items) -> None:
+def _print_items(console: Console, items: list[FeedItem]) -> None:
     for item in items:
         console.print(item.line, soft_wrap=True)
 
@@ -163,6 +164,7 @@ def attach(
             return record.state
         if record.state in ("running", "pending") and not alive:
             if time.monotonic() - idle_since > start_timeout_s:
+                _print_items(console, feed.end_burst(console.width))
                 console.print(f"[phil.warn]No worker is running.[/] Continue with `phil resume {escape(run_id)}`.")
                 return record.state
         else:
