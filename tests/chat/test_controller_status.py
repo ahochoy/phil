@@ -304,10 +304,10 @@ def test_the_chat_uses_the_raised_budget(controller):
 
 def test_status_line_end_to_end(controller_following_a_scripted_run):
     """After a scripted run's progress has been followed: toolbar_text(render_toolbar(view, now, 120))
-    contains the repo name, "●", the low model's short name, and "/$" (the budget)."""
+    contains the repo name, the run's name and stage, and ' / $' (the budget), but no dots or model."""
     controller, view = controller_following_a_scripted_run
     text = toolbar_text(render_toolbar(view, time.time(), 120))
     assert controller.info.root.name in text
-    assert "●" in text
-    assert "small-model" in text
-    assert "/$" in text
+    assert "subtract-calc · Implementing" in text  # its one task is done; the stage shows (Ruling R7)
+    assert "●" not in text and "small-model" not in text
+    assert " / $" in text

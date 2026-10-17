@@ -12,6 +12,8 @@ class RunView:
     tasks_done: int
     tasks_total: int
     started: float  # epoch seconds
+    name: str | None = None  # the run's display name (spec 2026-10-16 §3); None: show run_id
+    title: str | None = None  # the current task's title; None before tasks exist or once all are done
 
 
 @dataclass(frozen=True)

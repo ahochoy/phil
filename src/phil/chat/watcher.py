@@ -10,6 +10,7 @@ from phil.store.activity import activity_log
 from phil.store.db import connect
 from phil.store.events import MILESTONE_KINDS, run_events
 from phil.store.paths import ProjectPaths
+from phil.store.artifacts import ArtifactStore
 from phil.store.runs import get_run
 from phil.store.telemetry import run_totals, run_usage
 from phil.ui.feed_view import _int_seq, _seconds, interleave
@@ -77,6 +78,7 @@ class RunWatcher:
         self._orphan_started: dict[int, dict] = {}  # a sub-agent seen only by its inner calls: the oldest
         self._agents_posted: tuple = (None, ())  # (main seq, ((sub seq, its summary), ...)) last posted
         self.done = False
+        self._tasks: list[str] | None = None  # the plan's task titles, read once
         self._last: tuple | None = None
         self._paused_ts: str | None = None
         self._paused = False
@@ -121,6 +123,7 @@ class RunWatcher:
                     "node": record.current_node, "state": record.state, "tasks_done": record.tasks_done,
                     "tasks_total": record.tasks_total, "keyword": record.keyword, "started": started,
                     "tokens": totals.tokens, "cost_usd": totals.cost_usd, "cost_source": totals.cost_source,
+                    "name": record.name, "title": self._title(record.tasks_done),
                 }))
             while self._notices:
                 notice = self._notices.pop(0)
@@ -155,6 +158,18 @@ class RunWatcher:
                 self._idle_since, self._lost_posted = None, False
         finally:
             conn.close()
+
+    def _title(self, done: int) -> str | None:
+        """The current task's title (task `done + 1` of the run's saved plan, whitespace collapsed);
+        None once every task is done or when the plan can't be read (Ruling R8)."""
+        if self._tasks is None:
+            try:
+                plan = ArtifactStore(self.paths.run_dir(self.run_id)).read_plan()
+                self._tasks = [" ".join(task.description.split()) for task in plan.tasks]
+            except Exception:
+                logger.debug("couldn't read the plan of %s", self.run_id, exc_info=True)
+                self._tasks = []
+        return self._tasks[done] if 0 <= done < len(self._tasks) else None
 
     def _poll_feed(self) -> None:
         """Post the milestones and tool calls written since the last poll, in order, and the live step

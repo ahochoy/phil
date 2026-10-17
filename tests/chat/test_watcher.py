@@ -2,6 +2,7 @@ import json
 import logging
 
 from phil.chat.watcher import RunWatcher
+from phil.contracts import Goal
 from phil.repo import resolve_repo
 from phil.run.launch import prepare_run
 from phil.store.activity import activity_log
@@ -27,6 +28,22 @@ def setup(calc_repo, **kw):
 
 def kinds(posted):
     return [e.kind for e in posted]
+
+
+def test_run_progress_carries_the_name_and_the_current_tasks_title(calc_repo):
+    info = resolve_repo(calc_repo)
+    paths = ProjectPaths(info.slug)
+    record = prepare_run(info, calc_plan(), info.head_sha, goal=Goal(objective="Add subtract to calc"))
+    posted = []
+    watcher = RunWatcher(paths, record.run_id, posted.append, alive=lambda r: True, starting=lambda e: False)
+    conn = connect(paths.db_path)
+    update_run(conn, record.run_id, state="running", current_node="implement")
+    watcher.poll_once()
+    progress = [e for e in posted if e.kind == "run_progress"][-1]
+    assert (progress.data["name"], progress.data["title"]) == ("subtract-calc", "Add subtract")
+    update_run(conn, record.run_id, tasks_done=1, current_node="review")
+    watcher.poll_once()
+    assert [e for e in posted if e.kind == "run_progress"][-1].data["title"] is None  # every task done
 
 
 def test_progress_then_done(calc_repo):

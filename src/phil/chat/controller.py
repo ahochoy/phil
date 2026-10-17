@@ -1757,6 +1757,8 @@ class ChatController:
                 tasks_done=data.get("tasks_done", 0),
                 tasks_total=data.get("tasks_total", 0),
                 started=data.get("started", 0.0),
+                name=data.get("name"),
+                title=data.get("title"),
             )
         )
         self.state.set_run_usage(
