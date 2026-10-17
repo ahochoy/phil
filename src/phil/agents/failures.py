@@ -110,6 +110,32 @@ def _refused_failure(provider: str | None, detail: str) -> Failure:
                    "Phil won't retry this.", "Check the model with `phil models check`.")
 
 
+_CONTENT = {"image": "an image", "file": "a file", "audio": "an audio clip", "video": "a video"}
+_ROLE = {"tool": "a tool result", "user": "your message", "assistant": "an agent's reply", "system": "the instructions"}
+
+
+def _unsendable_content(exc: BaseException, provider: str | None) -> Failure | None:
+    """The OpenRouter SDK checks a request before sending it and raises a pydantic ValidationError
+    (titled `Unmarshaller`) when a message holds content not in its form, such as a file block an
+    agent's tool returned. That's a refusal of what was sent, not a bug inside Phil: say what it
+    was and where. None for any other exception."""
+    from pydantic import ValidationError
+
+    if not isinstance(exc, ValidationError) or exc.title != "Unmarshaller":
+        return None
+    what, where = "content", "a message"
+    for error in exc.errors():
+        location = error.get("loc", ())
+        if len(location) > 2 and location[0] == "body" and isinstance(location[2], str):
+            where = _ROLE.get(location[2], where)
+        tag = (error.get("ctx") or {}).get("tag")
+        if isinstance(tag, str):
+            what = _CONTENT.get(tag, f"a {tag} part")
+            break
+    return Failure("refused", f"Phil couldn't send the request: {_object(provider)} doesn't accept {what} in {where}.",
+                   "Phil won't retry this.", "Try again without that file, or try a different model.")
+
+
 def _classify(exc: BaseException, provider: str | None, attempts: int | None) -> Failure:
     from phil.agents.invoke import ContractViolation
     from phil.agents.retry import is_transient, provider_detail
@@ -120,6 +146,8 @@ def _classify(exc: BaseException, provider: str | None, attempts: int | None) ->
                        f"Try again, or use a stronger model for {exc.agent}.")
     if isinstance(exc, ConfigError):
         return Failure("config", str(exc), "Phil won't retry this.", "Fix the setting it names.")
+    if (unsendable := _unsendable_content(exc, provider)) is not None:
+        return unsendable
     status = _status(exc)
     detail = provider_detail(exc) or str(exc)
     if status is None:
