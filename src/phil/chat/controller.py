@@ -76,6 +76,7 @@ from phil.memory.doc import MemoryDoc
 from phil.memory.editor import EditorError, edit_file
 from phil.memory.listing import memory_lines
 from phil.memory.store import write_atomic
+from phil.parking import close_lines
 from phil.publish import publisher as publishing
 from phil.publish.service import PrChange, PublishRefused, change_line, publish_run, sweep_prs
 from phil.permissions.listing import CHANGE_HINT, listing_lines, problem_lines
@@ -123,6 +124,7 @@ HELP = (
     "/answer (a paused run's question), /resume (a failed or stopped run), /show (the chat's run: usage "
     "and numbered details), /more <n> (print detail n), /more #<step> (a feed step's detail), "
     "/feed <agent> (show one agent's lines; /feed to show all), /park <note> (set an idea aside), "
+    "/unpark <id…> or /unpark all (drop parked ideas), "
     "/permissions (the rules for agents' commands), "
     "/memory (what Phil remembers about this repo), /remember <fact>, /forget <n>, /help, "
     "/quit (or Ctrl-D)."
@@ -842,6 +844,8 @@ class ChatController:
             self._feed_command(text[len(command):].strip())
         elif command == "/park":
             self._park_command(text[len(command):].strip())
+        elif command == "/unpark":
+            self._unpark_command(text[len(command):].split())
         elif command == "/permissions":
             self._permissions_command()
         elif command == "/memory":
@@ -2217,6 +2221,20 @@ class ChatController:
         self._safe_note("parked", id=item.id, note=note)
         self._refresh_parked()
         self.console.print(f"Parked [phil.id]{escape(item.id)}[/].")
+
+    def _unpark_command(self, words: list[str]) -> None:
+        """`/unpark P-001 2…` drops those items; `/unpark all` drops every open one."""
+        if not words:
+            self.console.print("Usage: /unpark <id…> or /unpark all")
+            return
+        every = [word.lower() for word in words] == ["all"]
+        try:
+            lines, _ = close_lines(self.conn, [] if every else words, "dropped", every=every)
+        except Exception as exc:
+            self._say(f"Couldn't update the parking lot: {printable(exc)}")
+            return
+        self._say(*lines)
+        self._refresh_parked()
 
     def _report_policy_problems(self) -> None:
         """At chat start, right after the banner: each problem with the permission rules, once, in

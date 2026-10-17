@@ -113,6 +113,64 @@ def test_parked_empty(git_repo):
     assert "Parking lot is empty" in result.output
 
 
+def _park_three(repo: Path) -> None:
+    for note in ("cache the parser", "dark mode", "rename utils"):
+        park(_conn_for(repo), raised_by="user", note=note, why_not_now="later", source=Ref(label="t", path="t"))
+
+
+def _open_ids(repo: Path) -> list[str]:
+    return [row["id"] for row in _conn_for(repo).execute("SELECT id FROM parked WHERE status = 'open' ORDER BY id")]
+
+
+def test_parked_drop_closes_the_named_items(git_repo):
+    _park_three(git_repo)
+    result = runner.invoke(app, ["--repo", str(git_repo), "parked", "drop", "P-001", "3"])
+    assert result.exit_code == 0, result.output
+    assert "Dropped P-001, P-003." in result.output
+    assert _open_ids(git_repo) == ["P-002"]
+    listed = runner.invoke(app, ["--repo", str(git_repo), "parked"]).output
+    assert "P-002" in listed and "P-001" not in listed
+
+
+def test_parked_done_marks_items_promoted(git_repo):
+    _park_three(git_repo)
+    result = runner.invoke(app, ["--repo", str(git_repo), "parked", "done", "P-002"])
+    assert result.exit_code == 0, result.output
+    assert "Marked P-002 done." in result.output
+    status = _conn_for(git_repo).execute("SELECT status FROM parked WHERE id = 'P-002'").fetchone()[0]
+    assert status == "promoted"
+
+
+def test_parked_drop_all_empties_the_parking_lot(git_repo):
+    _park_three(git_repo)
+    result = runner.invoke(app, ["--repo", str(git_repo), "parked", "drop", "--all"])
+    assert result.exit_code == 0, result.output
+    assert "Dropped P-001, P-002, P-003." in result.output and _open_ids(git_repo) == []
+    again = runner.invoke(app, ["--repo", str(git_repo), "parked", "drop", "--all"])
+    assert again.exit_code == 0 and "Parking lot is already empty." in again.output
+
+
+def test_parked_drop_reports_items_that_are_not_open_and_fails(git_repo):
+    _park_three(git_repo)
+    runner.invoke(app, ["--repo", str(git_repo), "parked", "drop", "P-001"])
+    result = runner.invoke(app, ["--repo", str(git_repo), "parked", "drop", "P-001", "P-002", "P-009", "soon"])
+    assert result.exit_code == 1
+    assert "Dropped P-002." in result.output
+    assert "No open item P-001, P-009. phil parked lists them." in result.output
+    assert "Not an item ID: soon (they look like P-001)." in result.output
+    assert _open_ids(git_repo) == ["P-003"]
+
+
+def test_parked_drop_needs_ids_or_all(git_repo):
+    _park_three(git_repo)
+    result = runner.invoke(app, ["--repo", str(git_repo), "parked", "drop"])
+    assert result.exit_code == 1
+    assert "Name the items to drop (phil parked lists them), or use --all." in result.output
+    both = runner.invoke(app, ["--repo", str(git_repo), "parked", "drop", "P-001", "--all"])
+    assert both.exit_code == 1 and "Name items or use --all, not both." in both.output
+    assert _open_ids(git_repo) == ["P-001", "P-002", "P-003"]
+
+
 def test_schema_command_exports_all(tmp_path):
     out = tmp_path / "schemas"
     result = runner.invoke(app, ["schema", "--out", str(out)])

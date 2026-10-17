@@ -860,6 +860,23 @@ def test_parked_count_refreshes_when_the_run_finishes(calc_repo):
     assert seen == {"before": 0, "after": 1}
 
 
+def test_unpark_drops_items_and_updates_the_count(calc_repo):
+    seen = {}
+    text, *_ = run_chat(
+        calc_repo,
+        ["/park one", "/park two", "/park three", "/unpark", "/unpark P-001 2 P-009",
+         peek(seen, "after one", lambda c: c.state.view().parked), "/unpark all",
+         peek(seen, "after all", lambda c: c.state.view().parked), "/unpark all"],
+        {},
+    )
+    assert "Usage: /unpark <id…> or /unpark all" in text
+    assert "Dropped P-001, P-002." in text and "No open item P-009." in text
+    assert "Dropped P-003." in text and "Parking lot is already empty." in text
+    assert seen == {"after one": 1, "after all": 0}
+    conn = connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path)
+    assert {row["status"] for row in conn.execute("SELECT status FROM parked")} == {"dropped"}
+
+
 def test_park_updates_the_parked_count(calc_repo):
     seen = {}
     run_chat(

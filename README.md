@@ -261,7 +261,9 @@ The prompt stays usable while a goal is being planned or a run works in the back
   `/more <n>` expands one detail from the most recent listing (`/show`, a `/btw` answer, or the
   run's completion notice) — the full text of a log, packet, or agent output.
 - `/park <note>` sets an idea aside instead of acting on it now; `phil parked` lists the parking
-  lot, and its open count shows at chat start and in the toolbar.
+  lot, and its open count shows in the toolbar. `/unpark P-001` (or `/unpark all`) drops items;
+  outside the chat, `phil parked drop P-001 …` or `phil parked done P-001 …` close them, and
+  `--all` closes every open one.
 - The toolbar shows the chat's running cost (its own agent calls plus its runs'), e.g. `$0.42`
   reported by the provider or `~$0.42` estimated from a cached price list (see Observability).
 - `/runs` lists runs, `/help` shows the commands, `/quit` (or Ctrl-D) leaves the chat — a run

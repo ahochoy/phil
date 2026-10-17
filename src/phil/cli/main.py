@@ -20,6 +20,7 @@ from phil import __version__, platform
 from phil.chat.approval import effective_setup_cmd, git_policy_note, launch_problems, terminated
 from phil.chat.decision import approval_lines
 from phil.cli.memory import memory_app
+from phil.cli.parked import parked_app
 from phil.cli.permissions import permissions_app
 from phil.config import (
     CHAT_ROLES,
@@ -40,7 +41,6 @@ from phil.run.launch import is_worker_alive, prepare_run, spawn_worker, worker_s
 from phil.store.db import connect
 from phil.store.events import run_events
 from phil.text import printable
-from phil.store.parked import list_parked
 from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, get_run, list_runs, update_run
 from phil.tomlw import toml_value
@@ -59,6 +59,7 @@ keys_app = typer.Typer(help="Store, list and remove provider API keys.")
 app.add_typer(keys_app, name="keys")
 app.add_typer(permissions_app, name="permissions")
 app.add_typer(memory_app, name="memory")
+app.add_typer(parked_app, name="parked")
 console = make_console()
 
 # `getpass.getpass` itself, as a module attribute tests can monkeypatch.
@@ -484,21 +485,6 @@ def runs(ctx: typer.Context) -> None:
     info, conn = _open_project(ctx)
     _sweep_quietly(info, conn)
     render_runs(console, conn)
-
-
-@app.command()
-def parked(ctx: typer.Context) -> None:
-    """List open parking-lot items for the current repository."""
-    _, conn = _open_project(ctx)
-    items = list_parked(conn)
-    if not items:
-        console.print("[phil.muted]Parking lot is empty.[/]")
-        return
-    for item in items:
-        console.print(
-            f"[phil.id]{escape(item.id)}[/] {escape(item.note)} "
-            f"[phil.muted]({escape(item.raised_by)}: {escape(item.why_not_now)})[/]"
-        )
 
 
 @app.command()
