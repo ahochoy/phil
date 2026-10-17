@@ -13,6 +13,7 @@ from phil.store.artifacts import ArtifactStore
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
 from phil.store.telemetry import UsageLine, format_cost, goal_chat_usage, usage_by_role, weakest
+from phil.ui.runs import run_label
 
 _MAX_PER_CATEGORY = 5
 _MAX_DETAIL_LINES = 2000
@@ -153,7 +154,7 @@ def render_show(console: Console, conn: sqlite3.Connection, paths: ProjectPaths,
     assert record is not None
     depth_segment = f" · {escape(record.depth)}" if record.depth else ""
     console.print(
-        f"Run [phil.id]{escape(run_id)}[/] · {escape(record.keyword)}{depth_segment} · {escape(record.state)} · "
+        f"Run [phil.id]{escape(run_label(record, first=True))}[/] · {escape(record.keyword)}{depth_segment} · {escape(record.state)} · "
         f"{escape(record.base_sha[:8])}..{escape(record.branch)} · {record.tasks_done}/{record.tasks_total} tasks"
     )
 

@@ -6,6 +6,7 @@ from rich.table import Table
 
 from phil.store.runs import list_runs
 from phil.store.telemetry import format_cost, run_usage
+from phil.ui.runs import run_label
 
 
 def _format_tokens(tokens: int) -> str:
@@ -32,7 +33,7 @@ def render_runs(console: Console, conn: sqlite3.Connection) -> None:
     for run in records:
         totals = run_usage(conn, run.run_id)
         table.add_row(
-            f"[phil.id]{escape(run.run_id)}[/]",
+            f"[phil.id]{escape(run_label(run, first=True))}[/]",
             escape(run.keyword),
             f"{run.tasks_done}/{run.tasks_total}",
             escape(run.state + _pr_marker(run)),

@@ -101,6 +101,7 @@ from phil.ui.brief_view import render_brief
 from phil.ui.callout import failure_lines, overflows, to_rich
 from phil.ui.feed_view import FeedRenderer
 from phil.ui.plan_view import _clip, render_goal, render_plan
+from phil.ui.runs import label_for
 from phil.ui.runs_view import render_runs
 from phil.ui.show_view import detail_text, render_show, show_refs
 from phil.ui.toolbar import _fit, short_model
@@ -268,6 +269,7 @@ class ChatController:
         self._agents_md_create = False  # confirm_agents_md: the "create it?" question has been asked
         self.state = ChatState()
         self._run_id: str | None = None
+        self._run_names: dict[str, str | None] = {}  # run id -> its stored name, read once (it never changes)
         self._watcher = None  # follows the chat's run; a daemon thread (the worker is independent)
         self._run_role: str | None = None  # the last role seen at work in the followed run
         self._model_lock = threading.Lock()  # computing and setting the toolbar's model (_refresh_model)
@@ -570,7 +572,7 @@ class ChatController:
             decision = repo_shell_decision(self.info.root.name, rules, labels, pass_env, bash)
             return self._with_details(decision, repo_shell_lines(rules, labels, pass_env, bash))
         if stage == "confirm_pr" and self._pr_offer is not None:
-            return pr_decision(self._pr_offer, self._pr_force)
+            return pr_decision(self._short_label(self._pr_offer), self._pr_force)
         if stage == "confirm_fix":
             return fix_decision()
         if stage == "confirm_replace":
@@ -586,7 +588,7 @@ class ChatController:
         if pause.get("reason") == "approval":
             lines += approval_lines(pause)  # every command and rule in full (R15)
         log = pause.get("log")
-        return self._with_details(pause_decision(self._run_id, pause), lines, log=str(log) if log else None)
+        return self._with_details(pause_decision(self._short_label(self._run_id), pause), lines, log=str(log) if log else None)
 
     def _with_details(self, decision: Decision, lines: list[str], *, log: str | None = None) -> Decision:
         """A body that ends pointing at /more 1 (cut, or an attempts pause's "Details: /more 1"),
@@ -615,7 +617,7 @@ class ChatController:
         if decision is None:
             return self._prompt()
         if decision.kind in ("pause", "approval") and self._run_id is not None:
-            reminder = f"⏸ {self._run_id} needs you"
+            reminder = f"⏸ {self._short_label(self._run_id)} needs you"
         elif self.stage == "questions" and self._pending:
             reminder = f"Question {min(len(self._replies) + 1, len(self._pending))} of {len(self._pending)}"
         else:
@@ -801,7 +803,7 @@ class ChatController:
             self._hint(text)
         elif stage == "running":
             self.console.print(
-                f"This chat is following run [phil.id]{escape(self._run_id or '')}[/]. "
+                f"This chat is following run [phil.id]{escape(self._label(self._run_id))}[/]. "
                 "Use /btw to ask about it, or start another goal in a new window."
             )
         return True
@@ -907,7 +909,7 @@ class ChatController:
             self._begin_goal(rest, forced=forced, skip_design=skip)
         elif stage in RUN_STAGES:
             self.console.print(
-                f"This chat is following run [phil.id]{escape(self._run_id or '')}[/]. "
+                f"This chat is following run [phil.id]{escape(self._label(self._run_id))}[/]. "
                 "Use /btw to ask about it, or start another goal in a new window."
             )
         else:
@@ -922,9 +924,10 @@ class ChatController:
             # A new goal replaces a failed or stopped run the chat was offering to /resume.
             record = get_run(self.conn, self._run_id)
             rid = escape(self._run_id)
+            label = escape(self._label(self._run_id))
             state = escape(record.state) if record else "is"
             self.console.print(
-                f"[phil.muted]Run {rid} is left as {state}; `phil resume {rid}` still continues it.[/]"
+                f"[phil.muted]Run {label} is left as {state}; `phil resume {rid}` still continues it.[/]"
             )
             self._forget_run()
         self._next_generation()
@@ -1595,13 +1598,15 @@ class ChatController:
         started = "approved" if depth == "full" else "quick_started"
         self._safe_note(started, **note_data, run_id=record.run_id, depth=depth)
         self._recent.append(f"phil: planned {plan.keyword}")
+        self._run_names[record.run_id] = record.name
         run_id = escape(record.run_id)
+        label = escape(self._label(record.run_id))
         try:
             self.io.spawn(self.info.root, record.run_id, "start", None)
         except (Exception, KeyboardInterrupt) as exc:
             self._safe_note("spawn_failed", run_id=record.run_id, error=f"{type(exc).__name__}: {exc}")
             self.console.print(
-                f"[phil.error]Run {run_id} was created but its worker didn't start: {escape(str(exc))}. "
+                f"[phil.error]Run {label} was created but its worker didn't start: {escape(str(exc))}. "
                 f"Start it with `phil resume {run_id}`.[/]"
             )
             self._reset_goal()
@@ -1612,7 +1617,7 @@ class ChatController:
         self._lost, self._pause = False, None
         self._set_stage("running")
         self.console.print(
-            f"Run [phil.id]{run_id}[/] started in the background from {escape(base_sha[:7])}. "
+            f"Run [phil.id]{label}[/] started in the background from {escape(base_sha[:7])}. "
             f"This chat follows it; from another window use `phil attach {run_id}`."
         )
         self._follow()
@@ -1659,7 +1664,7 @@ class ChatController:
             watcher.start()
         except Exception as exc:
             self.console.print(
-                f"[phil.warn]Couldn't follow run {escape(run_id)} here ({escape(f'{type(exc).__name__}: {exc}')}); "
+                f"[phil.warn]Couldn't follow run {escape(self._label(run_id))} here ({escape(f'{type(exc).__name__}: {exc}')}); "
                 f"use `phil attach {escape(run_id)}`.[/]"
             )
             self._refresh_model()  # the stopped watcher's run no longer shows its model
@@ -1667,6 +1672,27 @@ class ChatController:
         self._watcher = watcher
         self._refresh_model()  # a followed run's model replaces a goal step's
         self._refresh_place()
+
+    def _run_name(self, run_id: str) -> str | None:
+        """The run's stored name; None when it has none or its row can't be read (not cached then)."""
+        if run_id not in self._run_names:
+            try:
+                record = get_run(self.conn, run_id)
+            except Exception:
+                logger.debug("couldn't read the name of %s", run_id, exc_info=True)
+                return None
+            self._run_names[run_id] = record.name if record is not None else None
+        return self._run_names[run_id]
+
+    def _label(self, run_id: str | None) -> str:
+        """The run as a printed line names it (spec 2026-10-16 §3.3): `name (id)` the first time in
+        this chat, then `name`; the ID for a run with no name."""
+        return self.state.mention(run_id, self._run_name(run_id)) if run_id else ""
+
+    def _short_label(self, run_id: str | None) -> str:
+        """The run's name (its ID when unnamed) for redrawn text, such as callout titles and the
+        folded prompt, which must not change between redraws (Ruling R5)."""
+        return label_for(run_id, self._run_name(run_id), first=False) if run_id else ""
 
     def _refresh_place(self) -> None:
         """The toolbar's repo and branch: the followed run's branch, else the repo's. Never raises."""
@@ -1715,7 +1741,7 @@ class ChatController:
         """EOF or /quit: the worker is independent, so say how to come back to a run still working."""
         if self._run_id is not None and self.stage in RUN_STAGES:
             self.console.print(
-                f"Run [phil.id]{escape(self._run_id)}[/] keeps working. "
+                f"Run [phil.id]{escape(self._label(self._run_id))}[/] keeps working. "
                 f"Reopen this chat with `phil --resume {escape(self.session.id)}`."
             )
 
@@ -1739,7 +1765,7 @@ class ChatController:
         self._refresh_model()  # the node may name the role at work
 
     def _on_budget_warning(self, data: dict) -> None:
-        line = budget_warning_line(self._run_id, **data)
+        line = budget_warning_line(self._label(self._run_id), **data)
         self.console.print(f"[phil.warn]{escape(line)}[/]")
 
     def _on_budget_raised(self, data: dict) -> None:
@@ -1797,7 +1823,7 @@ class ChatController:
         self.state.set_paused(True)
         self._safe_note("run_paused", run_id=self._run_id, escalation=escalation)
         self.console.print(
-            f"[phil.warn]⏸ {escape(self._run_id)} needs you: {escape(printable(escalation.get('summary', '')))}[/]"
+            f"[phil.warn]⏸ {escape(self._label(self._run_id))} needs you: {escape(printable(escalation.get('summary', '')))}[/]"
         )
         if self.stage in RUN_STAGES:
             self._set_stage("paused")
@@ -1813,8 +1839,8 @@ class ChatController:
         self._pause, self._answer_sent = None, False
         self.state.set_paused(False)
         if elsewhere:  # the open callout closes: say why it went away
-            self.console.print(Text(answered_elsewhere(self._run_id), style="phil.muted"))
-        self.console.print(f"[phil.muted]{escape(self._run_id)} resumed.[/]")
+            self.console.print(Text(answered_elsewhere(self._label(self._run_id)), style="phil.muted"))
+        self.console.print(f"[phil.muted]{escape(self._label(self._run_id))} resumed.[/]")
         if self.stage in ("paused", "hint"):
             self._set_stage("running")
 
@@ -1866,7 +1892,7 @@ class ChatController:
             self._safe_note("spawn_failed", run_id=run_id, error=f"{type(exc).__name__}: {exc}")
             self._set_stage("running")  # the pause stays pending: /answer asks it again
             self.console.print(
-                f"[phil.error]The resume worker for {escape(run_id)} didn't start: {escape(str(exc))}. "
+                f"[phil.error]The resume worker for {escape(self._label(run_id))} didn't start: {escape(str(exc))}. "
                 "Try /answer again.[/]"
             )
             return
@@ -1878,7 +1904,7 @@ class ChatController:
         rearm = getattr(self._watcher, "rearm", None)
         if rearm is not None:
             rearm()
-        self.console.print(f"Resuming [phil.id]{escape(run_id)}[/] with {escape(decision['action'])}.")
+        self.console.print(f"Resuming [phil.id]{escape(self._label(run_id))}[/] with {escape(decision['action'])}.")
 
     def _on_run_done(self, data: dict) -> None:
         # Settle the chat first, so a notice that fails to print can't leave it following a finished run.
@@ -1931,16 +1957,17 @@ class ChatController:
 
     def _run_notice(self, run_id: str, state: str, data: dict) -> None:
         rid = escape(run_id)
+        label = escape(self._label(run_id))
         summary = f"[phil.muted]Summary: {escape(str(data.get('summary', '')))}[/]"
         attention = data.get("needs_attention")
         if state in ("failed", "stopped"):
             failure = self._run_failure(run_id) if state == "failed" else None
             if failure is not None:  # the worker crashed: say what happened in plain words
-                self.console.print(f"[phil.warn]Run {rid} failed.[/]")
+                self.console.print(f"[phil.warn]Run {label} failed.[/]")
                 self.console.print(to_rich(failure_lines(failure, self.console.width)))
             else:
                 detail = f": {escape(attention)}" if attention else "."
-                self.console.print(f"[phil.warn]Run {rid} {escape(state)}{detail}[/]")
+                self.console.print(f"[phil.warn]Run {label} {escape(state)}{detail}[/]")
             self.console.print("Continue it with /resume.")
             log = ProjectPaths(self.info.slug).run_dir(run_id) / "logs" / "worker.log"
             self._notice_refs(run_id, first=Ref(label="worker log", path=str(log)) if failure else None)
@@ -1949,7 +1976,7 @@ class ChatController:
             tokens, cost = data.get("tokens", 0), data.get("cost_usd", 0.0)
             done, total = data.get("tasks_done", 0), data.get("tasks_total", 0)
             self.console.print(
-                f"[phil.gate.pass]✓ Run {rid} completed · {done}/{total} tasks · {tokens:,} tokens · ${cost:.2f}[/]"
+                f"[phil.gate.pass]✓ Run {label} completed · {done}/{total} tasks · {tokens:,} tokens · ${cost:.2f}[/]"
             )
             if attention:
                 self.console.print(f"[phil.warn]Open issues: {escape(attention)}[/]")
@@ -1960,11 +1987,11 @@ class ChatController:
             # "anyway". A finished run can't be resumed, so the chat then takes its next goal.
             count = self._blocking_count(run_id)
             issues = f"{count} blocking issue(s)" if count is not None else "blocking issues"
-            self.console.print(f"[phil.warn]Run {rid} finished with {issues} open; nothing to merge yet. See /show.[/]")
+            self.console.print(f"[phil.warn]Run {label} finished with {issues} open; nothing to merge yet. See /show.[/]")
             self.console.print(f"[phil.muted]Review it: phil diff {rid}[/]")
             self.console.print(summary, soft_wrap=True)  # the path stays whole
         else:
-            self.console.print(f"Run {rid} was {escape(state)}.")
+            self.console.print(f"Run {label} was {escape(state)}.")
             self.console.print(summary, soft_wrap=True)  # the path stays whole
         self._notice_refs(run_id)
 
@@ -2010,14 +2037,15 @@ class ChatController:
         self.state.set_live(None)  # the step it was running isn't running any more
         self.state.set_subs(())  # nor its sub-agents
         self.console.print(
-            f"[phil.warn]The worker for {escape(self._run_id)} stopped responding. Continue it with /resume.[/]"
+            f"[phil.warn]The worker for {escape(self._label(self._run_id))} stopped responding. Continue it with /resume.[/]"
         )
 
     def _on_watch_error(self, data: dict) -> None:
         # The watcher keeps polling and posts this once per failure streak; it recovers on its own.
         rid = escape(self._run_id)
+        label = escape(self._label(self._run_id))
         self.console.print(
-            f"[phil.muted]Live updates for {rid} are failing ({escape(str(data.get('error', '')))}); retrying. "
+            f"[phil.muted]Live updates for {label} are failing ({escape(str(data.get('error', '')))}); retrying. "
             f"`phil attach {rid}` also works.[/]"
         )
 
@@ -2049,7 +2077,7 @@ class ChatController:
         self.io.spawn(self.info.root, run_id, "continue", None)  # a failure is reported by the loop
         self._lost, self._done_seen = False, False
         self._set_stage("running")
-        self.console.print(f"Continuing [phil.id]{escape(run_id)}[/] from its last checkpoint.")
+        self.console.print(f"Continuing [phil.id]{escape(self._label(run_id))}[/] from its last checkpoint.")
         self._follow()
 
     # --- /show, /more, /park ----------------------------------------------------------------------
@@ -2384,7 +2412,7 @@ class ChatController:
             self.console.print(f"No commits on {escape(record.branch)}; nothing to open a PR for.")
             return
         anyway = " anyway" if force else ""
-        self.console.print(f"Open a PR for [phil.id]{escape(run_id)}[/] → {escape(record.base_branch)}{anyway}?")
+        self.console.print(f"Open a PR for [phil.id]{escape(self._label(run_id))}[/] → {escape(record.base_branch)}{anyway}?")
         self._pr_offer, self._pr_force = run_id, force
         self._set_stage("confirm_pr")
 
@@ -2408,7 +2436,7 @@ class ChatController:
         self._set_stage("idle")
 
     def _open_pr(self, run_id: str, *, force: bool = False) -> None:
-        self.console.print(f"Opening a PR for [phil.id]{escape(run_id)}[/]…")
+        self.console.print(f"Opening a PR for [phil.id]{escape(self._label(run_id))}[/]…")
         generation = self._generation
         self._pr_step_generation = generation
         self._step("Opening PR", generation)
@@ -2562,7 +2590,7 @@ class ChatController:
         stage = saved.get("stage", "idle")
         if self._run_id:
             self._set_stage("running")
-            self.console.print(f"[phil.muted]Following run {escape(self._run_id)}.[/]")
+            self.console.print(f"[phil.muted]Following run {escape(self._label(self._run_id))}.[/]")
             self._follow()
         elif stage in ("approval", "planning", "edit") and self._draft is not None:
             self._to_approval()

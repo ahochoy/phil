@@ -30,6 +30,7 @@ from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
+from phil.ui.runs import run_label
 from phil.ui.theme import make_console
 from tests.chat.conftest import ChatFactory, critique, goal, plan
 from tests.chat.test_controller import FULL_SCRIPT, run_chat, transcript
@@ -139,7 +140,7 @@ def test_type_folds_and_answer_reopens(controller_with_choose):
     pause_at = next(i for i, call in enumerate(calls) if call[0] == "choose" and call[2].kind == "pause")
     folded, reopened = calls[pause_at + 1], calls[pause_at + 2]
     assert folded[0] == "ask"
-    assert folded[1].startswith(f"⏸ {run_id} needs you · /answer to choose")
+    assert folded[1].startswith(f"⏸ {run_label(runs[0], first=False)} needs you · /answer to choose")
     assert reopened[0] == "choose" and reopened[2].kind == "pause"
     assert (run_id, "resume", {"action": "skip"}) in spawned
 
@@ -184,7 +185,7 @@ def test_answered_elsewhere_closes_the_callout(controller_with_choose):
         ["add subtract", "y", escalate(), to_state("running")], FULL_SCRIPT, calls=calls
     )
     run_id = runs[0].run_id
-    assert f"{run_id} was answered elsewhere." in text
+    assert f"{run_label(runs[0], first=False)} was answered elsewhere." in text
     assert calls[-2][0] == "choose" and calls[-2][2].kind == "pause"
     assert calls[-1] == ("ask", "you › ")
 
@@ -235,7 +236,7 @@ def test_a_crashed_run_shows_its_failure_callout(controller):
     # The chat follows its run (the harness's ManualWatcher); `crash` makes it fail as a worker would.
     text, spawned, runs, *_ = controller(["add subtract", "y", crash, refs], FULL_SCRIPT)
     run_id = runs[0].run_id
-    assert f"Run {run_id} failed." in text
+    assert f"Run {run_label(runs[0], first=False)} failed." in text
     assert "✗ Your openrouter account is out of credits." in text
     assert "Phil won't retry this. Add credits, then try again." in text
     assert "Continue it with /resume." in text
@@ -311,7 +312,7 @@ def test_a_refused_approval_prints_no_settled_line(controller_with_choose, calc_
 
 def test_an_approved_plan_settles_before_the_run_starts(controller_with_choose):
     text, spawned, runs, *_ = controller_with_choose(["add subtract", "y"], FULL_SCRIPT)
-    assert text.index("✓ Approve and run") < text.index(f"Run {runs[0].run_id} started")
+    assert text.index("✓ Approve and run") < text.index(f"Run {run_label(runs[0], first=True)} started")
 
 
 def test_each_answer_follows_its_question(controller_with_choose):
@@ -336,7 +337,7 @@ def test_retry_settles_when_the_resume_is_sent(controller_with_choose):
         ["add subtract", "y", escalate(), "retry", "try harder"], FULL_SCRIPT
     )
     assert text.count("✓ Retry the task") == 1
-    assert text.index("✓ Retry the task") < text.index(f"Resuming {runs[0].run_id} with retry.")
+    assert text.index("✓ Retry the task") < text.index(f"Resuming {run_label(runs[0], first=False)} with retry.")
     assert (runs[0].run_id, "resume", {"action": "retry", "hint": "try harder"}) in spawned
 
 
@@ -584,7 +585,7 @@ def test_answered_elsewhere_while_typing_the_hint(controller_with_choose):
         ["add subtract", "y", escalate(), "retry", to_state("running")], FULL_SCRIPT, calls=calls
     )
     run_id = runs[0].run_id
-    assert f"{run_id} was answered elsewhere." in text
+    assert f"{run_label(runs[0], first=False)} was answered elsewhere." in text
     assert calls[-1] == ("ask", "you › ")
     assert [mode for _, mode, _ in spawned] == ["start"]
 

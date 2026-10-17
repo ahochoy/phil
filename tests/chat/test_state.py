@@ -30,5 +30,13 @@ def test_state_is_thread_safe():
     assert state.view().btw_pending == 4000
 
 
+def test_a_chat_names_a_run_in_full_once():
+    state = ChatState()
+    assert state.mention("r-1", "map-section") == "map-section (r-1)"
+    assert state.mention("r-1", "map-section") == "map-section"
+    assert state.labelled_runs == {"r-1"}
+    assert state.mention("r-2", None) == "r-2"
+
+
 def test_events_default_to_never_stale():
     assert ChatEvent("btw_answer").generation == -1

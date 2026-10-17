@@ -1,4 +1,5 @@
 from phil.agents.fake import ScriptedAgentFactory
+from phil.contracts import Goal
 from phil.repo import resolve_repo
 from phil.run.launch import prepare_run
 from phil.run.worker import run_worker
@@ -20,6 +21,15 @@ def finished_run(calc_repo, *, depth: str | None = None):
     )
     run_worker(calc_repo, record.run_id, "start", factory=factory)
     return info, record, ProjectPaths(info.slug)
+
+
+def test_render_show_names_the_run_and_its_id(calc_repo):
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha, goal=Goal(objective="Add subtract to calc"))
+    paths = ProjectPaths(info.slug)
+    console = make_console(record=True, width=160)
+    render_show(console, connect(paths.db_path), paths, record.run_id)
+    assert f"Run subtract-calc ({record.run_id}) · CALC" in console.export_text()
 
 
 def test_show_refs_is_empty_for_a_run_with_no_files(calc_repo):

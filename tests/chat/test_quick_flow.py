@@ -11,7 +11,8 @@ from phil.store.db import connect
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
 from phil.repo import resolve_repo
-from tests.chat.conftest import critique, goal, plan
+from phil.ui.runs import run_label
+from tests.chat.conftest import critique, goal, label_of, plan
 from tests.chat.test_controller import FULL_SCRIPT, last_error, run_chat, transcript
 from tests.chat.test_controller_run import escalate, set_state
 from tests.chat.test_routing_flow import FIX_PROMPT, payloads, peek, route
@@ -447,7 +448,7 @@ def test_full_at_a_quick_runs_pause_resumes_it_with_full(calc_repo):
     assert prompts[2] == "FIX-001 failed 2 attempts — full / retry / abort › "
     assert MOVING in text
     # Said only once the resume was sent, so after "Resuming".
-    assert text.index(f"Resuming {run.run_id} with full.") < text.index(MOVING)
+    assert text.index(f"Resuming {run_label(run, first=False)} with full.") < text.index(MOVING)
 
 
 def test_the_aborted_quick_run_is_planned_fully_with_its_worklogs(calc_repo):
@@ -468,7 +469,7 @@ def test_the_aborted_quick_run_is_planned_fully_with_its_worklogs(calc_repo):
     assert factory.remaining() == {"route": 0, "intake": 0, "architect": 0, "critic": 0}
     assert APPROVE in prompts
     # The quick run's own completion notice and PR offer aren't shown: the move-to-full line, then planning.
-    assert f"Run {quick_id} was aborted." not in text and "Open a PR" not in text
+    assert f"Run {label_of(calc_repo, quick_id)} was aborted." not in text and "Open a PR" not in text
     assert text.index(MOVING) < text.index("Planning…") < text.index("Plan CALC v1")
     full_id = spawned[-1][0]
     assert [(m, d) for _, m, d in spawned] == [("start", None), ("resume", {"action": "full"}), ("start", None)]
@@ -556,7 +557,7 @@ def test_abort_at_a_quick_runs_pause_is_not_moved_to_full(calc_repo):
     )
     quick_id = spawned[0][0]
     assert MOVING not in text and "Planning…" not in text
-    assert f"Run {quick_id} was aborted." in text
+    assert f"Run {label_of(calc_repo, quick_id)} was aborted." in text
     assert factory.remaining()["architect"] == 1
 
 
@@ -573,7 +574,7 @@ def test_full_after_the_run_moved_on_is_forgotten(calc_repo):
     )
     assert "The run moved on; nothing to answer." in text
     assert [m for _, m, _ in spawned] == ["start"]
-    assert f"Run {spawned[0][0]} was aborted." in text and "Planning…" not in text
+    assert f"Run {label_of(calc_repo, spawned[0][0])} was aborted." in text and "Planning…" not in text
 
 
 def test_the_full_paths_approved_run_records_full(calc_repo):
