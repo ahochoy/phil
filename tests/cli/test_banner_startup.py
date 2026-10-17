@@ -11,7 +11,7 @@ from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import create_run, update_run
-from phil.ui.banner import FIRST_TIPS, TIPS
+from phil.ui.banner import FIRST_TIPS
 from tests.cli.test_chat_command import _FakeTerminal, _plain
 
 runner = CliRunner()
@@ -41,7 +41,7 @@ def test_chat_opens_with_the_card_and_no_help_paragraph(calc_repo, monkeypatch):
     box = [line for line in output.splitlines() if line.startswith("│")]
     assert any("Phil v" in line for line in box)
     assert any("calc" in line for line in box)
-    assert TIPS in output
+    assert "Type a goal to start" not in output
     assert "Commands: /runs" not in output
 
 
@@ -50,7 +50,7 @@ def test_piped_start_prints_plain_facts(calc_repo):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
     assert result.exit_code == 0, result.output
     assert "calc @ main" in result.output
-    assert TIPS in result.output
+    assert "Type a goal to start" not in result.output
     assert not any(ch in result.output for ch in ("╭", "│", "\x1b"))
 
 
@@ -91,7 +91,7 @@ def test_a_failing_render_falls_back_to_plain_lines(calc_repo, monkeypatch):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="", env={"COLUMNS": "120"})
     assert result.exit_code == 0, result.output
     output = _plain(result.output)
-    assert "calc @ main" in output and TIPS in output
+    assert "calc @ main" in output and "Type a goal to start" not in output
     assert not any(line.startswith("│") for line in output.splitlines())
     assert "you › " in output
 
@@ -133,7 +133,7 @@ def test_a_saved_chat_with_no_runs_is_not_a_first_visit(calc_repo):
     ChatSession.create(paths)
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
     assert result.exit_code == 0, result.output
-    assert TIPS in result.output
+    assert "Type a goal to start" not in result.output
     assert FIRST_TIPS not in result.output
 
 
@@ -155,7 +155,45 @@ def test_first_time_tips(calc_repo):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
     assert result.exit_code == 0, result.output
     assert FIRST_TIPS in result.output
-    assert TIPS not in result.output
+
+
+def test_the_open_chats_list_is_the_only_mention_of_its_runs(calc_repo, monkeypatch):
+    paths = _add_run(calc_repo, "r-9001", "running", "failed")
+    _open_chat(paths, 1)  # its run is r-9001
+    _tty(monkeypatch)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="\n", env={"COLUMNS": "120"})
+    assert result.exit_code == 0, result.output
+    output = _plain(result.output)
+    assert "Open chats:" in output
+    assert "1. r-9001 · run failed · (no goal)" in output  # an old, unnamed run shows by its ID
+    assert "phil resume r-9001" not in output  # no separate run line
+    assert "other open chat" not in output
+
+
+def test_a_run_outside_the_listed_chats_keeps_its_labelled_run_line(calc_repo, monkeypatch):
+    paths = _add_run(calc_repo, "r-9001", "running", "completed")
+    _open_chat(paths, 1)  # its run is r-9001
+    conn = connect(paths.db_path)
+    create_run(conn, run_id="r-0007", keyword="calc", base_sha="0" * 40, worktree=paths.project_dir / "wt",
+               tasks_total=1, name="nightly-docs")  # e.g. started with `phil run`: no chat holds it
+    update_run(conn, "r-0007", state="running")
+    update_run(conn, "r-0007", state="failed")
+    _tty(monkeypatch)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="\n", env={"COLUMNS": "120"})
+    assert result.exit_code == 0, result.output
+    assert "nightly-docs (r-0007) failed · phil resume r-0007" in _plain(result.output)
+
+
+def test_the_banner_has_no_parked_count(calc_repo):
+    _add_run(calc_repo, "r-0001", "running", "completed")
+    from phil.contracts import Ref
+    from phil.store.parked import park
+
+    park(connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path), raised_by="user", note="later",
+         why_not_now="test", source=Ref(label="t", path="t"), run_id=None)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
+    assert result.exit_code == 0, result.output
+    assert " · 1 parked" not in result.output  # the banner's old form; the status bar keeps its own count
 
 
 def test_version_falls_back_to_dev(calc_repo, monkeypatch):

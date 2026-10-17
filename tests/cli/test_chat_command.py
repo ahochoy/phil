@@ -200,8 +200,8 @@ def test_tty_lists_open_chats_and_reopens_one(calc_repo, monkeypatch):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="1\n")
     assert result.exit_code == 0, result.output
     output = _plain(result.output)  # a TTY chat forces colour
-    assert f"1. {chat_id} · " in output
-    assert " · run r-" in output
+    [run] = list_runs(connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path))
+    assert f"1. {run.name} · run " in output  # label · run state · goal; no chat id
     assert f"Reopened {chat_id}" in output
     [terminal] = made
     assert terminal.closed
@@ -315,6 +315,7 @@ def test_the_open_chats_list_marks_chats_open_elsewhere(calc_repo, monkeypatch):
     monkeypatch.setattr(cli, "_terminal", _FakeTerminal)
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="1\n")
     output = " ".join(_plain(result.output).split())
-    assert f"1. {chat_id} · " in output and "open elsewhere" in output
+    [run] = list_runs(connect(ProjectPaths(resolve_repo(calc_repo).slug).db_path))
+    assert f"1. {run.name} · run " in output and "open elsewhere" in output
     assert result.exit_code == 1
     assert "already open in another window" in output
