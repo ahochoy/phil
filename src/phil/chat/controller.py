@@ -55,6 +55,7 @@ from phil.chat.events import ChatEvent
 from phil.chat.overview import repo_overview
 from phil.chat.planning import Planner, PlanDraft, PlanningBudgetExceeded, intake, quick_plan
 from phil.chat.session import ChatSession
+from phil.chat.session import failed_goal as _failed_goal
 from phil.chat.snapshot import export_tree, export_worktree
 from phil.chat.state import ChatState, LiveStep, RunView, SideJob, SubAgent
 from phil.chat.watcher import RunWatcher
@@ -242,6 +243,7 @@ class ChatIO:
     submit: Callable[[Callable[[], None]], object] = lambda job: job()  # run a job; inline by default
     # (prompt, decision) -> the picked option's answer | TYPE | WAKE | None (EOF); None: no menu
     choose: Callable[[str, Decision], object] | None = None
+    prefill: Callable[[str], None] = lambda text: None  # put text in the next prompt, to edit or send
 
 
 class ChatController:
@@ -328,6 +330,9 @@ class ChatController:
         self._hidden = 0  # tool steps (end records) the filter has hidden since it was set
         self._base_sha: str | None = None
         self._done_seen = False
+        # The goal an error stopped before it had a plan or an answer: {"text", "objective", "phase"}.
+        # Saved, so the open-chats list shows it and a reopened chat puts it back in the prompt.
+        self._failed_goal: dict | None = None
         self._replacement = ""
         self._replacement_forced: str | None = None  # a replacement typed with /ask, /quick or /full
         self._held: list[ChatEvent] = []  # goal-job events that arrived during confirm_replace
@@ -689,6 +694,7 @@ class ChatController:
                     "base_sha": self._base_sha,
                     "explicit_base_sha": self._explicit_base_sha,  # `--base`; None follows HEAD
                     "done_seen": self._done_seen,
+                    "failed_goal": self._failed_goal,
                     # Agent-call numbers name the chat's artifacts; a reopened chat continues from them.
                     "counters": {
                         "intake": self._intake_calls,
@@ -974,6 +980,7 @@ class ChatController:
             self._forget_run()
         self._next_generation()
         self._reset_goal()
+        self._failed_goal = None  # a goal that starts replaces the one an error stopped
         self._skip_design = skip_design
         self._goal_mark = last_telemetry_id(self.conn)
         self._goal_text = text
@@ -1088,6 +1095,7 @@ class ChatController:
 
     def _on_answer_failed(self, data: dict) -> None:
         self._failed(data["error"], data.get("failure"))  # notes the error too
+        self._keep_failed_goal("answer")
         self._reset_goal()
         self._set_stage("idle")
 
@@ -1430,8 +1438,15 @@ class ChatController:
             self._revising = False
             self._set_stage("approval")  # keep the previous draft
         else:
+            self._keep_failed_goal("planning")
             self._reset_goal()
             self._set_stage("idle")
+
+    def _keep_failed_goal(self, phase: str) -> None:
+        """Remember the goal an error just stopped (`phase`: "planning" or "answer"), before it's reset."""
+        if self._goal_text:
+            objective = self._goal.objective if self._goal else None
+            self._failed_goal = {"text": self._goal_text, "objective": objective, "phase": phase}
 
     def _confirm_replace(self, text: str) -> None:
         if text.lower() in ("y", "yes"):
@@ -2692,7 +2707,16 @@ class ChatController:
         else:
             self._reset_goal()
             self._set_stage("idle")
-            if stage != "idle":
+            self._failed_goal = _failed_goal(saved.get("failed_goal"))
+            if self._failed_goal is not None:
+                shown = self._failed_goal["objective"] or self._failed_goal["text"]
+                what = "Planning" if self._failed_goal["phase"] == "planning" else "Answering"
+                self._say(
+                    f"{what} stopped with an error last time: {one_line(shown)}",
+                    "It's back in the prompt: press Enter to try again, or edit it first.",
+                )
+                self.io.prefill(self._failed_goal["text"])
+            elif stage != "idle":
                 self.console.print(
                     "The chat was closed before a plan was ready; send the goal again or type a new one."
                 )

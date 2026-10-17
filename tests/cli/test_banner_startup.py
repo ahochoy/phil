@@ -165,9 +165,36 @@ def test_the_open_chats_list_is_the_only_mention_of_its_runs(calc_repo, monkeypa
     assert result.exit_code == 0, result.output
     output = _plain(result.output)
     assert "Open chats:" in output
-    assert "1. r-9001 · run failed · (no goal)" in output  # an old, unnamed run shows by its ID
+    assert "1. r-9001 · run failed · just now · (no goal)" in output  # an old, unnamed run shows by its ID
     assert "phil resume r-9001" not in output  # no separate run line
     assert "other open chat" not in output
+
+
+def test_each_open_chat_row_says_what_it_waits_on_and_how_long_ago(calc_repo):
+    from datetime import UTC, timedelta
+
+    from phil.chat.session import ChatSummary
+
+    now = datetime(2026, 10, 17, 23, 39, tzinfo=UTC)
+    rows = [
+        ChatSummary("c-1", "Add a CTA section", "idle", "r-4f1c", "failed", active_at=now - timedelta(days=12)),
+        ChatSummary("c-2", "Add an about the owner section", "idle", None, None,
+                    active_at=now - timedelta(minutes=70), failed="planning"),
+        ChatSummary("c-3", "Explain the build", "idle", None, None, active_at=now - timedelta(hours=26),
+                    failed="answer"),
+        ChatSummary("c-4", "Add pow", "approval", None, None, active_at=now - timedelta(seconds=5)),
+        ChatSummary("c-5", "Add divide", "running", "r-0001", "running", open_elsewhere=True,
+                    active_at=now - timedelta(minutes=2), run_name="divide-op"),
+        ChatSummary("c-6", None, "idle", "r-0002", None),  # an unreadable time leaves the age out
+    ]
+    assert [cli._open_chat_line(n, chat, 200, now=now).plain for n, chat in enumerate(rows, 1)] == [
+        "1. r-4f1c · run failed · 12 days ago · Add a CTA section",
+        "2. planning failed · 1 hour ago · Add an about the owner section",
+        "3. answer failed · yesterday · Explain the build",
+        "4. plan to approve · just now · Add pow",
+        "5. divide-op · run running · 2 minutes ago · open elsewhere · Add divide",
+        "6. r-0002 · run unknown · (no goal)",
+    ]
 
 
 def test_a_run_outside_the_listed_chats_keeps_its_labelled_run_line(calc_repo, monkeypatch):

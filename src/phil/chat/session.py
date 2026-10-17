@@ -6,7 +6,7 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from phil import platform
@@ -31,6 +31,24 @@ class ChatSummary:
     run_state: str | None
     open_elsewhere: bool = False
     run_name: str | None = None
+    active_at: datetime | None = None  # when the chat last saved its state (aware, UTC)
+    failed: str | None = None  # "planning" or "answer": an error stopped the chat's goal there
+
+
+FAILED_PHASES = ("planning", "answer")
+
+
+def failed_goal(value: object) -> dict | None:
+    """A saved `failed_goal` ({"text", "objective", "phase"}), or None when there's none or it doesn't
+    read as one (hand-edited, or from a broken write)."""
+    if not isinstance(value, dict):
+        return None
+    text, objective, phase = value.get("text"), value.get("objective"), value.get("phase")
+    if not isinstance(text, str) or not text.strip() or phase not in FAILED_PHASES:
+        return None
+    if objective is not None and not isinstance(objective, str):
+        return None
+    return {"text": text, "objective": objective or None, "phase": phase}
 
 
 class ChatLocked(Exception):
@@ -164,15 +182,29 @@ def list_open_chats(paths: ProjectPaths, conn: sqlite3.Connection) -> list[ChatS
         run_id = state.get("run_id")
         open_run = bool(run_id) and not state.get("done_seen", False)
         open_plan = state.get("stage") == "approval" and bool(state.get("plan"))
-        if not (open_run or open_plan):
+        failed = None if (open_run or open_plan) else failed_goal(state.get("failed_goal"))
+        if not (open_run or open_plan or failed):
             continue
         record = get_run(conn, run_id) if run_id else None
         goal = state.get("goal") if isinstance(state.get("goal"), dict) else {}
+        objective = goal.get("objective")
+        if failed is not None:
+            objective = failed["objective"] or failed["text"]
         found.append(
             ChatSummary(
-                directory.name, goal.get("objective"), state.get("stage", "idle"), run_id,
+                directory.name, objective, state.get("stage", "idle"), run_id,
                 record.state if record else None, open_elsewhere=lock_holder(directory) is not None,
-                run_name=record.name if record else None,
+                run_name=record.name if record else None, active_at=_saved_at(directory),
+                failed=failed["phase"] if failed else None,
             )
         )
+    # Most recently active first; a chat reopened today comes before one started yesterday.
+    found.sort(key=lambda chat: (chat.active_at or datetime.min.replace(tzinfo=UTC), chat.id), reverse=True)
     return found
+
+
+def _saved_at(directory: Path) -> datetime | None:
+    try:
+        return datetime.fromtimestamp((directory / STATE_FILE).stat().st_mtime, UTC)
+    except OSError:
+        return None
