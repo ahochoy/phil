@@ -563,6 +563,8 @@ class ChatController:
             index = len(self._replies)
             question = self._pending[index]
             decision = question_decision(index + 1, len(self._pending), question.text, question.why, question.options)
+            if decision is None:  # a free-text question: typed at the prompt, no callout (R20)
+                return None
             return self._with_details(decision, [question.why])
         if stage == "choose_approach" and not self._describing and self._approach_order:
             return approach_decision([(a.name, a.summary) for a in self._approach_order])
@@ -712,7 +714,9 @@ class ChatController:
                         continue
                     if isinstance(raw, str):
                         option = next((o for o in decision.options if o.answer == raw), None)
-                        if option is not None and not option.typed:  # a typed option's answer comes next
+                        # A clarifying question's answer leaves its record line instead (_answers; R21).
+                        recorded = option is not None and self.stage == "questions" and option.answer != "go"
+                        if option is not None and not option.typed and not recorded:  # a typed option's answer comes next
                             settled = settled_line(decision, option)
                             # An approved plan settles once its run starts; a pause once its resume is sent.
                             waits = decision.kind in ("pause", "approval") or (
@@ -1225,9 +1229,12 @@ class ChatController:
         self._plan(self._goal, show_goal=False)
 
     def _ask_next(self) -> None:
-        """Print the next question: its number, text, why, and numbered options plus "Something else"
-        (the options only without a menu: with one, its callout lists them)."""
+        """Print the next question when no callout asks it: its number, text, why, and numbered
+        options plus "Something else". With a menu, a question with options is asked by its callout
+        alone (spec 2026-10-16 §6.1); a free-text question has no callout, so it still prints (R20)."""
         question = self._pending[len(self._replies)]
+        if self.io.choose is not None and question.options:
+            return
         self.console.print(f"[phil.agent]{len(self._replies) + 1}. {escape(_clip(question.text))}[/]")
         if question.why:
             self.console.print(f"   [phil.muted]{escape(_clip(question.why))}[/]")
@@ -1254,6 +1261,8 @@ class ChatController:
         answer = self._pick(question, text)
         if answer is None:
             return
+        if self.io.choose is not None and question.options:
+            self._record_answer(question.text, answer)  # its callout is gone: one line says what was chosen
         self._typing_other = False
         self._replies.append(f"{question.text}: {answer}")
         self._recent.append(f"you: {answer[:TURN_CHARS]}")
@@ -1261,6 +1270,11 @@ class ChatController:
             self._ask_next()
         else:
             self._finish_questions()
+
+    def _record_answer(self, question: str, answer: str) -> None:
+        """`? question → answer`, muted, cut to the width with … (spec 2026-10-16 §6.1; R22)."""
+        line = printable(f"? {question} → {answer}")
+        self.console.print(Text(_fit(line, self.console.width), style="phil.muted"))
 
     def _pick(self, question: Question, text: str) -> str | None:
         """The answer `text` gives `question`, or None while it still needs one (the "Something else"

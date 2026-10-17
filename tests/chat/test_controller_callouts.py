@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
+from rich.cells import cell_len
 
 from phil.chat.controller import MOVING_TO_FULL, OTHER_PROMPT, TYPE, WAKE, ChatController, ChatIO
 from phil.chat.decision import (
@@ -165,16 +166,56 @@ def test_a_typed_option_goes_to_its_typed_prompt(controller_with_choose):
     assert seen["clarifications"] == ["Which module?: lib.py"]
 
 
-def test_with_a_menu_the_printed_option_lists_are_left_to_the_callout(controller_with_choose):
-    """With `choose`, a question prints its text but not its numbered options (without it, the list
-    still prints: test_questions_flow); each pick leaves a settled line."""
+def test_with_a_menu_a_question_shows_only_in_its_callout(controller_with_choose):
+    """With `choose`, the callout alone asks (no printed copy; without it the question still prints:
+    test_questions_flow); the answer leaves one record line instead of an "Answer:" line."""
+    question = Question(text="Which module?", options=["calc.py", "ops.py"], why="It decides the file.")
+    scripts = {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()], "critic": [critique()]}
+    text, *_ = controller_with_choose(["add subtract", "1", "n"], scripts)
+    assert "1. Which module?" not in text and "It decides the file." not in text
+    assert "1. calc.py" not in text and "Something else" not in text
+    assert "? Which module? → calc.py" in text
+    assert "Answer: calc.py" not in text
+    assert "· Cancel" in text  # other decisions keep their settled lines
+
+
+def test_typed_text_is_recorded_as_typed(controller_with_choose):
     question = Question(text="Which module?", options=["calc.py", "ops.py"])
-    scripts = lambda: {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()],  # noqa: E731
-                       "critic": [critique()]}
-    menu_text, *_ = controller_with_choose(["add subtract", "1", "n"], scripts())
-    assert "1. Which module?" in menu_text
-    assert "1. calc.py" not in menu_text and "Something else" not in menu_text
-    assert "Answer: calc.py" in menu_text and "· Cancel" in menu_text  # the settled lines
+    scripts = {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()], "critic": [critique()]}
+    text, *_ = controller_with_choose(["add subtract", "3", "lib/ops_extra.py", "n"], scripts)
+    assert "? Which module? → lib/ops_extra.py" in text
+
+
+def test_a_long_record_line_is_cut_to_the_width(controller_with_choose):
+    question = Question(text="Which module?", options=["calc.py", "ops.py"])
+    scripts = {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()], "critic": [critique()]}
+    long = "put it in " + "a very long place " * 12
+    text, *_ = controller_with_choose(["add subtract", "3", long, "n"], scripts)
+    [line] = [line for line in text.splitlines() if line.startswith("? Which module?")]
+    assert line.endswith("…") and cell_len(line) <= 119
+
+
+def test_plan_with_what_you_know_keeps_its_settled_line(controller_with_choose):
+    question = Question(text="Which module?", options=["calc.py", "ops.py"])
+    scripts = {"intake": [goal(open_questions=[question])], "architect": [plan()], "critic": [critique()]}
+    text, *_ = controller_with_choose(["add subtract", "go", "n"], scripts)
+    assert "Answer: Plan with what you know" in text and "? Which module? →" not in text
+
+
+def test_a_free_text_question_has_no_callout(calc_repo):
+    controller = bare_controller(calc_repo)
+    controller.io.choose = lambda prompt, decision: None
+    controller._pending, controller._replies = [Question(text="Anything else to know?")], []
+    controller._set_stage("questions")
+    assert controller._build_decision() is None  # today: AttributeError from _with_details(None)
+
+
+def test_a_free_text_question_with_a_menu_prints_once(controller_with_choose):
+    question = Question(text="Anything else to know?")
+    scripts = {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()], "critic": [critique()]}
+    text, *_ = controller_with_choose(["add subtract", "nothing else", "n"], scripts)
+    assert text.count("Anything else to know?") == 1
+    assert "→ nothing else" not in text
 
 
 def test_answered_elsewhere_closes_the_callout(controller_with_choose):
@@ -316,14 +357,14 @@ def test_an_approved_plan_settles_before_the_run_starts(controller_with_choose):
 
 
 def test_each_answer_follows_its_question(controller_with_choose):
-    """Two questions answered through choose: question 1, its Answer:, question 2, its Answer:."""
+    """Two questions answered through choose: each leaves its record line, in order."""
     first = Question(text="Which module?", options=["calc.py", "ops.py"], why="It decides the file.")
     second = Question(text="Which name?", options=["minus", "subtract"])
     text, *_ = controller_with_choose(
         ["add subtract", "1", "1", "n"],
         {"intake": [goal(open_questions=[first, second]), goal()], "architect": [plan()], "critic": [critique()]},
     )
-    order = [text.index(s) for s in ("1. Which module?", "Answer: calc.py", "2. Which name?", "Answer: minus")]
+    order = [text.index(s) for s in ("? Which module? → calc.py", "? Which name? → minus")]
     assert order == sorted(order), text
 
 
