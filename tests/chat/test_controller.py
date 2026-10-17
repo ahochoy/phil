@@ -295,7 +295,7 @@ def test_slash_command_failure_does_not_crash_the_repl(calc_repo, monkeypatch):
     text, spawned, runs, *_ = run_chat(calc_repo, ["/runs", "/more 1", "/help"], {})
     assert "✗ Something went wrong inside Phil (RuntimeError)." in text
     assert "db exploded" in text  # the raw error, behind /more 1
-    assert "Commands: /runs" in text  # /help printed after recovering: the loop kept going
+    assert "Commands:\n  /runs" in text  # /help printed after recovering: the loop kept going
 
 
 def test_go_answer_is_recorded_and_open_questions_noted(calc_repo):
@@ -488,7 +488,7 @@ def test_prepare_failure_is_noted_and_reported(calc_repo, monkeypatch):
     )
     assert "Details: /more 1" in text  # a failure callout
     assert "RuntimeError: disk full" in last_error(calc_repo)
-    assert "Commands: /runs" in text
+    assert "Commands:\n  /runs" in text
     kinds = [e["kind"] for e in transcript(calc_repo)]
     assert "start_failed" in kinds and "approved" not in kinds
     assert spawned == [] and runs == []

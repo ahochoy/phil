@@ -432,7 +432,7 @@ def test_help_lists_feed(controller_with_run):
     controller = controller_with_run
     controller._command("/help")
     shown = " ".join(controller.console.export_text().split())  # wherever the help text wraps
-    assert "/feed <agent> (show one agent's lines; /feed to show all)" in shown
+    assert "/feed <agent> show one agent's lines; /feed to show all" in shown
     assert "Ctrl+Enter or Option/Alt+Enter starts a new line" in shown
 
 

@@ -893,8 +893,22 @@ def test_park_updates_the_parked_count(calc_repo):
 
 def test_help_lists_the_new_commands(calc_repo):
     text, *_ = run_chat(calc_repo, ["/help"], {})
-    text = " ".join(text.split())  # the help line wraps
+    text = " ".join(text.split())
     assert "/show" in text and "/more <n>" in text and "/park <note>" in text
+
+
+def test_help_puts_each_command_on_its_own_line(calc_repo):
+    text, *_ = run_chat(calc_repo, ["/help"], {})
+    lines = [line.strip() for line in text.splitlines()]
+    commands = [line for line in lines[lines.index("Commands:") + 1:] if line.startswith("/")]
+    assert [line.split("  ")[0] for line in commands] == [
+        "/runs", "/btw <question>", "/answer", "/resume", "/show", "/more <n>", "/more #<step>",
+        "/feed <agent>", "/park <note>", "/unpark <id…> | all", "/permissions", "/memory",
+        "/remember <fact>", "/forget <n>", "/help", "/quit",
+    ]
+    assert any(line.startswith("/btw <question>") and line.endswith("ask while work continues") for line in commands)
+    intro = " ".join(lines[: lines.index("Commands:")])
+    assert "Type a goal or a question." in intro and "Ctrl+Enter or Option/Alt+Enter starts a new line" in intro
 
 
 def test_inside_snapshot_reads_a_leading_slash_as_the_snapshot_root(tmp_path):
