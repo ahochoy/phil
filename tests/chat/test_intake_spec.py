@@ -30,6 +30,17 @@ def test_goal_task_defaults_to_none():
     assert Goal(objective="Add a map").task is None
 
 
+def test_goal_name_is_optional_so_old_outputs_still_validate():
+    assert Goal(objective="Add a map").name is None
+    assert Goal.model_validate({"objective": "Add a map"}).name is None
+    assert Goal(objective="Add a map", name="map-section").name == "map-section"
+
+
+def test_intake_prompt_asks_for_a_name():
+    prompt = load_prompt(get_spec("intake"))
+    assert "- `name`: 2 to 3 lowercase keywords naming the goal, joined by hyphens" in prompt
+
+
 def test_chat_and_run_roles_cover_all_roles_except_the_classifier_answerer_designer_and_memory():
     # None of the four is a checked chat or run role: routing falls back to the low model, then to
     # intake, the answerer and the memory keeper fall back to the orchestrator's model, and the
