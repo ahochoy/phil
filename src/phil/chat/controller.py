@@ -103,6 +103,7 @@ from phil.ui.brief_view import render_brief
 from phil.ui.callout import failure_lines, overflows, to_rich
 from phil.ui.bursts import FeedItem, one_line
 from phil.ui.feed_view import FeedRenderer
+from phil.ui.links import opened_pr_line
 from phil.ui.plan_view import _clip, render_goal, render_plan
 from phil.ui.runs import label_for
 from phil.ui.runs_view import render_runs
@@ -119,7 +120,8 @@ PLAN_NOW = "go"  # the answer that plans with what's known (decision.py's "Plan 
 OTHER_PROMPT = "Your answer › "  # after picking "Something else"
 HELP = (
     "Type a goal or a question. Prefix with /ask, /quick or /full to choose the path "
-    "(/full! plans fully without design proposals). "
+    "(/full! plans fully without design proposals). Enter sends; Ctrl+Enter or Option/Alt+Enter "
+    "starts a new line. "
     "Commands: /runs, /btw <question> (ask while work continues), "
     "/answer (a paused run's question), /resume (a failed or stopped run), /show (the chat's run: usage "
     "and numbered details), /more <n> (print detail n), /more #<step> (a feed step's detail), "
@@ -2528,7 +2530,7 @@ class ChatController:
     def _on_pr_opened(self, data: dict) -> None:
         self._clear_pr_step()
         self._safe_note("pr_opened", run_id=data["run_id"], number=data["number"], url=data["url"])
-        self.console.print(f"Opened PR #{data['number']}: {escape(str(data['url']))}")
+        self.console.print(opened_pr_line(data["number"], str(data["url"])), soft_wrap=True)
 
     def _on_pr_open_failed(self, data: dict) -> None:
         self._clear_pr_step()
