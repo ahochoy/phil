@@ -83,6 +83,47 @@ def test_terminal_io_prompt_wake_keeps_typed_text_and_eof():
             terminal.close()
 
 
+@pytest.mark.parametrize("newline", [
+    "\x1b\r",          # Option/Alt+Enter: Esc, then Enter (every terminal)
+    "\x1b[13;5u",      # Ctrl+Enter, as terminals reporting modifiers in CSI u send it (Orca, kitty…)
+    "\x1b[13;2u",      # Shift+Enter, the same way
+    "\x1b[27;5;13~",   # Ctrl+Enter under xterm's modifyOtherKeys
+    "\x1b[27;2;13~",   # Shift+Enter under xterm's modifyOtherKeys
+])
+def test_a_modified_enter_starts_a_new_line_and_enter_sends(newline):
+    with create_pipe_input() as pipe:
+        terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
+        io_ = terminal.chat_io(lambda *a: None)
+        try:
+            pipe.send_text(f"first{newline}second\r")
+            assert _ask(io_) == "first\nsecond"
+        finally:
+            terminal.close()
+
+
+def test_pasted_lines_stay_one_message():
+    with create_pipe_input() as pipe:
+        terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
+        try:
+            pipe.send_text("\x1b[200~add a CTA\nbelow the form\x1b[201~\r")  # a bracketed paste, then Enter
+            assert _ask(terminal.chat_io(lambda *a: None)) == "add a CTA\nbelow the form"
+        finally:
+            terminal.close()
+
+
+def test_a_menu_still_takes_esc_as_type_instead():
+    """The new-line keys belong to the typed prompt; the menu's lone Esc is unchanged."""
+    with create_pipe_input() as pipe:
+        terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
+        try:
+            pipe.send_text("\x1b")
+            assert terminal.choose("› ", D) is TYPE
+            pipe.send_text("still one\r")
+            assert _ask(terminal.chat_io(lambda *a: None)) == "still one"
+        finally:
+            terminal.close()
+
+
 def test_a_wake_between_prompts_is_not_lost():
     with create_pipe_input() as pipe:
         terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
@@ -480,10 +521,11 @@ def test_a_lone_escape_is_flushed_quickly():
 
 
 def test_ctrl_c_in_the_menu_leaves_a_normal_prompt(terminal_io, pipe):
+    typing = terminal_io.session.key_bindings
     pipe.send_text("\x03")
     with pytest.raises(KeyboardInterrupt):
         _choose(terminal_io, D)
-    assert terminal_io.session.key_bindings is None  # no menu bindings left behind
+    assert terminal_io.session.key_bindings is typing  # the typed prompt's keys, no menu bindings left behind
     assert not terminal_io.session.default_buffer.read_only()
     io_ = terminal_io.chat_io(lambda *a: None)
     pipe.send_text("abc\n")

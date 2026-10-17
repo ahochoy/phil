@@ -44,6 +44,7 @@ from phil.text import printable
 from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, get_run, list_runs, update_run
 from phil.tomlw import toml_value
+from phil.ui.links import opened_pr_line
 from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
 
@@ -1164,4 +1165,4 @@ def pr_command(
     except (PublishRefused, PublishError) as exc:
         console.print(f"[phil.error]{escape(str(exc))}[/]")
         raise typer.Exit(1) from exc
-    console.print(f"Opened PR #{record.pr_number}: {escape(record.pr_url)}")
+    console.print(opened_pr_line(record.pr_number, record.pr_url), soft_wrap=True)

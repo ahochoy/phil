@@ -13,6 +13,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -27,6 +28,26 @@ from phil.ui.theme import prompt_toolkit_styles
 
 MAX_JOBS = 3
 Spawn = Callable[[Path, str, str, dict | None], object]
+
+# Ctrl+Enter and Shift+Enter (and both), as terminals that report modifiers send them: CSI u
+# (Orca, kitty, WezTerm…) and xterm's modifyOtherKeys. prompt_toolkit reads the second kind as a
+# plain Enter and doesn't know the first, so both are read as Alt+Enter (Esc, Enter): a new line.
+NEWLINE_SEQUENCES = tuple(
+    sequence for modifier in (2, 5, 6) for sequence in (f"\x1b[13;{modifier}u", f"\x1b[27;{modifier};13~")
+)
+for _sequence in NEWLINE_SEQUENCES:
+    ANSI_SEQUENCES[_sequence] = (Keys.Escape, Keys.ControlM)
+
+
+def _typing_bindings() -> KeyBindings:
+    """The typed prompt's keys: Enter sends; Alt+Enter (and the keys read as it) starts a new line."""
+    bindings = KeyBindings()
+
+    @bindings.add("escape", "enter")
+    def _newline(event) -> None:
+        event.current_buffer.insert_text("\n")
+
+    return bindings
 
 
 def prompt_style() -> Style:
@@ -97,7 +118,8 @@ class TerminalIO:
         self._live_row = live_row
         self.session: PromptSession = PromptSession(
             bottom_toolbar=self._render_toolbar, refresh_interval=0.5, input=input, output=output,
-            style=prompt_style(),
+            style=prompt_style(), key_bindings=_typing_bindings(),
+            prompt_continuation=lambda width, line_number, wrap_count: " " * width,  # under the text
         )
         self._lock = threading.Lock()
         self._active = False  # a prompt is running (between its pre_run and its return)

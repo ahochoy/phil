@@ -243,6 +243,9 @@ a dot per task, and the run's tokens and cost against its budget (`$0.41/$2.00`,
 and red at 100%); on a narrow terminal it drops the least important detail first.
 The prompt stays usable while a goal is being planned or a run works in the background:
 
+- Enter sends what you typed. Ctrl+Enter (where the terminal reports it, as Orca, kitty and
+  WezTerm do) or Option/Alt+Enter (any terminal) starts a new line instead, so a goal can span
+  several lines; text pasted with line breaks stays one message.
 - Questions, plan approval, a paused run's choices and the other yes/no offers appear as a callout
   box you answer with ↑/↓ and Enter (or a number); a one-line note then records what you picked.
   Press Esc to type instead, and `/answer` to reopen the box. Piped input gets the same box,
