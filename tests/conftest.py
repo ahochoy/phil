@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import keyring
@@ -6,6 +7,10 @@ from keyring.backend import KeyringBackend
 from keyring.errors import PasswordDeleteError, PasswordSetError
 
 from tests.helpers import MODELS_TOML, build_template_repo, copy_repo
+
+if os.environ.get("PHIL_LOCKTRACE"):
+    # A failure on "database is locked" says which connection held the lock (tests/support/locktrace.py).
+    pytest_plugins = ["tests.support.locktrace"]
 
 
 def _is_live(request: pytest.FixtureRequest) -> bool:

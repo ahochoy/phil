@@ -55,5 +55,9 @@ jobs:
 
       # --durations lists the slowest tests; faulthandler_timeout dumps every thread's stack
       # if one test runs over 5 minutes, so a hang shows where it is instead of eating the job.
+      # PHIL_LOCKTRACE traces SQLite statements, so a "database is locked" failure says which
+      # connection held the lock (tests/support/locktrace.py).
       - name: Test
+        env:
+          PHIL_LOCKTRACE: "1"
         run: uv run pytest -q --durations=25 -o faulthandler_timeout=300
