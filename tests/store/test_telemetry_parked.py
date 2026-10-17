@@ -2,7 +2,15 @@ import pytest
 
 from phil.contracts import Ref
 from phil.store.db import connect
-from phil.store.parked import list_parked, open_count, park, set_parked_status
+from phil.store.parked import (
+    close_all_open,
+    close_parked,
+    list_parked,
+    open_count,
+    park,
+    parked_id,
+    set_parked_status,
+)
 from phil.store.paths import ProjectPaths
 from phil.store.telemetry import TelemetryRow, record, run_totals, usage_by_role
 
@@ -85,3 +93,31 @@ def test_set_status_rejects_invalid_status(conn):
     with pytest.raises(ValueError):
         set_parked_status(conn, item.id, "bogus")
     assert list_parked(conn, status=None) == [item]
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("P-001", "P-001"), ("p-001", "P-001"), ("P-1", "P-001"), ("3", "P-003"), (" P-012 ", "P-012"),
+    ("P-1234", "P-1234"), ("foo", None), ("P-", None), ("P-0", None), ("-1", None), ("P-1a", None),
+])
+def test_an_item_id_can_be_typed_loosely(text, expected):
+    assert parked_id(text) == expected
+
+
+def test_closing_items_closes_only_open_ones(conn):
+    source = Ref(label="x", path="y")
+    for note in ("a", "b", "c"):
+        park(conn, raised_by="user", note=note, why_not_now="later", source=source)
+    set_parked_status(conn, "P-002", "dropped")
+    closed, not_open = close_parked(conn, ["P-001", "P-002", "P-009", "P-001"], "dropped")
+    assert (closed, not_open) == (["P-001"], ["P-002", "P-009"])
+    assert [p.id for p in list_parked(conn)] == ["P-003"]
+
+
+def test_closing_every_open_item_leaves_the_rows_and_numbering(conn):
+    source = Ref(label="x", path="y")
+    for note in ("a", "b"):
+        park(conn, raised_by="user", note=note, why_not_now="later", source=source)
+    assert close_all_open(conn, "promoted") == ["P-001", "P-002"]
+    assert open_count(conn) == 0 and close_all_open(conn, "dropped") == []
+    assert {p.status for p in list_parked(conn, status=None)} == {"promoted"}
+    assert park(conn, raised_by="user", note="c", why_not_now="later", source=source).id == "P-003"
