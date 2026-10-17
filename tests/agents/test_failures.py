@@ -182,3 +182,46 @@ def test_real_openrouter_server_error():
         data=data, raw_response=_httpx_response(503)
     )
     assert classify_failure(exc, provider="openrouter").category == "server"
+
+
+def _refused_by_the_sdk(content, role="tool") -> Exception:
+    """The ValidationError the OpenRouter SDK raises, offline, when a message's content isn't in its
+    form (here: a LangChain block it doesn't know), before any request is sent."""
+    from typing import List
+
+    from openrouter import components
+    from openrouter.utils.serializers import unmarshal
+
+    message = {"role": role, "content": content}
+    if role == "tool":
+        message["tool_call_id"] = "c1"
+    try:
+        unmarshal([{"role": "user", "content": "hi"}, message], List[components.ChatMessages])
+    except Exception as exc:
+        return exc
+    raise AssertionError("the SDK accepted it")
+
+
+def test_content_the_openrouter_sdk_wont_send_is_named_not_an_internal_error():
+    image = _refused_by_the_sdk([{"type": "image", "base64": "/9j/", "mime_type": "image/jpeg"}])
+    assert type(image).__name__ == "ValidationError"
+    assert classify_failure(image, provider="openrouter") == Failure(
+        "refused", "Phil couldn't send the request: openrouter doesn't accept an image in a tool result.",
+        "Phil won't retry this.", "Try again without that file, or try a different model.",
+    )
+    audio = _refused_by_the_sdk([{"type": "audio", "base64": "AAAA", "mime_type": "audio/wav"}], role="user")
+    assert classify_failure(audio).headline == (
+        "Phil couldn't send the request: the provider doesn't accept an audio clip in your message."
+    )
+
+
+def test_any_other_validation_error_is_still_internal():
+    from pydantic import BaseModel, ValidationError
+
+    class Point(BaseModel):
+        x: int
+
+    try:
+        Point(x="nope")
+    except ValidationError as exc:
+        assert classify_failure(exc, provider="openrouter") == internal_failure("ValidationError")

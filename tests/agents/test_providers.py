@@ -179,12 +179,51 @@ def test_google_kind_builds_chat_google_generative_ai():
 
 
 def test_openrouter_kind_uses_a_millisecond_timeout_and_no_sdk_retries():
+    from langchain_openrouter import ChatOpenRouter
+
     model = build_chat_model(BUILTIN_PROVIDERS["openrouter"], "openai/gpt-6-luna", 180, environ=FAKE_ENVIRON)
-    assert type(model).__name__ == "ChatOpenRouter"
+    assert isinstance(model, ChatOpenRouter)
     assert model.model_name == "openai/gpt-6-luna"
     assert _secret(model.openrouter_api_key) == "dummy-openrouter"
     assert model.request_timeout == 180_000
     assert model.max_retries == 0
+
+
+JPEG = "/9j/4AAQSkZJRgABAQ=="  # base64; the bytes don't matter, only the block's shape
+
+
+def _tool_turn(content):
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    call = {"name": "read_file", "args": {"file_path": "/img/hero.jpg"}, "id": "call-1", "type": "tool_call"}
+    return [HumanMessage("look at the hero image"), AIMessage("", tool_calls=[call]),
+            ToolMessage(content=content, tool_call_id="call-1")]
+
+
+def test_openrouter_sends_an_image_a_tool_returned_in_openrouter_s_form():
+    """deepagents' read_file returns an image file as a LangChain image block; ChatOpenRouter converts
+    such blocks in user messages but not in tool results, and the OpenRouter SDK then refused the
+    request before sending it (ValidationError: body.N.tool.content ... tag 'image')."""
+    from typing import List
+
+    from openrouter import components
+    from openrouter.utils.serializers import unmarshal
+
+    model = build_chat_model(BUILTIN_PROVIDERS["openrouter"], "anthropic/claude-sonnet-5-5", 180, environ=FAKE_ENVIRON)
+    image = {"type": "image", "base64": JPEG, "mime_type": "image/jpeg"}
+    pdf = {"type": "file", "base64": "JVBERi0=", "mime_type": "application/pdf"}  # read_file on a PDF
+    dicts, _ = model._create_message_dicts(_tool_turn([image, pdf]), None)
+    image_part, file_part = dicts[-1]["content"]
+    assert image_part == {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{JPEG}"}}
+    assert file_part["type"] == "file"
+    unmarshal(dicts, List[components.ChatMessages])  # the SDK's own check, which raised before
+
+
+def test_openrouter_leaves_a_text_tool_result_as_it_was():
+    model = build_chat_model(BUILTIN_PROVIDERS["openrouter"], "openai/gpt-6-luna", 180, environ=FAKE_ENVIRON)
+    for content in ("3 matches", [{"type": "text", "text": "3 matches"}]):
+        dicts, _ = model._create_message_dicts(_tool_turn(content), None)
+        assert dicts[-1] == {"role": "tool", "content": content, "tool_call_id": "call-1"}
 
 
 def test_openrouter_sdk_client_does_not_retry():

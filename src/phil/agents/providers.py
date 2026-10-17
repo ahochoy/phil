@@ -170,8 +170,9 @@ def build_chat_model(
 
 
 def _build_openrouter(spec: ProviderSpec, model_name: str, timeout_s: int, key: str) -> Any:
-    from langchain.chat_models import init_chat_model
     from openrouter.utils import RetryConfig
+
+    from phil.agents.openrouter_model import PhilChatOpenRouter
 
     # ChatOpenRouter's `timeout` (request_timeout) is in milliseconds.
     kwargs: dict[str, Any] = {"timeout": timeout_s * 1000, "max_retries": 0, "api_key": key}
@@ -182,7 +183,8 @@ def _build_openrouter(spec: ProviderSpec, model_name: str, timeout_s: int, key: 
         kwargs["model_kwargs"] = {"cache_control": {"type": "ephemeral"}}
     if spec.base_url:
         kwargs["openrouter_api_base"] = spec.base_url
-    model = init_chat_model(f"openrouter:{model_name}", **kwargs)
+    # ChatOpenRouter, but a tool result's images reach OpenRouter in its own form (openrouter_model).
+    model = PhilChatOpenRouter(model=model_name, **kwargs)
     # max_retries=0 alone isn't enough: ChatOpenRouter then leaves the SDK's retry_config UNSET,
     # and the OpenRouter SDK falls back to retrying 5XX and connection errors with backoff for up
     # to an hour. A non-"backoff" strategy makes each request exactly once. The SDK's sub-clients
