@@ -2,6 +2,7 @@ import sqlite3
 
 from phil.store import db
 from phil.store.db import MIGRATIONS, connect
+from phil.store.runs import get_run
 
 
 def user_version(conn) -> int:
@@ -57,3 +58,19 @@ def test_calls_table_exists(tmp_path):
     columns = [row["name"] for row in conn.execute("PRAGMA table_info(calls)")]
     for expected in ("id", "telemetry_id", "model", "input_tokens", "output_tokens", "cost_usd", "cost_source", "created_at"):
         assert expected in columns
+
+
+def test_the_name_migration_runs_on_an_existing_database(tmp_path, monkeypatch):
+    path = tmp_path / "phil.db"
+    monkeypatch.setattr(db, "MIGRATIONS", MIGRATIONS[:-1])  # the database as it was before runs.name
+    old = connect(path)
+    old.execute(
+        "INSERT INTO runs (run_id, keyword, base_sha, branch, worktree, state, tasks_total, created_at, updated_at)"
+        " VALUES ('r-0001', 'CALC', 'abc', 'phil/r-0001', '/wt', 'pending', 1, 't', 't')"
+    )
+    old.close()
+    monkeypatch.setattr(db, "MIGRATIONS", MIGRATIONS)
+    conn = connect(path)
+    assert user_version(conn) == len(MIGRATIONS)
+    assert "name" in [row["name"] for row in conn.execute("PRAGMA table_info(runs)")]
+    assert get_run(conn, "r-0001").name is None

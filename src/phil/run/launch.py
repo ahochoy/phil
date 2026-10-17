@@ -7,8 +7,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from phil import platform
-from phil.contracts import Plan
+from phil.contracts import Goal, Plan
 from phil.repo import RepoInfo, resolve_repo
+from phil.run.naming import run_name
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
 from phil.store.events import EventLog, run_events
@@ -24,8 +25,10 @@ def prepare_run(
     chat_id: str | None = None,
     overrides: Sequence[str] = (),
     depth: str = "full",
+    goal: Goal | None = None,
 ) -> RunRecord:
-    """Record a pending run; its worker reloads the config with the same `--set` `overrides`."""
+    """Record a pending run; its worker reloads the config with the same `--set` `overrides`. A run
+    started from a `goal` is named from it (run_name; the fallback needs the ID allocated here)."""
     paths = ProjectPaths(info.slug)
     conn = connect(paths.db_path)
     try:
@@ -43,6 +46,7 @@ def prepare_run(
             base_branch=info.branch,
             config_overrides=json.dumps(list(overrides)) if overrides else None,
             depth=depth,
+            name=run_name(goal, run_id) if goal is not None else None,
         )
     finally:
         conn.close()

@@ -1584,7 +1584,7 @@ class ChatController:
             base_sha = self._explicit_base_sha or resolve_repo(self.info.root).head_sha
             record = prepare_run(
                 self.info, plan, base_sha, chat_id=self.session.id, overrides=(*self._config_overrides, pin),
-                depth=depth,
+                depth=depth, goal=self._goal,
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"

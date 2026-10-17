@@ -917,3 +917,8 @@ def test_ctrl_c_during_a_revise_returns_to_approval_with_the_old_draft(calc_repo
     assert "Plan CALC v2" not in text  # the revise landed stale
     assert prompts[7] == "Approve? [y / edit / n] › "
     assert len(runs) == 1 and runs[0].tasks_total == 1
+
+
+def test_a_chat_run_is_named_from_its_goal(calc_repo):
+    text, spawned, runs, *_ = run_chat(calc_repo, ["add subtract", "y"], FULL_SCRIPT)
+    assert runs[0].name == "subtract-calc"

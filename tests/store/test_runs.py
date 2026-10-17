@@ -207,3 +207,11 @@ def test_release_run_only_clears_its_own_pid(conn):
     assert get_run(conn, "r-0001").pid == 222
     release_run(conn, "r-0001", 222)
     assert get_run(conn, "r-0001").pid is None
+
+
+def test_create_run_stores_the_name(conn):
+    run = create_run(conn, run_id="r-0001", keyword="MAPS", base_sha="abc", worktree=Path("/tmp/wt"), tasks_total=1,
+                     name="map-section")
+    assert run.name == "map-section" and get_run(conn, "r-0001").name == "map-section"
+    unnamed = create_run(conn, run_id="r-0002", keyword="MAPS", base_sha="abc", worktree=Path("/tmp/wt"), tasks_total=1)
+    assert unnamed.name is None
