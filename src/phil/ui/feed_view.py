@@ -1,19 +1,19 @@
 """The activity feed's lines (spec 2026-10-07 §3.5): compact tool lines under each task and
-highlighted milestone bands. Shared by the chat and `phil attach`."""
+highlighted milestone bands. Shared by the chat and `phil attach`; burst state lives here
+(spec 2026-10-16 §5, §7)."""
 
 from datetime import datetime
 
 from rich.cells import cell_len
 from rich.text import Text
 
+from phil.ui.bursts import (
+    ENGINE, INDENT, LOOKS, TIMED, Burst, FeedItem, burst_text, fold, group_summary, is_failure, key_of,
+    rolling_lines,
+)
 from phil.ui.toolbar import elapsed
 
 BURST_LINES = 20
-INDENT = "    "
-_READS = ("read_file",)
-# Look-only tools: consecutive calls of these by one task and role fold into one line.
-_LOOKS = ("read_file", "ls", "glob", "grep")
-_TIMED = ("run_shell", "gate")
 
 
 def _seconds(ts: object) -> float | None:
@@ -67,10 +67,13 @@ def _cut(text: str, cells: int) -> str:
 
 
 class FeedRenderer:
-    def __init__(self) -> None:
+    def __init__(self, *, more_hint: bool = True) -> None:
         self._task_started: dict[str, float] = {}
+        self._more_hint = more_hint  # `(/more #n)` on summaries; attach has no /more (Ruling R18)
+        self._burst: Burst | None = None  # the burst still running
+        self._bursts: dict[int, list[dict]] = {}  # closed bursts by number, for /more #n
 
-    def _line(self, record: dict, width: int, summary: str | None = None) -> Text:
+    def _line(self, record: dict, width: int, summary: str | None = None, style: str = "phil.muted") -> Text:
         summary = summary if summary is not None else str(record.get("summary", ""))
         verb, _, rest = summary.partition(" ")
         if record.get("tool") == "gate":
@@ -81,7 +84,7 @@ class FeedRenderer:
             verb, rest = "", summary
         result_part = f"  {record['result']}" if record.get("result") else ""
         duration_part = ""
-        if record.get("tool") in _TIMED and record.get("duration_ms"):
+        if record.get("tool") in TIMED and record.get("duration_ms"):
             duration_part = f" · {record['duration_ms'] / 1000:.1f}s"
         ref = f"  #{record['seq']}" if record.get("detail") else ""
         head = f"{INDENT}{verb:<5} "
@@ -93,7 +96,7 @@ class FeedRenderer:
         rest = _cut(rest, max(budget - tail_len, 0))
         if not rest and cell_len(result_part) > budget:
             result_part = _cut(result_part, budget)  # narrower still: the result itself must give way
-        line = Text(f"{head}{rest}", style="phil.muted")
+        line = Text(f"{head}{rest}", style=style)
         if result_part:
             fail = record.get("ok") is False
             line.append(result_part, style="phil.gate.fail" if fail else "phil.muted")
@@ -103,34 +106,58 @@ class FeedRenderer:
             line.append(ref, style="phil.ref")
         return line
 
-    def tool_lines(self, records: list[dict], width: int) -> list[Text]:
-        ends = [r for r in records if r.get("phase") == "end"]
-        groups: list[list[dict]] = []
-        for record in ends:
-            last = groups[-1] if groups else None
-            # A failed look keeps its own line, so its result and #ref are never hidden inside a fold.
-            if (last and record.get("tool") in _LOOKS and last[-1].get("tool") in _LOOKS
-                    and record.get("ok") is not False and last[-1].get("ok") is not False
-                    and last[-1].get("task") == record.get("task") and last[-1].get("role") == record.get("role")):
-                last.append(record)
-            else:
-                groups.append([record])
+    def tool_lines(self, records: list[dict], width: int, cap: int | None = BURST_LINES) -> list[Text]:
+        groups = fold([r for r in records if r.get("phase") == "end"])
+        shown, extra = (groups, []) if cap is None else (groups[:cap], groups[cap:])
         lines: list[Text] = []
-        for group in groups[:BURST_LINES]:
-            if len(group) > 1:
-                parts = " · ".join(
-                    part for r in group if (part := str(r.get("summary", "")).partition(" ")[2])
-                )
-                verb = "read" if all(r.get("tool") in _READS for r in group) else "look"
-                lines.append(self._line(group[-1], width, summary=f"{verb} {parts}"))
-            else:
-                lines.append(self._line(group[0], width))
-        extra = groups[BURST_LINES:]
+        for group in shown:
+            summary = group_summary(group) if len(group) > 1 else None
+            lines.append(self._line(group[-1], width, summary=summary))
         if extra:
             count = sum(len(g) for g in extra)
-            noun = "reads" if all(r.get("tool") in _LOOKS for g in extra for r in g) else "steps"
+            noun = "reads" if all(r.get("tool") in LOOKS for g in extra for r in g) else "steps"
             lines.append(Text(f"{INDENT}… {count} more {noun}", style="phil.muted"))
         return lines
+
+    def activity(self, records: list[dict], width: int) -> list[FeedItem]:
+        """Feed lines for a batch of activity records (spec 2026-10-16 §5). A record of another
+        (task, role) ends the open burst first (its summary line). Within a burst only failures
+        print, at once; the engine's gate runs keep their own line each (Ruling R12)."""
+        out: list[FeedItem] = []
+        for record in records:
+            key = key_of(record)
+            if self._burst is not None and self._burst.key != key:
+                out += self.end_burst(width)
+            if record.get("phase") != "end":
+                continue
+            if key[1] == ENGINE:
+                out.append(FeedItem(self._line(record, width), (record,)))
+                continue
+            if self._burst is None:
+                self._burst = Burst(*key)
+            self._burst.calls.append(record)
+            if is_failure(record):
+                out.append(FeedItem(self._line(record, width, style="phil.error"), (record,)))
+        return out
+
+    def end_burst(self, width: int) -> list[FeedItem]:
+        """The open burst ended: its one summary line (none if nothing is open). It's kept for /more."""
+        burst, self._burst = self._burst, None
+        if burst is None or not burst.calls:
+            return []
+        number = burst.number
+        if number is not None:
+            self._bursts[number] = list(burst.calls)
+        ref = f"  (/more #{number})" if self._more_hint and number is not None else ""
+        body = _cut(f"{INDENT}{burst_text(burst)}", max(width - 1 - cell_len(ref), 0))
+        return [FeedItem(Text(body + ref, style="phil.muted"), tuple(burst.calls))]
+
+    def rolling(self) -> tuple[str, ...]:
+        return rolling_lines(self._burst)
+
+    def burst(self, number: int) -> list[dict] | None:
+        calls = self._bursts.get(number)
+        return list(calls) if calls is not None else None
 
     def milestone(self, event: dict, width: int) -> Text:
         kind, task = event.get("kind"), event.get("task") or ""

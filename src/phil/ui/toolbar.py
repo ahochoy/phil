@@ -169,7 +169,7 @@ def render_toolbar(view: ToolbarView, now: float, width: int | None = None) -> F
     return frags
 
 
-MAX_LIVE_LINES = 3
+MAX_LIVE_LINES = 6
 
 
 def _spin(style: str, started: float, now: float) -> tuple[str, str]:
@@ -181,7 +181,8 @@ def render_live_rows(
 ) -> Fragments:
     """The live row(s) above the input: one line per active agent (the main agent, each sub-agent
     indented with `└`), a goal step and in-flight `/btw` questions as their own lines; at most
-    `MAX_LIVE_LINES` lines plus a `+N more` line. Fragments, with `"\\n"` between lines and none
+    `MAX_LIVE_LINES` lines in all, the `+N more` line included; the main agent's rolling lines come
+    before sub-agent rows. Fragments, with `"\\n"` between lines and none
     after the last. An empty list means no live row.
 
     `max_lines=1` collapses everything to the first row alone, with ` +N more` appended inside
@@ -195,6 +196,8 @@ def render_live_rows(
         else:
             node = view.run.node or "starting"
             rows.append([_Part("", "  " + NODE_LABELS.get(node, node), 0)])
+        for line in view.rolling:
+            rows.append([_Part("class:phil.muted", line, 0)])
         for sub in view.subs:
             rows.append([
                 _Part(*_spin("class:phil.sub", sub.started, now)),
@@ -211,13 +214,15 @@ def render_live_rows(
     for job in view.side:
         rows.append([_Part(*_spin("class:phil.warn", job.started, now)),
                      _Part("", f" /btw · {job.label} · {elapsed(now - job.started)}", 0)])
+    rolling = len(view.rolling) if view.run is not None else 0
     if not rows:
         return []
     if max_lines == 1:
-        extra = len(rows) - 1
+        extra = len(rows) - 1 - rolling  # other agents' rows only (Ruling R16)
         rows = [[*rows[0], _Part("class:phil.muted", f" +{extra} more")] if extra > 0 else rows[0]]
-    elif len(rows) > MAX_LIVE_LINES + 1:
-        rows = [*rows[:MAX_LIVE_LINES], [_Part("class:phil.muted", f"  +{len(rows) - MAX_LIVE_LINES} more", 0)]]
+    elif len(rows) > MAX_LIVE_LINES:
+        keep = MAX_LIVE_LINES - 1  # six lines in all, the `+N more` line included
+        rows = [*rows[:keep], [_Part("class:phil.muted", f"  +{len(rows) - keep} more", 0)]]
     if view.feed_filter:
         rows[0] = [*rows[0], _Part("class:phil.muted", f"   [feed: {view.feed_filter}]")]
     out: Fragments = []

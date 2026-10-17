@@ -179,12 +179,31 @@ def test_a_btw_line():
     assert lines(view)[1][2:] == '/btw · "why 3 tries?" · 4s'
 
 
-def test_more_than_three_collapses_and_nothing_wraps():
-    subs = tuple(SubAgent(i, f"job {i}", None, 90.0) for i in range(4))
+def test_more_than_six_collapses_and_nothing_wraps():
+    subs = tuple(SubAgent(i, f"job {i}", None, 90.0) for i in range(6))
     view = ToolbarView(run=RUN2, live=MAIN, subs=subs, side=(SideJob("q", 99.0),))
     out = lines(view, width=40)
-    assert len(out) == 4 and out[-1].strip() == "+3 more"
+    assert len(out) == 6 and out[-1].strip() == "+3 more"
     assert all(cell_len(line) <= 39 for line in out)
+
+
+ROLL = ("    edit   a.py", "    edit   b.py", "    … 3 more", "    run    make  → ok")
+
+
+def test_the_rolling_lines_sit_under_the_main_row():
+    out = lines(ToolbarView(run=RUN2, live=MAIN, rolling=ROLL))
+    assert out[1:] == list(ROLL)
+
+
+def test_the_live_area_is_capped_at_six_lines_rolling_lines_first():
+    subs = (SubAgent(1, "x", None, 90.0), SubAgent(2, "y", None, 90.0))
+    out = lines(ToolbarView(run=RUN2, live=MAIN, rolling=ROLL, subs=subs))
+    assert len(out) == 6 and out[1:5] == list(ROLL) and out[5].strip() == "+2 more"
+
+
+def test_under_a_callout_the_rolling_lines_collapse_without_counting_as_agents():
+    text = toolbar_text(render_live_rows(ToolbarView(run=RUN2, live=MAIN, rolling=ROLL), 100.0, max_lines=1))
+    assert "\n" not in text and "more" not in text
 
 
 def test_goal_step_without_a_run():

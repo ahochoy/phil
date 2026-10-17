@@ -50,6 +50,7 @@ class ToolbarView:
     cost: tuple[float, str] | None = None  # (cost_usd, cost_source): the chat's running cost
     parked: int = 0  # open parked items
     live: LiveStep | None = None  # the running tool, shown on the live row above the input
+    rolling: tuple[str, ...] = ()  # the running burst's calls, under the main live row
     repo: str = ""
     branch: str = ""
     model: tuple[str, str] | None = None  # (tier label, short name)
@@ -92,6 +93,9 @@ class ChatState:
 
     def set_live(self, live: LiveStep | None) -> None:
         self._update(live=live)
+
+    def set_rolling(self, lines: tuple[str, ...]) -> None:
+        self._update(rolling=lines)
 
     def set_paused(self, paused: bool) -> None:
         self._update(paused=paused)
