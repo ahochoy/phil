@@ -39,6 +39,13 @@ def test_a_multi_line_command_and_an_escape_stay_on_one_line():
     assert line.endswith("→ ok later")
 
 
+def test_an_escape_in_an_edited_file_name_or_role_is_shown_as_a_question_mark():
+    b = Burst("CALC-001", "impl\x1b[2Jementer", [end(1, "edit_file", "edit a\x1b]0;x\x07.py\nb.py", "+1")])
+    text = burst_text(b)
+    assert "\x1b" not in text and "\x07" not in text and "\n" not in text
+    assert text == "impl?[2Jementer ran 1 tool · edited a?]0;x?.py b.py"
+
+
 def test_neither_is_the_count_alone_and_one_tool_is_singular():
     assert burst_text(burst(end(1, "read_file", "read a.py"))) == "implementer ran 1 tool"
 

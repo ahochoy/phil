@@ -119,7 +119,7 @@ def edited_files(calls: list[dict]) -> list[str]:
     files: list[str] = []
     for call in calls:
         if call.get("tool") in EDITS and call.get("ok") is not False:
-            path = str(call.get("summary", "")).partition(" ")[2]
+            path = one_line(call.get("summary", "")).partition(" ")[2]
             if path and path not in files:
                 files.append(path)
     return files
@@ -137,7 +137,7 @@ def last_command(calls: list[dict]) -> str | None:
 def burst_text(burst: Burst) -> str:
     """`implementer ran 9 tools · edited a, b, c +2`, `… · ran <command>`, or the count alone."""
     count = len(burst.calls)
-    text = f"{burst.role} ran {count} tool{'' if count == 1 else 's'}"
+    text = f"{one_line(burst.role)} ran {count} tool{'' if count == 1 else 's'}"
     files = edited_files(burst.calls)
     if files:
         more = f" +{len(files) - NAMED_EDITS}" if len(files) > NAMED_EDITS else ""
