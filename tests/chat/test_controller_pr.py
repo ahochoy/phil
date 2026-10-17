@@ -10,6 +10,7 @@ from phil.publish.publisher import FakePublisher
 from phil.store.db import connect
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
+from phil.ui.runs import run_label
 from tests.chat.test_controller import FULL_SCRIPT, run_chat
 from tests.chat.test_controller_run import commit_on_branch, completed_with_a_commit, peek, post, to_state
 from tests.helpers import run_git
@@ -46,7 +47,7 @@ def test_a_completed_run_offers_a_pr(calc_repo, fake):
         FULL_SCRIPT,
     )
     run_id = runs[0].run_id
-    assert f"Open a PR for {run_id} → main?" in text
+    assert f"Open a PR for {run_label(runs[0], first=False)} → main?" in text
     assert seen["stage"] == "confirm_pr"
     assert PR_PROMPT in prompts
     assert fake.calls == []
@@ -82,7 +83,7 @@ def test_yes_opens_the_pr(calc_repo, fake):
         FULL_SCRIPT,
     )
     run_id = runs[0].run_id
-    assert f"Opening a PR for {run_id}…" in text
+    assert f"Opening a PR for {run_label(runs[0], first=False)}…" in text
     assert "Opened PR #12: https://github.com/example/repo/pull/12" in text
     assert stored(calc_repo, run_id).pr_number == 12
     assert seen["stage"] == ("idle", None)
@@ -209,9 +210,9 @@ def test_an_incomplete_run_gets_a_notice_and_an_offer_to_open_a_pr_anyway(calc_r
         FULL_SCRIPT,
     )
     run_id = runs[0].run_id
-    assert f"Run {run_id} finished with 2 blocking issue(s) open; nothing to merge yet. See /show." in text
+    assert f"Run {run_label(runs[0], first=False)} finished with 2 blocking issue(s) open; nothing to merge yet. See /show." in text
     assert f"Review it: phil diff {run_id}" in text
-    assert f"Run {run_id} completed" not in text
+    assert f"Run {run_label(runs[0], first=False)} completed" not in text
     assert "/resume" not in text  # a finished run can't be resumed
     assert ANYWAY_PROMPT in prompts and PR_PROMPT not in prompts
     assert seen["after"] == ("confirm_pr", None, run_id)

@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
+from rich.cells import cell_len
 
 from phil.chat.controller import MOVING_TO_FULL, OTHER_PROMPT, TYPE, WAKE, ChatController, ChatIO
 from phil.chat.decision import (
@@ -30,6 +31,7 @@ from phil.store.db import connect
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run
+from phil.ui.runs import run_label
 from phil.ui.theme import make_console
 from tests.chat.conftest import ChatFactory, critique, goal, plan
 from tests.chat.test_controller import FULL_SCRIPT, run_chat, transcript
@@ -139,9 +141,21 @@ def test_type_folds_and_answer_reopens(controller_with_choose):
     pause_at = next(i for i, call in enumerate(calls) if call[0] == "choose" and call[2].kind == "pause")
     folded, reopened = calls[pause_at + 1], calls[pause_at + 2]
     assert folded[0] == "ask"
-    assert folded[1].startswith(f"⏸ {run_id} needs you · /answer to choose")
+    assert folded[1].startswith(f"⏸ {run_label(runs[0], first=False)} needs you · /answer to choose")
     assert reopened[0] == "choose" and reopened[2].kind == "pause"
     assert (run_id, "resume", {"action": "skip"}) in spawned
+
+
+def test_a_folded_question_still_shows_its_text(controller_with_choose):
+    """Esc folds the question's callout; its text is nowhere else on screen, so the folded line has it."""
+    calls = []
+    question = Question(text="Which module?", options=["calc.py", "ops.py"])
+    scripts = {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()], "critic": [critique()]}
+    controller_with_choose(["add subtract", TYPE, "/answer", "1", "n"], scripts, calls=calls)
+    at = next(i for i, call in enumerate(calls) if call[0] == "choose" and call[2].kind == "question")
+    assert calls[at + 1][0] == "ask"
+    assert calls[at + 1][1].startswith("Question 1 of 1: Which module? · /answer to choose")
+    assert calls[at + 2][0] == "choose" and calls[at + 2][2].kind == "question"
 
 
 def test_a_typed_option_goes_to_its_typed_prompt(controller_with_choose):
@@ -164,16 +178,56 @@ def test_a_typed_option_goes_to_its_typed_prompt(controller_with_choose):
     assert seen["clarifications"] == ["Which module?: lib.py"]
 
 
-def test_with_a_menu_the_printed_option_lists_are_left_to_the_callout(controller_with_choose):
-    """With `choose`, a question prints its text but not its numbered options (without it, the list
-    still prints: test_questions_flow); each pick leaves a settled line."""
+def test_with_a_menu_a_question_shows_only_in_its_callout(controller_with_choose):
+    """With `choose`, the callout alone asks (no printed copy; without it the question still prints:
+    test_questions_flow); the answer leaves one record line instead of an "Answer:" line."""
+    question = Question(text="Which module?", options=["calc.py", "ops.py"], why="It decides the file.")
+    scripts = {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()], "critic": [critique()]}
+    text, *_ = controller_with_choose(["add subtract", "1", "n"], scripts)
+    assert "1. Which module?" not in text and "It decides the file." not in text
+    assert "1. calc.py" not in text and "Something else" not in text
+    assert "? Which module? → calc.py" in text
+    assert "Answer: calc.py" not in text
+    assert "· Cancel" in text  # other decisions keep their settled lines
+
+
+def test_typed_text_is_recorded_as_typed(controller_with_choose):
     question = Question(text="Which module?", options=["calc.py", "ops.py"])
-    scripts = lambda: {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()],  # noqa: E731
-                       "critic": [critique()]}
-    menu_text, *_ = controller_with_choose(["add subtract", "1", "n"], scripts())
-    assert "1. Which module?" in menu_text
-    assert "1. calc.py" not in menu_text and "Something else" not in menu_text
-    assert "Answer: calc.py" in menu_text and "· Cancel" in menu_text  # the settled lines
+    scripts = {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()], "critic": [critique()]}
+    text, *_ = controller_with_choose(["add subtract", "3", "lib/ops_extra.py", "n"], scripts)
+    assert "? Which module? → lib/ops_extra.py" in text
+
+
+def test_a_long_record_line_is_cut_to_the_width(controller_with_choose):
+    question = Question(text="Which module?", options=["calc.py", "ops.py"])
+    scripts = {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()], "critic": [critique()]}
+    long = "put it in " + "a very long place " * 12
+    text, *_ = controller_with_choose(["add subtract", "3", long, "n"], scripts)
+    [line] = [line for line in text.splitlines() if line.startswith("? Which module?")]
+    assert line.endswith("…") and cell_len(line) <= 119
+
+
+def test_plan_with_what_you_know_keeps_its_settled_line(controller_with_choose):
+    question = Question(text="Which module?", options=["calc.py", "ops.py"])
+    scripts = {"intake": [goal(open_questions=[question])], "architect": [plan()], "critic": [critique()]}
+    text, *_ = controller_with_choose(["add subtract", "go", "n"], scripts)
+    assert "Answer: Plan with what you know" in text and "? Which module? →" not in text
+
+
+def test_a_free_text_question_has_no_callout(calc_repo):
+    controller = bare_controller(calc_repo)
+    controller.io.choose = lambda prompt, decision: None
+    controller._pending, controller._replies = [Question(text="Anything else to know?")], []
+    controller._set_stage("questions")
+    assert controller._build_decision() is None  # today: AttributeError from _with_details(None)
+
+
+def test_a_free_text_question_with_a_menu_prints_once(controller_with_choose):
+    question = Question(text="Anything else to know?")
+    scripts = {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()], "critic": [critique()]}
+    text, *_ = controller_with_choose(["add subtract", "nothing else", "n"], scripts)
+    assert text.count("Anything else to know?") == 1
+    assert "→ nothing else" not in text
 
 
 def test_answered_elsewhere_closes_the_callout(controller_with_choose):
@@ -184,7 +238,7 @@ def test_answered_elsewhere_closes_the_callout(controller_with_choose):
         ["add subtract", "y", escalate(), to_state("running")], FULL_SCRIPT, calls=calls
     )
     run_id = runs[0].run_id
-    assert f"{run_id} was answered elsewhere." in text
+    assert f"{run_label(runs[0], first=False)} was answered elsewhere." in text
     assert calls[-2][0] == "choose" and calls[-2][2].kind == "pause"
     assert calls[-1] == ("ask", "you › ")
 
@@ -235,7 +289,7 @@ def test_a_crashed_run_shows_its_failure_callout(controller):
     # The chat follows its run (the harness's ManualWatcher); `crash` makes it fail as a worker would.
     text, spawned, runs, *_ = controller(["add subtract", "y", crash, refs], FULL_SCRIPT)
     run_id = runs[0].run_id
-    assert f"Run {run_id} failed." in text
+    assert f"Run {run_label(runs[0], first=False)} failed." in text
     assert "✗ Your openrouter account is out of credits." in text
     assert "Phil won't retry this. Add credits, then try again." in text
     assert "Continue it with /resume." in text
@@ -311,18 +365,18 @@ def test_a_refused_approval_prints_no_settled_line(controller_with_choose, calc_
 
 def test_an_approved_plan_settles_before_the_run_starts(controller_with_choose):
     text, spawned, runs, *_ = controller_with_choose(["add subtract", "y"], FULL_SCRIPT)
-    assert text.index("✓ Approve and run") < text.index(f"Run {runs[0].run_id} started")
+    assert text.index("✓ Approve and run") < text.index(f"Run {run_label(runs[0], first=True)} started")
 
 
 def test_each_answer_follows_its_question(controller_with_choose):
-    """Two questions answered through choose: question 1, its Answer:, question 2, its Answer:."""
+    """Two questions answered through choose: each leaves its record line, in order."""
     first = Question(text="Which module?", options=["calc.py", "ops.py"], why="It decides the file.")
     second = Question(text="Which name?", options=["minus", "subtract"])
     text, *_ = controller_with_choose(
         ["add subtract", "1", "1", "n"],
         {"intake": [goal(open_questions=[first, second]), goal()], "architect": [plan()], "critic": [critique()]},
     )
-    order = [text.index(s) for s in ("1. Which module?", "Answer: calc.py", "2. Which name?", "Answer: minus")]
+    order = [text.index(s) for s in ("? Which module? → calc.py", "? Which name? → minus")]
     assert order == sorted(order), text
 
 
@@ -336,7 +390,7 @@ def test_retry_settles_when_the_resume_is_sent(controller_with_choose):
         ["add subtract", "y", escalate(), "retry", "try harder"], FULL_SCRIPT
     )
     assert text.count("✓ Retry the task") == 1
-    assert text.index("✓ Retry the task") < text.index(f"Resuming {runs[0].run_id} with retry.")
+    assert text.index("✓ Retry the task") < text.index(f"Resuming {run_label(runs[0], first=False)} with retry.")
     assert (runs[0].run_id, "resume", {"action": "retry", "hint": "try harder"}) in spawned
 
 
@@ -584,7 +638,7 @@ def test_answered_elsewhere_while_typing_the_hint(controller_with_choose):
         ["add subtract", "y", escalate(), "retry", to_state("running")], FULL_SCRIPT, calls=calls
     )
     run_id = runs[0].run_id
-    assert f"{run_id} was answered elsewhere." in text
+    assert f"{run_label(runs[0], first=False)} was answered elsewhere." in text
     assert calls[-1] == ("ask", "you › ")
     assert [mode for _, mode, _ in spawned] == ["start"]
 

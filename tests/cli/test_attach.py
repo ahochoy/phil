@@ -1,4 +1,5 @@
 import os
+import time
 
 from typer.testing import CliRunner
 
@@ -220,7 +221,7 @@ def test_attach_stops_at_an_incomplete_run(calc_repo):
     assert attach(conn, record.run_id, run_events(paths, record.run_id), console, io, poll_s=0) == "incomplete"
 
 
-def test_attach_prints_milestones_and_new_tool_lines(calc_repo):
+def test_attach_prints_milestones_and_burst_summaries(calc_repo):
     """attach() over a run whose events.jsonl has task_started and whose activity grows during the
     poll: the console shows the '▸ CALC-001' band and the new tool line. Activity written before
     attach started is not printed (plan amendment A5)."""
@@ -251,8 +252,62 @@ def test_attach_prints_milestones_and_new_tool_lines(calc_repo):
     assert attach(conn, record.run_id, events, console, io, poll_s=0) == "completed"
     text = console.export_text()
     assert "▸ CALC-001" in text
-    assert "run   pytest -q  → 7 passed" in text
+    assert "implementer ran 1 tool · ran pytest -q" in text
+    assert "(/more" not in text  # attach has no /more (Ruling R18)
     assert "→ old" not in text
+
+
+def test_attach_prints_failures_at_once_and_a_summary_when_the_run_fails(calc_repo):
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha)
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    update_run(conn, record.run_id, state="running")
+    events = run_events(paths, record.run_id)
+    activity = ActivityLog(paths.run_dir(record.run_id))
+
+    def sleep(_):
+        activity.end(1, task="CALC-001", role="implementer", tool="edit_file", summary="edit calc.py",
+                     result="+1 −0", ok=True, detail=None, duration_ms=5)
+        activity.end(2, task="CALC-001", role="implementer", tool="run_shell", summary="run pytest -q",
+                     result="→ 1 failed", ok=False, detail="1 failed\n", duration_ms=5)
+        update_run(conn, record.run_id, state="failed")
+
+    io = AttachIO(choose=lambda p, o: "abort", ask_hint=lambda: None, spawn=lambda m, d: None, sleep=sleep,
+                  alive=lambda r: False, starting=lambda e: False)
+    console = make_console(record=True, width=120)
+    assert attach(conn, record.run_id, events, console, io, poll_s=0) == "failed"
+    text = console.export_text()
+    failure, summary = text.index("run   pytest -q  → 1 failed"), text.index("implementer ran 2 tools · edited calc.py")
+    assert failure < summary < text.index("Continue with `phil resume")
+    assert text.count("implementer ran 2 tools") == 1
+
+
+def test_attach_closes_an_open_burst_before_saying_no_worker_is_running(calc_repo):
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha)
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    update_run(conn, record.run_id, state="running")
+    activity = ActivityLog(paths.run_dir(record.run_id))
+    wrote = []
+
+    def sleep(_):
+        if not wrote:
+            wrote.append(True)
+            activity.end(1, task="CALC-001", role="implementer", tool="edit_file", summary="edit calc.py",
+                         result="+1 −0", ok=True, detail=None, duration_ms=5)
+        time.sleep(0.05)  # past start_timeout_s, so the next pass gives up on the worker
+
+    io = AttachIO(choose=lambda p, o: "abort", ask_hint=lambda: None, spawn=lambda m, d: None, sleep=sleep,
+                  alive=lambda r: False, starting=lambda e: False)
+    console = make_console(record=True, width=120)
+    state = attach(conn, record.run_id, run_events(paths, record.run_id), console, io, poll_s=0,
+                   start_timeout_s=0.02)
+    assert state == "running"
+    text = console.export_text()
+    assert text.count("implementer ran 1 tool · edited calc.py") == 1
+    assert text.index("implementer ran 1 tool") < text.index("No worker is running")
 
 
 def test_attach_prints_a_gate_line_before_the_milestones_that_follow_it(calc_repo):

@@ -30,6 +30,7 @@ class ChatSummary:
     run_id: str | None
     run_state: str | None
     open_elsewhere: bool = False
+    run_name: str | None = None
 
 
 class ChatLocked(Exception):
@@ -171,6 +172,7 @@ def list_open_chats(paths: ProjectPaths, conn: sqlite3.Connection) -> list[ChatS
             ChatSummary(
                 directory.name, goal.get("objective"), state.get("stage", "idle"), run_id,
                 record.state if record else None, open_elsewhere=lock_holder(directory) is not None,
+                run_name=record.name if record else None,
             )
         )
     return found

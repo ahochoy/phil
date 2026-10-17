@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from pydantic import ValidationError
+from rich.cells import cell_len
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
@@ -99,8 +100,10 @@ from phil.tomlw import toml_value
 from phil.ui.answer_view import render_answer
 from phil.ui.brief_view import render_brief
 from phil.ui.callout import failure_lines, overflows, to_rich
+from phil.ui.bursts import FeedItem, one_line
 from phil.ui.feed_view import FeedRenderer
 from phil.ui.plan_view import _clip, render_goal, render_plan
+from phil.ui.runs import label_for
 from phil.ui.runs_view import render_runs
 from phil.ui.show_view import detail_text, render_show, show_refs
 from phil.ui.toolbar import _fit, short_model
@@ -111,6 +114,7 @@ WAKE = object()  # ChatIO.ask returns this when a background event interrupted t
 TYPE = object()  # ChatIO.choose returns this when the user left the menu to type (Esc)
 MAX_QUESTION_ROUNDS = 2
 SOMETHING_ELSE = "Something else (type it)"
+PLAN_NOW = "go"  # the answer that plans with what's known (decision.py's "Plan with what you know")
 OTHER_PROMPT = "Your answer › "  # after picking "Something else"
 HELP = (
     "Type a goal or a question. Prefix with /ask, /quick or /full to choose the path "
@@ -268,6 +272,7 @@ class ChatController:
         self._agents_md_create = False  # confirm_agents_md: the "create it?" question has been asked
         self.state = ChatState()
         self._run_id: str | None = None
+        self._run_names: dict[str, str | None] = {}  # run id -> its stored name, read once (it never changes)
         self._watcher = None  # follows the chat's run; a daemon thread (the worker is independent)
         self._run_role: str | None = None  # the last role seen at work in the followed run
         self._model_lock = threading.Lock()  # computing and setting the toolbar's model (_refresh_model)
@@ -560,6 +565,8 @@ class ChatController:
             index = len(self._replies)
             question = self._pending[index]
             decision = question_decision(index + 1, len(self._pending), question.text, question.why, question.options)
+            if decision is None:  # a free-text question: typed at the prompt, no callout (R20)
+                return None
             return self._with_details(decision, [question.why])
         if stage == "choose_approach" and not self._describing and self._approach_order:
             return approach_decision([(a.name, a.summary) for a in self._approach_order])
@@ -570,7 +577,7 @@ class ChatController:
             decision = repo_shell_decision(self.info.root.name, rules, labels, pass_env, bash)
             return self._with_details(decision, repo_shell_lines(rules, labels, pass_env, bash))
         if stage == "confirm_pr" and self._pr_offer is not None:
-            return pr_decision(self._pr_offer, self._pr_force)
+            return pr_decision(self._short_label(self._pr_offer), self._pr_force)
         if stage == "confirm_fix":
             return fix_decision()
         if stage == "confirm_replace":
@@ -586,7 +593,7 @@ class ChatController:
         if pause.get("reason") == "approval":
             lines += approval_lines(pause)  # every command and rule in full (R15)
         log = pause.get("log")
-        return self._with_details(pause_decision(self._run_id, pause), lines, log=str(log) if log else None)
+        return self._with_details(pause_decision(self._short_label(self._run_id), pause), lines, log=str(log) if log else None)
 
     def _with_details(self, decision: Decision, lines: list[str], *, log: str | None = None) -> Decision:
         """A body that ends pointing at /more 1 (cut, or an attempts pause's "Details: /more 1"),
@@ -615,9 +622,14 @@ class ChatController:
         if decision is None:
             return self._prompt()
         if decision.kind in ("pause", "approval") and self._run_id is not None:
-            reminder = f"⏸ {self._run_id} needs you"
+            reminder = f"⏸ {self._short_label(self._run_id)} needs you"
         elif self.stage == "questions" and self._pending:
-            reminder = f"Question {min(len(self._replies) + 1, len(self._pending))} of {len(self._pending)}"
+            number = min(len(self._replies) + 1, len(self._pending))
+            head, tail = f"Question {number} of {len(self._pending)}: ", " · /answer to choose"
+            # The question's text is nowhere else on screen once its callout is folded.
+            text = one_line(self._pending[number - 1].text)
+            room = max(self.console.width - 1 - cell_len(head) - cell_len(tail), 0)
+            return f"{head}{_fit(text, room)}{tail}\n{self._prompt()}"
         else:
             reminder = decision.title
         return f"{reminder} · /answer to choose\n{self._prompt()}"
@@ -709,7 +721,9 @@ class ChatController:
                         continue
                     if isinstance(raw, str):
                         option = next((o for o in decision.options if o.answer == raw), None)
-                        if option is not None and not option.typed:  # a typed option's answer comes next
+                        # A clarifying question's answer leaves its record line instead (_answers; R21).
+                        recorded = option is not None and self._records_answer(option.answer)
+                        if option is not None and not option.typed and not recorded:  # a typed option's answer comes next
                             settled = settled_line(decision, option)
                             # An approved plan settles once its run starts; a pause once its resume is sent.
                             waits = decision.kind in ("pause", "approval") or (
@@ -801,7 +815,7 @@ class ChatController:
             self._hint(text)
         elif stage == "running":
             self.console.print(
-                f"This chat is following run [phil.id]{escape(self._run_id or '')}[/]. "
+                f"This chat is following run [phil.id]{escape(self._label(self._run_id))}[/]. "
                 "Use /btw to ask about it, or start another goal in a new window."
             )
         return True
@@ -907,7 +921,7 @@ class ChatController:
             self._begin_goal(rest, forced=forced, skip_design=skip)
         elif stage in RUN_STAGES:
             self.console.print(
-                f"This chat is following run [phil.id]{escape(self._run_id or '')}[/]. "
+                f"This chat is following run [phil.id]{escape(self._label(self._run_id))}[/]. "
                 "Use /btw to ask about it, or start another goal in a new window."
             )
         else:
@@ -922,9 +936,10 @@ class ChatController:
             # A new goal replaces a failed or stopped run the chat was offering to /resume.
             record = get_run(self.conn, self._run_id)
             rid = escape(self._run_id)
+            label = escape(self._label(self._run_id))
             state = escape(record.state) if record else "is"
             self.console.print(
-                f"[phil.muted]Run {rid} is left as {state}; `phil resume {rid}` still continues it.[/]"
+                f"[phil.muted]Run {label} is left as {state}; `phil resume {rid}` still continues it.[/]"
             )
             self._forget_run()
         self._next_generation()
@@ -1221,9 +1236,12 @@ class ChatController:
         self._plan(self._goal, show_goal=False)
 
     def _ask_next(self) -> None:
-        """Print the next question: its number, text, why, and numbered options plus "Something else"
-        (the options only without a menu: with one, its callout lists them)."""
+        """Print the next question when no callout asks it: its number, text, why, and numbered
+        options plus "Something else". With a menu, a question with options is asked by its callout
+        alone (spec 2026-10-16 §6.1); a free-text question has no callout, so it still prints (R20)."""
         question = self._pending[len(self._replies)]
+        if self.io.choose is not None and question.options:
+            return
         self.console.print(f"[phil.agent]{len(self._replies) + 1}. {escape(_clip(question.text))}[/]")
         if question.why:
             self.console.print(f"   [phil.muted]{escape(_clip(question.why))}[/]")
@@ -1239,7 +1257,7 @@ class ChatController:
         intake call gets every answer. `go` plans with what's known (Ruling R2)."""
         if not text:
             return
-        if text.lower() == "go" and not self._typing_other:
+        if self._plans_now(text):
             if self._replies:
                 self._rounds = MAX_QUESTION_ROUNDS  # send what was answered; ask nothing more
                 self._finish_questions()
@@ -1250,6 +1268,8 @@ class ChatController:
         answer = self._pick(question, text)
         if answer is None:
             return
+        if self.io.choose is not None and question.options and self._records_answer(text):
+            self._record_answer(question.text, answer)  # its callout is gone: one line says what was chosen
         self._typing_other = False
         self._replies.append(f"{question.text}: {answer}")
         self._recent.append(f"you: {answer[:TURN_CHARS]}")
@@ -1257,6 +1277,19 @@ class ChatController:
             self._ask_next()
         else:
             self._finish_questions()
+
+    def _plans_now(self, text: str) -> bool:
+        """The reply is the "Plan with what you know" answer, not an answer typed under "Something else"."""
+        return text.lower() == PLAN_NOW and not self._typing_other
+
+    def _records_answer(self, text: str) -> bool:
+        """A clarifying question's reply leaves a record line (R21); "plan with what you know" doesn't."""
+        return self.stage == "questions" and not self._plans_now(text)
+
+    def _record_answer(self, question: str, answer: str) -> None:
+        """`? question → answer`, muted, cut to the width with … (spec 2026-10-16 §6.1; R22)."""
+        line = printable(f"? {question} → {answer}")
+        self.console.print(Text(_fit(line, self.console.width), style="phil.muted"))
 
     def _pick(self, question: Question, text: str) -> str | None:
         """The answer `text` gives `question`, or None while it still needs one (the "Something else"
@@ -1584,7 +1617,7 @@ class ChatController:
             base_sha = self._explicit_base_sha or resolve_repo(self.info.root).head_sha
             record = prepare_run(
                 self.info, plan, base_sha, chat_id=self.session.id, overrides=(*self._config_overrides, pin),
-                depth=depth,
+                depth=depth, goal=self._goal,
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -1595,13 +1628,15 @@ class ChatController:
         started = "approved" if depth == "full" else "quick_started"
         self._safe_note(started, **note_data, run_id=record.run_id, depth=depth)
         self._recent.append(f"phil: planned {plan.keyword}")
+        self._run_names[record.run_id] = record.name
         run_id = escape(record.run_id)
+        label = escape(self._label(record.run_id))
         try:
             self.io.spawn(self.info.root, record.run_id, "start", None)
         except (Exception, KeyboardInterrupt) as exc:
             self._safe_note("spawn_failed", run_id=record.run_id, error=f"{type(exc).__name__}: {exc}")
             self.console.print(
-                f"[phil.error]Run {run_id} was created but its worker didn't start: {escape(str(exc))}. "
+                f"[phil.error]Run {label} was created but its worker didn't start: {escape(str(exc))}. "
                 f"Start it with `phil resume {run_id}`.[/]"
             )
             self._reset_goal()
@@ -1612,7 +1647,7 @@ class ChatController:
         self._lost, self._pause = False, None
         self._set_stage("running")
         self.console.print(
-            f"Run [phil.id]{run_id}[/] started in the background from {escape(base_sha[:7])}. "
+            f"Run [phil.id]{label}[/] started in the background from {escape(base_sha[:7])}. "
             f"This chat follows it; from another window use `phil attach {run_id}`."
         )
         self._follow()
@@ -1659,7 +1694,7 @@ class ChatController:
             watcher.start()
         except Exception as exc:
             self.console.print(
-                f"[phil.warn]Couldn't follow run {escape(run_id)} here ({escape(f'{type(exc).__name__}: {exc}')}); "
+                f"[phil.warn]Couldn't follow run {escape(self._label(run_id))} here ({escape(f'{type(exc).__name__}: {exc}')}); "
                 f"use `phil attach {escape(run_id)}`.[/]"
             )
             self._refresh_model()  # the stopped watcher's run no longer shows its model
@@ -1667,6 +1702,27 @@ class ChatController:
         self._watcher = watcher
         self._refresh_model()  # a followed run's model replaces a goal step's
         self._refresh_place()
+
+    def _run_name(self, run_id: str) -> str | None:
+        """The run's stored name; None when it has none or its row can't be read (not cached then)."""
+        if run_id not in self._run_names:
+            try:
+                record = get_run(self.conn, run_id)
+            except Exception:
+                logger.debug("couldn't read the name of %s", run_id, exc_info=True)
+                return None
+            self._run_names[run_id] = record.name if record is not None else None
+        return self._run_names[run_id]
+
+    def _label(self, run_id: str | None) -> str:
+        """The run as a printed line names it (spec 2026-10-16 §3.3): `name (id)` the first time in
+        this chat, then `name`; the ID for a run with no name."""
+        return self.state.mention(run_id, self._run_name(run_id)) if run_id else ""
+
+    def _short_label(self, run_id: str | None) -> str:
+        """The run's name (its ID when unnamed) for redrawn text, such as callout titles and the
+        folded prompt, which must not change between redraws (Ruling R5)."""
+        return label_for(run_id, self._run_name(run_id), first=False) if run_id else ""
 
     def _refresh_place(self) -> None:
         """The toolbar's repo and branch: the followed run's branch, else the repo's. Never raises."""
@@ -1696,6 +1752,7 @@ class ChatController:
     def _clear_run(self) -> None:
         """The watcher is stopped: drop the run's toolbar state (its progress, live step, sub-agents
         and pause) and the feed filter."""
+        self.state.set_rolling(())
         self.state.set_live(None)
         self.state.set_subs(())
         self._set_feed_filter(None)
@@ -1715,7 +1772,7 @@ class ChatController:
         """EOF or /quit: the worker is independent, so say how to come back to a run still working."""
         if self._run_id is not None and self.stage in RUN_STAGES:
             self.console.print(
-                f"Run [phil.id]{escape(self._run_id)}[/] keeps working. "
+                f"Run [phil.id]{escape(self._label(self._run_id))}[/] keeps working. "
                 f"Reopen this chat with `phil --resume {escape(self.session.id)}`."
             )
 
@@ -1731,6 +1788,8 @@ class ChatController:
                 tasks_done=data.get("tasks_done", 0),
                 tasks_total=data.get("tasks_total", 0),
                 started=data.get("started", 0.0),
+                name=data.get("name"),
+                title=data.get("title"),
             )
         )
         self.state.set_run_usage(
@@ -1739,7 +1798,7 @@ class ChatController:
         self._refresh_model()  # the node may name the role at work
 
     def _on_budget_warning(self, data: dict) -> None:
-        line = budget_warning_line(self._run_id, **data)
+        line = budget_warning_line(self._label(self._run_id), **data)
         self.console.print(f"[phil.warn]{escape(line)}[/]")
 
     def _on_budget_raised(self, data: dict) -> None:
@@ -1752,19 +1811,28 @@ class ChatController:
         """A line the worker wrote for the user, such as phil.toml settings nobody has trusted yet."""
         self.console.print(f"[phil.warn]{escape(printable(data.get('message', '')))}[/]")
 
+    def _print_feed(self, items: list[FeedItem]) -> None:
+        """Print feed items the /feed filter shows: a summary shows when any of its calls would (R19)."""
+        agent = self._feed_filter
+        for item in items:
+            if agent is None or any(_shows(record, agent) for record in item.records):
+                self.console.print(item.line, soft_wrap=True)
+
+    def _end_burst(self) -> None:
+        """The open burst ended (a milestone, a pause, the run's end): its summary, and no rolling view."""
+        self._print_feed(self._feed.end_burst(self.console.width))
+        self.state.set_rolling(())
+
     def _on_activity(self, data: dict) -> None:
         records = data.get("records", [])
         agent = self._feed_filter
-        if agent is not None:
-            # Before folding and the burst cap, so they count only shown lines. Start records pass:
-            # the renderer draws only end records.
-            shown = [r for r in records if r.get("phase") != "end" or _shows(r, agent)]
-            self._hidden += len(records) - len(shown)
-            records = shown
-        for line in self._feed.tool_lines(records, self.console.width):
-            self.console.print(line, soft_wrap=True)
+        if agent is not None:  # steps (end records) from other agents; start records aren't steps
+            self._hidden += sum(1 for r in records if r.get("phase") == "end" and not _shows(r, agent))
+        self._print_feed(self._feed.activity(records, self.console.width))
+        self.state.set_rolling(self._feed.rolling())
 
     def _on_milestone(self, data: dict) -> None:
+        self._end_burst()
         self.console.print(self._feed.milestone(data, self.console.width))
 
     def _on_live_step(self, data: dict) -> None:
@@ -1787,6 +1855,7 @@ class ChatController:
         ))
 
     def _on_run_paused(self, data: dict) -> None:
+        self._end_burst()
         escalation = data["escalation"]
         if self._answer_sent:
             log = ProjectPaths(self.info.slug).run_dir(self._run_id) / "logs" / "worker.log"
@@ -1797,7 +1866,7 @@ class ChatController:
         self.state.set_paused(True)
         self._safe_note("run_paused", run_id=self._run_id, escalation=escalation)
         self.console.print(
-            f"[phil.warn]⏸ {escape(self._run_id)} needs you: {escape(printable(escalation.get('summary', '')))}[/]"
+            f"[phil.warn]⏸ {escape(self._label(self._run_id))} needs you: {escape(printable(escalation.get('summary', '')))}[/]"
         )
         if self.stage in RUN_STAGES:
             self._set_stage("paused")
@@ -1813,8 +1882,8 @@ class ChatController:
         self._pause, self._answer_sent = None, False
         self.state.set_paused(False)
         if elsewhere:  # the open callout closes: say why it went away
-            self.console.print(Text(answered_elsewhere(self._run_id), style="phil.muted"))
-        self.console.print(f"[phil.muted]{escape(self._run_id)} resumed.[/]")
+            self.console.print(Text(answered_elsewhere(self._label(self._run_id)), style="phil.muted"))
+        self.console.print(f"[phil.muted]{escape(self._label(self._run_id))} resumed.[/]")
         if self.stage in ("paused", "hint"):
             self._set_stage("running")
 
@@ -1866,7 +1935,7 @@ class ChatController:
             self._safe_note("spawn_failed", run_id=run_id, error=f"{type(exc).__name__}: {exc}")
             self._set_stage("running")  # the pause stays pending: /answer asks it again
             self.console.print(
-                f"[phil.error]The resume worker for {escape(run_id)} didn't start: {escape(str(exc))}. "
+                f"[phil.error]The resume worker for {escape(self._label(run_id))} didn't start: {escape(str(exc))}. "
                 "Try /answer again.[/]"
             )
             return
@@ -1878,11 +1947,12 @@ class ChatController:
         rearm = getattr(self._watcher, "rearm", None)
         if rearm is not None:
             rearm()
-        self.console.print(f"Resuming [phil.id]{escape(run_id)}[/] with {escape(decision['action'])}.")
+        self.console.print(f"Resuming [phil.id]{escape(self._label(run_id))}[/] with {escape(decision['action'])}.")
 
     def _on_run_done(self, data: dict) -> None:
         # Settle the chat first, so a notice that fails to print can't leave it following a finished run.
         self._stop_watcher()
+        self._end_burst()  # while the filter is still set: the summary comes before the notice
         self._clear_run()  # the watcher is stopped: the place is the repo's again
         self._pause, self._lost, self._answer_sent = None, False, False
         run_id, state = self._run_id, data.get("state", "")
@@ -1931,16 +2001,17 @@ class ChatController:
 
     def _run_notice(self, run_id: str, state: str, data: dict) -> None:
         rid = escape(run_id)
+        label = escape(self._label(run_id))
         summary = f"[phil.muted]Summary: {escape(str(data.get('summary', '')))}[/]"
         attention = data.get("needs_attention")
         if state in ("failed", "stopped"):
             failure = self._run_failure(run_id) if state == "failed" else None
             if failure is not None:  # the worker crashed: say what happened in plain words
-                self.console.print(f"[phil.warn]Run {rid} failed.[/]")
+                self.console.print(f"[phil.warn]Run {label} failed.[/]")
                 self.console.print(to_rich(failure_lines(failure, self.console.width)))
             else:
                 detail = f": {escape(attention)}" if attention else "."
-                self.console.print(f"[phil.warn]Run {rid} {escape(state)}{detail}[/]")
+                self.console.print(f"[phil.warn]Run {label} {escape(state)}{detail}[/]")
             self.console.print("Continue it with /resume.")
             log = ProjectPaths(self.info.slug).run_dir(run_id) / "logs" / "worker.log"
             self._notice_refs(run_id, first=Ref(label="worker log", path=str(log)) if failure else None)
@@ -1949,7 +2020,7 @@ class ChatController:
             tokens, cost = data.get("tokens", 0), data.get("cost_usd", 0.0)
             done, total = data.get("tasks_done", 0), data.get("tasks_total", 0)
             self.console.print(
-                f"[phil.gate.pass]✓ Run {rid} completed · {done}/{total} tasks · {tokens:,} tokens · ${cost:.2f}[/]"
+                f"[phil.gate.pass]✓ Run {label} completed · {done}/{total} tasks · {tokens:,} tokens · ${cost:.2f}[/]"
             )
             if attention:
                 self.console.print(f"[phil.warn]Open issues: {escape(attention)}[/]")
@@ -1960,11 +2031,11 @@ class ChatController:
             # "anyway". A finished run can't be resumed, so the chat then takes its next goal.
             count = self._blocking_count(run_id)
             issues = f"{count} blocking issue(s)" if count is not None else "blocking issues"
-            self.console.print(f"[phil.warn]Run {rid} finished with {issues} open; nothing to merge yet. See /show.[/]")
+            self.console.print(f"[phil.warn]Run {label} finished with {issues} open; nothing to merge yet. See /show.[/]")
             self.console.print(f"[phil.muted]Review it: phil diff {rid}[/]")
             self.console.print(summary, soft_wrap=True)  # the path stays whole
         else:
-            self.console.print(f"Run {rid} was {escape(state)}.")
+            self.console.print(f"Run {label} was {escape(state)}.")
             self.console.print(summary, soft_wrap=True)  # the path stays whole
         self._notice_refs(run_id)
 
@@ -2007,17 +2078,19 @@ class ChatController:
 
     def _on_worker_lost(self, data: dict) -> None:
         self._lost = True
+        self._end_burst()  # its summary comes before the notice
         self.state.set_live(None)  # the step it was running isn't running any more
         self.state.set_subs(())  # nor its sub-agents
         self.console.print(
-            f"[phil.warn]The worker for {escape(self._run_id)} stopped responding. Continue it with /resume.[/]"
+            f"[phil.warn]The worker for {escape(self._label(self._run_id))} stopped responding. Continue it with /resume.[/]"
         )
 
     def _on_watch_error(self, data: dict) -> None:
         # The watcher keeps polling and posts this once per failure streak; it recovers on its own.
         rid = escape(self._run_id)
+        label = escape(self._label(self._run_id))
         self.console.print(
-            f"[phil.muted]Live updates for {rid} are failing ({escape(str(data.get('error', '')))}); retrying. "
+            f"[phil.muted]Live updates for {label} are failing ({escape(str(data.get('error', '')))}); retrying. "
             f"`phil attach {rid}` also works.[/]"
         )
 
@@ -2049,7 +2122,7 @@ class ChatController:
         self.io.spawn(self.info.root, run_id, "continue", None)  # a failure is reported by the loop
         self._lost, self._done_seen = False, False
         self._set_stage("running")
-        self.console.print(f"Continuing [phil.id]{escape(run_id)}[/] from its last checkpoint.")
+        self.console.print(f"Continuing [phil.id]{escape(self._label(run_id))}[/] from its last checkpoint.")
         self._follow()
 
     # --- /show, /more, /park ----------------------------------------------------------------------
@@ -2104,16 +2177,22 @@ class ChatController:
         self.console.print(Text(text))  # plain text: never markup
 
     def _more_step(self, seq: int) -> None:
-        """`/more #n`: a feed step's detail, in a panel. Looks in the run this chat follows, else the
-        most recent run it followed (so details keep working after a run ends and is forgotten)."""
+        """`/more #n`: a burst's calls when n numbers one, then step n's detail in a panel. Looks in
+        the run this chat follows, else the most recent run it followed (so details keep working
+        after a run ends and is forgotten)."""
         run_id = self._chat_run()
         if run_id is None:
             self.console.print("No run to look in.")
             return
         log = activity_log(ProjectPaths(self.info.slug), run_id)
+        calls = self._feed.burst(seq)  # a burst's number first (Ruling R15)
+        if calls is not None:
+            for line in self._feed.tool_lines(calls, self.console.width, cap=None):
+                self.console.print(line, soft_wrap=True)
         path = log.detail_for(seq)
         if path is None:
-            self.console.print(f"#{seq} has no details.")
+            if calls is None:
+                self.console.print(f"#{seq} has no details.")
             return
         try:
             text = detail_text(path)
@@ -2384,7 +2463,7 @@ class ChatController:
             self.console.print(f"No commits on {escape(record.branch)}; nothing to open a PR for.")
             return
         anyway = " anyway" if force else ""
-        self.console.print(f"Open a PR for [phil.id]{escape(run_id)}[/] → {escape(record.base_branch)}{anyway}?")
+        self.console.print(f"Open a PR for [phil.id]{escape(self._label(run_id))}[/] → {escape(record.base_branch)}{anyway}?")
         self._pr_offer, self._pr_force = run_id, force
         self._set_stage("confirm_pr")
 
@@ -2408,7 +2487,7 @@ class ChatController:
         self._set_stage("idle")
 
     def _open_pr(self, run_id: str, *, force: bool = False) -> None:
-        self.console.print(f"Opening a PR for [phil.id]{escape(run_id)}[/]…")
+        self.console.print(f"Opening a PR for [phil.id]{escape(self._label(run_id))}[/]…")
         generation = self._generation
         self._pr_step_generation = generation
         self._step("Opening PR", generation)
@@ -2562,7 +2641,7 @@ class ChatController:
         stage = saved.get("stage", "idle")
         if self._run_id:
             self._set_stage("running")
-            self.console.print(f"[phil.muted]Following run {escape(self._run_id)}.[/]")
+            self.console.print(f"[phil.muted]Following run {escape(self._label(self._run_id))}.[/]")
             self._follow()
         elif stage in ("approval", "planning", "edit") and self._draft is not None:
             self._to_approval()

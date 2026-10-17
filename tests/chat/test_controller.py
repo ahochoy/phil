@@ -8,6 +8,7 @@ from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
 from phil.store.paths import ProjectPaths
 from phil.store.runs import list_runs
+from phil.ui.runs import run_label
 from phil.ui.theme import make_console
 from tests.chat.conftest import ChatFactory, critique, goal, plan
 from tests.helpers import MODELS_TOML, TEST_MODELS, run_git
@@ -95,7 +96,7 @@ def test_goal_to_approved_run(calc_repo):
     assert spawned[0][1:] == ("start", None)
     assert runs[0].keyword == "CALC"
     assert "Plan CALC v1" in text and "looks fine" in text
-    assert f"phil attach {spawned[0][0]}" in text
+    assert f"phil attach {spawned[0][0]}" in " ".join(text.split())  # the start line wraps
     assert factory.remaining() == {"intake": 0, "architect": 0, "critic": 0}
 
 
@@ -599,7 +600,7 @@ def test_start_message_names_the_base_commit(calc_repo):
         calc_repo, ["add subtract", "y"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}
     )
     sha7 = runs[0].base_sha[:7]
-    assert f"Run {runs[0].run_id} started in the background from {sha7}." in text
+    assert f"Run {run_label(runs[0], first=True)} started in the background from {sha7}." in text
 
 
 FULL_SCRIPT = {"intake": [goal()], "architect": [plan()], "critic": [critique()]}
@@ -629,7 +630,7 @@ def test_runs_are_linked_to_the_chat(calc_repo):
 
 def test_new_goal_while_running_is_refused(calc_repo):
     text, spawned, runs, factory, prompts = run_chat(calc_repo, ["add subtract", "y", "add multiply"], FULL_SCRIPT)
-    assert f"This chat is following run {runs[0].run_id}." in text
+    assert f"This chat is following run {run_label(runs[0], first=False)}." in text
     assert "Use /btw to ask about it" in text
     assert len(runs) == 1 and prompts[-2:] == ["you › ", "you › "]
 
@@ -917,3 +918,8 @@ def test_ctrl_c_during_a_revise_returns_to_approval_with_the_old_draft(calc_repo
     assert "Plan CALC v2" not in text  # the revise landed stale
     assert prompts[7] == "Approve? [y / edit / n] › "
     assert len(runs) == 1 and runs[0].tasks_total == 1
+
+
+def test_a_chat_run_is_named_from_its_goal(calc_repo):
+    text, spawned, runs, *_ = run_chat(calc_repo, ["add subtract", "y"], FULL_SCRIPT)
+    assert runs[0].name == "subtract-calc"

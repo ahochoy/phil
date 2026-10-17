@@ -1,6 +1,8 @@
 import threading
 from dataclasses import dataclass, replace
 
+from phil.ui.runs import label_for
+
 
 @dataclass(frozen=True)
 class RunView:
@@ -10,6 +12,8 @@ class RunView:
     tasks_done: int
     tasks_total: int
     started: float  # epoch seconds
+    name: str | None = None  # the run's display name (spec 2026-10-16 §3); None: show run_id
+    title: str | None = None  # the current task's title; None before tasks exist or once all are done
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,7 @@ class ToolbarView:
     cost: tuple[float, str] | None = None  # (cost_usd, cost_source): the chat's running cost
     parked: int = 0  # open parked items
     live: LiveStep | None = None  # the running tool, shown on the live row above the input
+    rolling: tuple[str, ...] = ()  # the running burst's calls, under the main live row
     repo: str = ""
     branch: str = ""
     model: tuple[str, str] | None = None  # (tier label, short name)
@@ -63,6 +68,15 @@ class ChatState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._view = ToolbarView()
+        self.labelled_runs: set[str] = set()  # runs this chat has named in full
+
+    def mention(self, run_id: str, name: str | None) -> str:
+        """The run's label for a line printed now: `name (id)` the first time this chat names it,
+        then `name` (the ID when it has none)."""
+        with self._lock:
+            first = run_id not in self.labelled_runs
+            self.labelled_runs.add(run_id)
+        return label_for(run_id, name, first=first)
 
     def _update(self, **fields: object) -> None:
         with self._lock:
@@ -79,6 +93,9 @@ class ChatState:
 
     def set_live(self, live: LiveStep | None) -> None:
         self._update(live=live)
+
+    def set_rolling(self, lines: tuple[str, ...]) -> None:
+        self._update(rolling=lines)
 
     def set_paused(self, paused: bool) -> None:
         self._update(paused=paused)

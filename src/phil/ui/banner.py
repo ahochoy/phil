@@ -1,5 +1,5 @@
 """The chat's welcome banner (spec 2026-10-08): a boxed card — mascot left, facts right — with
-"pick up where you left off" and tips below. Every box line has the same display width."""
+"pick up where you left off" below, and a welcome sentence on a first start. Every box line has the same display width."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -14,20 +14,11 @@ GAP = 4
 MIN_WIDTH = 10
 SUMMARY_CHARS = 60
 MUTED = "phil.muted"
-# Tips are (text, style) segments; command names carry no style, the rest is muted. A tips line
-# that doesn't fit drops whole segments: /feed first, then /btw (indexes into TIPS_SEGMENTS).
-TIPS_SEGMENTS: tuple[tuple[tuple[str, str], ...], ...] = (
-    (("Type a goal to start", MUTED),),
-    ((" · ", MUTED), ("/btw", ""), (" ask while it works", MUTED)),
-    ((" · ", MUTED), ("/feed", ""), (" filter the feed", MUTED)),
-    ((" · ", MUTED), ("/help", ""), (" everything else", MUTED)),
-)
-TIPS_DROP = (2, 1)
+# The welcome is (text, style) segments; the command name carries no style, the rest is muted.
 FIRST_TIPS_SEGMENTS: tuple[tuple[tuple[str, str], ...], ...] = (
     (("Describe what you want built. Phil plans it, asks before it runs, and works on its own branch.", MUTED),
      (" · ", MUTED), ("/help", "")),
 )
-TIPS = "".join(text for segment in TIPS_SEGMENTS for text, _ in segment)
 FIRST_TIPS = "".join(text for segment in FIRST_TIPS_SEGMENTS for text, _ in segment)
 
 
@@ -39,12 +30,12 @@ class BannerFacts:
     sha: str
     base: str | None
     dirty: int
-    parked: int
     models: tuple[tuple[str, str], ...]
     budget_usd: float
     run: tuple[str, str, str | None] | None
     other_chats: tuple[str, ...]
     first_time: bool
+    run_label: str = ""  # the run line's label (R24); "": the ID
 
 
 @dataclass(frozen=True)
@@ -101,8 +92,6 @@ def _facts(f: BannerFacts, plain: bool = False) -> list[_Line]:
             where.append(f"⚠ {f.dirty} uncommitted", "phil.warn")
             if plain:  # ruling R1: piped output says why they matter; the card stays short
                 where.append(" (not included in runs)", "phil.warn")
-    if f.parked:
-        where.append(f" · {f.parked} parked", MUTED)
     models: list[Text] = []
     for i, (label, name) in enumerate(f.models):
         segment = Text()
@@ -130,24 +119,23 @@ def _below(f: BannerFacts) -> list[_Line]:
     lines: list[_Line] = []
     if f.run:
         run_id, state, summary = f.run
+        label = f.run_label or run_id
         # The banner prints before the chat is chosen, so each hint is a command that works from any chat.
         if state == "escalated":
             shown = _summary(summary)
             why = f" ({shown})" if shown else ""
-            lines.append(_one(Text(f"⏸ {run_id} is waiting for you{why} · phil attach {run_id}", "phil.warn")))
+            lines.append(_one(Text(f"⏸ {label} is waiting for you{why} · phil attach {run_id}", "phil.warn")))
         elif state == "failed":
-            lines.append(_one(Text(f"{run_id} failed · phil resume {run_id}")))
+            lines.append(_one(Text(f"{label} failed · phil resume {run_id}")))
         elif state == "stopped":
-            lines.append(_one(Text(f"{run_id} was stopped · phil resume {run_id}")))
+            lines.append(_one(Text(f"{label} was stopped · phil resume {run_id}")))
         elif state in ("running", "pending"):
-            lines.append(_one(Text(f"{run_id} is running · phil attach {run_id}")))
+            lines.append(_one(Text(f"{label} is running · phil attach {run_id}")))
     if f.other_chats:
         n = len(f.other_chats)
         lines.append(_one(Text(f"{n} other open chat{'s' if n != 1 else ''} · phil --resume {f.other_chats[0]}", MUTED)))
-    if f.first_time:
+    if f.first_time:  # the idle status bar already says what the tips line said (spec 2026-10-16 §6.2)
         lines.append(_Line(_segments(FIRST_TIPS_SEGMENTS)))
-    else:
-        lines.append(_Line(_segments(TIPS_SEGMENTS), TIPS_DROP))
     return lines
 
 

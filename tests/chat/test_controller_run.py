@@ -17,6 +17,7 @@ from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
 from phil.store.telemetry import budget_warning_line
+from phil.ui.runs import run_label
 from tests.chat.conftest import critique, goal, plan
 from tests.chat.test_controller import FULL_SCRIPT, deferred, last_error, run_chat, session_dir
 
@@ -36,6 +37,16 @@ def set_state(controller, state, **fields):
         update_run(conn, run_id, state="running")
     update_run(conn, run_id, state=state, **fields)
     conn.close()
+
+
+def test_a_run_is_named_in_full_once_then_by_its_name(calc_repo):
+    text, spawned, runs, *_ = run_chat(calc_repo, ["add subtract", "y", escalate()], FULL_SCRIPT)
+    run = runs[0]
+    assert run.name == "subtract-calc"
+    assert f"Run subtract-calc ({run.run_id}) started in the background" in text
+    assert "⏸ subtract-calc needs you: CALC-001 failed 3 attempts" in text
+    assert f"phil attach {run.run_id}" in " ".join(text.split())  # command hints keep the ID (the start line wraps)
+    assert text.count(f"subtract-calc ({run.run_id})") == 1
 
 
 def escalate(summary="CALC-001 failed 3 attempts", options=("retry", "skip", "abort")):
@@ -102,7 +113,7 @@ def test_pause_is_answered_in_the_chat(calc_repo):
     )
     run_id = runs[0].run_id
     assert (run_id, "resume", {"action": "retry", "hint": "use minus"}) in spawned
-    assert f"⏸ {run_id} needs you: CALC-001 failed 3 attempts" in text
+    assert f"⏸ {run_label(runs[0], first=False)} needs you: CALC-001 failed 3 attempts" in text
     assert "Answer one of: retry, skip, abort" in text
     assert prompts[2:8] == ["you › ", PAUSE_PROMPT, PAUSE_PROMPT, PAUSE_PROMPT, HINT_PROMPT, "you › "]
     assert seen == {"paused": True, "after": ("running", False)}
@@ -125,7 +136,7 @@ def test_pause_answered_elsewhere_is_dropped(calc_repo):
         FULL_SCRIPT,
     )
     run_id = runs[0].run_id
-    assert f"{run_id} resumed." in text
+    assert f"{run_label(runs[0], first=False)} resumed." in text
     assert prompts[3:6] == [PAUSE_PROMPT, "you › ", "you › "]
     assert seen == {"paused": False}
     assert [mode for _, mode, _ in spawned] == ["start"]
@@ -162,7 +173,7 @@ def test_budget_warning_is_printed(calc_repo):
     )
     run_id = runs[0].run_id
     expected = budget_warning_line(
-        run_id, tokens=600, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0, cost_source="reported"
+        run_label(runs[0], first=False), tokens=600, cost_usd=0.0, max_tokens=700, max_cost_usd=2.0, cost_source="reported"
     )
     assert expected in text
 
@@ -256,7 +267,7 @@ def test_completion_notice_then_next_goal(calc_repo):
         },
     )
     run_id = runs[0].run_id
-    assert f"✓ Run {run_id} completed · 1/1 tasks · 0 tokens · $0.00" in text
+    assert f"✓ Run {run_label(runs[0], first=False)} completed · 1/1 tasks · 0 tokens · $0.00" in text
     assert f"Review it: phil diff {run_id}" in text
     summary = ProjectPaths(resolve_repo(calc_repo).slug).run_dir(run_id) / "summary.md"
     assert f"Summary:{summary}" in "".join(text.split())  # the long path may wrap
@@ -278,7 +289,7 @@ def test_completion_lists_open_issues_and_aborted_runs_say_so(calc_repo):
     assert "Open issues: CALC-001 skipped" in text
     text, spawned, runs, *_ = run_chat(calc_repo, ["add subtract", "y", to_state("aborted")], FULL_SCRIPT)
     aborted = [r for r in runs if r.state == "aborted"][0]
-    assert f"Run {aborted.run_id} was aborted." in text
+    assert f"Run {run_label(aborted, first=False)} was aborted." in text
 
 
 def test_failed_run_offers_resume(calc_repo):
@@ -298,7 +309,7 @@ def test_failed_run_offers_resume(calc_repo):
     )
     run_id = runs[0].run_id
     assert "Nothing to resume." in text
-    assert f"Run {run_id} failed: worker failed: boom" in text and "Continue it with /resume." in text
+    assert f"Run {run_label(runs[0], first=False)} failed: worker failed: boom" in text and "Continue it with /resume." in text
     assert (run_id, "continue", None) in spawned
     assert seen["first"].stopped and seen["ended"] == (None, "idle", run_id)  # kept for /resume
     watcher, stage = seen["second"]
@@ -310,7 +321,7 @@ def test_worker_lost_can_be_resumed(calc_repo):
         calc_repo, ["add subtract", "y", post("worker_lost"), "/resume"], FULL_SCRIPT
     )
     run_id = runs[0].run_id
-    assert f"The worker for {run_id} stopped responding. Continue it with /resume." in text
+    assert f"The worker for {run_label(runs[0], first=False)} stopped responding. Continue it with /resume." in text
     assert (run_id, "continue", None) in spawned
 
 
@@ -328,8 +339,8 @@ def test_watch_error_warns_and_keeps_watching(calc_repo):
     )
     run_id = runs[0].run_id
     flat = " ".join(text.split())
-    assert f"Live updates for {run_id} are failing (OSError: disk gone); retrying. `phil attach {run_id}` also works." in flat
-    assert f"✓ Run {run_id} completed" in text  # the watcher kept polling and delivered the ending
+    assert f"Live updates for {run_label(runs[0], first=False)} are failing (OSError: disk gone); retrying. `phil attach {run_id}` also works." in flat
+    assert f"✓ Run {run_label(runs[0], first=False)} completed" in text  # the watcher kept polling and delivered the ending
 
 
 def test_btw_answers_during_planning(calc_repo):
@@ -451,13 +462,13 @@ def test_eof_while_running_prints_the_reopen_hint(calc_repo):
         calc_repo, ["add subtract", "y", peek(seen, "w", lambda c: c._watcher)], FULL_SCRIPT
     )
     chat_id = session_dir(calc_repo).name
-    assert f"Run {runs[0].run_id} keeps working. Reopen this chat with `phil --resume {chat_id}`." in text
+    assert f"Run {run_label(runs[0], first=False)} keeps working. Reopen this chat with `phil --resume {chat_id}`." in text
     assert seen["w"].started and seen["w"].stopped
 
 
 def test_quit_while_paused_prints_the_reopen_hint(calc_repo):
     text, spawned, runs, *_ = run_chat(calc_repo, ["add subtract", "y", escalate(), "/quit"], FULL_SCRIPT)
-    assert f"Run {runs[0].run_id} keeps working." in text
+    assert f"Run {run_label(runs[0], first=False)} keeps working." in text
 
 
 def test_no_reopen_hint_without_a_run(calc_repo):
@@ -607,7 +618,7 @@ def test_new_goal_after_a_failed_run_says_it_is_left(calc_repo):
         },
     )
     run_id = runs[0].run_id
-    assert f"Run {run_id} is left as failed; `phil resume {run_id}` still continues it." in text
+    assert f"Run {run_label(runs[0], first=False)} is left as failed; `phil resume {run_id}` still continues it." in text
     assert "Goal: Add multiply" in text
 
 
@@ -624,7 +635,7 @@ def test_run_finished_while_closed_is_shown_once_on_reopen(calc_repo):
         return WAKE
 
     text, *_ = reopen(calc_repo, [poll])
-    assert text.count(f"✓ Run {run_id} completed") == 1
+    assert text.count(f"✓ Run {run_label(runs[0], first=False)} completed") == 1
     state = json.loads((session_dir(calc_repo) / "state.json").read_text())
     assert state["done_seen"] is True and state["run_id"] is None and state["stage"] == "idle"
     again, *_ = reopen(calc_repo, [])
@@ -760,7 +771,7 @@ def test_show_and_more_after_a_run(calc_repo):
     assert "# Run summary" in text and "- [x] CALC-001 [done]" in text  # /more 1 prints the file as-is
     assert "No detail 9. Use /show to list them." in text
     assert "Usage: /more <n> or /more #<step>" in text
-    assert f"Run {run_id} · CALC · full · completed" in text  # /show renders the chat's last run
+    assert f"Run {run_label(runs[0], first=True)} · CALC · full · completed" in text  # /show renders the chat's last run
     assert text.count("- [x] CALC-001 [done]") == 2  # /more 1 and /show's task list
 
 

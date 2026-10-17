@@ -43,6 +43,11 @@ class Question(Part):
 
 class Goal(Contract):
     objective: str
+    name: str | None = Field(
+        default=None,
+        description="2 to 3 lowercase keywords naming the goal, joined by hyphens, e.g. `newsletter-cta`. "
+        "Leave null while `open_questions` is non-empty.",
+    )
     constraints: list[str] = []
     non_goals: list[str] = []
     open_questions: list[Question] = Field(

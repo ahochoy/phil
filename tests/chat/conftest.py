@@ -6,7 +6,11 @@ from phil.config import PhilConfig
 from phil.contracts import Goal, Issue, Plan, PlanCritique, SelfCheck, Task
 from phil.contracts.routing import RouteJudgement
 from phil.store.artifacts import ArtifactStore
+from phil.repo import resolve_repo
 from phil.store.db import connect
+from phil.store.paths import ProjectPaths
+from phil.store.runs import get_run
+from phil.ui.runs import run_label
 from tests.helpers import TEST_MODELS
 from tests.run.conftest import calc_repo  # noqa: F401
 
@@ -34,6 +38,15 @@ class ChatFactory(ScriptedAgentFactory):
         if self.default_route:
             counts.pop("route", None)
         return counts
+
+
+def label_of(repo, run_id: str, *, first: bool = False) -> str:
+    """How the chat names `run_id` (spec 2026-10-16 §3.3), read from the store."""
+    conn = connect(ProjectPaths(resolve_repo(repo).slug).db_path)
+    try:
+        return run_label(get_run(conn, run_id), first=first)
+    finally:
+        conn.close()
 
 
 def empty_check() -> SelfCheck:

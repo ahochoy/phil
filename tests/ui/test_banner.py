@@ -1,11 +1,11 @@
 import pytest
 from rich.cells import cell_len
 
-from phil.ui.banner import FIRST_TIPS, GAP, NARROW_BOX, NARROW_MASCOT, TIPS, BannerFacts, banner_plain, render_banner
+from phil.ui.banner import FIRST_TIPS, GAP, NARROW_BOX, NARROW_MASCOT, BannerFacts, banner_plain, render_banner
 from phil.ui.mascot import MASCOT
 
 FACTS = BannerFacts(
-    version="0.9.0", repo="calc", branch="main", sha="a1b2c3d", base=None, dirty=2, parked=3,
+    version="0.9.0", repo="calc", branch="main", sha="a1b2c3d", base=None, dirty=2,
     models=(("high", "claude-sonnet-5"), ("low", "gemini-3.8-flash"), ("classifier", "jev-1.13")),
     budget_usd=1.0, run=("r-4f2a", "escalated", "CALC-002 needs approval"), other_chats=("7c1e",),
     first_time=False,
@@ -52,7 +52,7 @@ def test_tier_edges():
 def test_facts_content():
     text = "\n".join(t.plain for t in render_banner(FACTS, 140))
     assert "Phil v0.9.0 · deterministic orchestration, token-efficient" in text
-    assert "calc @ main a1b2c3d · ⚠ 2 uncommitted · 3 parked" in text
+    assert "calc @ main a1b2c3d · ⚠ 2 uncommitted" in text and "parked" not in text
     assert "high claude-sonnet-5 · low gemini-3.8-flash · classifier jev-1.13" in text
     assert "budget $1.00 a run" in text
 
@@ -106,9 +106,9 @@ def test_an_empty_escalation_summary_leaves_out_the_brackets(summary):
     assert _escalated(summary) == ["⏸ r-1 is waiting for you · phil attach r-1"]
 
 
-def test_tips_first_time_and_returning():
-    returning = [t.plain for t in render_banner(FACTS, 140)]
-    assert "Type a goal to start · /btw ask while it works · /feed filter the feed · /help everything else" in returning
+def test_no_tips_line_and_the_first_start_keeps_its_welcome():
+    returning = "\n".join(t.plain for t in render_banner(FACTS, 140))
+    assert "Type a goal to start" not in returning and "/feed" not in returning
     first = BannerFacts(**{**FACTS.__dict__, "first_time": True})
     assert any(t.plain.startswith("Describe what you want built.") for t in render_banner(first, 140))
 
@@ -119,29 +119,16 @@ def _styles_at(text, index):
     )
 
 
-def test_tips_drop_whole_segments_at_80_columns():
-    tips = render_banner(FACTS, 80)[-1]
-    assert "…" not in tips.plain
-    assert tips.plain == "Type a goal to start · /btw ask while it works · /help everything else"
-
-
-def test_tips_drop_feed_before_btw_then_cut():
-    no_btw = render_banner(FACTS, 60)[-1].plain
-    assert no_btw == "Type a goal to start · /help everything else"
-    assert render_banner(FACTS, 40)[-1].plain.endswith("…")
-
-
-def test_tips_name_commands_in_normal_weight():
-    tips = next(t for t in render_banner(FACTS, 140) if t.plain == TIPS)
-    for command in ("/btw", "/feed", "/help"):
-        assert _styles_at(tips, tips.plain.index(command)) == set()
-    assert _styles_at(tips, 0) == {"phil.muted"}  # "Type a goal to start"
-    assert _styles_at(tips, tips.plain.index(" · ")) == {"phil.muted"}
-    assert _styles_at(tips, tips.plain.index("everything else")) == {"phil.muted"}
+def test_the_welcome_names_help_in_normal_weight():
     first = BannerFacts(**{**FACTS.__dict__, "first_time": True})
     line = next(t for t in render_banner(first, 140) if t.plain == FIRST_TIPS)
     assert _styles_at(line, line.plain.index("/help")) == set()
     assert _styles_at(line, 0) == {"phil.muted"}
+
+
+def test_the_run_line_uses_the_label_and_keeps_the_id_in_the_hint():
+    facts = BannerFacts(**{**FACTS.__dict__, "run": ("r-1", "failed", None), "run_label": "newsletter-cta (r-1)"})
+    assert "newsletter-cta (r-1) failed · phil resume r-1" in [t.plain for t in render_banner(facts, 140)]
 
 
 def test_the_models_row_drops_whole_segments_at_80_columns():
@@ -172,6 +159,6 @@ def test_plain_has_no_box_and_no_escape_codes():
 
 
 def test_plain_says_uncommitted_files_stay_out_of_runs():
-    assert "calc @ main a1b2c3d · ⚠ 2 uncommitted (not included in runs) · 3 parked" in banner_plain(FACTS)
+    assert "calc @ main a1b2c3d · ⚠ 2 uncommitted (not included in runs)" in banner_plain(FACTS)
     card = "\n".join(t.plain for t in render_banner(FACTS, 140))
     assert "not included in runs" not in card

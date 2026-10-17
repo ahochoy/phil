@@ -183,21 +183,31 @@ def _terminal(toolbar, live_row=None):
     return TerminalIO(toolbar, live_row=live_row)
 
 
-def _open_chat_line(n: int, chat) -> str:
-    objective = escape(chat.objective) if chat.objective else "[phil.muted](no goal)[/]"
+def _open_chat_line(n: int, chat, width: int) -> Text:
+    """`n. run label · run state · goal`, cut to the width with … (spec 2026-10-16 §6.2). A chat with
+    no run shows only its goal; `open elsewhere` sits before the goal so a cut can't hide it (R23)."""
+    from phil.ui.runs import label_for
+
+    line = Text(f"{n}. ")
     if chat.run_id:
-        status = f"run {escape(chat.run_id)} {escape(chat.run_state or 'unknown')}"
+        line.append(label_for(chat.run_id, chat.run_name, first=False), "phil.id")
+        line.append(f" · run {chat.run_state or 'unknown'} · ")
+    if chat.open_elsewhere:
+        line.append("open elsewhere", "phil.warn")
+        line.append(" · ")
+    if chat.objective:
+        line.append(printable(chat.objective))
     else:
-        status = "plan waiting for approval"
-    elsewhere = " · [phil.warn]open elsewhere[/]" if chat.open_elsewhere else ""
-    return f"{n}. [phil.id]{escape(chat.id)}[/] · {objective} · {status}{elsewhere}"
+        line.append("(no goal)", "phil.muted")
+    line.truncate(max(width - 1, 1), overflow="ellipsis")
+    return line
 
 
 def _choose_open_chat(out, chats, ask) -> str | None:
     """List open chats and ask which to reopen; None starts a new chat."""
     out.print("Open chats:")
     for n, chat in enumerate(chats, 1):
-        out.print(_open_chat_line(n, chat))
+        out.print(_open_chat_line(n, chat, out.width), soft_wrap=True)
     while True:
         try:
             answer = ask("Reopen one? [number / Enter for a new chat] › ")
@@ -224,11 +234,16 @@ def _reopen_chat(session_cls, paths: ProjectPaths, chat_id: str):
 _PICK_UP_STATES = ("pending", "running", "escalated", "failed", "stopped")
 
 
-def _banner_facts(info, config, conn, paths, base_label, header_sha, base, session):
+def _banner_facts(info, config, conn, paths, base_label, header_sha, base, session, listed=None):
     """What the welcome banner shows. Each lookup is guarded on its own: one that fails leaves a
-    safe default for its field and never stops the chat from starting."""
+    safe default for its field and never stops the chat from starting.
+
+    `listed`: the open chats the picker is about to list (None: no picker). They are the only mention
+    of their runs, so the run line is left out for a run one of them holds, and the other-chats line
+    is left out altogether (spec 2026-10-16 §6.2)."""
     from phil.chat.session import list_open_chats
     from phil.ui.banner import BannerFacts
+    from phil.ui.runs import run_label
     from phil.ui.toolbar import short_model
 
     try:
@@ -251,10 +266,6 @@ def _banner_facts(info, config, conn, paths, base_label, header_sha, base, sessi
         dirty = len(info.dirty_files) if base is None else 0
     except Exception:
         dirty = 0
-    try:
-        parked = len(list_parked(conn))
-    except Exception:
-        parked = 0
     models: list[tuple[str, str]] = []
     for label, role in (("high", "architect"), ("low", "implementer")):
         try:  # the tier's own model; a legacy per-role config has none, so its role's model stands in
@@ -274,11 +285,13 @@ def _banner_facts(info, config, conn, paths, base_label, header_sha, base, sessi
         runs = list_runs(conn)  # the db is per project, so these are this repo's runs
     except Exception:
         runs = None
-    try:
-        record = next((r for r in runs or () if r.state in _PICK_UP_STATES), None)
+    listed_runs = {chat.run_id for chat in listed or () if chat.run_id}
+    try:  # a run an open chat holds is named by the open-chats list; the first one it doesn't hold shows
+        record = next((r for r in runs or () if r.state in _PICK_UP_STATES and r.run_id not in listed_runs), None)
     except Exception:
         record = None
     run = None
+    label = ""
     if record is not None:
         state = record.state
         try:  # left `running` by a crash or a reboot: `phil resume` takes a run whose worker is dead
@@ -293,10 +306,17 @@ def _banner_facts(info, config, conn, paths, base_label, header_sha, base, sessi
             except Exception:
                 summary = record.needs_attention  # what `phil attach` falls back to
         run = (record.run_id, state, summary)
-    try:
-        other_chats = tuple(c.id for c in list_open_chats(paths, conn) if session is None or c.id != session.id)
-    except Exception:
+        try:
+            label = run_label(record, first=True)
+        except Exception:
+            label = record.run_id
+    if listed is not None:
         other_chats = ()
+    else:
+        try:
+            other_chats = tuple(c.id for c in list_open_chats(paths, conn) if session is None or c.id != session.id)
+        except Exception:
+            other_chats = ()
     try:
         chats = paths.project_dir / "chats"
         saved = chats.is_dir() and any(d.is_dir() for d in chats.iterdir())
@@ -305,8 +325,8 @@ def _banner_facts(info, config, conn, paths, base_label, header_sha, base, sessi
         first_time = False
     return BannerFacts(
         version=version, repo=repo, branch=branch, sha=sha, base=base_label if base is not None else None,
-        dirty=dirty, parked=parked, models=tuple(models), budget_usd=budget_usd, run=run,
-        other_chats=other_chats, first_time=first_time,
+        dirty=dirty, models=tuple(models), budget_usd=budget_usd, run=run,
+        other_chats=other_chats, first_time=first_time, run_label=label,
     )
 
 
@@ -357,7 +377,13 @@ def _chat(ctx: typer.Context) -> None:
     tty = _is_tty()
     # Under patch_stdout, stdout is a proxy; force colour so Rich keeps emitting it.
     out = make_console(force_terminal=True) if tty else console
-    facts = _banner_facts(info, config, conn, paths, base_label, header_sha, base, session)
+    listed = []
+    if session is None and not new and tty:
+        try:  # like the banner's other lookups: a failure here must not stop the chat from starting
+            listed = list_open_chats(paths, conn)
+        except Exception:
+            logger.debug("couldn't list the open chats", exc_info=True)
+    facts = _banner_facts(info, config, conn, paths, base_label, header_sha, base, session, listed=listed or None)
     try:  # the mascot is hand-edited; a card that can't be drawn falls back to the plain lines
         card = render_banner(facts, out.width) if tty else None
     except Exception:
@@ -368,12 +394,10 @@ def _chat(ctx: typer.Context) -> None:
     else:
         for line in banner_plain(facts):
             out.print(line, soft_wrap=True, markup=False, highlight=False)
-    if session is None and not new and tty:
-        chats = list_open_chats(paths, conn)
-        if chats:
-            chosen = _choose_open_chat(out, chats, lambda prompt: out.input(f"[phil.user]{escape(prompt)}[/]"))
-            if chosen is not None:
-                session = _reopen_chat(ChatSession, paths, chosen)
+    if listed:
+        chosen = _choose_open_chat(out, listed, lambda prompt: out.input(f"[phil.user]{escape(prompt)}[/]"))
+        if chosen is not None:
+            session = _reopen_chat(ChatSession, paths, chosen)
     try:
         factory = _factory_from_env()
     except Exception as exc:

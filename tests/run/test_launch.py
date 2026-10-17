@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from phil import platform
+from phil.contracts import Goal
 from phil.repo import resolve_repo
 from phil.run.launch import is_worker_alive, prepare_run, spawn_worker, worker_command, worker_starting
 from phil.store.db import connect, utcnow
@@ -262,3 +263,10 @@ def test_spawn_worker_appends_a_spawn_event(calc_repo):
         assert event["mode"] == "start"
     finally:
         proc.wait(timeout=180)
+
+
+def test_prepare_run_names_a_run_from_its_goal(calc_repo):
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha, goal=Goal(objective="Add subtract to calc"))
+    assert record.name == "subtract-calc"
+    assert prepare_run(info, calc_plan(), info.head_sha).name is None  # `phil run`: a plan file, no goal

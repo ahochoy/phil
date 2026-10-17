@@ -2,13 +2,14 @@ from dataclasses import dataclass
 
 from rich.cells import cell_len, set_cell_size
 
-from phil.chat.state import ToolbarView
+from phil.chat.state import RunView, ToolbarView
 from phil.store.telemetry import format_cost
+from phil.ui.bursts import one_line
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 SEP = " │ "
 BUDGET_WARN = 0.8
-MAX_DOTS = 12
+TITLE_FLOOR = 12  # the task title shortens to this many cells before any segment drops
 Fragments = list[tuple[str, str]]
 STEP_LABELS = {
     "intake": "Understanding the goal",
@@ -25,7 +26,7 @@ NODE_LABELS = {
 }
 
 # Keep priority, higher survives longer (spec §2 drop order).
-P_EXTRA, P_REPO, P_MODEL, P_TOKENS, P_ELAPSED, P_COST, P_PROGRESS, P_PAUSE = range(8)
+P_EXTRA, P_REPO, P_MODEL, P_ELAPSED, P_COST, P_PROGRESS, P_PAUSE = range(7)
 
 
 @dataclass
@@ -33,6 +34,7 @@ class _Segment:
     priority: int
     fragments: Fragments
     glue: str = SEP  # what joins it to the segment before
+    title: int | None = None  # the index of the fragment holding the task title
 
 
 def elapsed(seconds: float) -> str:
@@ -47,34 +49,6 @@ def elapsed(seconds: float) -> str:
 def short_model(model: str) -> str:
     rest = model.split(":", 1)[1] if ":" in model else model
     return rest.rsplit("/", 1)[-1]
-
-
-def format_tokens(n: int) -> str:
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M tok"
-    if n >= 1000:
-        return f"{n // 1000}k tok"
-    return f"{n} tok"
-
-
-def task_dots(done: int, total: int, now: float, paused: bool) -> Fragments:
-    total, done = max(total, 0), max(min(done, total), 0)
-    current = done < total
-    if paused:
-        cur = ("class:phil.warn", "◉")
-    else:
-        cur = ("class:phil.gate.pass", "◉") if int(now * 2) % 2 == 0 else ("class:phil.muted", "○")
-    if total > MAX_DOTS:
-        frags: Fragments = [("class:phil.gate.pass", "●" * min(done, 3)), ("class:phil.muted", "…")]
-        if current:
-            frags.append(cur)
-        frags.append(("class:phil.muted", f" {done + (1 if current else 0)}/{total}"))
-        return frags
-    frags = [("class:phil.gate.pass", "●")] * done
-    if current:
-        frags.append(cur)
-        frags += [("class:phil.muted", "○")] * (total - done - 1)
-    return frags
 
 
 def budget_style(cost: float, limit: float) -> str:
@@ -92,21 +66,39 @@ def toolbar_text(fragments: Fragments) -> str:
     return "".join(text for _, text in fragments)
 
 
+def _run_segment(run: RunView) -> _Segment:
+    """`name · task 2 of 4 · title`; `name · planning` before there are tasks; the stage label once
+    every task is done (Ruling R7). A run with no name shows its ID."""
+    frags: Fragments = [("class:phil.id", run.name or run.run_id)]
+    if run.tasks_total <= 0:
+        frags.append(("", " · planning"))
+    elif run.tasks_done >= run.tasks_total:
+        node = run.node or "finish"
+        frags.append(("", f" · {NODE_LABELS.get(node, node)}"))
+    else:
+        frags.append(("", f" · task {run.tasks_done + 1} of {run.tasks_total}"))
+        if run.title:
+            frags += [("", " · "), ("", run.title)]
+            return _Segment(P_PROGRESS, frags, title=len(frags) - 1)
+    return _Segment(P_PROGRESS, frags)
+
+
 def _segments(view: ToolbarView, now: float) -> list[_Segment]:
     segs: list[_Segment] = []
     if view.repo:
         segs.append(_Segment(P_REPO, [("", view.repo), ("class:phil.muted", f" @ {view.branch or '?'}")]))
     run = view.run
-    if view.paused and run:
-        segs.append(_Segment(P_PAUSE, [("class:phil.warn", f"⏸ {run.run_id} needs you")]))
-    if run:
-        progress: Fragments = [("class:phil.id", run.run_id), ("", " "),
-                               *task_dots(run.tasks_done, run.tasks_total, now, view.paused)]
-        if not view.paused:
-            progress.append(("", f" {run.node or 'starting'}"))
-        segs.append(_Segment(P_PROGRESS, progress))
-        if not view.paused:
-            segs.append(_Segment(P_ELAPSED, [("", elapsed(now - run.started))], glue=" · "))
+    if run and view.paused:
+        segs.append(_Segment(P_PAUSE, [("class:phil.warn", f"⏸ {run.name or run.run_id} needs you")]))
+    elif run:
+        segs.append(_run_segment(run))
+        segs.append(_Segment(P_ELAPSED, [("", elapsed(now - run.started))]))
+        if view.run_cost is not None:
+            cost, source = view.run_cost
+            shown = format_cost(cost, source)
+            if view.budget_usd > 0:
+                shown += f" / ${view.budget_usd:.2f}"
+            segs.append(_Segment(P_COST, [(budget_style(cost, view.budget_usd), shown)]))
     elif view.step:
         frame = SPINNER[int((now - view.step_started) * 8) % len(SPINNER)]
         label = STEP_LABELS.get(view.step, view.step)
@@ -116,19 +108,12 @@ def _segments(view: ToolbarView, now: float) -> list[_Segment]:
         segs.append(_Segment(P_PROGRESS, [("", step)]))
     else:
         segs.append(_Segment(P_PROGRESS, [("class:phil.muted", "Phil · type a goal, or /help")]))
-    if view.model and not view.paused:
-        tier, name = view.model
-        segs.append(_Segment(P_MODEL, [("class:phil.muted", f"{tier}·"), ("", name)]))
-    if run and view.tokens is not None:
-        segs.append(_Segment(P_TOKENS, [("class:phil.muted", format_tokens(view.tokens))]))
-    if run and view.run_cost is not None:
-        cost, source = view.run_cost
-        shown = format_cost(cost, source)
-        if view.budget_usd > 0:
-            shown += f"/${view.budget_usd:.2f}"
-        segs.append(_Segment(P_COST, [(budget_style(cost, view.budget_usd), shown)]))
-    elif not run and view.cost is not None:
-        segs.append(_Segment(P_COST, [("class:phil.cost", f"chat {format_cost(*view.cost)}")]))
+    if not run:
+        if view.model:
+            tier, name = view.model
+            segs.append(_Segment(P_MODEL, [("class:phil.muted", f"{tier}·"), ("", name)]))
+        if view.cost is not None:
+            segs.append(_Segment(P_COST, [("class:phil.cost", f"chat {format_cost(*view.cost)}")]))
     if view.btw_pending:
         segs.append(_Segment(P_EXTRA, [("class:phil.muted", f"/btw ×{view.btw_pending}")]))
     if view.parked:
@@ -145,12 +130,27 @@ def _join(segs: list[_Segment]) -> Fragments:
     return out
 
 
+def _shorten_title(segs: list[_Segment], limit: int) -> None:
+    """Cut the task title by what the line is over `limit`, down to TITLE_FLOOR cells, with …."""
+    excess = cell_len(toolbar_text(_join(segs))) - limit
+    for seg in segs:
+        if excess <= 0 or seg.title is None:
+            continue
+        style, title = seg.fragments[seg.title]
+        cells = cell_len(title)
+        if cells > TITLE_FLOOR:
+            shorter = _cut_cells(title, max(TITLE_FLOOR, cells - excess))
+            seg.fragments[seg.title] = (style, shorter)
+            excess -= cells - cell_len(shorter)
+
+
 def render_toolbar(view: ToolbarView, now: float, width: int | None = None) -> Fragments:
-    """The status line as prompt_toolkit fragments; with `width`, segments drop (spec §2 order)
-    until it fits in fewer cells than that, and a line that still doesn't fit is cut with …."""
+    """The status line as prompt_toolkit fragments; with `width`, segments drop (spec 2026-10-16 §4.1
+    order) until it fits in fewer cells than that, and a line that still doesn't fit is cut with …."""
     segs = _segments(view, now)
     if width is not None:
         limit = width - 1
+        _shorten_title(segs, limit)
         while len(segs) > 1 and cell_len(toolbar_text(_join(segs))) > limit:
             droppable = [s for s in segs if s.priority != P_PAUSE]
             if not droppable:
@@ -170,7 +170,7 @@ def render_toolbar(view: ToolbarView, now: float, width: int | None = None) -> F
     return frags
 
 
-MAX_LIVE_LINES = 3
+MAX_LIVE_LINES = 6
 
 
 def _spin(style: str, started: float, now: float) -> tuple[str, str]:
@@ -182,7 +182,8 @@ def render_live_rows(
 ) -> Fragments:
     """The live row(s) above the input: one line per active agent (the main agent, each sub-agent
     indented with `└`), a goal step and in-flight `/btw` questions as their own lines; at most
-    `MAX_LIVE_LINES` lines plus a `+N more` line. Fragments, with `"\\n"` between lines and none
+    `MAX_LIVE_LINES` lines in all, the `+N more` line included; the main agent's rolling lines come
+    before sub-agent rows. Fragments, with `"\\n"` between lines and none
     after the last. An empty list means no live row.
 
     `max_lines=1` collapses everything to the first row alone, with ` +N more` appended inside
@@ -191,18 +192,20 @@ def render_live_rows(
     if view.run is not None:
         if view.live is not None:
             live = view.live
-            parts = [p for p in (live.task, live.role, live.summary, elapsed(now - live.started)) if p]
+            parts = [p for p in (live.role, one_line(live.summary), elapsed(now - live.started)) if p]
             rows.append([_Part(*_spin("class:phil.agent", live.started, now)), _Part("", " " + " · ".join(parts), 0)])
         else:
             node = view.run.node or "starting"
             rows.append([_Part("", "  " + NODE_LABELS.get(node, node), 0)])
+        for line in view.rolling:
+            rows.append([_Part("class:phil.muted", line, 0)])
         for sub in view.subs:
             rows.append([
                 _Part(*_spin("class:phil.sub", sub.started, now)),
                 _Part("", "  └ sub-agent · "),
-                _Part("", sub.summary or "working", 1, floor=1),  # cut second
+                _Part("", one_line(sub.summary or "working"), 1, floor=1),  # cut second
                 _Part("", " · "),
-                _Part("", sub.description, 0, floor=8),  # cut first, down to 8 cells
+                _Part("", one_line(sub.description), 0, floor=8),  # cut first, down to 8 cells
                 _Part("", f" · {elapsed(now - sub.started)}"),  # the time always survives a cut
             ])
     if view.step:
@@ -212,13 +215,15 @@ def render_live_rows(
     for job in view.side:
         rows.append([_Part(*_spin("class:phil.warn", job.started, now)),
                      _Part("", f" /btw · {job.label} · {elapsed(now - job.started)}", 0)])
+    rolling = len(view.rolling) if view.run is not None else 0
     if not rows:
         return []
     if max_lines == 1:
-        extra = len(rows) - 1
+        extra = len(rows) - 1 - rolling  # other agents' rows only (Ruling R16)
         rows = [[*rows[0], _Part("class:phil.muted", f" +{extra} more")] if extra > 0 else rows[0]]
-    elif len(rows) > MAX_LIVE_LINES + 1:
-        rows = [*rows[:MAX_LIVE_LINES], [_Part("class:phil.muted", f"  +{len(rows) - MAX_LIVE_LINES} more", 0)]]
+    elif len(rows) > MAX_LIVE_LINES:
+        keep = MAX_LIVE_LINES - 1  # six lines in all, the `+N more` line included
+        rows = [*rows[:keep], [_Part("class:phil.muted", f"  +{len(rows) - keep} more", 0)]]
     if view.feed_filter:
         rows[0] = [*rows[0], _Part("class:phil.muted", f"   [feed: {view.feed_filter}]")]
     out: Fragments = []
