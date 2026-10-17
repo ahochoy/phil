@@ -12,9 +12,11 @@ from pathlib import Path
 
 from pydantic import ValidationError
 from rich.cells import cell_len
-from rich.console import Console
+from rich.console import Console, Group
 from rich.markup import escape
+from rich.padding import Padding
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 from phil.agents.failures import Failure, classify_failure, internal_failure
@@ -118,19 +120,41 @@ MAX_QUESTION_ROUNDS = 2
 SOMETHING_ELSE = "Something else (type it)"
 PLAN_NOW = "go"  # the answer that plans with what's known (decision.py's "Plan with what you know")
 OTHER_PROMPT = "Your answer › "  # after picking "Something else"
-HELP = (
+HELP_INTRO = (
     "Type a goal or a question. Prefix with /ask, /quick or /full to choose the path "
     "(/full! plans fully without design proposals). Enter sends; Ctrl+Enter or Option/Alt+Enter "
-    "starts a new line. "
-    "Commands: /runs, /btw <question> (ask while work continues), "
-    "/answer (a paused run's question), /resume (a failed or stopped run), /show (the chat's run: usage "
-    "and numbered details), /more <n> (print detail n), /more #<step> (a feed step's detail), "
-    "/feed <agent> (show one agent's lines; /feed to show all), /park <note> (set an idea aside), "
-    "/unpark <id…> or /unpark all (drop parked ideas), "
-    "/permissions (the rules for agents' commands), "
-    "/memory (what Phil remembers about this repo), /remember <fact>, /forget <n>, /help, "
-    "/quit (or Ctrl-D)."
+    "starts a new line."
 )
+# /help's list: one command per line, its description beside it.
+HELP_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("/runs", "this repo's runs"),
+    ("/btw <question>", "ask while work continues"),
+    ("/answer", "a paused run's question"),
+    ("/resume", "a failed or stopped run"),
+    ("/show", "the chat's run: usage and numbered details"),
+    ("/more <n>", "print detail n"),
+    ("/more #<step>", "a feed step's detail"),
+    ("/feed <agent>", "show one agent's lines; /feed to show all"),
+    ("/park <note>", "set an idea aside"),
+    ("/unpark <id…> | all", "drop parked ideas"),
+    ("/permissions", "the rules for agents' commands"),
+    ("/memory", "what Phil remembers about this repo"),
+    ("/remember <fact>", "add a fact to Phil's memory"),
+    ("/forget <n>", "remove line n of Phil's memory"),
+    ("/help", "this list"),
+    ("/quit", "leave the chat (or Ctrl-D)"),
+)
+
+
+def help_view() -> Group:
+    """/help: the intro, then the commands in two columns; a narrow terminal wraps a description
+    under itself, never into the command column."""
+    commands = Table.grid(padding=(0, 2))
+    commands.add_column(no_wrap=True)
+    commands.add_column()
+    for command, description in HELP_COMMANDS:
+        commands.add_row(Text(command, style="bold"), Text(description))
+    return Group(Text(HELP_INTRO), Text(""), Text("Commands:"), Padding(commands, (0, 0, 0, 2), expand=False))
 FEED_AGENTS = ("implementer", "tester", "reviewer", "architect", "sub-agent", "engine")
 SIDE_LABEL_CHARS = 60  # a /btw question's live-row label, quotes included
 PROMPTS = {
@@ -829,7 +853,7 @@ class ChatController:
         if command in ("/quit", "/exit"):
             return False
         if command == "/help":
-            self.console.print(escape(HELP))
+            self.console.print(help_view())
         elif command == "/runs":
             render_runs(self.console, self.conn)
         elif command == "/btw":

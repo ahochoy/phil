@@ -249,4 +249,5 @@ def test_an_unknown_subcommand_lists_the_choices(calc_repo):
 def test_help_lists_the_memory_commands(calc_repo):
     text, *_ = run_chat(calc_repo, ["/help"], {})
     flat = " ".join(text.split())
-    assert "/memory (what Phil remembers about this repo), /remember <fact>, /forget <n>," in flat
+    assert "/memory what Phil remembers about this repo" in flat
+    assert "/remember <fact> add a fact to Phil's memory /forget <n> remove line n of Phil's memory" in flat
