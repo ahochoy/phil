@@ -54,14 +54,16 @@ Success means the following:
 The scroll progress `p` runs from 0 to 1 across the pinned distance.
 
 - **0 to 0.85:** the orbit runs from the first frame to the last.
-- **0.85 to 1:** the last frame holds, and the bottom fade rises to cover the stage.
-- **On release:** what follows is already cream, so there is no seam.
+- **0.85 to 1:** the hero holds, still pinned, on the last frame. This is a short stick (about 200px of scrolling at 900px tall).
+- **On release:** the hero scrolls out like any other section, with its copy and footage fully visible. Only the resting bottom fade blends its lower edge into the cream metrics strip.
+
+(Revised 2026-10-18 after review on the page. The first version raised a cream wash over the whole stage during the outro, and the user preferred stick-then-scroll.)
 
 ### Fade
 
 - **The gradient:** an eased gradient of about 8 stops, from `#352F2A` to `#FAF8F5`. The extra stops prevent banding across the large change in brightness.
 - **At rest:** it covers the bottom 15% of the stage. That is the "fades smoothly" edge visible on load.
-- **During the outro:** between p = 0.85 and p = 1, the fade's height grows from 15% to 100% of the stage. The CSS sets `height: calc(15% + 85% * var(--fade, 0))`, where `--fade` is `fadeOpacity(p)` (see section 3).
+- **Size:** it stays at this size throughout, so nothing rises during the outro. It extends 2px past the stage edge, where the stage's overflow clips it. At a fractional height the last row would otherwise be only partly painted, leaving a 1px grey line where the hero meets the page.
 
 ### Copy
 
@@ -142,7 +144,6 @@ There are two modules, both bundled by Astro from a `<script>` in `Hero.astro`. 
 | `progress(scrollY, sectionTop, sectionHeight, stageHeight): number` | `(scrollY − sectionTop) / (sectionHeight − stageHeight)`, clamped to 0..1. Returns 0 when the denominator is ≤ 0. |
 | `viewportProgress(rectTop, rectHeight, viewportHeight): number` | Mobile. 0 when the box's top meets the viewport bottom, and 1 when its bottom meets the viewport top. Clamped. |
 | `frameIndex(p, count, end = 0.85): number` | `round(min(p / end, 1) × (count − 1))`. Returns 0 when `count ≤ 1`. |
-| `fadeOpacity(p, start = 0.85): number` | `smoothstep(start, 1, p)`, in 0..1. |
 | `loadOrder(count): number[]` | Every index in `0..count−1` exactly once, in passes with strides 16, 8, 4, 2, 1. Each pass skips indices already listed. Index 0 comes first and `count − 1` is in the first pass. |
 | `nearestLoaded(i, loaded: ArrayLike<unknown>): number` | The closest index whose slot is filled, preferring the lower index on ties. Returns −1 when nothing is loaded. |
 | `coverRect(srcW, srcH, dstW, dstH, focusX = 0.6)` | The source crop `{sx, sy, sw, sh}` that covers the destination at its aspect ratio. Any horizontal excess is cropped around `focusX`, and vertical excess around the centre. |
@@ -162,7 +163,7 @@ There are two modules, both bundled by Astro from a `<script>` in `Hero.astro`. 
 6. **Draw:**
    - `scroll` and `resize` events only mark the canvas for a redraw (passive listeners), and a single `requestAnimationFrame` callback does the work;
    - it computes `p` (with `progress` at `md` and up, or `viewportProgress` below), then `i = frameIndex(p, count)`, then `j = nearestLoaded(i, bitmaps)`;
-   - it draws `bitmaps[j]` with `coverRect` and sets the fade's `--fade` custom property to `fadeOpacity(p)`;
+   - it draws frame `j` with `coverRect` (frames are decoded `<img>` elements, not ImageBitmaps, so the browser can evict their pixels);
    - it skips the draw when `j` and the canvas size haven't changed.
 7. **Hand-over from the poster:** after the first draw, it adds `.is-live` to the stage, and the CSS hides the poster.
 8. **No console output** in production.
@@ -188,7 +189,6 @@ There are two modules, both bundled by Astro from a `<script>` in `Hero.astro`. 
 - **Cases:**
   - `progress` and `viewportProgress` at the boundaries, beyond them, and with a zero or negative denominator;
   - `frameIndex` at p = 0, 0.85 and 1, with p > 1, and with `count` = 1 and 2;
-  - `fadeOpacity` below 0.85, at 0.85, at 1, and its monotonic shape;
   - `loadOrder` for counts 1, 2, 17 and 120: a permutation of `0..n−1`, starting with 0, with `n − 1` in the first pass;
   - `nearestLoaded` with an empty list, with exactly the requested frame loaded, and with ties;
   - `coverRect` for a source wider than the destination, a taller one, an equal aspect ratio, and `focusX` at 0 and 1 (the crop stays inside the source).
@@ -211,7 +211,7 @@ There are two modules, both bundled by Astro from a `<script>` in `Hero.astro`. 
 Use Playwright against `astro preview`.
 
 - **Desktop, 1440×900:**
-  - screenshots at p ≈ 0, 0.5, 0.9 and 1, showing different frames, the fade rising, and a seamless hand-off to the metrics strip;
+  - screenshots at p ≈ 0, 0.5, 0.9 and 1, showing different frames, the hold on the last frame, then the hero scrolling out normally with no seam at its bottom edge;
   - no console errors;
   - "View on GitHub" can be clicked while pinned.
 - **Mobile, 390×844:** stacked, with no pinning and the footage above the copy.

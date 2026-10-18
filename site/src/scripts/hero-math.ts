@@ -38,12 +38,6 @@ export function frameIndex(p: number, count: number, end = 0.85): number {
   return Math.round(t * (count - 1));
 }
 
-/** Smoothstep from p = start to p = 1. */
-export function fadeOpacity(p: number, start = 0.85): number {
-  const t = clamp01((p - start) / (1 - start));
-  return t * t * (3 - 2 * t);
-}
-
 /** Every frame once: every 16th frame (plus the last), then every 8th, 4th, 2nd, then the rest. */
 export function loadOrder(count: number): number[] {
   const order: number[] = [];

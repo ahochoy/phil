@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   clamp01,
   coverRect,
-  fadeOpacity,
   frameIndex,
   loadOrder,
   nearestLoaded,
@@ -90,28 +89,6 @@ describe("frameIndex", () => {
 
   it("can use the whole range", () => {
     expect(frameIndex(0.5, 101, 1)).toBe(50);
-  });
-});
-
-describe("fadeOpacity", () => {
-  it("is 0 up to the start of the outro", () => {
-    expect(fadeOpacity(0)).toBe(0);
-    expect(fadeOpacity(0.85)).toBe(0);
-  });
-
-  it("is 1 at the end and beyond", () => {
-    expect(fadeOpacity(1)).toBe(1);
-    expect(fadeOpacity(1.4)).toBe(1);
-  });
-
-  it("is eased: half at the midpoint, never decreasing", () => {
-    expect(fadeOpacity(0.925)).toBeCloseTo(0.5);
-    let previous = -1;
-    for (let p = 0.8; p <= 1.0001; p += 0.01) {
-      const value = fadeOpacity(p);
-      expect(value).toBeGreaterThanOrEqual(previous);
-      previous = value;
-    }
   });
 });
 

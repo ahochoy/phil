@@ -132,9 +132,11 @@ const installCommand = "uv tool install --editable git+https://github.com/ahocho
     position: absolute;
     left: 0;
     right: 0;
-    bottom: 0;
+    /* 2px past the stage edge (clipped by its overflow): at a fractional height the fade's last
+       row is only partly painted, leaving a 1px grey line where the hero meets the page. */
+    bottom: -2px;
     z-index: 20;
-    height: calc(15% + 85% * var(--fade, 0));
+    height: calc(15% + 2px);
     pointer-events: none;
     background: linear-gradient(
       to bottom,
@@ -155,16 +157,6 @@ const installCommand = "uv tool install --editable git+https://github.com/ahocho
       rgb(250 248 245 / 0.987) 91.9%,
       rgb(250 248 245 / 1) 100%
     );
-  }
-
-  /* The ramp alone leaves its top transparent, so a solid cream layer dissolves in over the outro
-     and the stage is fully cream by the time the pin releases. */
-  .hero-fade::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: #faf8f5;
-    opacity: calc(var(--fade, 0) * var(--fade, 0));
   }
 
   @media (min-width: 768px) {

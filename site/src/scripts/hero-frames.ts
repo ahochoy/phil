@@ -1,7 +1,6 @@
 // Scroll-scrubbed frame player for the hero. Every failure path returns early and leaves the poster.
 import {
   coverRect,
-  fadeOpacity,
   frameIndex,
   loadOrder,
   nearestLoaded,
@@ -60,15 +59,14 @@ export function startHero(section: HTMLElement): void {
   const stage = section.querySelector<HTMLElement>(".hero-stage");
   const media = section.querySelector<HTMLElement>(".hero-media");
   const canvas = section.querySelector<HTMLCanvasElement>(".hero-canvas");
-  const fade = section.querySelector<HTMLElement>(".hero-fade");
-  if (!stage || !media || !canvas || !fade) return giveUp();
+  if (!stage || !media || !canvas) return giveUp();
 
   // Start fetching once the hero is within a viewport of the screen (in practice: immediately).
   const observer = new IntersectionObserver(
     (entries) => {
       if (entries.some((entry) => entry.isIntersecting)) {
         observer.disconnect();
-        void run(section, stage, media, canvas, fade);
+        void run(section, stage, media, canvas);
       }
     },
     { rootMargin: "100% 0px" },
@@ -81,7 +79,6 @@ async function run(
   stage: HTMLElement,
   media: HTMLElement,
   canvas: HTMLCanvasElement,
-  fade: HTMLElement,
 ): Promise<void> {
   let manifest: Manifest;
   try {
@@ -128,7 +125,6 @@ async function run(
   const draw = () => {
     queued = false;
     const p = currentProgress();
-    fade.style.setProperty("--fade", desktop.matches ? String(fadeOpacity(p)) : "0");
     const frame = nearestLoaded(frameIndex(p, manifest.count, desktop.matches ? 0.85 : 1), frames);
     if (frame < 0) return;
     if (frame === lastFrame && canvas.width === lastWidth && canvas.height === lastHeight) return;
