@@ -18,6 +18,15 @@ const {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script is:inline>
+      // Only scripted pages with motion allowed, on a connection the frames suit, get the tall,
+      // pinned hero (see Hero.astro). The player removes the class again if it gives up.
+      var connection = navigator.connection;
+      var slow = !!connection && (connection.saveData === true || /^(slow-2g|2g|3g)$/.test(connection.effectiveType || ""));
+      if (!slow && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        document.documentElement.classList.add("js-scrub");
+      }
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="generator" content={Astro.generator} />
 
