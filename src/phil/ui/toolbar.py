@@ -99,14 +99,7 @@ def _segments(view: ToolbarView, now: float) -> list[_Segment]:
             if view.budget_usd > 0:
                 shown += f" / ${view.budget_usd:.2f}"
             segs.append(_Segment(P_COST, [(budget_style(cost, view.budget_usd), shown)]))
-    elif view.step:
-        frame = SPINNER[int((now - view.step_started) * 8) % len(SPINNER)]
-        label = STEP_LABELS.get(view.step, view.step)
-        step = f"{frame} {label} · {elapsed(now - view.step_started)}"
-        if view.cancelling:
-            step += " (cancelling…)"
-        segs.append(_Segment(P_PROGRESS, [("", step)]))
-    else:
+    elif not view.step:  # a goal's step shows once, in its live row above the prompt
         segs.append(_Segment(P_PROGRESS, [("class:phil.muted", "Phil · type a goal, or /help")]))
     if not run:
         if view.model:
@@ -210,8 +203,9 @@ def render_live_rows(
             ])
     if view.step:
         label = STEP_LABELS.get(view.step, view.step)
+        cancelling = " (cancelling…)" if view.cancelling else ""
         rows.append([_Part(*_spin("class:phil.warn" if view.run else "class:phil.agent", view.step_started, now)),
-                     _Part("", f" {label} · {elapsed(now - view.step_started)}", 0)])
+                     _Part("", f" {label} · {elapsed(now - view.step_started)}{cancelling}", 0)])
     for job in view.side:
         rows.append([_Part(*_spin("class:phil.warn", job.started, now)),
                      _Part("", f" /btw · {job.label} · {elapsed(now - job.started)}", 0)])
