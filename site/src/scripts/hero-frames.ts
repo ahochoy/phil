@@ -39,6 +39,12 @@ function isManifest(value: unknown): value is Manifest {
   );
 }
 
+// Without a working player the pinned 250vh would be a dead scroll past a still poster,
+// so every bail-out drops the class that sets that height.
+function giveUp(): void {
+  document.documentElement.classList.remove("js-scrub");
+}
+
 async function loadBitmap(url: string): Promise<ImageBitmap> {
   const img = new Image();
   img.src = url;
@@ -47,12 +53,12 @@ async function loadBitmap(url: string): Promise<ImageBitmap> {
 }
 
 export function startHero(section: HTMLElement): void {
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches || slowConnection()) return;
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches || slowConnection()) return giveUp();
   const stage = section.querySelector<HTMLElement>(".hero-stage");
   const media = section.querySelector<HTMLElement>(".hero-media");
   const canvas = section.querySelector<HTMLCanvasElement>(".hero-canvas");
   const fade = section.querySelector<HTMLElement>(".hero-fade");
-  if (!stage || !media || !canvas || !fade) return;
+  if (!stage || !media || !canvas || !fade) return giveUp();
 
   // Start fetching once the hero is within a viewport of the screen (in practice: immediately).
   const observer = new IntersectionObserver(
@@ -77,16 +83,16 @@ async function run(
   let manifest: Manifest;
   try {
     const response = await fetch(MANIFEST_URL);
-    if (!response.ok) return;
+    if (!response.ok) return giveUp();
     const body: unknown = await response.json();
-    if (!isManifest(body)) return;
+    if (!isManifest(body)) return giveUp();
     manifest = body;
   } catch {
-    return;
+    return giveUp();
   }
 
   const ctx = canvas.getContext("2d");
-  if (!ctx) return;
+  if (!ctx) return giveUp();
 
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const width =
@@ -98,7 +104,7 @@ async function run(
   try {
     bitmaps[0] = await loadBitmap(url(0));
   } catch {
-    return;
+    return giveUp();
   }
 
   let queued = false;
