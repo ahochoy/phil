@@ -185,15 +185,24 @@ def _terminal(toolbar, live_row=None):
     return TerminalIO(toolbar, live_row=live_row)
 
 
-def _open_chat_line(n: int, chat, width: int) -> Text:
-    """`n. run label · run state · goal`, cut to the width with … (spec 2026-10-16 §6.2). A chat with
-    no run shows only its goal; `open elsewhere` sits before the goal so a cut can't hide it (R23)."""
+def _open_chat_line(n: int, chat, width: int, *, now: datetime | None = None) -> Text:
+    """`n. what it waits on · how long ago · goal`, cut to the width with … (spec 2026-10-16 §6.2).
+    What it waits on: its run (`label · run failed`), a goal an error stopped (`planning failed`), or
+    a plan (`plan to approve`). `open elsewhere` sits before the goal so a cut can't hide it (R23)."""
     from phil.ui.runs import label_for
+    from phil.ui.when import ago
 
     line = Text(f"{n}. ")
-    if chat.run_id:
+    if chat.failed:
+        line.append(f"{chat.failed} failed", "phil.warn")
+        line.append(" · ")
+    elif chat.run_id:
         line.append(label_for(chat.run_id, chat.run_name, first=False), "phil.id")
         line.append(f" · run {chat.run_state or 'unknown'} · ")
+    elif chat.stage == "approval":
+        line.append("plan to approve · ")
+    if chat.active_at is not None:
+        line.append(f"{ago(chat.active_at, now or datetime.now(UTC))} · ", "phil.muted")
     if chat.open_elsewhere:
         line.append("open elsewhere", "phil.warn")
         line.append(" · ")

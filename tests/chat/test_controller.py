@@ -63,7 +63,7 @@ def run_chat(repo, answers, scripts, config=None, submit=None, wake=None, choose
         if spawn is not None:
             spawn(root, run_id, mode, decision)
 
-    io = ChatIO(ask=ask, spawn=spawn_one)
+    io = ChatIO(ask=ask, spawn=spawn_one, prefill=lambda text: calls.append(("prefill", text)))
     if choose:
         io.choose = choose_one
     if submit is not None:

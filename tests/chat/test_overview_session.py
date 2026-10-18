@@ -92,6 +92,38 @@ def test_list_open_chats(git_repo):
     chats = list_open_chats(paths, conn)
     assert [c.id for c in chats] == [approving.id, running.id]
     assert chats[1].objective == "Add divide" and chats[1].run_state == "pending"
+    assert all(c.active_at is not None and c.active_at.tzinfo is not None for c in chats)
+
+
+def test_a_chat_whose_goal_failed_is_listed_with_that_goal(git_repo):
+    paths = ProjectPaths(resolve_repo(git_repo).slug)
+    conn = connect(paths.db_path)
+    failed = ChatSession.create(paths, now=lambda: datetime(2026, 10, 17, 18, 22, 44))
+    failed.save_state({"stage": "idle", "goal": None, "run_id": None,
+                       "failed_goal": {"text": "add an about section", "objective": None, "phase": "planning"}})
+    named = ChatSession.create(paths, now=lambda: datetime(2026, 10, 17, 18, 30, 0))
+    named.save_state({"stage": "idle", "failed_goal": {"text": "x", "objective": "Add an about section",
+                                                       "phase": "answer"}})
+    broken = ChatSession.create(paths, now=lambda: datetime(2026, 10, 17, 18, 40, 0))
+    broken.save_state({"stage": "idle", "failed_goal": "not a dict"})  # hand-edited: not listed
+    chats = {c.id: c for c in list_open_chats(paths, conn)}
+    assert set(chats) == {failed.id, named.id}
+    assert (chats[failed.id].failed, chats[failed.id].objective) == ("planning", "add an about section")
+    assert (chats[named.id].failed, chats[named.id].objective) == ("answer", "Add an about section")
+
+
+def test_open_chats_are_listed_most_recently_active_first(git_repo):
+    import os
+
+    paths = ProjectPaths(resolve_repo(git_repo).slug)
+    conn = connect(paths.db_path)
+    older = ChatSession.create(paths, now=lambda: datetime(2026, 10, 5, 8, 25, 50))  # created first...
+    older.save_state({"stage": "approval", "goal": {"objective": "Old"}, "plan": {"keyword": "OLD"}})
+    newer = ChatSession.create(paths, now=lambda: datetime(2026, 10, 16, 9, 0, 0))
+    newer.save_state({"stage": "approval", "goal": {"objective": "New"}, "plan": {"keyword": "NEW"}})
+    os.utime(newer.dir / "state.json", (1_760_000_000, 1_760_000_000))  # ...but used last
+    os.utime(older.dir / "state.json", (1_760_100_000, 1_760_100_000))
+    assert [c.id for c in list_open_chats(paths, conn)] == [older.id, newer.id]
 
 
 def _dead_pid() -> int:
@@ -157,4 +189,4 @@ def test_list_open_chats_marks_chats_open_elsewhere(git_repo):
     stale.save_state({"stage": "approval", "goal": {"objective": "Add mod"}, "plan": {"keyword": "MOD"}})
     (stale.dir / "chat.lock").write_text(str(_dead_pid()))
     chats = list_open_chats(paths, conn)
-    assert [(c.id, c.open_elsewhere) for c in chats] == [(elsewhere.id, True), (stale.id, False)]
+    assert {c.id: c.open_elsewhere for c in chats} == {elsewhere.id: True, stale.id: False}

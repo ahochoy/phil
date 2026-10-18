@@ -101,6 +101,20 @@ def test_a_modified_enter_starts_a_new_line_and_enter_sends(newline):
             terminal.close()
 
 
+def test_prefilled_text_starts_the_next_prompt_and_can_be_edited():
+    with create_pipe_input() as pipe:
+        terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())
+        io_ = terminal.chat_io(lambda *a: None)
+        try:
+            io_.prefill("add an about section")
+            pipe.send_text(" with a headshot\r")  # typed at the end, then Enter
+            assert _ask(io_) == "add an about section with a headshot"
+            pipe.send_text("next\r")
+            assert _ask(io_) == "next"  # only the next prompt starts with it
+        finally:
+            terminal.close()
+
+
 def test_pasted_lines_stay_one_message():
     with create_pipe_input() as pipe:
         terminal = TerminalIO(lambda: "", input=pipe, output=DummyOutput())

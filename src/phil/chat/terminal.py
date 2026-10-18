@@ -161,7 +161,12 @@ class TerminalIO:
             return []
 
     def chat_io(self, spawn: Spawn) -> ChatIO:
-        return ChatIO(ask=self.ask, spawn=spawn, wake=self.wake, submit=self.submit, choose=self.choose)
+        return ChatIO(ask=self.ask, spawn=spawn, wake=self.wake, submit=self.submit, choose=self.choose,
+                      prefill=self.prefill)
+
+    def prefill(self, text: str) -> None:
+        """Start the next typed prompt with `text`, the cursor at its end, to send or edit."""
+        self._carried = Document(text, cursor_position=len(text))
 
     def ask(self, prompt: str) -> object:
         with self._lock:

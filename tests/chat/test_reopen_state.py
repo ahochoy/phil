@@ -147,6 +147,41 @@ def test_an_older_states_missing_approach_restores_as_none(calc_repo):
     assert "A full-width band above the footer." not in architect
 
 
+def _state(calc_repo) -> dict:
+    return json.loads((session_dir(calc_repo) / "state.json").read_text())
+
+
+def test_a_goal_whose_intake_failed_is_kept_and_back_in_the_prompt_on_reopen(calc_repo):
+    text, *_ = run_chat(calc_repo, ["add subtract"], {"intake": [RuntimeError("provider down")]})
+    assert "Something went wrong inside Phil" in text
+    assert _state(calc_repo)["failed_goal"] == {"text": "add subtract", "objective": None, "phase": "planning"}
+    calls = []
+    text, spawned, runs, factory, prompts = reopen(calc_repo, ["add subtract", "n"], FULL_SCRIPT, calls=calls)
+    flat = " ".join(text.split())
+    assert "Planning stopped with an error last time: add subtract" in flat
+    assert "It's back in the prompt: press Enter to try again, or edit it first." in flat
+    assert calls[0] == ("prefill", "add subtract") and calls[1] == ("ask", "you › ")
+    assert "Plan CALC v1" in text  # sent again, it plans
+    assert _state(calc_repo)["failed_goal"] is None  # a goal that starts clears it
+
+
+def test_a_goal_whose_planning_failed_shows_its_objective_on_reopen(calc_repo):
+    run_chat(calc_repo, ["add subtract"], {"intake": [goal()], "architect": [RuntimeError("provider down")]})
+    assert _state(calc_repo)["failed_goal"] == {
+        "text": "add subtract", "objective": "Add subtract to calc", "phase": "planning",
+    }
+    calls = []
+    text, *_ = reopen(calc_repo, [None], calls=calls)
+    assert "Planning stopped with an error last time: Add subtract to calc" in " ".join(text.split())
+    assert ("prefill", "add subtract") in calls
+
+
+def test_a_new_goal_after_a_failure_clears_the_failed_goal(calc_repo):
+    run_chat(calc_repo, ["add subtract", "add divide", "n"],
+             {"intake": [RuntimeError("provider down"), goal()], "architect": [plan()], "critic": [critique()]})
+    assert _state(calc_repo)["failed_goal"] is None
+
+
 def test_state_and_transcript_write_failures_warn_once(calc_repo, monkeypatch):
     def boom(self, *a, **k):
         raise OSError("disk full")
