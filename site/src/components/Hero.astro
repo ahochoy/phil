@@ -1,53 +1,182 @@
 ---
 import { SITE_CONFIG } from "../config";
+
+const installCommand = "uv tool install --editable git+https://github.com/ahochoy/phil.git";
 ---
 
-<section class="relative pt-16 pb-20 md:pt-24 md:pb-28 overflow-hidden bg-[#352F2A] text-[#FAF8F5] border-b border-[#4D453E]">
-  <div class="absolute top-0 left-1/2 -translate-x-1/2 w-[700px] h-[350px] bg-[#C26910]/10 blur-[120px] rounded-full pointer-events-none"></div>
-
-  <div class="max-w-5xl mx-auto px-6 text-center relative z-10">
-    <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-[#554C43] bg-[#433B34] text-[12px] font-mono font-medium text-[#D5CCC0] mb-8 shadow-xs">
-      <span class="w-2 h-2 rounded-full bg-[#F59E0B] animate-pulse"></span>
-      <span class="text-[#FAF8F5] font-serif italic text-sm">philia (φιλία)</span>
-      <span class="text-[#8C8074]">·</span>
-      <span class="tracking-wide uppercase text-[11px] text-[#D5CCC0]">a coding agent experiment</span>
+<section class="hero-scroll text-[#FAF8F5]">
+  <div class="hero-stage">
+    <div class="hero-media" aria-hidden="true">
+      <img class="hero-poster" src="/hero/poster.webp" alt="" width="1600" height="900" fetchpriority="high" decoding="async" />
+      <canvas class="hero-canvas"></canvas>
     </div>
 
-    <h1 class="font-serif text-4xl sm:text-5xl md:text-6xl lg:text-[68px] font-normal tracking-tight text-[#FAF8F5] leading-[1.12] mb-6 max-w-4xl mx-auto">
-      I built a coding agent to find out where the <span class="italic font-serif text-[#F59E0B]">tokens go</span>.
-    </h1>
+    <div class="hero-copy-wrap">
+      <div class="hero-copy">
+        <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-[#554C43] bg-[#433B34] text-[12px] font-mono font-medium text-[#D5CCC0] mb-7 shadow-xs">
+          <span class="w-2 h-2 rounded-full bg-[#F59E0B] animate-pulse"></span>
+          <span class="text-[#FAF8F5] font-serif italic text-sm">philia (φιλία)</span>
+          <span class="text-[#8C8074]">·</span>
+          <span class="tracking-wide uppercase text-[11px] text-[#D5CCC0]">a coding agent experiment</span>
+        </div>
 
-    <p class="text-lg md:text-xl text-[#D5CCC0] max-w-2xl mx-auto font-normal leading-relaxed mb-10">
-      Phil is a terminal coding agent built on <span class="text-[#FAF8F5] font-medium">LangGraph</span> and <span class="text-[#FAF8F5] font-medium">DeepAgents</span>. It plans with you, works in its own git worktree, and stops at a budget you set. Every change I make to it runs against a live benchmark, and I write up what I learn.
-    </p>
+        <h1 class="font-serif text-4xl sm:text-5xl lg:text-[52px] font-normal tracking-tight text-[#FAF8F5] leading-[1.12] mb-7">
+          I built a coding agent to find out where the <span class="italic font-serif text-[#F59E0B]">tokens go</span>.
+        </h1>
 
-    <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
-      <a
-        href={SITE_CONFIG.links.github}
-        target="_blank"
-        rel="noopener noreferrer"
-        class="w-full sm:w-auto inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-full bg-[#FAF8F5] text-[#26221E] text-sm font-medium hover:bg-[#EAE4DA] shadow-md hover:shadow-lg transition-all"
-      >
-        <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
-          <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
-        </svg>
-        <span>View on GitHub</span>
-      </a>
+        <div class="flex flex-col sm:flex-row gap-3 mb-7">
+          <a
+            href={SITE_CONFIG.links.github}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="w-full sm:w-auto inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-full bg-[#FAF8F5] text-[#26221E] text-sm font-medium hover:bg-[#EAE4DA] shadow-md hover:shadow-lg transition-all"
+          >
+            <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24" aria-hidden="true">
+              <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
+            </svg>
+            <span>View on GitHub</span>
+          </a>
 
-      <a
-        href="#origin"
-        class="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-full border border-[#554C43] bg-[#433B34] text-[#FAF8F5] text-sm font-medium hover:bg-[#4E443C] transition-all"
-      >
-        <span>How it started</span>
-        <span class="text-[#B8ADA0]">↓</span>
-      </a>
+          <a
+            href="#origin"
+            class="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-full border border-[#554C43] bg-[#433B34] text-[#FAF8F5] text-sm font-medium hover:bg-[#4E443C] transition-all"
+          >
+            <span>How it started</span>
+            <span class="text-[#B8ADA0]">↓</span>
+          </a>
+        </div>
+
+        <p class="text-base md:text-lg text-[#D5CCC0] font-normal leading-relaxed mb-7">
+          Phil is a terminal coding agent built on <span class="text-[#FAF8F5] font-medium">LangGraph</span> and <span class="text-[#FAF8F5] font-medium">DeepAgents</span>. It plans with you, works in its own git worktree, and stops at a budget you set. Every change I make to it runs against a live benchmark, and I write up what I learn.
+        </p>
+
+        <div class="flex items-center gap-3 pl-4 pr-1.5 py-1.5 rounded-full border border-[#4D453E] bg-[#2A2521] font-mono text-xs text-[#FAF8F5] shadow-inner">
+          <span class="text-[#F59E0B] font-bold" aria-hidden="true">&gt;</span>
+          <code class="select-all truncate min-w-0 flex-1">{installCommand}</code>
+          <button
+            type="button"
+            hidden
+            data-copy={installCommand}
+            class="shrink-0 inline-flex items-center px-3 py-1.5 rounded-full border border-[#554C43] bg-[#433B34] text-[11px] text-[#D5CCC0] hover:text-[#FAF8F5] hover:border-[#6B6055] transition-colors"
+          >Copy</button>
+        </div>
+      </div>
     </div>
 
-    <!-- Quick Terminal Install Snippet -->
-    <div class="inline-flex items-center gap-3 px-4 py-2.5 rounded-xl border border-[#4D453E] bg-[#2A2521] font-mono text-xs text-[#FAF8F5] shadow-inner mb-16">
-      <span class="text-[#F59E0B] font-bold">$</span>
-      <span class="select-all">uv tool install --editable git+https://github.com/ahochoy/phil.git</span>
-      <span class="text-[11px] text-[#8C8074] hidden sm:inline">(editable CLI)</span>
-    </div>
+    <div class="hero-fade" aria-hidden="true"></div>
   </div>
 </section>
+
+<style>
+  .hero-scroll {
+    position: relative;
+    background: #352f2a;
+  }
+
+  .hero-stage {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Mobile: footage on top at 16:10, fading out at the bottom. */
+  .hero-media {
+    position: relative;
+    order: -1;
+    width: 100%;
+    aspect-ratio: 16 / 10;
+    -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent);
+    mask-image: linear-gradient(to bottom, #000 70%, transparent);
+  }
+
+  .hero-poster,
+  .hero-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  .hero-poster {
+    object-fit: cover;
+    object-position: 60% center;
+  }
+
+  .hero-stage.is-live .hero-poster {
+    visibility: hidden;
+  }
+
+  .hero-copy-wrap {
+    position: relative;
+    z-index: 10;
+    width: 100%;
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: 2.5rem 1.5rem 6rem;
+  }
+
+  /* Eased cream ramp: composited over taupe and footage it lands on #FAF8F5 without banding. */
+  .hero-fade {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    height: calc(15% + 85% * var(--fade, 0));
+    pointer-events: none;
+    background: linear-gradient(
+      to bottom,
+      rgb(250 248 245 / 0) 0%,
+      rgb(250 248 245 / 0.013) 8.1%,
+      rgb(250 248 245 / 0.049) 15.5%,
+      rgb(250 248 245 / 0.104) 22.5%,
+      rgb(250 248 245 / 0.175) 29%,
+      rgb(250 248 245 / 0.259) 35.3%,
+      rgb(250 248 245 / 0.352) 41.2%,
+      rgb(250 248 245 / 0.45) 47.1%,
+      rgb(250 248 245 / 0.55) 52.9%,
+      rgb(250 248 245 / 0.648) 58.8%,
+      rgb(250 248 245 / 0.741) 64.7%,
+      rgb(250 248 245 / 0.825) 71%,
+      rgb(250 248 245 / 0.896) 77.5%,
+      rgb(250 248 245 / 0.951) 84.5%,
+      rgb(250 248 245 / 0.987) 91.9%,
+      rgb(250 248 245 / 1) 100%
+    );
+  }
+
+  @media (min-width: 768px) {
+    :global(html.js-scrub) .hero-scroll {
+      height: 250vh;
+    }
+
+    .hero-stage {
+      position: sticky;
+      top: 4.5rem;
+      height: calc(100svh - 4.5rem);
+      min-height: 600px;
+      justify-content: center;
+    }
+
+    /* Composition B: footage bleeds across the right 68% and dissolves leftward behind the copy. */
+    .hero-media {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 68%;
+      aspect-ratio: auto;
+      -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 38%);
+      mask-image: linear-gradient(to right, transparent 0%, #000 38%);
+    }
+
+    .hero-copy-wrap {
+      padding: 0 1.5rem;
+    }
+
+    .hero-copy {
+      width: 46%;
+    }
+  }
+</style>
