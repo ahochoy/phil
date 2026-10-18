@@ -157,6 +157,16 @@ const installCommand = "uv tool install --editable git+https://github.com/ahocho
     );
   }
 
+  /* The ramp alone leaves its top transparent, so a solid cream layer dissolves in over the outro
+     and the stage is fully cream by the time the pin releases. */
+  .hero-fade::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: #faf8f5;
+    opacity: calc(var(--fade, 0) * var(--fade, 0));
+  }
+
   @media (min-width: 768px) {
     :global(html.js-scrub) .hero-scroll {
       height: 250vh;
