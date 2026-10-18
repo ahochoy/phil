@@ -67,6 +67,17 @@ const installCommand = "uv tool install --editable git+https://github.com/ahocho
   </div>
 </section>
 
+<script>
+  import { startHero } from "../scripts/hero-frames";
+  import { setupCopyButtons } from "../scripts/copy-command";
+
+  const section = document.querySelector<HTMLElement>(".hero-scroll");
+  if (section) {
+    setupCopyButtons(section);
+    startHero(section);
+  }
+</script>
+
 <style>
   .hero-scroll {
     position: relative;
