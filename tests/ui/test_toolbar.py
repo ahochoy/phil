@@ -55,11 +55,18 @@ def test_idle():
     assert text(view) == "calc @ main │ Phil · type a goal, or /help │ chat $0.06"
 
 
-def test_working_on_a_goal():
+def test_working_on_a_goal_leaves_the_step_to_the_live_row():
+    """The step (`⠋ Architect drafting · 12s`) shows once, in the live row above the prompt."""
     view = ToolbarView(repo="calc", branch="main", step="architect", step_started=52.0,
                        model=("high", "claude-sonnet-5"), cost=(0.06, "reported"))
-    out = text(view)
-    assert out.startswith("calc @ main │ ") and "Architect drafting · 12s │ high·claude-sonnet-5 │ chat $0.06" in out
+    assert text(view) == "calc @ main │ high·claude-sonnet-5 │ chat $0.06"
+    assert lines(view, now=64.0)[0][2:] == "Architect drafting · 12s"
+
+
+def test_a_cancelling_step_says_so_in_its_live_row():
+    view = ToolbarView(step="architect", step_started=88.0, cancelling=True)
+    assert lines(view)[0][2:] == "Architect drafting · 12s (cancelling…)"
+    assert "cancelling" not in text(view)
 
 
 def test_paused_shows_only_the_place_and_the_notice():
