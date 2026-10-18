@@ -49,27 +49,5 @@ import { SITE_CONFIG } from "../config";
       <span class="select-all">uv tool install --editable git+https://github.com/ahochoy/phil.git</span>
       <span class="text-[11px] text-[#8C8074] hidden sm:inline">(editable CLI)</span>
     </div>
-
-    <!-- Metrics -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-4xl mx-auto pt-6 border-t border-[#4D453E]">
-      {SITE_CONFIG.metrics.map((item, idx) => (
-        <div class="flex flex-col items-center p-3 text-center">
-          <div class="flex items-center gap-1.5">
-            <span class={`w-1.5 h-1.5 rounded-full ${
-              idx === 0 ? "bg-[#F59E0B]" :
-              idx === 1 ? "bg-[#10B981]" :
-              idx === 2 ? "bg-[#A855F7]" : "bg-[#F59E0B]"
-            }`}></span>
-            <span class="font-serif text-2xl md:text-3xl font-medium text-[#FAF8F5]">
-              {item.value}
-            </span>
-          </div>
-          <span class="text-xs font-semibold text-[#EFE9E2] mt-1 font-sans">{item.label}</span>
-          <span class="text-[11px] text-[#B8ADA0] mt-0.5 max-w-[160px] leading-tight font-sans">
-            {item.sublabel}
-          </span>
-        </div>
-      ))}
-    </div>
   </div>
 </section>
