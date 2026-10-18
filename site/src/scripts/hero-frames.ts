@@ -45,11 +45,14 @@ function giveUp(): void {
   document.documentElement.classList.remove("js-scrub");
 }
 
-async function loadBitmap(url: string): Promise<ImageBitmap> {
+// Frames stay as decoded <img> elements rather than ImageBitmaps: 120 bitmaps at 1600 px pin
+// ~690 MB, enough to crash an iPad tab, while the browser may evict an image's decoded pixels
+// under memory pressure and re-decode it when drawn.
+async function loadFrame(url: string): Promise<HTMLImageElement> {
   const img = new Image();
   img.src = url;
   await img.decode();
-  return createImageBitmap(img);
+  return img;
 }
 
 export function startHero(section: HTMLElement): void {
@@ -98,11 +101,11 @@ async function run(
   const width =
     canvas.clientWidth * dpr > LARGE_FRAME_THRESHOLD ? Math.max(...manifest.widths) : Math.min(...manifest.widths);
   const url = (i: number) => `/hero/frames/${width}/${String(i + 1).padStart(manifest.pad, "0")}.webp`;
-  const bitmaps: (ImageBitmap | undefined)[] = new Array(manifest.count);
+  const frames: (HTMLImageElement | undefined)[] = new Array(manifest.count);
   const desktop = matchMedia(DESKTOP);
 
   try {
-    bitmaps[0] = await loadBitmap(url(0));
+    frames[0] = await loadFrame(url(0));
   } catch {
     return giveUp();
   }
@@ -126,12 +129,12 @@ async function run(
     queued = false;
     const p = currentProgress();
     fade.style.setProperty("--fade", desktop.matches ? String(fadeOpacity(p)) : "0");
-    const frame = nearestLoaded(frameIndex(p, manifest.count, desktop.matches ? 0.85 : 1), bitmaps);
+    const frame = nearestLoaded(frameIndex(p, manifest.count, desktop.matches ? 0.85 : 1), frames);
     if (frame < 0) return;
     if (frame === lastFrame && canvas.width === lastWidth && canvas.height === lastHeight) return;
-    const bitmap = bitmaps[frame]!;
-    const crop = coverRect(bitmap.width, bitmap.height, canvas.width, canvas.height);
-    ctx.drawImage(bitmap, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, canvas.width, canvas.height);
+    const img = frames[frame]!;
+    const crop = coverRect(img.naturalWidth, img.naturalHeight, canvas.width, canvas.height);
+    ctx.drawImage(img, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, canvas.width, canvas.height);
     lastFrame = frame;
     lastWidth = canvas.width;
     lastHeight = canvas.height;
@@ -167,7 +170,7 @@ async function run(
     while (next < order.length) {
       const i = order[next++];
       try {
-        bitmaps[i] = await loadBitmap(url(i));
+        frames[i] = await loadFrame(url(i));
         schedule();
       } catch {
         // A missing frame is covered by its neighbours via nearestLoaded.
