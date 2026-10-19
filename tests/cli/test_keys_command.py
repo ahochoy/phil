@@ -98,6 +98,26 @@ def test_keys_list_prints_a_pending_source_like_any_other(git_repo, monkeypatch)
     assert "sk-TESTSECRET-123" not in result.output
 
 
+def test_keys_list_without_a_key_store_reports_missing(git_repo, monkeypatch):
+    # The release smoke test runs `phil keys list` on CI runners, which, like headless Linux
+    # machines, may have no usable key store (spec 2026-10-18 §5.2).
+    import keyring
+    from keyring.backends.fail import Keyring as FailKeyring
+
+    wide(monkeypatch)
+    (git_repo / "phil.toml").write_text('[models]\nhigh = "openai:gpt"\nlow = "openai:gpt"\n')
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    previous = keyring.get_keyring()
+    keyring.set_keyring(FailKeyring())
+    try:
+        result = runner.invoke(cli.app, ["--repo", str(git_repo), "keys", "list"])
+    finally:
+        keyring.set_keyring(previous)
+    assert result.exit_code == 0, result.output
+    assert "openai  OPENAI_API_KEY  missing" in result.output.splitlines()
+
+
 def test_keys_remove_prints_both_messages(git_repo, monkeypatch):
     wide(monkeypatch)
     result = runner.invoke(cli.app, ["--repo", str(git_repo), "keys", "remove", "openai"])
