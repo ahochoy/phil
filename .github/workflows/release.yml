@@ -116,7 +116,8 @@ jobs:
         run: |
           export PHIL_HOME="$RUNNER_TEMP/phil-home"
           cd "$RUNNER_TEMP"
-          test "$(phil --version)" = "$VERSION"
+          # Windows' Python writes "\r\n" to the pipe; strip the \r before comparing.
+          test "$(phil --version | tr -d '\r')" = "$VERSION"
           phil --help > /dev/null
           phil keys list
 
@@ -136,13 +137,15 @@ jobs:
           name: dist
           path: dist
 
+      # --check-url skips files the index already has, so a re-run after a partial upload
+      # finishes the release instead of failing on "file already exists".
       - name: Publish to PyPI
         if: github.event_name == 'push'
-        run: uv publish --trusted-publishing always dist/*
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/ dist/*
 
       - name: Publish to TestPyPI
         if: github.event_name == 'workflow_dispatch'
-        run: uv publish --trusted-publishing always --publish-url https://test.pypi.org/legacy/ dist/*
+        run: uv publish --trusted-publishing always --publish-url https://test.pypi.org/legacy/ --check-url https://test.pypi.org/simple/ dist/*
 
   verify:
     needs: [check, publish]
@@ -180,7 +183,7 @@ jobs:
       - name: Run it
         run: |
           export PHIL_HOME="$RUNNER_TEMP/phil-home"
-          test "$(phil --version)" = "$VERSION"
+          test "$(phil --version | tr -d '\r')" = "$VERSION"
 
   github-release:
     needs: [check, verify]

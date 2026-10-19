@@ -6,15 +6,15 @@
     uv run pytest
     uv run phil --version
 
-To use your working copy as `phil` from any repo, install it as an editable tool. Code changes
-are picked up automatically; reinstall after dependencies change:
-
-    uv tool install --editable . --force
-
 The distribution is named `phil-agent`. If you installed an editable `phil` tool before the
 rename, remove it first, or the two tools clash over the `phil` command:
 
     uv tool uninstall phil
+
+To use your working copy as `phil` from any repo, install it as an editable tool. Code changes
+are picked up automatically; reinstall after dependencies change:
+
+    uv tool install --editable . --force
 
 The original LangGraph prototype is kept in `prototype/` for reference and is not part of the package.
 

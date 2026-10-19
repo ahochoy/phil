@@ -26,6 +26,20 @@ def test_a_called_test_run_never_cancels_the_main_branch_run():
     assert "group: tests-${{ github.workflow }}-${{ github.ref }}" in TESTS
 
 
+def test_version_checks_ignore_a_windows_carriage_return():
+    # On windows-latest, Python writes "0.1.0\r\n" to the pipe; the comparison must not see the \r.
+    assert '"$(phil --version)"' not in RELEASE
+    assert RELEASE.count("\"$(phil --version | tr -d '\\r')\"") == 2
+
+
+def test_a_rerun_skips_files_already_uploaded():
+    # A publish that uploaded the wheel but not the sdist must be re-runnable without a new version.
+    publishes = [line for line in RELEASE.splitlines() if "uv publish" in line]
+    assert len(publishes) == 2
+    assert "--check-url https://pypi.org/simple/" in publishes[0]
+    assert "--check-url https://test.pypi.org/simple/" in publishes[1]
+
+
 def test_every_action_is_pinned_to_a_commit():
     uses = re.findall(r"uses: ([^\s]+)", RELEASE)
     external = [u for u in uses if not u.startswith("./")]
