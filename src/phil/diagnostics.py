@@ -9,6 +9,7 @@ import logging
 import os
 import platform
 import sys
+import threading
 import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -26,7 +27,7 @@ CRASH_KEEP = 20
 _FORMAT = "%(asctime)s %(levelname)s %(threadName)s %(name)s: %(message)s"
 
 # What `configure` installed, so a second call or `reset` can take it out again.
-_state: dict = {"handlers": [], "file": None, "level": None, "raise_exceptions": True}
+_state: dict = {"handlers": [], "file": None, "level": None, "raise_exceptions": True, "hooks": None}
 
 
 def debug_enabled() -> bool:
@@ -45,6 +46,44 @@ class _Levels(logging.Filter):
         return record.levelno >= (self.phil_level if is_phil else self.other_level)
 
 
+class _FileHandler(logging.FileHandler):
+    """A `FileHandler` whose failure to open its file is handled like any other write failure.
+
+    The plain one opens the file inside `emit` unguarded, so an unwritable chat log would raise
+    into whatever code was logging.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            super().emit(record)
+        except Exception:
+            self.handleError(record)
+
+
+def _thread_hook(args) -> None:
+    """Log a thread's uncaught exception instead of printing it above the prompt."""
+    if args.exc_type is SystemExit:
+        return
+    name = args.thread.name if args.thread is not None else "?"
+    logging.getLogger("phil.diagnostics").error(
+        "uncaught exception in thread %s", name, exc_info=(args.exc_type, args.exc_value, args.exc_traceback)
+    )
+
+
+def _unraisable_hook(unraisable) -> None:
+    """Log an exception Python can't raise (a finalizer's, a callback's) instead of printing it."""
+    try:
+        where = repr(unraisable.object)
+    except Exception:
+        where = "<unprintable object>"
+    logging.getLogger("phil.diagnostics").error(
+        "%s: %s",
+        unraisable.err_msg or "Exception ignored in",
+        where,
+        exc_info=(unraisable.exc_type, unraisable.exc_value, unraisable.exc_traceback),
+    )
+
+
 def _file_handler(path: Path, *, rotate: bool) -> logging.Handler:
     """A file handler on `path`, or a `NullHandler` when its directory can't be made."""
     try:
@@ -54,7 +93,7 @@ def _file_handler(path: Path, *, rotate: bool) -> logging.Handler:
                 path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8", delay=True
             )
         else:
-            handler = logging.FileHandler(path, encoding="utf-8", delay=True)
+            handler = _FileHandler(path, encoding="utf-8", delay=True)
     except OSError:
         return logging.NullHandler()
     handler.setFormatter(logging.Formatter(_FORMAT))
@@ -81,7 +120,13 @@ def configure(log_path: Path) -> None:
         stderr.setFormatter(logging.Formatter(_FORMAT))
         stderr.addFilter(_Levels(logging.DEBUG, logging.WARNING))
         handlers.append(stderr)
-    _state.update(handlers=handlers, file=file, level=root.level, raise_exceptions=logging.raiseExceptions)
+    _state.update(
+        handlers=handlers,
+        file=file,
+        level=root.level,
+        raise_exceptions=logging.raiseExceptions,
+        hooks=(threading.excepthook, sys.unraisablehook),
+    )
     for handler in handlers:
         root.addHandler(handler)
     root.setLevel(logging.DEBUG if debug else logging.INFO)
@@ -89,6 +134,8 @@ def configure(log_path: Path) -> None:
     # "--- Logging error ---" and a traceback to stderr.
     logging.raiseExceptions = debug
     logging.captureWarnings(True)
+    threading.excepthook = _thread_hook
+    sys.unraisablehook = _unraisable_hook
 
 
 def reset() -> None:
@@ -102,6 +149,7 @@ def reset() -> None:
     root.setLevel(_state["level"])
     logging.raiseExceptions = _state["raise_exceptions"]
     logging.captureWarnings(False)
+    threading.excepthook, sys.unraisablehook = _state["hooks"]
     _state.update(handlers=[], file=None)
 
 
@@ -111,20 +159,22 @@ def redirect(log_path: Path) -> Iterator[None]:
     root = logging.getLogger()
     previous = _state["file"]
     handler = _file_handler(log_path, rotate=False)
+    # Add before removing, both ways: a moment with no handler would send a watcher thread's
+    # warning to Python's last-resort handler, on stderr.
+    root.addHandler(handler)
     if previous is not None:
         root.removeHandler(previous)
         _state["handlers"] = [handler if h is previous else h for h in _state["handlers"]]
         _state["file"] = handler
-    root.addHandler(handler)
     try:
         yield
     finally:
-        root.removeHandler(handler)
-        handler.close()
         if previous is not None:
             root.addHandler(previous)
             _state["handlers"] = [previous if h is handler else h for h in _state["handlers"]]
             _state["file"] = previous
+        root.removeHandler(handler)
+        handler.close()
 
 
 def crash(exc: BaseException, command: str | None) -> Path | None:

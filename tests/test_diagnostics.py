@@ -1,4 +1,5 @@
 import logging
+import sys
 import warnings
 from pathlib import Path
 
@@ -97,6 +98,74 @@ def test_a_log_that_cannot_be_written_stays_silent(tmp_path, capfd):
     diagnostics.configure(tmp_path / "phil.log")
     logging.getLogger("somelib").warning("nowhere to go")
     assert capfd.readouterr().err == ""
+
+
+def test_a_redirected_log_that_cannot_be_opened_stays_silent(tmp_path, capfd):
+    diagnostics.configure(tmp_path / "phil.log")
+    (tmp_path / "chat").mkdir()
+    (tmp_path / "chat" / "phil.log").mkdir()  # opening it for append fails at the first write
+    with diagnostics.redirect(tmp_path / "chat" / "phil.log"):
+        logging.getLogger("phil.watch").warning("watcher failed")  # must not raise
+    assert capfd.readouterr().err == ""
+
+
+def test_an_uncaught_thread_exception_goes_to_the_log(tmp_path, capfd):
+    import threading
+
+    diagnostics.configure(tmp_path / "phil.log")
+
+    def explode():
+        raise RuntimeError("thread broke")
+
+    thread = threading.Thread(target=explode, name="watcher")
+    thread.start()
+    thread.join(5)
+    assert capfd.readouterr().err == ""
+    log = (tmp_path / "phil.log").read_text(encoding="utf-8")
+    assert "watcher" in log and "RuntimeError: thread broke" in log
+
+
+def test_an_exception_in_a_finalizer_goes_to_the_log(tmp_path, capfd):
+    import gc
+
+    diagnostics.configure(tmp_path / "phil.log")
+
+    class Leaky:
+        def __del__(self):
+            raise RuntimeError("finalizer broke")
+
+    Leaky()
+    gc.collect()
+    assert capfd.readouterr().err == ""
+    assert "RuntimeError: finalizer broke" in (tmp_path / "phil.log").read_text(encoding="utf-8")
+
+
+def test_reset_restores_the_exception_hooks(tmp_path):
+    import threading
+
+    thread_hook, unraisable_hook = threading.excepthook, sys.unraisablehook
+    diagnostics.configure(tmp_path / "phil.log")
+    assert threading.excepthook is not thread_hook and sys.unraisablehook is not unraisable_hook
+    diagnostics.reset()
+    assert threading.excepthook is thread_hook and sys.unraisablehook is unraisable_hook
+
+
+def test_redirect_never_leaves_the_root_logger_without_a_file_handler(tmp_path, monkeypatch):
+    diagnostics.configure(tmp_path / "phil.log")
+    root = logging.getLogger()
+    counts = []
+    remove = root.removeHandler
+
+    def counting_remove(handler):
+        # Only Phil's own handlers count: pytest's capture and log-file handlers also sit on the root.
+        counts.append(sum(any(isinstance(f, diagnostics._Levels) for f in h.filters) for h in root.handlers))
+        remove(handler)
+
+    monkeypatch.setattr(root, "removeHandler", counting_remove)
+    with diagnostics.redirect(tmp_path / "chat" / "phil.log"):
+        pass
+    # Each swap adds the new handler before it removes the old one.
+    assert counts and min(counts) >= 2
 
 
 def test_crash_writes_a_file_without_locals(tmp_path, monkeypatch):
