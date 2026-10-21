@@ -1,6 +1,5 @@
 import getpass
 import importlib
-import importlib.metadata
 import json
 import logging
 import os
@@ -257,10 +256,7 @@ def _banner_facts(info, config, conn, paths, base_label, header_sha, base, sessi
     from phil.ui.runs import run_label
     from phil.ui.toolbar import short_model
 
-    try:
-        version = importlib.metadata.version("phil")
-    except Exception:
-        version = "dev"
+    version = __version__
     try:
         repo = info.root.name
     except Exception:

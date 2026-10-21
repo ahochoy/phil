@@ -1,4 +1,3 @@
-import importlib.metadata
 from datetime import datetime
 from pathlib import Path
 
@@ -255,11 +254,8 @@ def test_the_banner_has_no_parked_count(calc_repo):
     assert " · 1 parked" not in result.output  # the banner's old form; the status bar keeps its own count
 
 
-def test_version_falls_back_to_dev(calc_repo, monkeypatch):
-    def missing(name):
-        raise importlib.metadata.PackageNotFoundError(name)
-
-    monkeypatch.setattr(importlib.metadata, "version", missing)
+def test_the_banner_shows_phils_version(calc_repo, monkeypatch):
+    monkeypatch.setattr(cli, "__version__", "9.8.7")
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="")
     assert result.exit_code == 0, result.output
-    assert "Phil vdev" in result.output
+    assert "Phil v9.8.7" in result.output

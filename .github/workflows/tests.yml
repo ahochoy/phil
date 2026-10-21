@@ -1,19 +1,22 @@
 name: tests
 
-# Phil's offline test suite on every pull request and every push to main. Live and bench tests
-# (real model calls) stay opt-in, so this needs no secrets, and fork PRs can't reach any.
+# Phil's offline test suite on every pull request, every push to main, and every release. Live and
+# bench tests (real model calls) stay opt-in, so this needs no secrets, and fork PRs can't reach any.
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main]
+  # The release workflow runs this same suite before it builds anything.
+  workflow_call:
 
 permissions:
   contents: read
 
-# A newer push to the same PR cancels the run in progress.
+# A newer push to the same PR cancels the run in progress. The workflow name keeps a release's
+# call to this suite out of the group a push to main uses.
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
