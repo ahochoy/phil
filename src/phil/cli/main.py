@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 # Python's last-resort handler would write them to stderr. They still propagate to `phil`.
 logger.addHandler(logging.NullHandler())
 
-app = typer.Typer(add_completion=False, help="Phil: a contract-driven coding agent.")
+app = typer.Typer(add_completion=False, pretty_exceptions_enable=False, help="Phil: a contract-driven coding agent.")
 models_app = typer.Typer(help="Check the configured models.")
 app.add_typer(models_app, name="models")
 keys_app = typer.Typer(help="Store, list and remove provider API keys.")

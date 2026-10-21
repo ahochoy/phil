@@ -1,4 +1,4 @@
-from phil.cli.main import app
+from phil.cli.entry import main
 
 if __name__ == "__main__":
-    app()
+    main()
