@@ -145,3 +145,11 @@ def test_crash_message():
         " — please include it if you report this."
     )
     assert diagnostics.crash_message(exc, None) == "Phil hit an unexpected error (KeyError)."
+
+
+def test_a_warning_raised_in_phil_code_fails_the_tests():
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    options = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pytest"]["ini_options"]
+    assert "error:::phil" in options.get("filterwarnings", [])

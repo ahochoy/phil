@@ -860,6 +860,11 @@ def worker(
         except WorkerError as exc:
             console.print(f"[phil.error]{escape(str(exc))}[/]")
             raise typer.Exit(2) from exc
+        except Exception:
+            # The chat shows a crashed run's worker.log (`/more`), so the traceback goes there
+            # too, not only into the crash file.
+            logger.exception("the worker crashed")
+            raise
         if outcome.status == "stopped":
             from phil.workspace import shell
 

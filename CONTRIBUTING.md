@@ -23,7 +23,16 @@ Start a run from a plan file and follow it:
     uv run phil run plan.json
     uv run phil attach <run-id>
 
+Phil keeps library warnings, other libraries' log lines and crash tracebacks out of the terminal.
+They go to `~/.phil/logs/phil.log` (a chat's go to its own `phil.log`, a run's to its
+`worker.log`), and a crash prints one line naming its file in `~/.phil/logs/`. To see them in the
+terminal while developing, set `PHIL_DEBUG=1`:
+
+    PHIL_DEBUG=1 uv run phil
+
 ## Tests
+
+The tests fail on any warning raised from Phil's own code; fix its cause rather than ignoring it.
 
 Tests run in parallel with pytest-xdist; use `uv run pytest -n 0` to run serially when debugging.
 CI runs the same suite on Linux, macOS and Windows for every pull request.
