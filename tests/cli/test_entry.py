@@ -1,4 +1,5 @@
 import io
+import locale
 import os
 import subprocess
 import sys
@@ -48,8 +49,14 @@ def launch(home, *args, debug=False):
     env["PHIL_HOME"] = str(home)
     if debug:
         env["PHIL_DEBUG"] = "1"
+    # A child writing to a pipe uses the locale's encoding (cp1252 on Windows); -I makes it ignore
+    # PYTHONUTF8, so read its output the same way.
     return subprocess.run(
-        [sys.executable, "-I", "-c", SCRIPT, *args], env=env, capture_output=True, text=True, encoding="utf-8"
+        [sys.executable, "-I", "-c", SCRIPT, *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding=locale.getencoding(),
     )
 
 

@@ -209,8 +209,9 @@ def test_crash_returns_none_when_it_cannot_write(tmp_path, monkeypatch):
 
 def test_crash_message():
     exc = KeyError("sk-secret")
-    assert diagnostics.crash_message(exc, Path("/h/logs/crash-1.log")) == (
-        "Phil hit an unexpected error (KeyError). Details were saved to /h/logs/crash-1.log"
+    path = Path("/h/logs/crash-1.log")  # prints with backslashes on Windows
+    assert diagnostics.crash_message(exc, path) == (
+        f"Phil hit an unexpected error (KeyError). Details were saved to {path}"
         " — please include it if you report this."
     )
     assert diagnostics.crash_message(exc, None) == "Phil hit an unexpected error (KeyError)."

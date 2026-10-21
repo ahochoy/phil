@@ -125,7 +125,7 @@ The goal is to reach a publishable state first.
    - ✓ keep internal diagnostics out of users' terminals ([spec](specs/2026-10-20-phil-diagnostics-design.md), [plan](plans/2026-10-21-phil-diagnostics.md));
    - confirm the bring-your-own-provider path (M2a);
    - finalize the mascot;
-   - the TestPyPI rehearsal, then publish `phil-agent` by tagging `v0.1.0` (packaging: PR #50).
+   - the TestPyPI rehearsal, then publish `phil-agent` by tagging `v0.1.0` (packaging: PR #50, merged).
 5. A polish pass before release: clean up the status bar, the chat and the agent display, so that what's on screen is clear and relevant rather than competing for attention (UI polish, PR #41, merged).
 
 **After launch, in this order:**

@@ -42,7 +42,7 @@ def test_the_wheel_ships_every_prompt(dist):
 def test_the_wheel_installs_the_phil_command(dist):
     wheel = _wheel(dist)
     entry_points = next(n for n in wheel.namelist() if n.endswith(".dist-info/entry_points.txt"))
-    assert "phil = phil.cli.main:app" in wheel.read(entry_points).decode()
+    assert "phil = phil.cli.entry:main" in wheel.read(entry_points).decode()
 
 
 def test_the_wheel_holds_only_the_phil_package(dist):
