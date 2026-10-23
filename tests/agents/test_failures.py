@@ -3,10 +3,11 @@ import httpx
 import openai
 import openrouter.components.serviceunavailableresponseerrordata as openrouter_serviceunavailable_data
 import openrouter.errors.serviceunavailableresponse_error as openrouter_serviceunavailable_error
-from langchain_core.exceptions import ModelAuthenticationError, ModelRateLimitError
+from langchain_core.exceptions import ModelAuthenticationError, ModelInvalidRequestError, ModelRateLimitError
 
-from phil.agents.failures import Failure, classify_failure, internal_failure
+from phil.agents.failures import Failure, classify_failure, internal_failure, tag_provider
 from phil.agents.invoke import ContractViolation
+from phil.agents.providers import BUILTIN_PROVIDERS, ProviderSpec
 from phil.config import ConfigError
 
 
@@ -19,6 +20,10 @@ class GoogleAuthenticationError(ModelAuthenticationError):
 
 
 class GoogleRateLimitError(ModelRateLimitError):
+    pass
+
+
+class GoogleInvalidRequestError(ModelInvalidRequestError):
     pass
 
 
@@ -225,3 +230,75 @@ def test_any_other_validation_error_is_still_internal():
         Point(x="nope")
     except ValidationError as exc:
         assert classify_failure(exc, provider="openrouter") == internal_failure("ValidationError")
+
+
+def test_a_custom_providers_auth_failure_names_its_own_key_variable():
+    exc = HTTPError(401)
+    tag_provider(exc, ProviderSpec("vllm", "openai", "http://box:8000/v1", "VLLM_API_KEY", None, None))
+    f = classify_failure(exc)  # the run worker passes no provider
+    assert f.category == "auth"
+    assert f.action == "Run `phil keys set vllm`, or set VLLM_API_KEY."
+
+
+def test_an_overridden_key_variable_is_named():
+    exc = HTTPError(401)
+    tag_provider(exc, ProviderSpec("openai", "openai", None, "WORK_OPENAI_KEY", None, None))
+    assert classify_failure(exc, provider="openai").action == "Run `phil keys set openai`, or set WORK_OPENAI_KEY."
+
+
+def test_a_keyless_provider_gets_no_keys_set_hint():
+    exc = HTTPError(401)
+    tag_provider(exc, BUILTIN_PROVIDERS["ollama"])
+    f = classify_failure(exc)
+    assert "phil keys set" not in f.action
+    assert f.action == "Check [providers.ollama] in your config: it sends no API key."
+
+
+def test_an_untagged_builtin_still_gets_its_default_key():
+    assert classify_failure(HTTPError(401), provider="anthropic").action == (
+        "Run `phil keys set anthropic`, or set ANTHROPIC_API_KEY."
+    )
+
+
+def test_an_untagged_unknown_provider_points_at_keys_list():
+    assert classify_failure(HTTPError(401), provider="mystery").action == "Check your API keys with `phil keys list`."
+
+
+def test_googles_bad_key_400_is_an_auth_failure():
+    exc = GoogleInvalidRequestError(
+        "Error calling model 'gemini-3.8-flash' (INVALID_ARGUMENT): 400 INVALID_ARGUMENT. "
+        "{'error': {'code': 400, 'message': 'API key not valid. Please pass a valid API key.', "
+        "'status': 'INVALID_ARGUMENT', 'details': [{'reason': 'API_KEY_INVALID'}]}}"
+    )
+    f = classify_failure(exc, provider="google")
+    assert f.category == "auth"
+    assert f.action == "Run `phil keys set google`, or set GOOGLE_API_KEY."
+
+
+def test_a_local_server_that_is_down_says_so():
+    exc = openai.APIConnectionError(request=httpx.Request("POST", "http://localhost:11434/v1/chat/completions"))
+    tag_provider(exc, BUILTIN_PROVIDERS["ollama"])
+    f = classify_failure(exc)
+    assert f.category == "network"
+    assert f.headline == "Couldn't reach ollama at http://localhost:11434/v1."
+    assert f.retries == "Phil won't retry this."
+    assert f.action == "Is `ollama serve` running?"
+
+
+def test_another_local_server_that_is_down_names_its_url():
+    exc = openai.APIConnectionError(request=httpx.Request("POST", "http://localhost:8000/v1/chat/completions"))
+    tag_provider(exc, ProviderSpec("vllm", "openai", "http://localhost:8000/v1", None, None, None))
+    f = classify_failure(exc)
+    assert f.headline == "Couldn't reach vllm at http://localhost:8000/v1."
+    assert f.action == "Is the server at http://localhost:8000/v1 running?"
+
+
+def test_an_untagged_local_server_uses_the_request_url():
+    exc = openai.APIConnectionError(request=httpx.Request("POST", "http://127.0.0.1:9000/v1/x"))
+    f = classify_failure(exc, provider="lab")
+    assert f.headline == "Couldn't reach lab at http://127.0.0.1:9000."
+
+
+def test_googles_quota_error_is_quota_not_busy():
+    f = classify_failure(GoogleRateLimitError("You exceeded your current quota."), provider="google")
+    assert f.category == "quota"

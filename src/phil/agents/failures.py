@@ -2,23 +2,14 @@
 and what the user can do. Built on retry.py's status and transient checks; never raises."""
 
 from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from phil.agents.providers import ProviderSpec
 
 CATEGORIES = ("auth", "quota", "busy", "server", "network", "refused", "output", "config", "internal")
-_KEY_ENV = {"openrouter": "OPENROUTER_API_KEY", "openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY",
-            "google": "GOOGLE_API_KEY", "typesafe": "TYPESAFE_API_KEY"}
-
-# Specific phrases, not single keywords: a bare "credit", "quota", "billing" or "payment" also
-# shows up in refusals that have nothing to do with the account being out of money (e.g. "model
-# billing-assistant not found", "payment field invalid"), so those would false-positive as quota.
-_QUOTA_PHRASES = (
-    "insufficient credits",
-    "insufficient_quota",
-    "insufficient funds",
-    "out of credits",
-    "exceeded your current quota",
-    "credit balance",
-    "requires more credits",
-)
+PROVIDER_ATTR = "phil_provider"  # the ProviderSpec invoke_agent tags a failed call's exception with
+_BAD_KEY_PHRASES = ("api_key_invalid", "api key not valid")
 
 # langchain_core's provider-neutral model-error names (langchain_core.exceptions), matched by
 # name along the exception's MRO rather than imported, the same way retry.py matches them. Used
@@ -30,9 +21,12 @@ _BUSY_NAMES = {"ModelRateLimitError"}
 _REFUSED_NAMES = {"ModelNotFoundError", "ModelInvalidRequestError", "InvalidRequestError"}
 
 
-def _looks_like_quota(detail: str) -> bool:
-    lowered = detail.lower()
-    return any(phrase in lowered for phrase in _QUOTA_PHRASES)
+def tag_provider(exc: BaseException, spec: "ProviderSpec") -> None:
+    """Remember which provider `exc` came from, so its failure names the right key and URL."""
+    try:
+        setattr(exc, PROVIDER_ATTR, spec)
+    except Exception:
+        pass
 
 
 def _mro_names(exc: BaseException) -> set[str]:
@@ -67,7 +61,9 @@ def _status(exc: BaseException) -> int | None:
 
 def classify_failure(exc: BaseException, *, provider: str | None = None, attempts: int | None = None) -> Failure:
     try:
-        return _classify(exc, provider or None, attempts)
+        spec = getattr(exc, PROVIDER_ATTR, None)
+        name = provider or (spec.name if spec is not None else None)
+        return _classify(exc, name, attempts, spec)
     except Exception:
         return internal_failure(type(exc).__name__)
 
@@ -89,13 +85,22 @@ def _object(provider: str | None) -> str:
     return provider or "the provider"
 
 
-def _auth_failure(provider: str | None) -> Failure:
+def _key_action(provider: str | None, spec: "ProviderSpec | None") -> str:
     if provider is None:
-        action = "Check your API keys with `phil keys list`."
-    else:
-        env = _KEY_ENV.get(provider, f"{provider.upper()}_API_KEY")
-        action = f"Run `phil keys set {provider}`, or set {env}."
-    return Failure("auth", "The provider rejected your API key.", "Phil won't retry this.", action)
+        return "Check your API keys with `phil keys list`."
+    if spec is None:
+        from phil.agents.providers import ALIASES, BUILTIN_PROVIDERS
+
+        spec = BUILTIN_PROVIDERS.get(ALIASES.get(provider, provider))
+        if spec is None:
+            return "Check your API keys with `phil keys list`."
+    if spec.api_key_env is None:
+        return f"Check [providers.{provider}] in your config: it sends no API key."
+    return f"Run `phil keys set {provider}`, or set {spec.api_key_env}."
+
+
+def _auth_failure(provider: str | None, spec: "ProviderSpec | None" = None) -> Failure:
+    return Failure("auth", "The provider rejected your API key.", "Phil won't retry this.", _key_action(provider, spec))
 
 
 def _busy_failure(provider: str | None, attempts: int | None) -> Failure:
@@ -136,9 +141,11 @@ def _unsendable_content(exc: BaseException, provider: str | None) -> Failure | N
                    "Phil won't retry this.", "Try again without that file, or try a different model.")
 
 
-def _classify(exc: BaseException, provider: str | None, attempts: int | None) -> Failure:
+def _classify(
+    exc: BaseException, provider: str | None, attempts: int | None, spec: "ProviderSpec | None"
+) -> Failure:
     from phil.agents.invoke import ContractViolation
-    from phil.agents.retry import is_transient, provider_detail
+    from phil.agents.retry import is_transient, local_server_down, looks_like_quota, provider_detail
     from phil.config import ConfigError
 
     if isinstance(exc, ContractViolation):
@@ -150,19 +157,26 @@ def _classify(exc: BaseException, provider: str | None, attempts: int | None) ->
         return unsendable
     status = _status(exc)
     detail = provider_detail(exc) or str(exc)
+    if any(phrase in detail.lower() for phrase in _BAD_KEY_PHRASES):  # Google's bad key is a 400
+        return _auth_failure(provider, spec)
+    client_error = status is None or 400 <= status < 500
+    if status == 402 or (client_error and looks_like_quota(detail)):  # before "busy": a 429 can be quota
+        return Failure("quota", f"Your {provider or 'provider'} account is out of credits.", "Phil won't retry this.",
+                       "Add credits, then try again.")
+    if (local := local_server_down(exc)) is not None:
+        base = spec.base_url if spec is not None and spec.base_url else local
+        action = "Is `ollama serve` running?" if provider == "ollama" else f"Is the server at {base} running?"
+        return Failure("network", f"Couldn't reach {_object(provider)} at {base}.", "Phil won't retry this.", action)
     if status is None:
         names = _mro_names(exc)
         if names & _AUTH_NAMES:
-            return _auth_failure(provider)
+            return _auth_failure(provider, spec)
         if names & _BUSY_NAMES:
             return _busy_failure(provider, attempts)
         if names & _REFUSED_NAMES:
             return _refused_failure(provider, detail)
     if status in (401, 403):
-        return _auth_failure(provider)
-    if status == 402 or (status is not None and 400 <= status < 500 and _looks_like_quota(detail)):
-        return Failure("quota", f"Your {provider or 'provider'} account is out of credits.", "Phil won't retry this.",
-                       "Add credits, then try again.")
+        return _auth_failure(provider, spec)
     if status in (429, 529):
         return _busy_failure(provider, attempts)
     if status is not None and 500 <= status < 600:
