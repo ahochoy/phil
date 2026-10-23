@@ -1,5 +1,6 @@
 import json
 import re
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -294,14 +295,21 @@ def test_a_stale_chat_lock_is_taken_over_and_released(calc_repo, monkeypatch):
     original = ChatController.run
 
     def run(self):
+        import logging
+
         seen["lock"] = lock.read_text(encoding="utf-8").strip()
-        seen["propagate"] = __import__("logging").getLogger("phil").propagate
+        # The chat's diagnostics go to its own phil.log, through a handler on the root logger.
+        seen["log"] = [
+            Path(h.baseFilename).name
+            for h in logging.getLogger().handlers
+            if isinstance(h, logging.FileHandler) and Path(h.baseFilename).parent == lock.parent
+        ]
         return original(self)
 
     monkeypatch.setattr(ChatController, "run", run)
     result = runner.invoke(cli.app, ["--repo", str(calc_repo), "--resume", chat_id], input="")
     assert result.exit_code == 0, result.output
-    assert seen == {"lock": str(__import__("os").getpid()), "propagate": False}
+    assert seen == {"lock": str(__import__("os").getpid()), "log": ["phil.log"]}
     assert not lock.exists()
 
 

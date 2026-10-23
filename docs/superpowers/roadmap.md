@@ -120,20 +120,20 @@ The goal is to reach a publishable state first.
 **First public release, in this order:**
 1. ✓ M4 permissions (done, 2026-10-13). This also settles where config, policies and memory live on disk.
 2. ✓ Memory at the repository level: facts learned in a repo that later runs reuse, visible and editable (done, 2026-10-15; [plan](plans/2026-10-15-phil-repo-memory.md), [spec](specs/2026-10-15-phil-repo-memory-design.md)).
-3. Skills, a basic version: Phil and its sub-agents use the `SKILL.md` skills the user already has installed, from folders the user approves.
-4. Release work:
-   - keep internal diagnostics out of users' terminals;
+3. ~~Skills~~ — moved to after launch (user, 2026-10-20).
+4. Release work, in this order (user, 2026-10-20):
+   - ✓ keep internal diagnostics out of users' terminals ([spec](specs/2026-10-20-phil-diagnostics-design.md), [plan](plans/2026-10-21-phil-diagnostics.md));
    - confirm the bring-your-own-provider path (M2a);
-   - publish as `phil-agent`.
-5. A polish pass before release:
    - finalize the mascot;
-   - clean up the status bar, the chat and the agent display, so that what's on screen is clear and relevant rather than competing for attention.
+   - the TestPyPI rehearsal, then publish `phil-agent` by tagging `v0.1.0` (packaging: PR #50, merged).
+5. A polish pass before release: clean up the status bar, the chat and the agent display, so that what's on screen is clear and relevant rather than competing for attention (UI polish, PR #41, merged).
 
 **After launch, in this order:**
-1. Design workflows in the browser: a local page that shows the reasoning and the visual options, where the user's choice is sent back to the terminal. This replaces "visual proposals" in M6.
-2. A full-screen mode, as an option. Other coding agents take over the terminal once a conversation starts, and Phil has its own command set and persistent on-screen elements, so this fits. It comes after launch because it means rebuilding how the whole chat is drawn.
-3. Memory across repositories: insights about how the user works and best practices not already in the agent files.
-4. Other local customizations: hooks, MCP servers and plugins.
+1. Skills, a basic version: Phil and its sub-agents use the `SKILL.md` skills the user already has installed, from folders the user approves.
+2. Design workflows in the browser: a local page that shows the reasoning and the visual options, where the user's choice is sent back to the terminal. This replaces "visual proposals" in M6.
+3. A full-screen mode, as an option. Other coding agents take over the terminal once a conversation starts, and Phil has its own command set and persistent on-screen elements, so this fits. It comes after launch because it means rebuilding how the whole chat is drawn.
+4. Memory across repositories: insights about how the user works and best practices not already in the agent files.
+5. Other local customizations: hooks, MCP servers and plugins.
 
 ## Open decisions (carried from the feedback)
 

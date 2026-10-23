@@ -1,10 +1,8 @@
 import json
-import logging
 import os
 import re
 import sqlite3
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -72,28 +70,6 @@ def lock_holder(directory: Path) -> int | None:
     if pid <= 0 or pid == os.getpid() or not _pid_alive(pid):
         return None
     return pid
-
-
-@contextmanager
-def chat_logging(directory: Path) -> Iterator[None]:
-    """Send the `phil` loggers to `<chat dir>/phil.log` and nowhere else while the chat runs.
-
-    Worker threads (the run watcher) log warnings with tracebacks; with no handler, Python's
-    last-resort handler would write them to stderr, above the prompt.
-    """
-    logger = logging.getLogger("phil")
-    directory.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(directory / LOG_FILE, delay=True)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(threadName)s %(name)s: %(message)s"))
-    propagate = logger.propagate
-    logger.addHandler(handler)
-    logger.propagate = False
-    try:
-        yield
-    finally:
-        logger.removeHandler(handler)
-        logger.propagate = propagate
-        handler.close()
 
 
 @dataclass

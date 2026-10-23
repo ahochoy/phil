@@ -1,3 +1,4 @@
+import contextlib
 import getpass
 import importlib
 import json
@@ -15,7 +16,7 @@ from pydantic import ValidationError
 from rich.markup import escape
 from rich.text import Text
 
-from phil import __version__, platform
+from phil import __version__, diagnostics, platform
 from phil.chat.approval import effective_setup_cmd, git_policy_note, launch_problems, terminated
 from phil.chat.decision import approval_lines
 from phil.cli.memory import memory_app
@@ -52,7 +53,7 @@ logger = logging.getLogger(__name__)
 # Python's last-resort handler would write them to stderr. They still propagate to `phil`.
 logger.addHandler(logging.NullHandler())
 
-app = typer.Typer(add_completion=False, help="Phil: a contract-driven coding agent.")
+app = typer.Typer(add_completion=False, pretty_exceptions_enable=False, help="Phil: a contract-driven coding agent.")
 models_app = typer.Typer(help="Check the configured models.")
 app.add_typer(models_app, name="models")
 keys_app = typer.Typer(help="Store, list and remove provider API keys.")
@@ -338,7 +339,7 @@ def _banner_facts(info, config, conn, paths, base_label, header_sha, base, sessi
 
 
 def _chat(ctx: typer.Context) -> None:
-    from phil.chat.session import ChatLocked, ChatSession, chat_logging, list_open_chats
+    from phil.chat.session import LOG_FILE, ChatLocked, ChatSession, list_open_chats
     from phil.ui.banner import banner_plain, render_banner
 
     resume_id, new = ctx.obj.get("resume"), ctx.obj.get("new", False)
@@ -421,7 +422,7 @@ def _chat(ctx: typer.Context) -> None:
         out.print(f"[phil.error]Chat {escape(session.id)} is already open in another window (pid {exc.pid}).[/]")
         raise typer.Exit(1) from exc
     try:
-        with chat_logging(session.dir):
+        with diagnostics.redirect(session.dir / LOG_FILE):
             _run_chat(info, config, conn, out, tty, factory, base_sha, session, resume, overrides)
     finally:
         session.unlock()
@@ -498,6 +499,14 @@ def schema(out: Path = typer.Option(Path("phil-schemas"), "--out", help="Output 
     """Export JSON Schema for every contract."""
     paths = export_schemas(out)
     console.print(f"Wrote [phil.id]{len(paths)}[/] schemas to {escape(str(out))}")
+
+
+def _worker_log(start: Path, run_id: str) -> Path | None:
+    """The run's worker.log, where the worker's stdout and stderr already go; None outside a repository."""
+    try:
+        return ProjectPaths(resolve_repo(start).slug).run_dir(run_id) / "logs" / "worker.log"
+    except RepoError:
+        return None
 
 
 def _factory_from_env():
@@ -844,17 +853,24 @@ def worker(
     from phil.run.worker import WorkerError, run_worker
 
     start = ctx.obj.get("repo") or Path.cwd()
-    try:
-        outcome = run_worker(start, run_id, mode, json.loads(decision) if decision else None, factory=_factory_from_env())
-    except WorkerError as exc:
-        console.print(f"[phil.error]{escape(str(exc))}[/]")
-        raise typer.Exit(2) from exc
-    if outcome.status == "stopped":
-        from phil.workspace import shell
+    log = _worker_log(start, run_id)
+    with diagnostics.redirect(log) if log is not None else contextlib.nullcontext():
+        try:
+            outcome = run_worker(start, run_id, mode, json.loads(decision) if decision else None, factory=_factory_from_env())
+        except WorkerError as exc:
+            console.print(f"[phil.error]{escape(str(exc))}[/]")
+            raise typer.Exit(2) from exc
+        except Exception:
+            # The chat shows a crashed run's worker.log (`/more`), so the traceback goes there
+            # too, not only into the crash file.
+            logger.exception("the worker crashed")
+            raise
+        if outcome.status == "stopped":
+            from phil.workspace import shell
 
-        # A tool thread may have started a command after the stop handler's own kill.
-        shell.kill_active_groups()
-    console.print(f"{escape(run_id)}: {escape(outcome.status)}")
+            # A tool thread may have started a command after the stop handler's own kill.
+            shell.kill_active_groups()
+        console.print(f"{escape(run_id)}: {escape(outcome.status)}")
 
 
 def _require_run(conn: sqlite3.Connection, run_id: str):

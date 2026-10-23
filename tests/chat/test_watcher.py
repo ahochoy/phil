@@ -236,10 +236,11 @@ def test_rearm_reposts_a_pause_still_waiting_after_a_resume_attempt(calc_repo):
     assert kinds(posted).count("run_paused") == 2
 
 
-def test_chat_logging_keeps_watcher_tracebacks_off_the_terminal(calc_repo, tmp_path, monkeypatch, capfd, caplog):
+def test_the_chat_log_keeps_watcher_tracebacks_off_the_terminal(calc_repo, tmp_path, monkeypatch, capfd):
     import threading
 
-    from phil.chat.session import chat_logging
+    from phil import diagnostics
+    from phil.chat.session import LOG_FILE
 
     paths, run_id, conn, events, watcher, posted, _ = setup(calc_repo)
 
@@ -248,15 +249,21 @@ def test_chat_logging_keeps_watcher_tracebacks_off_the_terminal(calc_repo, tmp_p
 
     monkeypatch.setattr(watcher, "poll_once", boom)
     capfd.readouterr()
-    with caplog.at_level(logging.WARNING), chat_logging(tmp_path / "chat"):
+    with diagnostics.redirect(tmp_path / "chat" / LOG_FILE):
         thread = threading.Thread(target=watcher._tick)
         thread.start()
         thread.join(5)
+        logging.getLogger("httpx").warning("a library log line")
     assert capfd.readouterr().err == ""
-    assert caplog.records == []  # nothing propagates to the root logger's (terminal) handlers
-    log = (tmp_path / "chat" / "phil.log").read_text()
+    log = (tmp_path / "chat" / LOG_FILE).read_text(encoding="utf-8")
     assert "run watcher poll failed" in log and "RuntimeError: boom" in log
-    assert logging.getLogger("phil").propagate  # restored when the chat ends
+    assert "a library log line" in log
+
+
+def test_chat_logging_is_gone():
+    import phil.chat.session as session
+
+    assert not hasattr(session, "chat_logging")
 
 
 def test_a_budget_warning_from_before_the_watcher_started_is_not_reposted(calc_repo):

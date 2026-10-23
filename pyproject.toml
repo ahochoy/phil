@@ -43,7 +43,7 @@ dependencies = [
 ]
 
 [project.scripts]
-phil = "phil.cli.main:app"
+phil = "phil.cli.entry:main"
 
 [project.urls]
 Homepage = "https://github.com/ahochoy/phil"
@@ -78,6 +78,8 @@ markers = [
     "bench: runs the live benchmark (opt-in with -m bench)",
 ]
 addopts = "-m 'not live and not bench' -n auto"
+# A warning raised from Phil's own code fails the test; library warnings stay in the summary.
+filterwarnings = ["error:::phil"]
 
 [dependency-groups]
 dev = [
