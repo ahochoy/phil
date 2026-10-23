@@ -190,6 +190,33 @@ def test_child_env_strips_secrets_but_honours_pass_env():
     assert child_env(environ, pass_env=["DATABASE_TOKEN"]) == {"PATH": "/bin", "DATABASE_TOKEN": "t"} | NULL_KEYRING
 
 
+GIT_CONFIG = {
+    "GIT_CONFIG_COUNT": "2",
+    "GIT_CONFIG_KEY_0": "credential.interactive",
+    "GIT_CONFIG_VALUE_0": "false",
+    "GIT_CONFIG_KEY_1": "credential.guiPrompt",
+    "GIT_CONFIG_VALUE_1": "false",
+}
+
+
+def test_git_config_entries_are_dropped_together_not_left_half_set():
+    # Live: GIT_CONFIG_KEY_0 reads as a secret name and was stripped while GIT_CONFIG_COUNT stayed,
+    # so every git command an agent ran failed with "unable to parse command-line config".
+    assert child_env({"PATH": "/bin"} | GIT_CONFIG) == {"PATH": "/bin"} | NULL_KEYRING
+
+
+def test_git_config_entries_passed_through_pass_env_are_kept_whole():
+    keys = [name for name in GIT_CONFIG if name.startswith("GIT_CONFIG_KEY_")]
+    assert child_env({"PATH": "/bin"} | GIT_CONFIG, pass_env=keys) == {"PATH": "/bin"} | GIT_CONFIG | NULL_KEYRING
+
+
+def test_a_child_git_command_runs_with_the_parents_git_config(tmp_path, monkeypatch):
+    for name, value in GIT_CONFIG.items():
+        monkeypatch.setenv(name, value)
+    result = subprocess.run(["git", "init", "-q", str(tmp_path)], env=child_env(os.environ), capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_child_env_pins_the_null_keyring_even_over_the_parent_or_pass_env():
     environ = {"PATH": "/bin", "PYTHON_KEYRING_BACKEND": "keyring.backends.fail.Keyring"}
     assert child_env(environ, pass_env=["PYTHON_KEYRING_BACKEND"]) == {"PATH": "/bin"} | NULL_KEYRING
