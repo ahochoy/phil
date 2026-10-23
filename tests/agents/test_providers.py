@@ -125,6 +125,21 @@ def test_split_model_splits_on_the_first_colon():
 # --- model construction: attributes only, no network --------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("base_url", "responses"),
+    [
+        (None, True),
+        ("https://api.openai.com/v1", True),
+        ("http://localhost:11434/v1", False),
+        ("http://lab:8000/v1", False),
+        ("https://api.groq.com/openai/v1", False),
+    ],
+)
+def test_only_real_openai_uses_the_responses_api(base_url, responses):
+    spec = ProviderSpec("x", "openai", base_url, None, None, None)
+    assert build_chat_model(spec, "some-model", 30, environ={}).use_responses_api is responses
+
+
 def test_openai_kind_builds_chat_openai():
     pytest.importorskip("langchain_openai")
     from langchain_openai import ChatOpenAI

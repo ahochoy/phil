@@ -6,9 +6,10 @@ Provider packages are imported only when a model of that kind is built."""
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
-from phil.config import ConfigError
 from phil.agents.tool_choice import without_forced_tool_choice
+from phil.config import ConfigError
 from phil.key_store import key_lookup
 
 if TYPE_CHECKING:
@@ -157,7 +158,8 @@ def build_chat_model(
         from langchain_openai import ChatOpenAI
 
         return without_forced_tool_choice(ChatOpenAI)(
-            model=model_name, base_url=spec.base_url, api_key=key, timeout=timeout_s, max_retries=0
+            model=model_name, base_url=spec.base_url, api_key=key, timeout=timeout_s, max_retries=0,
+            use_responses_api=_is_openai_api(spec.base_url),
         )
     if spec.kind == "anthropic":
         from langchain_anthropic import ChatAnthropic
@@ -173,6 +175,12 @@ def build_chat_model(
             model=model_name, base_url=spec.base_url, google_api_key=key, timeout=timeout_s, max_retries=1
         )
     raise ConfigError(f"Unknown provider kind {spec.kind!r} for provider {spec.name!r}")
+
+
+def _is_openai_api(base_url: str | None) -> bool:
+    """True for OpenAI itself (no base_url, or api.openai.com): it gets the Responses API, which
+    reasoning models need for tools. OpenAI-compatible servers keep Chat Completions."""
+    return base_url is None or urlsplit(base_url).hostname == "api.openai.com"
 
 
 def _build_openrouter(spec: ProviderSpec, model_name: str, timeout_s: int, key: str) -> Any:
