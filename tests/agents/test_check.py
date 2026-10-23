@@ -99,12 +99,14 @@ def test_the_real_lean_agent_path_succeeds(tmp_path, monkeypatch):
 
 
 def test_the_real_lean_agent_path_reports_prose(tmp_path, monkeypatch):
-    model = ScriptedChatModel(script=[AIMessage(content="Sure, pineapple!")])
+    model = ScriptedChatModel(
+        script=[AIMessage(content="Sure."), AIMessage(content="Still sure."), AIMessage(content="Sure, pineapple!")]
+    )
     [result] = check_models(
         PhilConfig(models={"low": "ollama:m"}), factory=real_factory(model, monkeypatch), repo_root=tmp_path
     )
     assert result.detail == 'returned text instead of the required structured output: "Sure, pineapple!"'
-    assert len(model.received) == 1  # the text answer ends the check; LangChain doesn't ask again
+    assert len(model.received) == 3  # the answer and two reminders; then the check ends
 
 
 def test_the_real_lean_agent_path_does_not_retry_a_transient_error(tmp_path, monkeypatch):

@@ -35,10 +35,11 @@ class ModelCheck(Contract):
 
 
 # Lean, and without _shared.md: its self_check rules don't apply to this tiny contract. A text
-# answer ends the check at once (one model call), reported with an excerpt of the text.
+# answer gets the same reminders a real agent gets, so a model passes only if Phil can get an
+# answer from it.
 MODEL_CHECK = AgentSpec(
     "model_check", "orchestrator", ModelCheckInput, ModelCheck,
-    harness="lean", shared_prompt=False, end_on_text=True,
+    harness="lean", shared_prompt=False,
 )
 
 

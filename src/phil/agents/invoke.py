@@ -13,6 +13,7 @@ from pydantic import BaseModel, ValidationError
 from phil.agents.evidence import check_evidence
 from phil.agents.pricing import PriceBook, default_price_book
 from phil.agents.providers import ProviderSpec, estimate_cost, provider_for_model, split_model
+from phil.agents.reminder import reminder_count
 from phil.agents.retry import MODEL_CALL_ATTEMPTS, call_with_retry
 from phil.agents.spec import AgentSpec
 from phil.agents.tools import CommandLog, make_shell_tool
@@ -479,6 +480,7 @@ def invoke_agent(
                 tool_calls=usage.tool_calls,
                 retries=retries,
                 cost_source=usage.cost_source,
+                reminders=reminder_count(result.get("messages", [])),
             ),
             usage,
         )
