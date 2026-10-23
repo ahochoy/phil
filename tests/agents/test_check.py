@@ -218,3 +218,19 @@ def test_a_refused_openrouter_decision_call_names_openrouter_and_its_key(tmp_pat
                            jev_transport=httpx.MockTransport(lambda r: httpx.Response(401)))
     [result] = [r for r in results if r.model == "openrouter_decisions:typesafe/jev-1.13"]
     assert result.detail == "OpenRouter refused the request (http 401): check OPENROUTER_API_KEY."
+
+
+def test_a_pass_that_needed_a_reminder_says_so(tmp_path, monkeypatch):
+    config = PhilConfig(models={"high": "ollama:small", "low": "ollama:small"})
+    model = ScriptedChatModel(
+        script=[AIMessage(content="ok pineapple"), tool_call("ModelCheck", {"ok": True, "echo": CHECK_WORD}, "c1")]
+    )
+    [result] = check_models(config, factory=real_factory(model, monkeypatch), repo_root=tmp_path)
+    assert (result.ok, result.reminded) == (True, True)
+
+
+def test_a_first_try_pass_needed_no_reminder(tmp_path, monkeypatch):
+    config = PhilConfig(models={"high": "ollama:small", "low": "ollama:small"})
+    model = ScriptedChatModel(script=[tool_call("ModelCheck", {"ok": True, "echo": CHECK_WORD}, "c1")])
+    [result] = check_models(config, factory=real_factory(model, monkeypatch), repo_root=tmp_path)
+    assert (result.ok, result.reminded) == (True, False)
