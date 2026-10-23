@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from phil.config import ConfigError
+from phil.agents.tool_choice import without_forced_tool_choice
 from phil.key_store import key_lookup
 
 if TYPE_CHECKING:
@@ -137,7 +138,8 @@ def build_chat_model(
 
     A provider with an `api_key_env` needs that variable set (non-empty) in `environ` (the
     environment, then the keychain, when `environ` is omitted); `used_by` names the roles in the
-    error. A provider without one gets a placeholder key."""
+    error. A provider without one gets a placeholder key. Every model offers its tools unforced
+    (`phil.agents.tool_choice`)."""
     if spec.kind == SYSTEMONE:
         raise ConfigError(
             f"{spec.name} answers typed routing questions, not chat; use it only for the classifier."
@@ -154,16 +156,20 @@ def build_chat_model(
     if spec.kind == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=model_name, base_url=spec.base_url, api_key=key, timeout=timeout_s, max_retries=0)
+        return without_forced_tool_choice(ChatOpenAI)(
+            model=model_name, base_url=spec.base_url, api_key=key, timeout=timeout_s, max_retries=0
+        )
     if spec.kind == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(model=model_name, base_url=spec.base_url, api_key=key, timeout=timeout_s, max_retries=0)
+        return without_forced_tool_choice(ChatAnthropic)(
+            model=model_name, base_url=spec.base_url, api_key=key, timeout=timeout_s, max_retries=0
+        )
     if spec.kind == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         # The Google SDK reads max_retries=0 as "use its default" (5 retries); 1 is a single attempt.
-        return ChatGoogleGenerativeAI(
+        return without_forced_tool_choice(ChatGoogleGenerativeAI)(
             model=model_name, base_url=spec.base_url, google_api_key=key, timeout=timeout_s, max_retries=1
         )
     raise ConfigError(f"Unknown provider kind {spec.kind!r} for provider {spec.name!r}")
