@@ -18,7 +18,7 @@ from phil.agents.providers import ALIASES, is_known_provider, resolve_provider, 
 from phil.config import REPO_SOURCE, ROLES, PhilConfig, global_config_path
 from phil.key_store import KeyStoreError, key_source, keychain_available, pending_keys, set_key
 from phil.routing.jev import JevError, ping_jev
-from phil.setup.catalog import CatalogModel, ollama_models, openrouter_catalog, search_openrouter
+from phil.setup.catalog import CatalogModel, OllamaModel, ollama_models, openrouter_catalog, search_openrouter
 from phil.setup.guard import KEY_WARNING, looks_like_key
 from phil.setup.io import SetupCancelled, SetupIO
 from phil.setup.suggestions import SUGGESTIONS
@@ -44,6 +44,7 @@ PROVIDER_CHOICES: list[tuple[str, str]] = [
     ("ollama", "Ollama (local)"),
     (CUSTOM, "Custom OpenAI-compatible"),
 ]
+OLLAMA_NO_TOOLS = "  — can't call tools, won't work with Phil"
 NAME_PATTERN = re.compile(r"[a-z][a-z0-9_-]*")
 VAR_PATTERN = re.compile(r"[A-Z][A-Z0-9_]*")
 NEXT_STEPS = (
@@ -62,7 +63,7 @@ class _Provider:
     api_key_env: str | None
     custom: bool = False  # a [providers.<name>] table setup writes
     fields: dict[str, object] = field(default_factory=dict)
-    installed: list[str] = field(default_factory=list)  # Ollama's models
+    installed: list[OllamaModel] = field(default_factory=list)  # Ollama's models
 
 
 def _ask(io: SetupIO, prompt: str, default: str | None = None) -> str:
@@ -98,7 +99,7 @@ def run_setup(
     config: PhilConfig,
     check: Callable[[PhilConfig], list] = _check_models,
     catalog: Callable[[], list[CatalogModel]] = openrouter_catalog,
-    ollama: Callable[[str], list[str] | None] = ollama_models,
+    ollama: Callable[[str], list[OllamaModel] | None] = ollama_models,
     write: Callable[..., None] = write_global_config,
     path: Path | None = None,
     classifier_check: Callable[[str], str | None] | None = None,
@@ -178,7 +179,7 @@ def _error_text(exc: Exception) -> str:
 
 
 def _provider_step(
-    io: SetupIO, config: PhilConfig, saved: dict[str, str], ollama: Callable[[str], list[str] | None]
+    io: SetupIO, config: PhilConfig, saved: dict[str, str], ollama: Callable[[str], list[OllamaModel] | None]
 ) -> _Provider:
     names = [name for name, _ in PROVIDER_CHOICES]
     current = _provider_of(saved["high"]) if "high" in saved else None
@@ -203,7 +204,9 @@ def _provider_step(
         return _Provider(name, resolve_provider(config, name).api_key_env)
 
 
-def _ollama_provider(io: SetupIO, config: PhilConfig, ollama: Callable[[str], list[str] | None]) -> _Provider:
+def _ollama_provider(
+    io: SetupIO, config: PhilConfig, ollama: Callable[[str], list[OllamaModel] | None]
+) -> _Provider:
     base_url = resolve_provider(config, "ollama").base_url or "http://localhost:11434/v1"
     while True:
         installed = ollama(base_url)
@@ -339,9 +342,15 @@ def _model_step(
 
 
 def _ollama_model(io: SetupIO, provider: _Provider, tier: str, default: str | None) -> str:
-    names = provider.installed
+    models = provider.installed
+    names = [m.name for m in models]
+    labels = [m.name + (OLLAMA_NO_TOOLS if m.tools is False else "") for m in models]
     current = default.removeprefix("ollama:") if default else None
-    index = io.choose(f"{tier} model", names, default=names.index(current) if current in names else 0)
+    if current in names:
+        start = names.index(current)
+    else:
+        start = next((i for i, m in enumerate(models) if m.tools is not False), 0)
+    index = io.choose(f"{tier} model", labels, default=start)
     return f"ollama:{names[index]}"
 
 
