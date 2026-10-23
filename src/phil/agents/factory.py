@@ -7,6 +7,7 @@ from typing import Any
 from phil.agents.providers import ProviderSpec, build_chat_model, resolve_provider, split_model
 from phil.agents.reminder import answer_reminder_middleware
 from phil.agents.spec import ANSWER_NOW, AgentSpec, load_prompt
+from phil.agents.tool_args import tool_args_middleware
 
 
 def _case_variants(name: str) -> list[str]:
@@ -229,7 +230,7 @@ def _build_light_agent(
         human_message_token_limit_before_evict=None,
         _permissions=filesystem_permissions(spec),
     )
-    middleware: list[Any] = [filesystem, PhilModelRetryMiddleware()]
+    middleware: list[Any] = [filesystem, PhilModelRetryMiddleware(), tool_args_middleware()]
     if spec.max_model_calls is not None:
         middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
     middleware.append(answer_reminder_middleware(spec.out_contract, tools=True))
@@ -275,7 +276,7 @@ def _build_deep_agent(
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
     backend = FilesystemBackend(root_dir=workdir, virtual_mode=True) if workdir is not None else None
-    middleware: list[Any] = [PhilModelRetryMiddleware()]
+    middleware: list[Any] = [PhilModelRetryMiddleware(), tool_args_middleware()]
     if spec.max_model_calls is not None:
         # Caps the main agent's calls; a sub-agent it starts runs on its own (uncapped) loop.
         middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
@@ -294,7 +295,7 @@ def _build_deep_agent(
 
 def _general_purpose_subagent() -> Any:
     """deepagents' default general-purpose sub-agent, spelled out so it gets Phil's per-call
-    retry middleware: `create_deep_agent(middleware=...)` applies to the main agent only — the
+    retry and tool-argument middleware: `create_deep_agent(middleware=...)` applies to the main agent only — the
     auto-added general-purpose sub-agent inherits just the entries that replace one of its own
     default middleware by name. Passing a spec named "general-purpose" replaces the default;
     as a declarative spec it still gets deepagents' base stack (filesystem with the parent's
@@ -304,4 +305,4 @@ def _general_purpose_subagent() -> Any:
 
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
-    return {**GENERAL_PURPOSE_SUBAGENT, "middleware": [PhilModelRetryMiddleware()]}
+    return {**GENERAL_PURPOSE_SUBAGENT, "middleware": [PhilModelRetryMiddleware(), tool_args_middleware()]}
