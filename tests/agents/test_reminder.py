@@ -82,6 +82,12 @@ def test_the_reminder_names_the_answer_tool():
     assert reminder_text("PlanCritique") == "Return your answer by calling the PlanCritique tool."
 
 
+def test_an_agent_with_tools_is_told_to_keep_working_first():
+    assert reminder_text("TaskResult", tools=True) == (
+        "Continue with your tools; when you're done, return your answer by calling the TaskResult tool."
+    )
+
+
 # --- the middleware, through invoke_agent ----------------------------------------------------
 
 
@@ -126,7 +132,7 @@ def test_a_deep_agent_narrating_in_text_is_reminded_and_keeps_working(config, co
     ctx = _ctx(config, conn, tmp_path, monkeypatch, model, workdir=workdir)
     plan = invoke_agent(get_spec("architect"), architect_packet(), ctx, node="architect")
     assert plan.keyword == PLAN_ARGS["keyword"]
-    assert model.seen[1] == reminder_text("Plan")
+    assert model.seen[1] == reminder_text("Plan", tools=True)
 
 
 def test_reminders_never_take_a_light_agent_past_its_hard_stop(config, conn, tmp_path, monkeypatch):

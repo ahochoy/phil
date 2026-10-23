@@ -20,7 +20,10 @@ REMINDER_ID = "phil-reminder"  # message ids, so reminders can be counted; never
 _FENCE = re.compile(r"```[a-zA-Z]*[ \t]*\n?(.*?)```", re.DOTALL)
 
 
-def reminder_text(tool_name: str) -> str:
+def reminder_text(tool_name: str, *, tools: bool = False) -> str:
+    """The reminder. An agent with tools may have been narrating mid-task, so it isn't told to stop."""
+    if tools:
+        return f"Continue with your tools; when you're done, return your answer by calling the {tool_name} tool."
     return f"Return your answer by calling the {tool_name} tool."
 
 
@@ -64,11 +67,12 @@ def reminder_count(messages: list) -> int:
     )
 
 
-def answer_reminder_middleware(contract: type[Contract]) -> Any:
+def answer_reminder_middleware(contract: type[Contract], *, tools: bool = False) -> Any:
+    """`tools`: the agent has tools to work with (light and deep harnesses), not only its answer."""
     from langchain.agents.middleware import AgentMiddleware, hook_config
     from langchain_core.messages import HumanMessage
 
-    tool_name = contract.__name__
+    text = reminder_text(contract.__name__, tools=tools)
 
     def after(state: Any) -> dict[str, Any] | None:
         if state.get("structured_response") is not None:
@@ -83,7 +87,7 @@ def answer_reminder_middleware(contract: type[Contract]) -> Any:
         sent = reminder_count(messages)
         if sent >= MAX_REMINDERS:
             return {"jump_to": "end"}
-        reminder = HumanMessage(reminder_text(tool_name), id=f"{REMINDER_ID}-{sent + 1}")
+        reminder = HumanMessage(text, id=f"{REMINDER_ID}-{sent + 1}")
         return {"messages": [reminder], "jump_to": "model"}
 
     class AnswerReminder(AgentMiddleware):

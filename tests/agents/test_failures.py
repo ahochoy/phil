@@ -302,3 +302,23 @@ def test_an_untagged_local_server_uses_the_request_url():
 def test_googles_quota_error_is_quota_not_busy():
     f = classify_failure(GoogleRateLimitError("You exceeded your current quota."), provider="google")
     assert f.category == "quota"
+
+
+GOOGLE_PER_MINUTE = (
+    "You exceeded your current quota, please check your plan and billing details. Quota exceeded for metric: "
+    "generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 10, model: gemini-3.8-flash. "
+    "Please retry in 43.2s."
+)
+
+
+def test_googles_per_minute_limit_is_busy_not_out_of_credits():
+    f = classify_failure(GoogleRateLimitError(GOOGLE_PER_MINUTE), provider="google", attempts=3)
+    assert f.category == "busy"
+
+
+def test_the_provider_that_failed_wins_over_the_callers_name():
+    # The chat names the architect's provider for a job that also runs the critic.
+    exc = HTTPError(401)
+    tag_provider(exc, BUILTIN_PROVIDERS["anthropic"])
+    f = classify_failure(exc, provider="openrouter")
+    assert f.action == "Run `phil keys set anthropic`, or set ANTHROPIC_API_KEY."

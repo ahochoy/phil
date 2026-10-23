@@ -62,7 +62,8 @@ def _status(exc: BaseException) -> int | None:
 def classify_failure(exc: BaseException, *, provider: str | None = None, attempts: int | None = None) -> Failure:
     try:
         spec = getattr(exc, PROVIDER_ATTR, None)
-        name = provider or (spec.name if spec is not None else None)
+        # The tag is the provider that failed; a caller's name can be another agent's in the same job.
+        name = spec.name if spec is not None else provider
         return _classify(exc, name, attempts, spec)
     except Exception:
         return internal_failure(type(exc).__name__)

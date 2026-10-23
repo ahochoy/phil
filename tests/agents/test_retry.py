@@ -306,6 +306,13 @@ def test_a_local_timeout_is_still_a_retried_timeout():
     assert is_transient(exc) is True
 
 
+def test_a_per_minute_limit_that_says_retry_in_is_retried():
+    from langchain_core.exceptions import ModelRateLimitError
+
+    exc = ModelRateLimitError("You exceeded your current quota, please check your plan. Please retry in 43.2s.")
+    assert is_transient(exc) is True
+
+
 def test_a_quota_429_is_not_retried():
     exc = openai.RateLimitError(
         "You exceeded your current quota, please check your plan.",

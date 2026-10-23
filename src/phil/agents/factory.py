@@ -232,7 +232,7 @@ def _build_light_agent(
     middleware: list[Any] = [filesystem, PhilModelRetryMiddleware()]
     if spec.max_model_calls is not None:
         middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
-    middleware.append(answer_reminder_middleware(spec.out_contract))
+    middleware.append(answer_reminder_middleware(spec.out_contract, tools=True))
     return create_agent(
         chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=tools,
@@ -279,7 +279,7 @@ def _build_deep_agent(
     if spec.max_model_calls is not None:
         # Caps the main agent's calls; a sub-agent it starts runs on its own (uncapped) loop.
         middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
-    middleware.append(answer_reminder_middleware(spec.out_contract))
+    middleware.append(answer_reminder_middleware(spec.out_contract, tools=True))
     return create_deep_agent(
         model=chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=tools,

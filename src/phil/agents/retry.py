@@ -62,9 +62,14 @@ QUOTA_PHRASES = (
 )
 
 
+# Google words a per-minute rate limit like an exhausted quota ("You exceeded your current
+# quota…") but says when to retry, or names a per-minute quota: that one resets in seconds.
+_RATE_LIMIT_HINT = re.compile(r"retry in [\d.]+\s*s|retrydelay|per ?minute", re.IGNORECASE)
+
+
 def looks_like_quota(text: str) -> bool:
     lowered = text.lower()
-    return any(phrase in lowered for phrase in QUOTA_PHRASES)
+    return any(phrase in lowered for phrase in QUOTA_PHRASES) and not _RATE_LIMIT_HINT.search(text)
 
 
 _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
