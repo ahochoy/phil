@@ -103,10 +103,21 @@ def test_tests_added_must_exist(tmp_path):
 
 
 def test_tests_added_outside_worktree_is_rejected(tmp_path):
-    output = result(tests_added=["/etc/hosts", "../outside.py"])
+    output = result(tests_added=["../outside.py", "tests/../../outside.py"])
     assert check_evidence(output, commands=[], workdir=tmp_path) == [
-        "tests_added path is outside the worktree: /etc/hosts",
         "tests_added path is outside the worktree: ../outside.py",
+        "tests_added path is outside the worktree: tests/../../outside.py",
+    ]
+
+
+def test_tests_added_with_a_leading_slash_is_read_from_the_worktree_root(tmp_path):
+    # The file tools show the worktree root as "/", so models report paths that way.
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "test_greet.py").write_text("")
+    (tmp_path / "tests" / "test_a.py").write_text("")
+    output = result(tests_added=["/test_greet.py", "/tests/test_a.py", "/etc/hosts"])
+    assert check_evidence(output, commands=[], workdir=tmp_path) == [
+        "tests_added file does not exist: /etc/hosts"
     ]
 
 
