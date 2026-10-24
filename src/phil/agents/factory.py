@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Any
 
 from phil.agents.providers import ProviderSpec, build_chat_model, resolve_provider, split_model
+from phil.agents.reminder import answer_reminder_middleware
 from phil.agents.spec import ANSWER_NOW, AgentSpec, load_prompt
+from phil.agents.tool_args import tool_args_middleware
 
 
 def _case_variants(name: str) -> list[str]:
@@ -143,8 +145,8 @@ def _call_budget_middleware(max_calls: int, message: str = ANSWER_NOW) -> Any:
     call sees the conversation as text (`_as_transcript`), and a tool call made from a capped call
     isn't run (`TOOL_BUDGET_USED`): a provider doesn't always hold the model to the tools offered.
 
-    Hard: an invalid answer is sent back to the model (ToolStrategy's handle_errors), and so is a
-    plain-text one, so the soft cap alone could loop until LangGraph's recursion limit. Once
+    Hard: an invalid answer is sent back to the model (ToolStrategy's handle_errors), and a
+    plain-text one gets a reminder (phil.agents.reminder), so the soft cap alone could loop until LangGraph's recursion limit. Once
     `max_calls + BUDGET_GRACE_CALLS` calls are made, the loop ends without another model call and
     with no structured response; invoke_agent then records the rejected output and makes its
     single contract retry. One invoke_agent is thus bounded at
@@ -228,9 +230,10 @@ def _build_light_agent(
         human_message_token_limit_before_evict=None,
         _permissions=filesystem_permissions(spec),
     )
-    middleware: list[Any] = [filesystem, PhilModelRetryMiddleware()]
+    middleware: list[Any] = [filesystem, PhilModelRetryMiddleware(), tool_args_middleware()]
     if spec.max_model_calls is not None:
         middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
+    middleware.append(answer_reminder_middleware(spec.out_contract, tools=True))
     return create_agent(
         chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=tools,
@@ -249,9 +252,7 @@ def _build_lean_agent(
 
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
-    middleware: list[Any] = [PhilModelRetryMiddleware()]
-    if spec.end_on_text:
-        middleware.append(_end_on_text_middleware())
+    middleware: list[Any] = [PhilModelRetryMiddleware(), answer_reminder_middleware(spec.out_contract)]
     return create_agent(
         chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=[],
@@ -259,25 +260,6 @@ def _build_lean_agent(
         response_format=_tool_strategy(spec),
         middleware=middleware,
     )
-
-
-def _end_on_text_middleware() -> Any:
-    """Ends a lean agent's loop after a model answer with no tool call, leaving no structured
-    output (invoke_agent then records the answer's text as the rejected output). Only a plain AI
-    answer ends it: an invalid structured-output call leaves a ToolMessage with the error last, and
-    LangChain's own loop asks the model to fix its arguments."""
-    from langchain.agents.middleware import AgentMiddleware, hook_config
-
-    class EndOnText(AgentMiddleware):
-        @hook_config(can_jump_to=["end"])
-        def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
-            last = state["messages"][-1] if state["messages"] else None
-            is_text_answer = getattr(last, "type", None) == "ai" and not getattr(last, "tool_calls", None)
-            if state.get("structured_response") is None and is_text_answer:
-                return {"jump_to": "end"}
-            return None
-
-    return EndOnText()
 
 
 def _build_deep_agent(
@@ -294,10 +276,11 @@ def _build_deep_agent(
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
     backend = FilesystemBackend(root_dir=workdir, virtual_mode=True) if workdir is not None else None
-    middleware: list[Any] = [PhilModelRetryMiddleware()]
+    middleware: list[Any] = [PhilModelRetryMiddleware(), tool_args_middleware()]
     if spec.max_model_calls is not None:
         # Caps the main agent's calls; a sub-agent it starts runs on its own (uncapped) loop.
         middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
+    middleware.append(answer_reminder_middleware(spec.out_contract, tools=True))
     return create_deep_agent(
         model=chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=tools,
@@ -312,7 +295,7 @@ def _build_deep_agent(
 
 def _general_purpose_subagent() -> Any:
     """deepagents' default general-purpose sub-agent, spelled out so it gets Phil's per-call
-    retry middleware: `create_deep_agent(middleware=...)` applies to the main agent only — the
+    retry and tool-argument middleware: `create_deep_agent(middleware=...)` applies to the main agent only — the
     auto-added general-purpose sub-agent inherits just the entries that replace one of its own
     default middleware by name. Passing a spec named "general-purpose" replaces the default;
     as a declarative spec it still gets deepagents' base stack (filesystem with the parent's
@@ -322,4 +305,4 @@ def _general_purpose_subagent() -> Any:
 
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
-    return {**GENERAL_PURPOSE_SUBAGENT, "middleware": [PhilModelRetryMiddleware()]}
+    return {**GENERAL_PURPOSE_SUBAGENT, "middleware": [PhilModelRetryMiddleware(), tool_args_middleware()]}

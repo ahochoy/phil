@@ -35,10 +35,11 @@ class ModelCheck(Contract):
 
 
 # Lean, and without _shared.md: its self_check rules don't apply to this tiny contract. A text
-# answer ends the check at once (one model call), reported with an excerpt of the text.
+# answer gets the same reminders a real agent gets, so a model passes only if Phil can get an
+# answer from it.
 MODEL_CHECK = AgentSpec(
     "model_check", "orchestrator", ModelCheckInput, ModelCheck,
-    harness="lean", shared_prompt=False, end_on_text=True,
+    harness="lean", shared_prompt=False,
 )
 
 
@@ -49,6 +50,7 @@ class CheckResult:
     ok: bool
     seconds: float
     detail: str  # why it failed; empty when ok
+    reminded: bool = False  # passed, but only after a reminder to call the answer tool
 
 
 def _role_labels(config: PhilConfig) -> dict[str, str]:
@@ -128,34 +130,39 @@ def _jev_detail(provider: ProviderSpec, exc: JevError) -> str:
 
 def _check_one(
     ctx: AgentContext, model: str, labels: list[str], call: int, jev_transport: object | None
-) -> tuple[bool, str]:
+) -> tuple[bool, str, bool]:
+    """(ok, detail, reminded): reminded when the model passed only after a reminder to call its answer tool."""
     try:
         # Checked here so the errors name the tiers and roles using the model, not the check's own role.
         provider = provider_for_model(ctx.config, model, labels[0])
         if provider.api_key_env and not key_lookup().get(provider.api_key_env):
-            return False, missing_key_message(provider.name, provider.api_key_env, labels)
+            return False, missing_key_message(provider.name, provider.api_key_env, labels), False
         if provider.kind == SYSTEMONE:
             try:
                 ping_jev(provider, split_model(model)[1], timeout_s=ctx.config.routing.jev_timeout_s,
                          transport=jev_transport)
             except JevError as exc:
-                return False, _jev_detail(provider, exc)
-            return True, ""
+                return False, _jev_detail(provider, exc), False
+            return True, "", False
         packet = build_packet("model_check", ModelCheckInput(word=CHECK_WORD), budget_tokens=1_000)
         output = invoke_agent(
             MODEL_CHECK, packet, ctx, node="model_check", call=call,
             model=model, max_attempts=1, transient_retries=False,
         )
     except ContractViolation as exc:
-        return False, _violation_detail(exc)
+        return False, _violation_detail(exc), False
     except Exception as exc:
-        return False, _error_detail(exc)
+        return False, _error_detail(exc), False
     assert isinstance(output, ModelCheck)
     if not output.ok:
-        return False, "returned ok=false"
+        return False, "returned ok=false", False
     if output.echo.strip() != CHECK_WORD:
-        return False, f'echoed "{output.echo}" instead of "{CHECK_WORD}"'
-    return True, ""
+        return False, f'echoed "{output.echo}" instead of "{CHECK_WORD}"', False
+    row = ctx.conn.execute(
+        "SELECT reminders FROM telemetry WHERE node = ? AND call = ? ORDER BY id DESC LIMIT 1",
+        ("model_check", call),
+    ).fetchone()
+    return True, "", bool(row and row[0])
 
 
 def check_models(
@@ -189,8 +196,8 @@ def check_models(
             )
             for call, (model, labels) in enumerate(targets, 1):
                 started = clock()
-                ok, detail = _check_one(ctx, model, labels, call, jev_transport)
-                results.append(CheckResult(", ".join(labels), model, ok, clock() - started, detail))
+                ok, detail, reminded = _check_one(ctx, model, labels, call, jev_transport)
+                results.append(CheckResult(", ".join(labels), model, ok, clock() - started, detail, reminded))
         finally:
             conn.close()
     return results

@@ -57,13 +57,11 @@ def check_evidence(
     if workdir is not None:
         resolved_workdir = workdir.resolve()
         for path in getattr(output, "tests_added", []):
-            pure_path = PurePosixPath(path)
-            resolved_path = (workdir / path).resolve()
-            outside = (
-                pure_path.is_absolute()
-                or ".." in pure_path.parts
-                or not resolved_path.is_relative_to(resolved_workdir)
-            )
+            # The file tools show the worktree root as "/", so a leading "/" means the worktree.
+            relative = path.lstrip("/")
+            pure_path = PurePosixPath(relative)
+            resolved_path = (workdir / relative).resolve()
+            outside = ".." in pure_path.parts or not resolved_path.is_relative_to(resolved_workdir)
             if outside:
                 problems.append(f"tests_added path is outside the worktree: {path}")
             elif not resolved_path.exists():

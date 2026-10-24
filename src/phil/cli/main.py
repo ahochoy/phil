@@ -649,7 +649,8 @@ def models_check(ctx: typer.Context) -> None:
         raise typer.Exit(1)
     for result in results:
         if result.ok:
-            line = f"[phil.gate.pass]✓[/] {escape(result.label)}  {escape(result.model)}  {result.seconds:.1f}s"
+            note = " (needed a reminder)" if result.reminded else ""
+            line = f"[phil.gate.pass]✓[/] {escape(result.label)}  {escape(result.model)}  {result.seconds:.1f}s{note}"
         else:
             line = f"[phil.gate.fail]✗[/] {escape(result.label)}  {escape(result.model)}  {escape(result.detail)}"
         console.print(line, soft_wrap=True, highlight=False)

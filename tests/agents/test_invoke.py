@@ -611,3 +611,14 @@ def test_error_rows_carry_retries_and_calls(config, conn, artifacts, critic_pack
     assert json.loads(row["tool_calls"]) == {"read_file": 2}
     assert row["chat_id"] == "c-0003"
     assert len(calls_rows(conn)) == 2
+
+
+def test_a_failing_call_is_tagged_with_its_provider(config, conn, critic_packet, monkeypatch):
+    from phil.agents.failures import PROVIDER_ATTR
+    from tests.agents.test_model_retry import HTTPError, ScriptedChatModel, real_factory
+
+    model = ScriptedChatModel(script=[HTTPError(401)])
+    ctx = AgentContext(config=config, conn=conn, layer="chat", factory=real_factory(model, monkeypatch))
+    with pytest.raises(Exception) as excinfo:
+        invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+    assert getattr(excinfo.value, PROVIDER_ATTR).name == config.model_for("critic").partition(":")[0]

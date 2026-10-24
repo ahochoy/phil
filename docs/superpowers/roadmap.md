@@ -123,7 +123,7 @@ The goal is to reach a publishable state first.
 3. ~~Skills~~ — moved to after launch (user, 2026-10-20).
 4. Release work, in this order (user, 2026-10-20):
    - ✓ keep internal diagnostics out of users' terminals ([spec](specs/2026-10-20-phil-diagnostics-design.md), [plan](plans/2026-10-21-phil-diagnostics.md));
-   - confirm the bring-your-own-provider path (M2a);
+   - confirm the bring-your-own-provider path (M2a): answers on every provider ([spec](specs/2026-10-22-phil-provider-answers-design.md), [plan](plans/2026-10-22-phil-provider-answers.md)); prices and budgets next;
    - finalize the mascot;
    - the TestPyPI rehearsal, then publish `phil-agent` by tagging `v0.1.0` (packaging: PR #50, merged).
 5. A polish pass before release: clean up the status bar, the chat and the agent display, so that what's on screen is clear and relevant rather than competing for attention (UI polish, PR #41, merged).

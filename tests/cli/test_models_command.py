@@ -91,3 +91,17 @@ def test_models_check_skips_global_tiers_that_a_legacy_repo_config_overrides(git
         "– high  ollama:big  unused (no role maps to it)",
         "– low  ollama:small  unused (no role maps to it)",
     ]
+
+
+def test_models_check_marks_a_pass_that_needed_a_reminder(git_repo, monkeypatch):
+    from phil.agents.check import CheckResult
+
+    monkeypatch.setattr(cli, "console", make_console(width=300))
+    monkeypatch.setattr(
+        "phil.agents.check.check_models",
+        lambda *a, **k: [CheckResult("high, low", "ollama:small", True, 2.5, "", reminded=True)],
+    )
+    (git_repo / "phil.toml").write_text('[models]\nhigh = "ollama:small"\nlow = "ollama:small"\n')
+    result = runner.invoke(cli.app, ["--repo", str(git_repo), "models", "check"])
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == ["✓ high, low  ollama:small  2.5s (needed a reminder)"]

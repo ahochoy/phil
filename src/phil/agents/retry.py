@@ -47,6 +47,60 @@ def add_provider_detail(exc: BaseException) -> None:
     except (AttributeError, TypeError):
         pass
 
+
+# Specific phrases, not single keywords: a bare "credit", "quota", "billing" or "payment" also
+# shows up in refusals that have nothing to do with the account being out of money (e.g. "model
+# billing-assistant not found", "payment field invalid"), so those would false-positive as quota.
+QUOTA_PHRASES = (
+    "insufficient credits",
+    "insufficient_quota",
+    "insufficient funds",
+    "out of credits",
+    "exceeded your current quota",
+    "credit balance",
+    "requires more credits",
+)
+
+
+# Google words a per-minute rate limit like an exhausted quota ("You exceeded your current
+# quota…") but says when to retry, or names a per-minute quota: that one resets in seconds.
+_RATE_LIMIT_HINT = re.compile(r"retry in [\d.]+\s*s|retrydelay|per ?minute", re.IGNORECASE)
+
+
+def looks_like_quota(text: str) -> bool:
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in QUOTA_PHRASES) and not _RATE_LIMIT_HINT.search(text)
+
+
+_LOOPBACK = {"localhost", "127.0.0.1", "::1"}
+_CONNECT_NAMES = {"APIConnectionError", "ConnectError"}
+
+
+def _request_url(exc: BaseException) -> Any:
+    try:
+        url = exc.request.url  # type: ignore[attr-defined]  # openai/anthropic/httpx errors carry the request
+    except Exception:
+        return None
+    return url if getattr(url, "host", None) is not None else None
+
+
+def local_server_down(exc: BaseException) -> str | None:
+    """`scheme://host:port` of a local server (localhost, 127.0.0.1, ::1) that refused the
+    connection, from `exc` or its causes; None otherwise. A timeout is not this: a slow server is
+    running."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        names = {cls.__name__ for cls in type(current).__mro__}
+        if (isinstance(current, ConnectionRefusedError) or names & _CONNECT_NAMES) and not is_timeout(current):
+            url = _request_url(current)
+            if url is not None and url.host in _LOOPBACK:
+                return f"{url.scheme}://{url.netloc.decode('ascii')}"
+        current = current.__cause__ or current.__context__
+    return None
+
+
 TRANSIENT_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}  # 529: Anthropic "overloaded"
 
 _TRANSIENT_HTTPX = {"TimeoutException", "NetworkError", "RemoteProtocolError"}
@@ -134,6 +188,10 @@ def _200_with_error_code(exc: BaseException) -> int | None:
 
 
 def is_transient(exc: BaseException) -> bool:
+    # A local server that isn't running won't start by itself, and an exhausted quota won't refill
+    # in seconds: neither is worth a retry.
+    if local_server_down(exc) is not None or looks_like_quota(provider_detail(exc) or str(exc)):
+        return False
     if isinstance(exc, (TimeoutError, ConnectionError)):
         return True
     if _is_httpx_transient(exc) or _is_openrouter_transient(exc) or _matches(exc, _SDK_MODULES, _TRANSIENT_SDK):
