@@ -187,7 +187,11 @@ Prices, for estimating a call's cost when it reports none: a provider's own `inp
 built-in prices are `0.0`, so it costs $0. Otherwise the built-in `anthropic`, `openai` and
 `google` providers, and any provider of kind `openrouter`, are priced from OpenRouter's public
 price list, cache and long-context prices included. A provider with its own `base_url` (a proxy,
-a local server) is never priced from the list. Anything else shows as unknown (see Observability).
+a local server), whether set under `[providers.<name>]` or through the vendor SDK's environment
+variable (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GOOGLE_GEMINI_BASE_URL` and their older
+names), is never priced from the list; OpenAI's own `https://api.openai.com/v1` still is.
+Anything else shows as unknown (see Observability). If the list can't be fetched, Phil says so
+when a run or goal starts and tries again later.
 
 Every provider's own SDK retries are off (`max_retries=0`), so Phil's retry middleware is the
 only retry policy that runs — except the Google kind, which is built with `max_retries=1`

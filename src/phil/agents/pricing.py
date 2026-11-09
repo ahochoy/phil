@@ -6,7 +6,7 @@ import tempfile
 import threading
 import time
 import urllib.request
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -59,20 +59,33 @@ _DATE_SUFFIX = re.compile(r"-\d{8}$")
 _DIGIT_DASH = re.compile(r"(?<=\d)-(?=\d)")
 
 
-def _vendor_endpoint(kind: str, base_url: str | None) -> bool:
-    """The vendor's own API: no base_url, or OpenAI's own host. Anything else (a proxy, a local
-    server) may charge anything, so the list's price would be a guess."""
+# Where each vendor's SDK sends a built-in provider's calls when Phil passes no base_url.
+BASE_URL_ENV: dict[str, tuple[str, ...]] = {
+    "anthropic": ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_URL"),
+    "openai": ("OPENAI_BASE_URL", "OPENAI_API_BASE"),
+    "google": ("GOOGLE_GEMINI_BASE_URL",),
+}
+
+
+def _vendor_endpoint(kind: str, base_url: str | None, environ: Mapping[str, str]) -> bool:
+    """The vendor's own API: no base_url (nor one in the SDK's environment variables), or OpenAI's
+    own host. Anything else (a proxy, a local server) may charge anything, so the list's price
+    would be a guess."""
+    if base_url is None:
+        base_url = next((environ[name] for name in BASE_URL_ENV.get(kind, ()) if environ.get(name)), None)
     if base_url is None:
         return True
     return kind == "openai" and urlsplit(base_url).hostname == "api.openai.com"
 
 
-def book_ids(kind: str, base_url: str | None, name: str) -> list[str]:
+def book_ids(kind: str, base_url: str | None, name: str, environ: Mapping[str, str] | None = None) -> list[str]:
     """The OpenRouter ids to price a `kind` provider's model `name` by, most exact first (spec
-    2026-11-09 §4.2); [] when the list doesn't price that provider."""
+    2026-11-09 §4.2); [] when the list doesn't price that provider. `environ` (the process
+    environment by default) is where the vendor SDKs look for a base URL Phil didn't set."""
     if kind == "openrouter":
         return [name]
-    if kind not in DIRECT_KINDS or not _vendor_endpoint(kind, base_url) or name.endswith(":batch"):
+    environ = os.environ if environ is None else environ
+    if kind not in DIRECT_KINDS or not _vendor_endpoint(kind, base_url, environ) or name.endswith(":batch"):
         return []
     ids: list[str] = []
     for candidate in (name, _DIGIT_DASH.sub(".", name), _DIGIT_DASH.sub(".", _DATE_SUFFIX.sub("", name))):
@@ -267,6 +280,15 @@ class PriceBook:
             return None
         except Exception:
             return None
+
+    def available(self) -> bool:
+        """Whether the list could be loaded (fetched, or from a cache, fresh or stale)."""
+        try:
+            with self._lock:
+                self._load()
+                return self._loaded
+        except Exception:
+            return False
 
     def price(self, model: str) -> Price | None:
         if not model.startswith("openrouter:"):

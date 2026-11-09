@@ -62,6 +62,48 @@ def test_an_anthropic_proxy_is_unpriced_and_named(tmp_path):
     assert "`[providers.anthropic]`" in run_notice(items, max_cost_usd=2.0, max_tokens=1_500_000)
 
 
+def test_an_anthropic_proxy_set_in_the_environment_is_unpriced(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example.com")
+    cfg = config({"high": "anthropic:claude-sonnet-5-5", "low": "anthropic:claude-sonnet-5-5"})
+    assert unpriced_models(cfg, ("implementer",), no_fetch(tmp_path)) == [
+        Unpriced("anthropic:claude-sonnet-5-5", "anthropic", ("implementer",))
+    ]
+
+
+def offline(tmp_path):
+    def down():
+        raise OSError("offline")
+
+    return PriceBook(tmp_path / "offline.json", fetch=down, clock=lambda: 1_000_000.0)
+
+
+def test_a_price_list_that_cant_be_fetched_is_named_not_blamed_on_the_config(tmp_path):
+    cfg = config({"high": "anthropic:claude-sonnet-5-5", "low": "anthropic:claude-sonnet-5-5"})
+    items = unpriced_models(cfg, ("implementer",), offline(tmp_path))
+    assert items == [Unpriced("anthropic:claude-sonnet-5-5", "anthropic", ("implementer",), listless=True)]
+    assert run_notice(items, max_cost_usd=2.0, max_tokens=1_500_000) == (
+        "Couldn't fetch OpenRouter's price list, so the $2.00 run budget can't count "
+        "`anthropic:claude-sonnet-5-5` (implementer). The run still stops at 1,500,000 tokens."
+    )
+    assert planning_notice(items, max_cost_usd=1.0) == (
+        "Couldn't fetch OpenRouter's price list, so this goal's $1.00 planning budget (chat.max_cost_usd) "
+        "can't count `anthropic:claude-sonnet-5-5` (implementer)."
+    )
+
+
+def test_an_unfetched_list_and_a_priceless_provider_get_a_sentence_each(tmp_path):
+    items = [
+        Unpriced("lab:llama", "lab", ("tester",)),
+        Unpriced("anthropic:claude-sonnet-5-5", "anthropic", ("implementer",), listless=True),
+    ]
+    assert run_notice(items, max_cost_usd=2.0, max_tokens=100) == (
+        "No price for `lab:llama` (tester), so the $2.00 run budget can't count it. "
+        "Couldn't fetch OpenRouter's price list, so it can't count `anthropic:claude-sonnet-5-5` (implementer) either. "
+        "The run still stops at 100 tokens. "
+        "To fix it, set `input_per_mtok` and `output_per_mtok` under `[providers.lab]`."
+    )
+
+
 def test_roles_without_a_model_or_with_an_unknown_provider_are_skipped(tmp_path):
     cfg = config({"low": "nowhere:model"})
     assert unpriced_models(cfg, ("architect", "implementer"), no_fetch(tmp_path)) == []

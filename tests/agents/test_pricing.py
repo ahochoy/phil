@@ -274,6 +274,34 @@ def test_openai_itself_with_an_explicit_base_url_is_looked_up():
     assert book_ids("openai", "https://api.openai.com/v1", "gpt-6.1-terra") == ["openai/gpt-6.1-terra"]
 
 
+@pytest.mark.parametrize(
+    ("kind", "variable"),
+    [
+        ("anthropic", "ANTHROPIC_BASE_URL"),
+        ("anthropic", "ANTHROPIC_API_URL"),
+        ("openai", "OPENAI_BASE_URL"),
+        ("openai", "OPENAI_API_BASE"),
+        ("google", "GOOGLE_GEMINI_BASE_URL"),
+    ],
+)
+def test_a_proxy_set_in_the_environment_is_never_looked_up(kind, variable):
+    # The vendor SDKs send a built-in provider's calls to these when Phil passes no base_url.
+    assert book_ids(kind, None, "some-model", environ={variable: "https://proxy.example.com"}) == []
+
+
+def test_openais_own_url_in_the_environment_is_still_looked_up():
+    environ = {"OPENAI_BASE_URL": "https://api.openai.com/v1"}
+    assert book_ids("openai", None, "gpt-6.1-terra", environ=environ) == ["openai/gpt-6.1-terra"]
+
+
+def test_the_list_says_whether_it_could_be_loaded(tmp_path):
+    def down():
+        raise OSError("offline")
+
+    assert direct_book(tmp_path).available() is True
+    assert book(tmp_path / "offline", fetch=down).available() is False
+
+
 def test_find_with_no_ids_never_loads_the_list(tmp_path):
     def boom():
         raise AssertionError("fetched")
