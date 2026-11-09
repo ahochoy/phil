@@ -65,6 +65,7 @@ class TelemetryRow(BaseModel):
     retries: int = 0
     cost_source: CostSource = "reported"
     cache_read_tokens: int = 0  # of input_tokens, how many were read from the provider's prompt cache
+    reminders: int = 0  # reminders to call the answer tool (phil.agents.reminder)
 
 
 @dataclass(frozen=True)

@@ -29,11 +29,6 @@ class AgentSpec:
     harness: Literal["deep", "lean", "light"] = "deep"
     # Append _shared.md (output discipline, the required self_check) to the role's prompt.
     shared_prompt: bool = True
-    # Lean only: end when the model answers in text instead of returning the structured output, so
-    # invoke_agent records the text as `raw` and retries with feedback. Without it, LangChain calls a
-    # tool-less agent's model again, unchanged, until its recursion limit. (Deep agents have tools,
-    # and LangChain already ends their loop on an answer with no tool call.)
-    end_on_text: bool = False
     read_only_shell: bool = False  # shell runs only M1's read-only commands (no project allowlist)
     max_model_calls: int | None = None  # light or deep: the last allowed call must answer
     cap_message: str = ANSWER_NOW  # with max_model_calls: the instruction added to the last allowed call

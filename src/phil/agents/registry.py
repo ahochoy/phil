@@ -35,7 +35,7 @@ ARCHITECT_REVISE_MAX_MODEL_CALLS = 4
 
 SPECS: dict[str, AgentSpec] = {
     "intake": AgentSpec(
-        "intake", "orchestrator", IntakeInput, Goal, harness="lean", end_on_text=True, repo_context=True
+        "intake", "orchestrator", IntakeInput, Goal, harness="lean", repo_context=True
     ),
     # Light, not deep: it reads a handful of files, so it needs no sub-agent (whose calls the cap
     # can't see; live, one added 3 uncapped calls), no to-do tool and no summarization.
@@ -44,7 +44,7 @@ SPECS: dict[str, AgentSpec] = {
         cap_message=PLAN_NOW, repo_context=True,
     ),
     "critic": AgentSpec(
-        "critic", "critic", CriticInput, PlanCritique, harness="lean", end_on_text=True, repo_context=True
+        "critic", "critic", CriticInput, PlanCritique, harness="lean", repo_context=True
     ),
     "implementer": AgentSpec(
         "implementer", "implementer", ImplementInput, TaskResult, tools=("shell",), writes_files=True,
@@ -54,11 +54,11 @@ SPECS: dict[str, AgentSpec] = {
         "tester", "tester", TesterInput, TesterReport, tools=("shell",), writes_files=True, repo_context=True
     ),
     "reviewer": AgentSpec(
-        "reviewer", "reviewer", ReviewInput, Review, harness="lean", end_on_text=True, repo_context=True
+        "reviewer", "reviewer", ReviewInput, Review, harness="lean", repo_context=True
     ),
     "btw": AgentSpec("btw", "orchestrator", BtwInput, Brief, writes_files=False, repo_context=True),
     "route": AgentSpec(
-        "route", "classifier", RouteInput, RouteJudgement, harness="lean", shared_prompt=False, end_on_text=True
+        "route", "classifier", RouteInput, RouteJudgement, harness="lean", shared_prompt=False
     ),
     "answer": AgentSpec(
         "answer", "answerer", AnswerInput, Answer, tools=("shell",), harness="light", shared_prompt=False,
@@ -76,7 +76,7 @@ SPECS: dict[str, AgentSpec] = {
         repo_context=True,
     ),
     "memory": AgentSpec(
-        "memory", "memory", MemoryInput, MemoryUpdate, harness="lean", shared_prompt=False, end_on_text=True
+        "memory", "memory", MemoryInput, MemoryUpdate, harness="lean", shared_prompt=False
     ),
 }
 

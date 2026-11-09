@@ -144,3 +144,17 @@ def test_end_to_end_propagation_through_create_agent():
     agent.invoke({"messages": [{"role": "user", "content": "hello"}]}, config={"callbacks": [collector]})
     assert len(collector.calls) == 1
     assert (collector.calls[0].input_tokens, collector.calls[0].output_tokens) == (5, 2)
+
+
+def test_a_responses_api_message_is_collected():
+    # langchain_openai's Responses API returns content blocks and a resp_ id; usage still rides on
+    # usage_metadata and the model on response_metadata["model_name"].
+    collector = UsageCollector()
+    message = AIMessage(
+        content=[{"type": "text", "text": "hi", "annotations": [], "id": "msg_1"}],
+        usage_metadata={"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+        response_metadata={"model_name": "gpt-5.6-terra", "id": "resp_1"},
+    )
+    collector.on_llm_end(LLMResult(generations=[[ChatGeneration(message=message)]]), run_id=uuid.uuid4())
+    [call] = collector.calls
+    assert (call.model, call.input_tokens, call.output_tokens) == ("gpt-5.6-terra", 12, 3)

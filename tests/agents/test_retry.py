@@ -1,4 +1,5 @@
 import httpx
+import openai
 import openrouter.components.badrequestresponseerrordata as openrouter_badrequest_data
 import openrouter.components.serviceunavailableresponseerrordata as openrouter_serviceunavailable_data
 import openrouter.errors.badrequestresponse_error as openrouter_badrequest_error
@@ -9,7 +10,7 @@ from langchain_openrouter import ChatOpenRouter
 from phil.agents.fake import FakeAgent, FakeAgentFactory
 from phil.agents.invoke import AgentContext, invoke_agent
 from phil.agents.registry import get_spec
-from phil.agents.retry import call_with_retry, is_timeout, is_transient
+from phil.agents.retry import call_with_retry, is_timeout, is_transient, local_server_down
 from tests.agents.conftest import critique
 
 
@@ -276,3 +277,46 @@ def test_google_genai_rate_limit_and_server_errors_are_transient():
     assert is_transient(chat_models.GoogleAPIError(503, {"error": {"code": 503, "status": "UNAVAILABLE"}}))
     assert not is_transient(chat_models.GoogleAPIError(501, {"error": {"code": 501, "status": "UNIMPLEMENTED"}}))
     assert not is_transient(chat_models.GoogleAuthenticationError("bad key"))
+
+
+def _connection_error(url: str) -> openai.APIConnectionError:
+    return openai.APIConnectionError(request=httpx.Request("POST", url))
+
+
+def test_a_refused_local_server_is_found_and_not_retried():
+    exc = _connection_error("http://localhost:11434/v1/chat/completions")
+    assert local_server_down(exc) == "http://localhost:11434"
+    assert is_transient(exc) is False
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8000/v1/x", "http://[::1]:8000/v1/x"])
+def test_every_loopback_host_counts(url):
+    assert local_server_down(_connection_error(url)) is not None
+
+
+def test_a_remote_connection_error_is_still_retried():
+    exc = _connection_error("https://api.openai.com/v1/responses")
+    assert local_server_down(exc) is None
+    assert is_transient(exc) is True
+
+
+def test_a_local_timeout_is_still_a_retried_timeout():
+    exc = openai.APITimeoutError(request=httpx.Request("POST", "http://localhost:11434/v1/chat/completions"))
+    assert local_server_down(exc) is None
+    assert is_transient(exc) is True
+
+
+def test_a_per_minute_limit_that_says_retry_in_is_retried():
+    from langchain_core.exceptions import ModelRateLimitError
+
+    exc = ModelRateLimitError("You exceeded your current quota, please check your plan. Please retry in 43.2s.")
+    assert is_transient(exc) is True
+
+
+def test_a_quota_429_is_not_retried():
+    exc = openai.RateLimitError(
+        "You exceeded your current quota, please check your plan.",
+        response=httpx.Response(429, request=httpx.Request("POST", "https://api.openai.com/v1/x")),
+        body=None,
+    )
+    assert is_transient(exc) is False

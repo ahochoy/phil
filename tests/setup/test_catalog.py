@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from phil.agents.pricing import PriceBook
-from phil.setup.catalog import CatalogModel, ollama_models, openrouter_catalog, search_openrouter
+from phil.setup.catalog import CatalogModel, OllamaModel, ollama_models, openrouter_catalog, search_openrouter
 
 FIXTURE = json.loads((Path(__file__).parents[1] / "agents" / "fixtures" / "openrouter-models.json").read_text())
 
@@ -86,14 +86,22 @@ class FakeResponse:
         return self._payload
 
 
-def test_ollama_models_lists_the_installed_models():
+def test_ollama_models_lists_the_installed_models_and_whether_they_call_tools():
     calls = []
 
     def get(url, timeout):
         calls.append((url, timeout))
-        return FakeResponse({"models": [{"name": "qwen3:32b"}, {"name": "llama4:8b"}]})
+        return FakeResponse({"models": [
+            {"name": "qwen3:32b", "capabilities": ["completion", "tools", "thinking"]},
+            {"name": "qwen2.5-coder:1.5b", "capabilities": ["completion"]},
+            {"name": "llama4:8b"},
+        ]})
 
-    assert ollama_models("http://localhost:11434/v1", get=get) == ["qwen3:32b", "llama4:8b"]
+    assert ollama_models("http://localhost:11434/v1", get=get) == [
+        OllamaModel("qwen3:32b", True),
+        OllamaModel("qwen2.5-coder:1.5b", False),
+        OllamaModel("llama4:8b", None),
+    ]
     assert calls == [("http://localhost:11434/api/tags", 3.0)]
 
 

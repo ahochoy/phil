@@ -162,6 +162,15 @@ Ollama needs no `[providers.ollama]` entry at all — it's already built in and 
 low = "ollama:qwen3:32b"
 ```
 
+Phil never forces a model to call a tool: current Claude models reject that. An agent that
+answers in plain text instead gets its JSON taken as the answer when it's valid, or a short
+reminder to call its answer tool (up to two per attempt). The `openai` provider (OpenAI
+itself) uses OpenAI's Responses API, which its reasoning models need for tools; every other
+`openai`-kind provider (Ollama, vLLM, a custom endpoint) uses Chat Completions.
+
+A local model has to support tool calling to work with Phil. `phil setup` marks Ollama models
+that can't ("can't call tools, won't work with Phil").
+
 Migrating from an older config: a model prefix that `init_chat_model` used to accept but that
 isn't built in here (e.g. `deepseek:`, `groq:`, `xai:`) now needs a `[providers.<name>]`
 entry. Most such services are OpenAI-compatible:
@@ -224,7 +233,9 @@ agent path Phil uses, and prints one line per model: pass or fail, the tiers it 
 took (or why it failed: an unknown provider, a missing key, or a model that didn't return the
 required structured output). A tier set under `[models]` that no role maps to — e.g. a global
 `high` under a repo `phil.toml` that sets all six roles — isn't called; it's listed as
-`– high  <model>  unused (no role maps to it)` and isn't a failure.
+`– high  <model>  unused (no role maps to it)` and isn't a failure. A pass marked
+`(needed a reminder)` means the model first answered in text and returned the structured output
+only after a reminder: it works, but it's a weak fit and costs an extra call now and then.
 
 ## Usage
 

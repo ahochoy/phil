@@ -3,7 +3,7 @@ import pytest
 from phil.agents.check import CheckResult
 from phil.config import global_config_path, load_config
 from phil.key_store import SERVICE
-from phil.setup.catalog import CatalogModel
+from phil.setup.catalog import CatalogModel, OllamaModel
 from phil.setup.flow import D1_OPENROUTER, JEV_OPENROUTER, JEV_TYPESAFE, run_setup
 from phil.setup.io import ScriptedSetupIO
 
@@ -48,7 +48,10 @@ class FakeOllama:
 
     def __call__(self, base_url):
         self.urls.append(base_url)
-        return self.answers.pop(0)
+        answer = self.answers.pop(0)
+        if answer is None:
+            return None
+        return [m if isinstance(m, OllamaModel) else OllamaModel(m, None) for m in answer]
 
 
 @pytest.fixture(autouse=True)
@@ -335,6 +338,22 @@ def test_unreachable_ollama_then_retry(tmp_path):
     assert wrote is True
     assert any("ollama serve" in line for line in io.lines)
     assert written(tmp_path).models == {"high": "ollama:qwen3:32b", "low": "ollama:qwen3:32b"}
+
+
+def test_an_ollama_model_that_cant_call_tools_is_marked_and_not_the_default(tmp_path):
+    ollama = FakeOllama([OllamaModel("qwen2.5-coder:1.5b", False), OllamaModel("qwen3:8b", True)])
+    wrote, io, _ = setup(["Ollama", "", "", "Your low model"], tmp_path, ollama=ollama)
+    assert wrote is True
+    assert any("qwen2.5-coder:1.5b  — can't call tools, won't work with Phil" in line for line in io.lines)
+    assert written(tmp_path).models == {"high": "ollama:qwen3:8b", "low": "ollama:qwen3:8b"}
+
+
+def test_the_new_suggestions():
+    from phil.setup.suggestions import SUGGESTIONS
+
+    assert SUGGESTIONS["anthropic"] == {"high": "anthropic:claude-opus-5-5", "low": "anthropic:claude-haiku-5-5"}
+    assert SUGGESTIONS["google"] == {"high": "google:gemini-4-argon", "low": "google:gemini-3.8-flash"}
+    assert SUGGESTIONS["openai"] == {"high": "openai:gpt-5.6-sol", "low": "openai:gpt-5.6-terra"}
 
 
 def test_unreachable_ollama_then_back_to_the_provider_choice(tmp_path):

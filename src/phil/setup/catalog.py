@@ -38,15 +38,27 @@ def openrouter_catalog(book: "PriceBook | None" = None) -> list[CatalogModel]:
     return [CatalogModel(model_id, prompt, completion) for model_id, prompt, completion in book.models()]
 
 
+@dataclass(frozen=True)
+class OllamaModel:
+    name: str
+    tools: bool | None  # can it call tools; None when this Ollama doesn't report capabilities
+
+
 def ollama_models(
     base_url: str, *, get: Callable[..., Any] = httpx.get, timeout: float = 3.0
-) -> list[str] | None:
-    """The names of the models installed in the Ollama at `base_url` (its OpenAI-compatible `/v1`
-    URL or its root), from `GET /api/tags`. None when it can't be reached or answers unexpectedly."""
+) -> list[OllamaModel] | None:
+    """The models installed in the Ollama at `base_url` (its OpenAI-compatible `/v1` URL or its
+    root), from `GET /api/tags`, with whether each can call tools. None when it can't be reached or
+    answers unexpectedly."""
     root = base_url.rstrip("/").removesuffix("/v1").rstrip("/")
     try:
         response = get(f"{root}/api/tags", timeout=timeout)
         response.raise_for_status()
-        return [str(model["name"]) for model in response.json()["models"]]
+        models = []
+        for model in response.json()["models"]:
+            capabilities = model.get("capabilities")
+            tools = None if capabilities is None else "tools" in capabilities
+            models.append(OllamaModel(str(model["name"]), tools))
+        return models
     except Exception:
         return None

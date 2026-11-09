@@ -125,10 +125,27 @@ def test_split_model_splits_on_the_first_colon():
 # --- model construction: attributes only, no network --------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("base_url", "responses"),
+    [
+        (None, True),
+        ("https://api.openai.com/v1", True),
+        ("http://localhost:11434/v1", False),
+        ("http://lab:8000/v1", False),
+        ("https://api.groq.com/openai/v1", False),
+    ],
+)
+def test_only_real_openai_uses_the_responses_api(base_url, responses):
+    spec = ProviderSpec("x", "openai", base_url, None, None, None)
+    assert build_chat_model(spec, "some-model", 30, environ={}).use_responses_api is responses
+
+
 def test_openai_kind_builds_chat_openai():
     pytest.importorskip("langchain_openai")
+    from langchain_openai import ChatOpenAI
+
     model = build_chat_model(BUILTIN_PROVIDERS["openai"], "gpt-5-mini", 42, environ=FAKE_ENVIRON)
-    assert type(model).__name__ == "ChatOpenAI"
+    assert isinstance(model, ChatOpenAI)
     assert model.model_name == "gpt-5-mini"
     assert _secret(model.openai_api_key) == "dummy-openai"
     assert model.request_timeout == 42
@@ -137,8 +154,10 @@ def test_openai_kind_builds_chat_openai():
 
 def test_ollama_builds_chat_openai_at_its_base_url_without_a_key():
     pytest.importorskip("langchain_openai")
+    from langchain_openai import ChatOpenAI
+
     model = build_chat_model(BUILTIN_PROVIDERS["ollama"], "qwen3:32b", 90, environ={})
-    assert type(model).__name__ == "ChatOpenAI"
+    assert isinstance(model, ChatOpenAI)
     assert model.model_name == "qwen3:32b"
     assert model.openai_api_base == "http://localhost:11434/v1"
     assert _secret(model.openai_api_key) == "not-needed"
@@ -157,8 +176,10 @@ def test_a_custom_openai_compatible_provider_uses_its_base_url_and_key():
 def test_anthropic_kind_builds_chat_anthropic():
     pytest.importorskip("langchain_anthropic")
     spec = ProviderSpec("proxy", "anthropic", "http://proxy:9000", "ANTHROPIC_API_KEY", None, None)
+    from langchain_anthropic import ChatAnthropic
+
     model = build_chat_model(spec, "claude-sonnet-5", 42, environ=FAKE_ENVIRON)
-    assert type(model).__name__ == "ChatAnthropic"
+    assert isinstance(model, ChatAnthropic)
     assert model.model == "claude-sonnet-5"
     assert model.anthropic_api_url == "http://proxy:9000"
     assert _secret(model.anthropic_api_key) == "dummy-anthropic"
@@ -168,8 +189,10 @@ def test_anthropic_kind_builds_chat_anthropic():
 
 def test_google_kind_builds_chat_google_generative_ai():
     pytest.importorskip("langchain_google_genai")
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
     model = build_chat_model(BUILTIN_PROVIDERS["google"], "gemini-2.5-flash", 42, environ=FAKE_ENVIRON)
-    assert type(model).__name__ == "ChatGoogleGenerativeAI"
+    assert isinstance(model, ChatGoogleGenerativeAI)
     assert model.model == "gemini-2.5-flash"
     assert _secret(model.google_api_key) == "dummy-google"
     assert model.timeout == 42
