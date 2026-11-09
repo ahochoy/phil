@@ -1,13 +1,15 @@
 import contextlib
 import json
 import os
+import re
 import tempfile
 import threading
 import time
 import urllib.request
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 MODELS_URL = "https://openrouter.ai/api/v1/models"
 CACHE_MAX_AGE_S = 24 * 3600
@@ -16,9 +18,102 @@ MAX_RESPONSE_BYTES = 20 * 1024 * 1024  # the model list is a few MB; refuse anyt
 
 
 @dataclass(frozen=True)
+class Tier:
+    """A long-context price: it applies to a call whose input reaches `min_prompt_tokens`."""
+
+    min_prompt_tokens: int
+    prompt: float
+    completion: float
+    cache_read: float | None = None
+    cache_write: float | None = None
+
+
+@dataclass(frozen=True)
 class Price:
     prompt: float  # USD per token
     completion: float
+    cache_read: float | None = None  # None: the list has no cache price; the prompt price is used
+    cache_write: float | None = None
+    tiers: tuple[Tier, ...] = ()  # ascending by min_prompt_tokens
+
+    def cost(self, input_tokens: int, output_tokens: int, cache_read_tokens: int = 0, cache_write_tokens: int = 0) -> float:
+        """One call's cost (spec 2026-11-09 §4.5). Cached tokens are part of `input_tokens`."""
+        rates: Price | Tier = self
+        for tier in self.tiers:
+            if input_tokens >= tier.min_prompt_tokens:
+                rates = tier  # ascending, so the last one reached is the highest threshold
+        read = rates.prompt if rates.cache_read is None else rates.cache_read
+        write = rates.prompt if rates.cache_write is None else rates.cache_write
+        uncached = max(input_tokens - cache_read_tokens - cache_write_tokens, 0)
+        return (
+            uncached * rates.prompt
+            + cache_read_tokens * read
+            + cache_write_tokens * write
+            + output_tokens * rates.completion
+        )
+
+
+# The vendors whose own APIs the list prices, under `<kind>/<model>` ids.
+DIRECT_KINDS = ("anthropic", "openai", "google")
+_DATE_SUFFIX = re.compile(r"-\d{8}$")
+_DIGIT_DASH = re.compile(r"(?<=\d)-(?=\d)")
+
+
+def _vendor_endpoint(kind: str, base_url: str | None) -> bool:
+    """The vendor's own API: no base_url, or OpenAI's own host. Anything else (a proxy, a local
+    server) may charge anything, so the list's price would be a guess."""
+    if base_url is None:
+        return True
+    return kind == "openai" and urlsplit(base_url).hostname == "api.openai.com"
+
+
+def book_ids(kind: str, base_url: str | None, name: str) -> list[str]:
+    """The OpenRouter ids to price a `kind` provider's model `name` by, most exact first (spec
+    2026-11-09 §4.2); [] when the list doesn't price that provider."""
+    if kind == "openrouter":
+        return [name]
+    if kind not in DIRECT_KINDS or not _vendor_endpoint(kind, base_url) or name.endswith(":batch"):
+        return []
+    ids: list[str] = []
+    for candidate in (name, _DIGIT_DASH.sub(".", name), _DIGIT_DASH.sub(".", _DATE_SUFFIX.sub("", name))):
+        model_id = f"{kind}/{candidate}"
+        if model_id not in ids:
+            ids.append(model_id)
+    return ids
+
+
+def _rate(pricing: dict, key: str) -> float | None:
+    """A non-negative USD-per-token price, or None when missing, malformed or a router's "-1"."""
+    if key not in pricing:
+        return None
+    try:
+        value = float(pricing[key])
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _tiers(pricing: dict, base: Price) -> tuple[Tier, ...]:
+    tiers: list[Tier] = []
+    for override in pricing.get("overrides") or []:
+        if not isinstance(override, dict):
+            continue
+        try:
+            threshold = int(override["min_prompt_tokens"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        prompt, completion = _rate(override, "prompt"), _rate(override, "completion")
+        read, write = _rate(override, "input_cache_read"), _rate(override, "input_cache_write")
+        tiers.append(
+            Tier(
+                threshold,
+                prompt=base.prompt if prompt is None else prompt,
+                completion=base.completion if completion is None else completion,
+                cache_read=base.cache_read if read is None else read,
+                cache_write=base.cache_write if write is None else write,
+            )
+        )
+    return tuple(sorted(tiers, key=lambda tier: tier.min_prompt_tokens))
 
 
 def _default_fetch() -> dict:
@@ -101,15 +196,13 @@ class PriceBook:
         for entry in data.get("data", []):
             model_id = entry.get("id")
             pricing = entry.get("pricing") or {}
-            if not model_id or "prompt" not in pricing or "completion" not in pricing:
+            if not model_id or not isinstance(pricing, dict):
                 continue
-            try:
-                price = Price(prompt=float(pricing["prompt"]), completion=float(pricing["completion"]))
-            except (TypeError, ValueError):
-                continue
-            if price.prompt < 0 or price.completion < 0:
-                continue  # OpenRouter's "-1" sentinel for router models (e.g. openrouter/auto)
-            prices[model_id] = price
+            prompt, completion = _rate(pricing, "prompt"), _rate(pricing, "completion")
+            if prompt is None or completion is None:
+                continue  # missing, malformed, or OpenRouter's "-1" sentinel for router models (e.g. openrouter/auto)
+            base = Price(prompt, completion, _rate(pricing, "input_cache_read"), _rate(pricing, "input_cache_write"))
+            prices[model_id] = replace(base, tiers=_tiers(pricing, base))
         return prices
 
     def _parse_catalog(self, data: dict) -> list[tuple[str, float | None, float | None]]:
@@ -159,16 +252,26 @@ class PriceBook:
         self._catalog = self._parse_catalog(data)
         self._loaded = True
 
-    def price(self, model: str) -> Price | None:
+    def find(self, ids: Sequence[str]) -> Price | None:
+        """The price of the first of `ids` (OpenRouter ids, no `openrouter:` prefix) the list has;
+        None when it has none of them or is unavailable. No ids: None, without loading the list."""
+        if not ids:
+            return None
         try:
-            if not model.startswith("openrouter:"):
-                return None
             with self._lock:
                 self._load()
-            model_id = model.removeprefix("openrouter:")
-            return self._prices.get(model_id)
+            for model_id in ids:
+                price = self._prices.get(model_id)
+                if price is not None:
+                    return price
+            return None
         except Exception:
             return None
+
+    def price(self, model: str) -> Price | None:
+        if not model.startswith("openrouter:"):
+            return None
+        return self.find([model.removeprefix("openrouter:")])
 
     def models(self) -> list[tuple[str, float | None, float | None]]:
         """The OpenRouter catalog, loading the book if needed: (id, input, output) per model in the
@@ -183,9 +286,7 @@ class PriceBook:
     def estimate(self, model: str, input_tokens: int, output_tokens: int) -> float | None:
         try:
             price = self.price(model)
-            if price is None:
-                return None
-            return price.prompt * input_tokens + price.completion * output_tokens
+            return None if price is None else price.cost(input_tokens, output_tokens)
         except Exception:
             return None
 
