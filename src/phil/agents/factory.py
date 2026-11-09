@@ -234,6 +234,13 @@ def _build_light_agent(
     if spec.max_model_calls is not None:
         middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
     middleware.append(answer_reminder_middleware(spec.out_contract, tools=True))
+    if _provider_kind(model, provider) == "anthropic":
+        from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+
+        # Direct Anthropic caches only what's marked: this marks the growing history, so the agent's
+        # tool loop rereads it at the cache price (spec 2026-11-09 §4.7). Last, so it marks the
+        # request the model actually gets.
+        middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     return create_agent(
         chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=tools,
@@ -241,6 +248,18 @@ def _build_light_agent(
         response_format=_tool_strategy(spec),
         middleware=middleware,
     )
+
+
+def _provider_kind(model: str, provider: ProviderSpec | None) -> str | None:
+    """The kind of `model`'s provider: `provider`'s, else the built-in its prefix names; None if unknown."""
+    from phil.config import ConfigError, PhilConfig
+
+    if provider is not None:
+        return provider.kind
+    try:
+        return resolve_provider(PhilConfig(), split_model(model)[0]).kind
+    except ConfigError:
+        return None
 
 
 def _build_lean_agent(
