@@ -338,7 +338,7 @@ def no_fetch_price_book(tmp_path):
     return PriceBook(tmp_path / "prices-unused.json", fetch=boom, clock=lambda: 1_000_000.0)
 
 
-def _llm_result(input_tokens, output_tokens, cost=None, model_name=None):
+def _llm_result(input_tokens, output_tokens, cost=None, model_name=None, cache=None):
     from langchain_core.messages import AIMessage
     from langchain_core.outputs import ChatGeneration, LLMResult
 
@@ -353,6 +353,7 @@ def _llm_result(input_tokens, output_tokens, cost=None, model_name=None):
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
+            **({"input_token_details": cache} if cache else {}),
         },
         response_metadata=metadata,
     )
@@ -513,7 +514,9 @@ def test_a_provider_with_one_price_is_not_estimated(conn, artifacts, critic_pack
         {"models": TEST_MODELS | {"critic": "lab:llama"}, "providers": {"lab": {"kind": "openai", "input_per_mtok": 2.0}}}
     )
     agent = CallbackAgent([("llm", 1000, 100, None, "llama")], critique())
-    invoke_agent(get_spec("critic"), critic_packet, accounting_context(config, conn, artifacts, agent), node="critic")
+    # No base_url: OpenAI's own API, so the list is consulted (it has no openai/llama).
+    ctx = accounting_context(config, conn, artifacts, agent, prices=price_book(tmp_path))
+    invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
     [row] = telemetry(conn)
     assert (row["cost_source"], row["cost_usd"]) == ("unknown", 0.0)
 
@@ -527,7 +530,7 @@ def test_ollama_calls_are_estimated_free(conn, artifacts, critic_packet, tmp_pat
     assert (row["cost_source"], row["cost_usd"]) == ("estimated", 0.0)
 
 
-def test_openrouter_price_book_wins_over_provider_prices(conn, artifacts, critic_packet, tmp_path):
+def test_provider_prices_win_over_the_openrouter_price_book(conn, artifacts, critic_packet, tmp_path):
     config = PhilConfig.model_validate(
         {
             "models": TEST_MODELS | {"critic": OPENROUTER_MODEL},
@@ -535,10 +538,72 @@ def test_openrouter_price_book_wins_over_provider_prices(conn, artifacts, critic
         }
     )
     agent = CallbackAgent([("llm", 1000, 100, None, "openai/gpt-6-sol")], critique())
-    ctx = accounting_context(config, conn, artifacts, agent, prices=price_book(tmp_path))
+    ctx = accounting_context(config, conn, artifacts, agent, prices=price_book(tmp_path))  # the list has 0.003
     invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
     [row] = telemetry(conn)
-    assert (row["cost_source"], row["cost_usd"]) == ("estimated", pytest.approx(0.003))
+    assert (row["cost_source"], row["cost_usd"]) == ("estimated", pytest.approx(1100 / 1e6 * 1000.0))
+
+
+DIRECT_PRICES = {
+    "data": [
+        {
+            "id": "anthropic/claude-sonnet-5.5",
+            "pricing": {"prompt": "0.000002", "completion": "0.00001", "input_cache_read": "0.0000001",
+                        "input_cache_write": "0.0000025"},
+        },
+        {"id": "openai/gpt-6.1-terra", "pricing": {"prompt": "0.000001", "completion": "0.000005"}},
+    ]
+}
+
+
+def direct_price_book(tmp_path):
+    return PriceBook(tmp_path / "direct.json", fetch=lambda: DIRECT_PRICES, clock=lambda: 1_000_000.0)
+
+
+def test_a_direct_anthropic_call_is_priced_from_the_book_with_its_cache_tokens(conn, artifacts, critic_packet, tmp_path):
+    config = PhilConfig(models=TEST_MODELS | {"critic": "anthropic:claude-sonnet-5-5"})
+    agent = CallbackAgent(
+        [("llm", 1000, 100, None, "claude-sonnet-5-5", {"cache_read": 600, "cache_creation": 200})], critique()
+    )
+    ctx = accounting_context(config, conn, artifacts, agent, prices=direct_price_book(tmp_path))
+    invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+    [row] = telemetry(conn)
+    assert row["cost_source"] == "estimated"
+    assert row["cost_usd"] == pytest.approx(200 * 0.000002 + 600 * 0.0000001 + 200 * 0.0000025 + 100 * 0.00001)
+    assert (row["cache_read_tokens"], row["cache_write_tokens"]) == (600, 200)
+
+
+def test_a_direct_openai_call_is_priced_from_the_book(conn, artifacts, critic_packet, tmp_path):
+    config = PhilConfig(models=TEST_MODELS | {"critic": "openai:gpt-6.1-terra"})
+    agent = CallbackAgent([("llm", 1000, 100, None, "gpt-6.1-terra")], critique())
+    ctx = accounting_context(config, conn, artifacts, agent, prices=direct_price_book(tmp_path))
+    invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+    [row] = telemetry(conn)
+    assert (row["cost_source"], row["cost_usd"]) == ("estimated", pytest.approx(1000 * 0.000001 + 100 * 0.000005))
+
+
+def test_a_local_openai_compatible_server_is_never_looked_up(conn, artifacts, critic_packet, tmp_path):
+    config = PhilConfig.model_validate(
+        {
+            "models": TEST_MODELS | {"critic": "lab:gpt-6.1-terra"},
+            "providers": {"lab": {"kind": "openai", "base_url": "http://localhost:8000/v1"}},
+        }
+    )
+    agent = CallbackAgent([("llm", 1000, 100, None, "gpt-6.1-terra")], critique())
+    ctx = accounting_context(config, conn, artifacts, agent, prices=no_fetch_price_book(tmp_path))
+    invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+    [row] = telemetry(conn)
+    assert (row["cost_source"], row["cost_usd"]) == ("unknown", 0.0)
+
+
+def test_an_estimated_direct_cost_counts_toward_the_run_budget(conn, artifacts, critic_packet, tmp_path):
+    from phil.store.telemetry import run_totals
+
+    config = PhilConfig(models=TEST_MODELS | {"critic": "openai:gpt-6.1-terra"})
+    agent = CallbackAgent([("llm", 1000, 100, None, "gpt-6.1-terra")], critique())
+    ctx = accounting_context(config, conn, artifacts, agent, prices=direct_price_book(tmp_path))
+    invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+    assert run_totals(conn, "r-0001")[1] == pytest.approx(0.0015)
 
 
 def test_invoke_passes_the_resolved_provider_to_the_factory(conn, artifacts, critic_packet):

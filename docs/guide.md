@@ -182,11 +182,12 @@ base_url = "https://api.groq.com/openai/v1"
 api_key_env = "GROQ_API_KEY"
 ```
 
-Prices, for estimating a call's cost when it reports none: any provider of kind `openrouter`
-(the built-in one or a custom entry) is priced from OpenRouter's public price list. Every other
-provider uses its own `input_per_mtok` / `output_per_mtok` (USD per million tokens) from its
-`[providers.<name>]` entry; Ollama's built-in prices are `0.0`, so it costs $0. Anything else
-shows as unknown (see Observability).
+Prices, for estimating a call's cost when it reports none: a provider's own `input_per_mtok` /
+`output_per_mtok` (USD per million tokens) under `[providers.<name>]` come first; Ollama's
+built-in prices are `0.0`, so it costs $0. Otherwise the built-in `anthropic`, `openai` and
+`google` providers, and any provider of kind `openrouter`, are priced from OpenRouter's public
+price list, cache and long-context prices included. A provider with its own `base_url` (a proxy,
+a local server) is never priced from the list. Anything else shows as unknown (see Observability).
 
 Every provider's own SDK retries are off (`max_retries=0`), so Phil's retry middleware is the
 only retry policy that runs — except the Google kind, which is built with `max_retries=1`
@@ -445,13 +446,13 @@ Cost markers, wherever a cost is shown:
   list): `$?` when the computed total is exactly zero, `?` appended to the formatted amount when
   there's a nonzero total from other calls alongside the unpriced one.
 
-When a call reports no cost, Phil estimates one. A call to any provider of kind `openrouter`
-(the built-in `openrouter` or a custom `[providers.<name>]` entry with that kind) is priced
-from OpenRouter's public price list (`GET https://openrouter.ai/api/v1/models`, no key needed,
-cached under `~/.phil/cache/` for a day). Any other provider uses its own `input_per_mtok` /
-`output_per_mtok` prices set under `[providers.<name>]` (see Configuration → Providers).
-Ollama's built-in prices are `0.0` / `0.0`, so it costs $0. A model with no price shows as
-unknown, never estimated.
+When a call reports no cost, Phil estimates one: from the provider's own `input_per_mtok` /
+`output_per_mtok` under `[providers.<name>]` when both are set, else from OpenRouter's public
+price list (`GET https://openrouter.ai/api/v1/models`, no key needed, cached under
+`~/.phil/cache/` for a day) for the built-in `anthropic`, `openai` and `google` providers and any
+provider of kind `openrouter`. Tokens read from or written to a prompt cache are charged at the
+list's cache prices. Ollama's built-in prices are `0.0` / `0.0`, so it costs $0. A model with no
+price shows as unknown, never estimated.
 
 A run pauses at 100% of its `[run] max_tokens` / `max_cost_usd` limits as before, and now warns
 once at `[run] warn_at` (default `0.8`, i.e. 80%) of whichever limit it's closer to; the chat and
