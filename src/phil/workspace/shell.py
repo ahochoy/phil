@@ -425,9 +425,26 @@ KEYRING_BACKEND_VAR = "PYTHON_KEYRING_BACKEND"
 NULL_KEYRING_BACKEND = "keyring.backends.null.Keyring"
 
 
+_GIT_CONFIG = re.compile(r"GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)")
+
+
+def _whole_git_config(env: dict[str, str]) -> dict[str, str]:
+    """`env`, or without its GIT_CONFIG_COUNT/KEY_<n>/VALUE_<n> entries when any of the first
+    COUNT pairs is missing: GIT_CONFIG_KEY_<n> reads as a secret name, and git refuses to run at
+    all ("unable to parse command-line config") with a count whose keys were stripped."""
+    count = env.get("GIT_CONFIG_COUNT")
+    if count is None:
+        return env
+    indexes = range(int(count)) if count.isdigit() else None
+    if indexes is not None and all(f"GIT_CONFIG_KEY_{i}" in env and f"GIT_CONFIG_VALUE_{i}" in env for i in indexes):
+        return env
+    return {name: value for name, value in env.items() if not _GIT_CONFIG.fullmatch(name)}
+
+
 def child_env(environ: Mapping[str, str], pass_env: Iterable[str] = ()) -> dict[str, str]:
     allowed = set(pass_env)
     env = {name: value for name, value in environ.items() if name in allowed or not is_secret_name(name)}
+    env = _whole_git_config(env)
     env[KEYRING_BACKEND_VAR] = NULL_KEYRING_BACKEND
     return env
 
