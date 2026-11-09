@@ -79,6 +79,16 @@ def test_the_name_migration_runs_on_an_existing_database(tmp_path, monkeypatch):
     assert get_run(conn, "r-0001").name is None
 
 
+def test_the_cache_write_migration_runs_on_an_existing_database(tmp_path, monkeypatch):
+    path = tmp_path / "phil.db"
+    monkeypatch.setattr(db, "MIGRATIONS", MIGRATIONS[:-1])  # the database as it was before cache_write_tokens
+    connect(path).close()
+    monkeypatch.setattr(db, "MIGRATIONS", MIGRATIONS)
+    conn = connect(path)
+    assert user_version(conn) == len(MIGRATIONS)
+    assert "cache_write_tokens" in [row["name"] for row in conn.execute("PRAGMA table_info(telemetry)")]
+
+
 def test_a_connection_waits_up_to_the_busy_timeout_for_a_lock(tmp_path):
     conn = connect(tmp_path / "phil.db")
     assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == BUSY_TIMEOUT_S * 1000

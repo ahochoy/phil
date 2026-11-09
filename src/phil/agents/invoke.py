@@ -102,6 +102,7 @@ class _Usage:
     cost_source: CostSource = "reported"
     calls: list[CallRow] = field(default_factory=list)
     cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
 
 def _pricing_models(configured: str, call_model: str | None) -> list[str]:
@@ -177,6 +178,7 @@ def _usage(
         cost_source=weakest([row.cost_source for row in rows]),
         calls=rows,
         cache_read_tokens=sum(model_call.cache_read_tokens for model_call in collector.calls),
+        cache_write_tokens=sum(model_call.cache_write_tokens for model_call in collector.calls),
     )
 
 
@@ -268,6 +270,7 @@ def _record_error(
             packet_tokens=packet.tokens,
             input_tokens=usage.input_tokens,
             cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
             output_tokens=usage.output_tokens,
             latency_ms=int((time.monotonic() - started) * 1000),
             cost_usd=usage.cost_usd,
@@ -473,6 +476,7 @@ def invoke_agent(
                 packet_tokens=packet.tokens,
                 input_tokens=usage.input_tokens,
                 cache_read_tokens=usage.cache_read_tokens,
+                cache_write_tokens=usage.cache_write_tokens,
                 output_tokens=usage.output_tokens,
                 latency_ms=latency_ms,
                 cost_usd=usage.cost_usd,

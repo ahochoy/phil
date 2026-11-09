@@ -15,11 +15,16 @@ class ModelCall:
     output_tokens: int
     reported_cost: float | None
     cache_read_tokens: int = 0  # of input_tokens, how many were read from the provider's prompt cache
+    cache_write_tokens: int = 0  # of input_tokens, how many were written to it
 
 
-def _cache_reads(message: object) -> int:
+def _cache_tokens(message: object) -> tuple[int, int]:
+    """(read, written) prompt-cache tokens. With Anthropic's per-TTL breakdown, langchain_anthropic
+    reports the writes under `ephemeral_5m/1h_input_tokens` and zeroes `cache_creation`."""
     details = (getattr(message, "usage_metadata", None) or {}).get("input_token_details") or {}
-    return int(details.get("cache_read", 0) or 0)
+    read = int(details.get("cache_read", 0) or 0)
+    by_ttl = int(details.get("ephemeral_5m_input_tokens", 0) or 0) + int(details.get("ephemeral_1h_input_tokens", 0) or 0)
+    return read, by_ttl or int(details.get("cache_creation", 0) or 0)
 
 
 def _usage_from_message(message: object) -> tuple[int, int] | None:
@@ -113,13 +118,15 @@ class UsageCollector(BaseCallbackHandler):
                 response_metadata = getattr(message, "response_metadata", None) or {}
                 cost = response_metadata.get("cost")
                 model = _model_name(response_metadata) or fallback_model
+                cache_read, cache_write = _cache_tokens(message)
                 new_calls.append(
                     ModelCall(
                         model=model,
                         input_tokens=usage[0],
                         output_tokens=usage[1],
                         reported_cost=float(cost) if cost is not None else None,
-                        cache_read_tokens=_cache_reads(message),
+                        cache_read_tokens=cache_read,
+                        cache_write_tokens=cache_write,
                     )
                 )
         if new_calls:

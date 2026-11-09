@@ -73,3 +73,56 @@ def test_rows_without_cache_reads_show_input_tokens_alone(tmp_path):
     console = make_console(record=True, width=160)
     console.print(_usage_table(usage_by_role(conn, "r-1")))
     assert "1,000" in console.export_text() and "cached" not in console.export_text()
+
+
+def _generation_with(details: dict, input_tokens: int = 1_000) -> ChatGeneration:
+    message = AIMessage(
+        content="",
+        usage_metadata={
+            "input_tokens": input_tokens, "output_tokens": 5, "total_tokens": input_tokens + 5,
+            "input_token_details": details,
+        },
+    )
+    return ChatGeneration(message=message)
+
+
+def _one_call(details: dict):
+    collector = UsageCollector()
+    collector.on_llm_end(LLMResult(generations=[[_generation_with(details)]]), run_id=uuid.uuid4())
+    [call] = collector.calls
+    return call
+
+
+def test_the_collector_records_cache_writes():
+    call = _one_call({"cache_read": 600, "cache_creation": 200})
+    assert (call.cache_read_tokens, call.cache_write_tokens) == (600, 200)
+
+
+def test_anthropics_ttl_breakdown_counts_as_cache_writes():
+    # With Anthropic's per-TTL breakdown, langchain_anthropic zeroes cache_creation and reports the
+    # writes under ephemeral_5m_input_tokens / ephemeral_1h_input_tokens instead.
+    call = _one_call(
+        {"cache_read": 0, "cache_creation": 0, "ephemeral_5m_input_tokens": 300, "ephemeral_1h_input_tokens": 50}
+    )
+    assert call.cache_write_tokens == 350
+
+
+def test_langchain_anthropic_counts_cached_tokens_inside_input_tokens():
+    # Phil's estimate subtracts cache reads and writes from input_tokens: that only works while
+    # langchain_anthropic adds them back into its total.
+    from anthropic.types import Usage
+    from langchain_anthropic.chat_models import _create_usage_metadata
+
+    usage = _create_usage_metadata(
+        Usage(input_tokens=200, output_tokens=5, cache_read_input_tokens=600, cache_creation_input_tokens=200)
+    )
+    assert usage["input_tokens"] == 1_000
+
+
+def test_cache_writes_are_stored(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    record(conn, TelemetryRow(
+        run_id="r-1", layer="run", node="implement", role="implementer", model="m", attempt=1, packet_tokens=0,
+        input_tokens=1_000, output_tokens=10, latency_ms=0, cost_usd=0.1, outcome="ok", cache_write_tokens=200,
+    ))
+    assert conn.execute("SELECT cache_write_tokens FROM telemetry").fetchone()[0] == 200
