@@ -23,7 +23,7 @@ from phil.store.db import connect, utcnow
 from phil.store.events import EventLog, run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
-from tests.helpers import MODELS_TOML, run_git
+from tests.helpers import MODELS_TOML, TEST_MODELS, run_git
 from tests.run.conftest import TEST_CMD, bad_green, calc_plan, review, tester_report, write_green, write_red
 
 
@@ -799,3 +799,50 @@ def test_an_ignore_decision_is_silent(calc_repo):
 def test_a_run_without_overrides_stores_none(calc_repo):
     info, record = new_run(calc_repo)
     assert record.config_overrides is None
+
+
+class RecordingEvents:
+    def __init__(self):
+        self.appended = []
+
+    def append(self, kind, **data):
+        self.appended.append((kind, data))
+
+
+def _lab_config(**prices):
+    return PhilConfig.model_validate({
+        "models": TEST_MODELS | {"implementer": "lab:llama"},
+        "providers": {"lab": {"kind": "openai", "base_url": "http://localhost:8000/v1", **prices}},
+    })
+
+
+def test_an_unpriced_run_model_is_noted_once_at_start():
+    events = RecordingEvents()
+    worker_module._note_unpriced(events, _lab_config())
+    [(kind, data)] = events.appended
+    assert kind == "notice"
+    assert data["message"].startswith("No price for `lab:llama` (implementer), so the $2.00 run budget")
+    assert "1,500,000 tokens" in data["message"] and "`[providers.lab]`" in data["message"]
+
+
+def test_priced_run_models_are_not_noted():
+    events = RecordingEvents()
+    worker_module._note_unpriced(events, _lab_config(input_per_mtok=1.0, output_per_mtok=2.0))
+    assert events.appended == []
+
+
+def test_the_unpriced_note_never_fails_the_run(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("price list exploded")
+
+    monkeypatch.setattr(worker_module, "unpriced_models", boom)
+    worker_module._note_unpriced(RecordingEvents(), _lab_config())  # no exception
+
+
+def test_a_new_run_checks_its_prices(calc_repo, monkeypatch):
+    seen = []
+    monkeypatch.setattr(worker_module, "_note_unpriced", lambda events, config: seen.append(config))
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha)
+    run_worker(calc_repo, record.run_id, "start", factory=happy())
+    assert len(seen) == 1

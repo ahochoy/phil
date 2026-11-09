@@ -11,8 +11,9 @@ from pathlib import Path
 
 from phil import platform
 from phil.agents.failures import classify_failure
-from phil.agents.invoke import AgentFactory
-from phil.config import PhilConfig, load_config
+from phil.agents.invoke import AgentFactory, shared_price_book
+from phil.agents.unpriced import run_notice, unpriced_models
+from phil.config import RUN_ROLES, PhilConfig, load_config
 from phil.memory.context import write_run_context
 from phil.repo import resolve_repo
 from phil.repo_detect import detect_test_cmd
@@ -109,6 +110,18 @@ def _note_policy(events: EventLog, repo_root: Path, paths: ProjectPaths, config:
             events.append("notice", message=notice)
     except Exception:
         _logger.warning("couldn't write the permission rules' notices", exc_info=True)
+
+
+def _note_unpriced(events: EventLog, config: PhilConfig) -> None:
+    """At run start, once, in the run log: the run's models Phil can't price, so its cost budget
+    can't count them (spec 2026-11-09 §4.6). Never fails the run."""
+    try:
+        items = unpriced_models(config, RUN_ROLES, shared_price_book())
+        notice = run_notice(items, max_cost_usd=config.run.max_cost_usd, max_tokens=config.run.max_tokens)
+        if notice is not None:
+            events.append("notice", message=notice)
+    except Exception:
+        _logger.warning("couldn't check the run's model prices", exc_info=True)
 
 
 class Heartbeat:
@@ -239,6 +252,7 @@ def run_worker(
             outcome = runner.settle(engine, snapshot)
         elif not snapshot.values:
             _note_policy(events, info.root, paths, config)
+            _note_unpriced(events, config)
             try:
                 for problem in write_run_context(deps.artifacts.run_dir, info.root, paths):
                     events.append("notice", message=f"Repo context: {problem}")

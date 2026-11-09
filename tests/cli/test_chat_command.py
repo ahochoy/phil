@@ -99,6 +99,11 @@ def test_the_chat_key_check_passes_with_a_store_only_key(calc_repo, monkeypatch)
     monkeypatch.setenv("PHIL_AGENT_FACTORY", "tests.chat.chat_scenarios:factory")
     monkeypatch.setenv("PHIL_TEST_SCENARIO", "approve")
     monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    # The goal's price check consults the process-wide price list: an empty one, never the network.
+    from phil.agents.pricing import PriceBook
+
+    empty = PriceBook(calc_repo.parent / "prices.json", fetch=lambda: {"data": []})
+    monkeypatch.setattr("phil.agents.invoke._default_prices", empty)
     set_key("OPENAI_API_KEY", "sk-TESTSECRET-stored")
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="add subtract\ny\n")
     assert result.exit_code == 0, result.output

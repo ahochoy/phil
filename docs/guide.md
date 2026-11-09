@@ -465,6 +465,13 @@ The chat's own planning has a budget too. `[chat] max_cost_usd` (default `1.0`) 
 - **Revision:** once the limit is reached, a revision the critic asks for is skipped and the plan so far is shown.
 - **At the limit:** neither a new plan nor an `edit` starts. Approving the plan shown still works, and a raised limit lets planning continue.
 
+When Phil can't price a model a run or a goal will use — a custom provider with no
+`input_per_mtok` / `output_per_mtok`, a provider with its own `base_url`, or a model OpenRouter's
+list doesn't have — it says so once, before the work starts, and goes on: for example
+``No price for `lab:llama` (implementer), so the $2.00 run budget can't count it. The run still
+stops at 1,500,000 tokens. To fix it, set `input_per_mtok` and `output_per_mtok` under
+`[providers.lab]`.`` Nothing is blocked; the token limit still applies.
+
 Each architect call is also capped at 10 model calls, and a revision (the critic's or your `edit`) at 4, since it starts from the previous plan; the prompt states both budgets. Every call resends the conversation so far, so an unbounded exploration grows expensive fast.
 
 Anthropic models through OpenRouter use prompt caching, so an agent's repeated history is billed at the cache price. Other vendors on OpenRouter cache on their own. `phil show` and `/show` list cache reads next to input tokens, for example `172,000 (128,000 cached)`.
