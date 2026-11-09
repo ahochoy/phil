@@ -237,6 +237,9 @@ required structured output). A tier set under `[models]` that no role maps to â€
 `â€“ high  <model>  unused (no role maps to it)` and isn't a failure. A pass marked
 `(needed a reminder)` means the model first answered in text and returned the structured output
 only after a reminder: it works, but it's a weak fit and costs an extra call now and then.
+A passing model's line ends with its price, e.g. `$2.00/$10.00 per M` (input/output per million
+tokens), `price reported per call` for an OpenRouter model, or `no price` when Phil can't price it
+(see Observability).
 
 ## Usage
 

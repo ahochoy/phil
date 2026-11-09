@@ -34,7 +34,7 @@ def test_models_check_prints_one_line_per_model(git_repo, monkeypatch):
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
     assert len(lines) == 2
-    assert lines[0].startswith("✓ high  ollama:big  ") and lines[0].endswith("s")
+    assert lines[0].startswith("✓ high  ollama:big  ") and lines[0].endswith("s  $0.00/$0.00 per M")
     assert lines[1].startswith("✓ low  ollama:small  ")
 
 
@@ -45,8 +45,10 @@ def test_models_check_joins_the_labels_of_a_shared_model(git_repo, monkeypatch):
     )
     result = runner.invoke(cli.app, ["--repo", str(git_repo), "models", "check"])
     assert result.exit_code == 0, result.output
-    lines = [re.sub(r"\d+\.\ds$", "<t>", line) for line in result.output.splitlines()]
-    assert lines == ["✓ high, low  ollama:same  <t>", "✓ role:critic  ollama:judge  <t>"]
+    lines = [re.sub(r"\d+\.\ds", "<t>", line) for line in result.output.splitlines()]
+    assert lines == [
+        "✓ high, low  ollama:same  <t>  $0.00/$0.00 per M", "✓ role:critic  ollama:judge  <t>  $0.00/$0.00 per M",
+    ]
 
 
 def test_models_check_exits_1_on_a_failure(git_repo, monkeypatch):
@@ -82,12 +84,12 @@ def test_models_check_skips_global_tiers_that_a_legacy_repo_config_overrides(git
     (git_repo / "phil.toml").write_text("[models]\n" + "".join(f'{role} = "ollama:legacy"\n' for role in ROLES))
     result = runner.invoke(cli.app, ["--repo", str(git_repo), "models", "check"])
     assert result.exit_code == 0, result.output
-    lines = [re.sub(r"\d+\.\ds$", "<t>", line) for line in result.output.splitlines()]
+    lines = [re.sub(r"\d+\.\ds", "<t>", line) for line in result.output.splitlines()]
     # the repo's `classifier = "ollama:legacy"` key is the classifier tier itself (not a role
     # override), so it's labelled "classifier" and that tier is in use, not unused.
     labels = ", ".join(["classifier"] + [f"role:{role}" for role in ROLES if role != "classifier"])
     assert lines == [
-        f"✓ {labels}  ollama:legacy  <t>",
+        f"✓ {labels}  ollama:legacy  <t>  $0.00/$0.00 per M",
         "– high  ollama:big  unused (no role maps to it)",
         "– low  ollama:small  unused (no role maps to it)",
     ]
@@ -105,3 +107,17 @@ def test_models_check_marks_a_pass_that_needed_a_reminder(git_repo, monkeypatch)
     result = runner.invoke(cli.app, ["--repo", str(git_repo), "models", "check"])
     assert result.exit_code == 0, result.output
     assert result.output.splitlines() == ["✓ high, low  ollama:small  2.5s (needed a reminder)"]
+
+
+def test_models_check_shows_a_passing_models_price(git_repo, monkeypatch):
+    from phil.agents.check import CheckResult
+
+    monkeypatch.setattr(cli, "console", make_console(width=300))
+    monkeypatch.setattr(
+        "phil.agents.check.check_models",
+        lambda *a, **k: [CheckResult("high, low", "openai:gpt-6-sol", True, 2.5, "", price="$2.00/$10.00 per M")],
+    )
+    (git_repo / "phil.toml").write_text('[models]\nhigh = "ollama:small"\nlow = "ollama:small"\n')
+    result = runner.invoke(cli.app, ["--repo", str(git_repo), "models", "check"])
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == ["✓ high, low  openai:gpt-6-sol  2.5s  $2.00/$10.00 per M"]

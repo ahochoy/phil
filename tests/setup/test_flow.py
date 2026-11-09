@@ -398,6 +398,14 @@ def test_a_failed_check_then_a_different_choice_then_the_check_passes(tmp_path):
     assert any(line.startswith("✓ high") for line in io.lines)
 
 
+def test_a_passing_check_line_shows_the_models_price():
+    from phil.setup.flow import _result_line
+
+    passed = CheckResult("high", "openai:gpt-6-sol", True, 0.1, "", price="$2.00/$10.00 per M")
+    assert _result_line(passed) == "✓ high  openai:gpt-6-sol  0.1s  $2.00/$10.00 per M"
+    assert _result_line(CheckResult("high", "ollama:x", True, 0.1, "")) == "✓ high  ollama:x  0.1s"
+
+
 def test_a_failed_check_can_be_kept_anyway(tmp_path):
     check = FakeCheck(bad={SUGGESTED_HIGH})
     wrote, _, _ = setup(["", SECRET, "", "", "Keep", ""], tmp_path, check=check)

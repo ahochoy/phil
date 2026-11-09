@@ -1,6 +1,10 @@
+import tempfile
+from pathlib import Path
+
 from typer.testing import CliRunner
 
 from phil.agents.check import CHECK_WORD, ModelCheck
+from phil.agents.pricing import PriceBook
 from phil.agents.fake import ScriptedAgentFactory
 from phil.cli import main as cli
 from phil.config import global_config_path, load_config
@@ -17,9 +21,11 @@ def use(monkeypatch, answers):
     monkeypatch.setattr(cli, "console", make_console(width=300))
     monkeypatch.setattr(cli, "_setup_io", lambda: io)
     monkeypatch.setattr(cli, "_factory_from_env", lambda: ScriptedAgentFactory({"model_check": [OK, OK]}))
-    # Never the network, nor a local Ollama.
+    # Never the network, nor a local Ollama: the check's price lookup gets an empty price list.
     monkeypatch.setattr("phil.setup.catalog.openrouter_catalog", lambda book=None: [])
     monkeypatch.setattr("phil.setup.catalog.ollama_models", lambda base_url, **kwargs: None)
+    empty = PriceBook(Path(tempfile.mkdtemp()) / "prices.json", fetch=lambda: {"data": []})
+    monkeypatch.setattr("phil.agents.invoke._default_prices", empty)
     return io
 
 
