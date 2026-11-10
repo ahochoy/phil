@@ -33,6 +33,32 @@ def test_one_call_per_tier_when_the_models_differ(tmp_path):
     assert all(r.detail == "" and r.seconds >= 0 for r in results)
 
 
+PRICE_LIST = {"data": [{"id": "openai/gpt-6-sol", "pricing": {"prompt": "0.000002", "completion": "0.00001"}}]}
+
+
+def price_list(tmp_path):
+    from phil.agents.pricing import PriceBook
+
+    return PriceBook(tmp_path / "prices.json", fetch=lambda: PRICE_LIST, clock=lambda: 1_000_000.0)
+
+
+def test_a_passing_model_shows_its_price(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")  # the check's key precheck
+    config = PhilConfig(models={"high": "openai:gpt-6-sol", "low": "ollama:small"})
+    factory = ScriptedAgentFactory({"model_check": [OK, OK]})
+    results = check_models(config, factory=factory, repo_root=tmp_path, prices=price_list(tmp_path))
+    assert [(r.model, r.price) for r in results] == [
+        ("openai:gpt-6-sol", "$2.00/$10.00 per M"), ("ollama:small", "$0.00/$0.00 per M"),
+    ]
+
+
+def test_a_failing_model_shows_no_price(tmp_path):
+    config = PhilConfig(models={"high": "ollama:big", "low": "ollama:big"})
+    factory = ScriptedAgentFactory({"model_check": [RuntimeError("down")]})
+    [result] = check_models(config, factory=factory, repo_root=tmp_path, prices=price_list(tmp_path))
+    assert not result.ok and result.price is None
+
+
 def test_one_call_when_the_tiers_share_a_model(tmp_path):
     config = PhilConfig(models={"high": "ollama:same", "low": "ollama:same"})
     factory = ScriptedAgentFactory({"model_check": [OK]})
@@ -95,7 +121,9 @@ def test_the_real_lean_agent_path_succeeds(tmp_path, monkeypatch):
     [result] = check_models(
         PhilConfig(models={"low": "ollama:m"}), factory=real_factory(model, monkeypatch), repo_root=tmp_path
     )
-    assert result == CheckResult(label="low", model="ollama:m", ok=True, seconds=result.seconds, detail="")
+    assert result == CheckResult(
+        label="low", model="ollama:m", ok=True, seconds=result.seconds, detail="", price="$0.00/$0.00 per M"
+    )
 
 
 def test_the_real_lean_agent_path_reports_prose(tmp_path, monkeypatch):
@@ -133,7 +161,7 @@ def test_the_precheck_passes_with_a_store_only_key(tmp_path, monkeypatch):
     set_key("OPENAI_API_KEY", "sk-TESTSECRET-stored")
     config = PhilConfig(models={"low": "openai:gpt-x"})
     factory = ScriptedAgentFactory({"model_check": [OK]})
-    [result] = check_models(config, factory=factory, repo_root=tmp_path)
+    [result] = check_models(config, factory=factory, repo_root=tmp_path, prices=price_list(tmp_path))
     assert result.ok
     assert factory.remaining() == {"model_check": 0}
 

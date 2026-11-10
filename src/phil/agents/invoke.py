@@ -12,7 +12,7 @@ from pydantic import BaseModel, ValidationError
 
 from phil.agents.evidence import check_evidence
 from phil.agents.failures import tag_provider
-from phil.agents.pricing import PriceBook, default_price_book
+from phil.agents.pricing import PriceBook, book_ids, default_price_book
 from phil.agents.providers import ProviderSpec, estimate_cost, provider_for_model, split_model
 from phil.agents.reminder import reminder_count
 from phil.agents.retry import MODEL_CALL_ATTEMPTS, call_with_retry
@@ -31,6 +31,7 @@ from phil.store.paths import ProjectPaths
 from phil.store.telemetry import CallRow, CostSource, TelemetryRow, record, record_calls, weakest
 
 if TYPE_CHECKING:
+    from phil.agents.collector import ModelCall  # imports langchain_core: kept out of import time
     from phil.store.activity import ActivityLog
 
 logger = logging.getLogger(__name__)
@@ -81,16 +82,19 @@ _default_prices: PriceBook | None = None
 _default_prices_lock = threading.Lock()
 
 
-def _price_book(ctx: AgentContext) -> PriceBook:
-    """The context's price book, or a process-wide default created (and fetched) only when a
-    model call actually needs an estimate."""
+def shared_price_book() -> PriceBook:
+    """The process-wide price book, created on first use (its list is fetched only when a price is
+    first asked for)."""
     global _default_prices
-    if ctx.prices is not None:
-        return ctx.prices
     with _default_prices_lock:
         if _default_prices is None:
             _default_prices = default_price_book()
         return _default_prices
+
+
+def price_book_for(ctx: AgentContext) -> PriceBook:
+    """The context's price book, else the process-wide one."""
+    return ctx.prices if ctx.prices is not None else shared_price_book()
 
 
 @dataclass
@@ -102,43 +106,35 @@ class _Usage:
     cost_source: CostSource = "reported"
     calls: list[CallRow] = field(default_factory=list)
     cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
 
-def _pricing_models(configured: str, call_model: str | None) -> list[str]:
-    """Model ids to price a call by: the call's own reported model first — a deep agent's
-    sub-agent, or an OpenRouter fallback route, can report a model from a different vendor than
-    the one configured for the role, and the price book may still know it as
-    ``openrouter:<call_model>`` — then the configured model, when the book doesn't know the
-    reported one."""
-    provider, sep, _ = configured.partition(":")
-    if call_model and sep and "/" in call_model:
-        candidate = f"{provider}:{call_model}"
-        if candidate != configured:
-            return [candidate, configured]
-    return [configured]
+def _book_ids(configured: str, provider: ProviderSpec | None, call_model: str | None) -> list[str]:
+    """OpenRouter ids to price a call by. For an OpenRouter-kind provider (or none: the configured
+    model is `openrouter:<id>`) the call's own reported model comes first — a deep agent's sub-agent,
+    or a fallback route, can report a model from another vendor, and the book may know it — then the
+    configured one. A direct provider is priced by its configured model (spec 2026-11-09 §4.2)."""
+    name = split_model(configured)[1]
+    if provider is not None and provider.kind != "openrouter":
+        return book_ids(provider.kind, provider.base_url, name)
+    if provider is None and not configured.startswith("openrouter:"):
+        return []
+    ids = [call_model] if call_model and "/" in call_model and call_model != name else []
+    return [*ids, name]
 
 
-def _estimate(
-    ctx: AgentContext,
-    configured: str,
-    provider: ProviderSpec | None,
-    call_model: str | None,
-    input_tokens: int,
-    output_tokens: int,
-) -> float | None:
-    """A call's cost with none reported: OpenRouter's price book for an OpenRouter-kind provider,
-    then the provider's own prices (`[providers.x]`, or Ollama's 0.0), else `None` (unknown)."""
-    if provider is None or provider.kind == "openrouter":
-        # The book knows models as `openrouter:<id>`, whatever the provider entry is called.
-        book_model = configured if provider is None else f"openrouter:{split_model(configured)[1]}"
-        prices = _price_book(ctx)
-        for name in _pricing_models(book_model, call_model):
-            cost = prices.estimate(name, input_tokens, output_tokens)
-            if cost is not None:
-                return cost
+def _estimate(ctx: AgentContext, configured: str, provider: ProviderSpec | None, call: "ModelCall") -> float | None:
+    """A call's cost with none reported (spec 2026-11-09 §4.1): the provider's own prices
+    (`[providers.x]`, or a built-in's such as Ollama's 0.0), then the price book, else `None` (unknown)."""
     if provider is not None:
-        return estimate_cost(provider, input_tokens, output_tokens)
-    return None
+        configured_cost = estimate_cost(provider, call.input_tokens, call.output_tokens)
+        if configured_cost is not None:
+            return configured_cost
+    ids = _book_ids(configured, provider, call.model)
+    price = price_book_for(ctx).find(ids) if ids else None
+    if price is None:
+        return None
+    return price.cost(call.input_tokens, call.output_tokens, call.cache_read_tokens, call.cache_write_tokens)
 
 
 def _usage(
@@ -156,9 +152,7 @@ def _usage(
         if model_call.reported_cost is not None:
             cost, source = model_call.reported_cost, "reported"
         else:
-            estimate = _estimate(
-                ctx, configured, provider, model_call.model, model_call.input_tokens, model_call.output_tokens
-            )
+            estimate = _estimate(ctx, configured, provider, model_call)
             cost, source = (estimate, "estimated") if estimate is not None else (0.0, "unknown")
         rows.append(
             CallRow(
@@ -177,6 +171,7 @@ def _usage(
         cost_source=weakest([row.cost_source for row in rows]),
         calls=rows,
         cache_read_tokens=sum(model_call.cache_read_tokens for model_call in collector.calls),
+        cache_write_tokens=sum(model_call.cache_write_tokens for model_call in collector.calls),
     )
 
 
@@ -268,6 +263,7 @@ def _record_error(
             packet_tokens=packet.tokens,
             input_tokens=usage.input_tokens,
             cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
             output_tokens=usage.output_tokens,
             latency_ms=int((time.monotonic() - started) * 1000),
             cost_usd=usage.cost_usd,
@@ -473,6 +469,7 @@ def invoke_agent(
                 packet_tokens=packet.tokens,
                 input_tokens=usage.input_tokens,
                 cache_read_tokens=usage.cache_read_tokens,
+                cache_write_tokens=usage.cache_write_tokens,
                 output_tokens=usage.output_tokens,
                 latency_ms=latency_ms,
                 cost_usd=usage.cost_usd,

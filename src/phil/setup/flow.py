@@ -15,6 +15,7 @@ from pathlib import Path
 from tomlkit.exceptions import TOMLKitError
 
 from phil.agents.providers import ALIASES, is_known_provider, resolve_provider, split_model
+from phil.agents.unpriced import usd
 from phil.config import REPO_SOURCE, ROLES, PhilConfig, global_config_path
 from phil.key_store import KeyStoreError, key_source, keychain_available, pending_keys, set_key
 from phil.routing.jev import JevError, ping_jev
@@ -354,14 +355,10 @@ def _ollama_model(io: SetupIO, provider: _Provider, tier: str, default: str | No
     return f"ollama:{names[index]}"
 
 
-def _usd(value: float) -> str:
-    return f"${value:.2f}" if value == 0 or value >= 0.1 else f"${value:.3f}"
-
-
 def _describe(model: CatalogModel) -> str:
     if model.input_per_mtok is None or model.output_per_mtok is None:
         return f"{model.id}  (no price listed)"
-    return f"{model.id}  {_usd(model.input_per_mtok)}/{_usd(model.output_per_mtok)} per M"
+    return f"{model.id}  {usd(model.input_per_mtok)}/{usd(model.output_per_mtok)} per M"
 
 
 def _openrouter_model(io: SetupIO, tier: str, default: str | None, catalog: _LazyCatalog) -> str:
@@ -415,7 +412,8 @@ def _candidate(config: PhilConfig, provider: _Provider, models: dict[str, str]) 
 
 def _result_line(result) -> str:
     if result.ok:
-        return f"✓ {result.label}  {result.model}  {result.seconds:.1f}s"
+        price = f"  {result.price}" if result.price else ""
+        return f"✓ {result.label}  {result.model}  {result.seconds:.1f}s{price}"
     return f"✗ {result.label}  {result.model}  {result.detail}"
 
 

@@ -182,11 +182,16 @@ base_url = "https://api.groq.com/openai/v1"
 api_key_env = "GROQ_API_KEY"
 ```
 
-Prices, for estimating a call's cost when it reports none: any provider of kind `openrouter`
-(the built-in one or a custom entry) is priced from OpenRouter's public price list. Every other
-provider uses its own `input_per_mtok` / `output_per_mtok` (USD per million tokens) from its
-`[providers.<name>]` entry; Ollama's built-in prices are `0.0`, so it costs $0. Anything else
-shows as unknown (see Observability).
+Prices, for estimating a call's cost when it reports none: a provider's own `input_per_mtok` /
+`output_per_mtok` (USD per million tokens) under `[providers.<name>]` come first; Ollama's
+built-in prices are `0.0`, so it costs $0. Otherwise the built-in `anthropic`, `openai` and
+`google` providers, and any provider of kind `openrouter`, are priced from OpenRouter's public
+price list, cache and long-context prices included. A provider with its own `base_url` (a proxy,
+a local server), whether set under `[providers.<name>]` or through the vendor SDK's environment
+variable (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GOOGLE_GEMINI_BASE_URL` and their older
+names), is never priced from the list; OpenAI's own `https://api.openai.com/v1` still is.
+Anything else shows as unknown (see Observability). If the list can't be fetched, Phil says so
+when a run or goal starts and tries again later.
 
 Every provider's own SDK retries are off (`max_retries=0`), so Phil's retry middleware is the
 only retry policy that runs — except the Google kind, which is built with `max_retries=1`
@@ -236,6 +241,9 @@ required structured output). A tier set under `[models]` that no role maps to �
 `– high  <model>  unused (no role maps to it)` and isn't a failure. A pass marked
 `(needed a reminder)` means the model first answered in text and returned the structured output
 only after a reminder: it works, but it's a weak fit and costs an extra call now and then.
+A passing model's line ends with its price, e.g. `$2.00/$10.00 per M` (input/output per million
+tokens), `price reported per call` for an OpenRouter model, or `no price` when Phil can't price it
+(see Observability).
 
 ## Usage
 
@@ -445,13 +453,13 @@ Cost markers, wherever a cost is shown:
   list): `$?` when the computed total is exactly zero, `?` appended to the formatted amount when
   there's a nonzero total from other calls alongside the unpriced one.
 
-When a call reports no cost, Phil estimates one. A call to any provider of kind `openrouter`
-(the built-in `openrouter` or a custom `[providers.<name>]` entry with that kind) is priced
-from OpenRouter's public price list (`GET https://openrouter.ai/api/v1/models`, no key needed,
-cached under `~/.phil/cache/` for a day). Any other provider uses its own `input_per_mtok` /
-`output_per_mtok` prices set under `[providers.<name>]` (see Configuration → Providers).
-Ollama's built-in prices are `0.0` / `0.0`, so it costs $0. A model with no price shows as
-unknown, never estimated.
+When a call reports no cost, Phil estimates one: from the provider's own `input_per_mtok` /
+`output_per_mtok` under `[providers.<name>]` when both are set, else from OpenRouter's public
+price list (`GET https://openrouter.ai/api/v1/models`, no key needed, cached under
+`~/.phil/cache/` for a day) for the built-in `anthropic`, `openai` and `google` providers and any
+provider of kind `openrouter`. Tokens read from or written to a prompt cache are charged at the
+list's cache prices. Ollama's built-in prices are `0.0` / `0.0`, so it costs $0. A model with no
+price shows as unknown, never estimated.
 
 A run pauses at 100% of its `[run] max_tokens` / `max_cost_usd` limits as before, and now warns
 once at `[run] warn_at` (default `0.8`, i.e. 80%) of whichever limit it's closer to; the chat and
@@ -464,9 +472,16 @@ The chat's own planning has a budget too. `[chat] max_cost_usd` (default `1.0`) 
 - **Revision:** once the limit is reached, a revision the critic asks for is skipped and the plan so far is shown.
 - **At the limit:** neither a new plan nor an `edit` starts. Approving the plan shown still works, and a raised limit lets planning continue.
 
+When Phil can't price a model a run or a goal will use — a custom provider with no
+`input_per_mtok` / `output_per_mtok`, a provider with its own `base_url`, or a model OpenRouter's
+list doesn't have — it says so once, before the work starts, and goes on: for example
+``No price for `lab:llama` (implementer), so the $2.00 run budget can't count it. The run still
+stops at 1,500,000 tokens. To fix it, set `input_per_mtok` and `output_per_mtok` under
+`[providers.lab]`.`` Nothing is blocked; the token limit still applies.
+
 Each architect call is also capped at 10 model calls, and a revision (the critic's or your `edit`) at 4, since it starts from the previous plan; the prompt states both budgets. Every call resends the conversation so far, so an unbounded exploration grows expensive fast.
 
-Anthropic models through OpenRouter use prompt caching, so an agent's repeated history is billed at the cache price. Other vendors on OpenRouter cache on their own. `phil show` and `/show` list cache reads next to input tokens, for example `172,000 (128,000 cached)`.
+Anthropic models cache their prompts, so an agent's repeated history is billed at the cache price: through OpenRouter, and directly for agents that use tools (the architect, the quick implementer, the designer and answers, and every deep agent). Other vendors cache on their own. `phil show` and `/show` list cache reads next to input tokens, for example `172,000 (128,000 cached)`.
 
 ```toml
 [chat]

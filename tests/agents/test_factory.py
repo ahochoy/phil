@@ -224,3 +224,63 @@ def test_chat_model_openrouter_uses_millisecond_timeout_and_disables_sdk_retries
     model = chat_model("openrouter:openai/gpt-6-luna", 180)
     assert model.request_timeout == 180_000
     assert model.max_retries == 0
+
+
+def _light_middleware(tmp_path, monkeypatch, model, provider=None):
+    import langchain.agents
+
+    captured = {}
+    monkeypatch.setattr(langchain.agents, "create_agent", lambda model, tools=None, **kw: captured.update(kw) or "agent")
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: object())
+    build_agent(get_spec("architect"), model, tmp_path, [], provider=provider)
+    return [type(m).__name__ for m in captured["middleware"]]
+
+
+def test_a_light_agent_on_anthropic_caches_its_prompt(tmp_path, monkeypatch):
+    names = _light_middleware(tmp_path, monkeypatch, "anthropic:claude-sonnet-5-5", BUILTIN_PROVIDERS["anthropic"])
+    assert names[-1] == "AnthropicPromptCachingMiddleware"
+
+
+def test_a_custom_anthropic_kind_provider_caches_too(tmp_path, monkeypatch):
+    proxy = ProviderSpec("proxy", "anthropic", "https://proxy.example.com", "PROXY_KEY", None, None)
+    assert "AnthropicPromptCachingMiddleware" in _light_middleware(tmp_path, monkeypatch, "proxy:claude-x", proxy)
+
+
+def test_a_built_in_anthropic_model_without_a_resolved_provider_caches(tmp_path, monkeypatch):
+    assert "AnthropicPromptCachingMiddleware" in _light_middleware(tmp_path, monkeypatch, "anthropic:claude-sonnet-5-5")
+
+
+@pytest.mark.parametrize("model", ["openai:gpt-6-sol", "openrouter:anthropic/claude-sonnet-5.5", "ollama:qwen3:8b"])
+def test_other_light_agents_dont_get_anthropics_cache_middleware(tmp_path, monkeypatch, model):
+    assert "AnthropicPromptCachingMiddleware" not in _light_middleware(tmp_path, monkeypatch, model)
+
+
+def test_a_lean_agent_on_anthropic_doesnt_cache(tmp_path, monkeypatch):
+    import langchain.agents
+
+    captured = {}
+    monkeypatch.setattr(langchain.agents, "create_agent", lambda model, tools=None, **kw: captured.update(kw) or "agent")
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: object())
+    build_agent(get_spec("critic"), "anthropic:claude-sonnet-5-5", tmp_path, [], provider=BUILTIN_PROVIDERS["anthropic"])
+    assert "AnthropicPromptCachingMiddleware" not in [type(m).__name__ for m in captured["middleware"]]
+
+
+def test_deepagents_still_caches_a_deep_agent_and_its_sub_agent(tmp_path, monkeypatch):
+    # The deep harness gets Anthropic caching from deepagents itself, for the main agent and the
+    # general-purpose sub-agent; this pins that it still does.
+    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+
+    from phil.agents.providers import build_chat_model
+
+    made = []
+    original = AnthropicPromptCachingMiddleware.__init__
+
+    def spy(self, *args, **kwargs):
+        made.append(kwargs.get("unsupported_model_behavior"))
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(AnthropicPromptCachingMiddleware, "__init__", spy)
+    model = build_chat_model(BUILTIN_PROVIDERS["anthropic"], "claude-sonnet-5-5", 30, environ={"ANTHROPIC_API_KEY": "dummy"})
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: model)
+    build_agent(get_spec("implementer"), "anthropic:claude-sonnet-5-5", tmp_path, [], provider=BUILTIN_PROVIDERS["anthropic"])
+    assert len(made) >= 2 and set(made) == {"ignore"}

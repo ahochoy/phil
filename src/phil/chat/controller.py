@@ -20,7 +20,8 @@ from rich.table import Table
 from rich.text import Text
 
 from phil.agents.failures import Failure, classify_failure, internal_failure
-from phil.agents.invoke import AgentContext
+from phil.agents.invoke import AgentContext, price_book_for
+from phil.agents.unpriced import PLANNING_ROLES, planning_notice, unpriced_models
 from phil.chat.answer import ask_answer
 from phil.chat.approval import (
     effective_setup_cmd,
@@ -1038,7 +1039,7 @@ class ChatController:
             self._answer_job(route.text)
         else:
             self._set_stage("intake")
-            self._intake_job(route.text)
+            self._intake_job(route.text, check_prices=True)
 
     def _status_line(self, route: Route) -> str:
         if route.source == "fix_offer":
@@ -1111,7 +1112,9 @@ class ChatController:
         else:
             self._begin_goal(text)  # another message is a new goal
 
-    def _intake_job(self, message: str, previous: Goal | None = None, answers: list[str] | None = None) -> None:
+    def _intake_job(
+        self, message: str, previous: Goal | None = None, answers: list[str] | None = None, check_prices: bool = False
+    ) -> None:
         self._intake_calls += 1
         call, generation = self._intake_calls, self._generation
         self._step("intake", generation)
@@ -1119,6 +1122,8 @@ class ChatController:
         detected = detect_test_cmd(self.info.root)  # reads only file names (and package.json's scripts)
 
         def fn(ctx: AgentContext) -> dict:
+            if check_prices:
+                self._note_unpriced(ctx)
             goal = intake(
                 ctx, message, overview=self.overview, previous=previous, answers=answers or [], call=call,
                 route_depth=route_depth, detected_test_cmd=detected,
@@ -1385,6 +1390,23 @@ class ChatController:
         reached chat.max_cost_usd. The limit and the goal's mark are read now, on the main thread."""
         chat_id, mark, limit = self.session.id, self._goal_mark, self.config.chat.max_cost_usd
         return lambda conn: lambda: chat_cost_since(conn, chat_id, mark) >= limit
+
+    def _note_unpriced(self, ctx: AgentContext) -> None:
+        """Once per goal, on the goal's first intake job: the goal's planning models Phil can't price
+        (spec 2026-11-09 §4.6). On the job's thread, since the price list may be fetched first; it
+        posts only when there's a line to show, and never fails the goal."""
+        try:
+            items = unpriced_models(ctx.config, PLANNING_ROLES, price_book_for(ctx))
+            line = planning_notice(items, max_cost_usd=ctx.config.chat.max_cost_usd)
+        except Exception:
+            logger.warning("couldn't check the goal's model prices", exc_info=True)
+            return
+        if line is not None:
+            self.post(ChatEvent("unpriced_ready", {"line": line}, -1))
+
+    def _on_unpriced_ready(self, data: dict) -> None:
+        if data.get("line"):
+            self.console.print(f"[phil.warn]{escape(data['line'])}[/]")
 
     def _goal_cost(self) -> float:
         return chat_cost_since(self.conn, self.session.id, self._goal_mark)

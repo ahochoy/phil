@@ -9,7 +9,9 @@ from pathlib import Path
 
 from pydantic import Field
 
-from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, invoke_agent
+from phil.agents.invoke import AgentContext, AgentFactory, ContractViolation, invoke_agent, shared_price_book
+from phil.agents.pricing import PriceBook
+from phil.agents.unpriced import price_label
 from phil.agents.providers import SYSTEMONE, ProviderSpec, missing_key_message, provider_for_model, split_model
 from phil.agents.spec import AgentSpec
 from phil.config import ROLES, TIERS, ConfigError, PhilConfig
@@ -51,6 +53,7 @@ class CheckResult:
     seconds: float
     detail: str  # why it failed; empty when ok
     reminded: bool = False  # passed, but only after a reminder to call the answer tool
+    price: str | None = None  # "$in/$out per M", "no price"…; None when it failed (phil.agents.unpriced)
 
 
 def _role_labels(config: PhilConfig) -> dict[str, str]:
@@ -172,13 +175,17 @@ def check_models(
     repo_root: Path,
     clock: Callable[[], float] = time.monotonic,
     jev_transport: object | None = None,
+    prices: PriceBook | None = None,
 ) -> list[CheckResult]:
     """One call per distinct model a role resolves to (see `check_targets`): a lean agent asked to return
     `ModelCheck(ok=true, echo=<word>)`, with the configured timeout, one try and no retries. Its
     telemetry and artifacts go to a temporary directory, not the project's.
 
     A typesafe (systemone) classifier model is pinged with `ping_jev` instead, through the lean
-    agent path; `jev_transport` overrides its HTTP transport (tests only)."""
+    agent path; `jev_transport` overrides its HTTP transport (tests only).
+
+    A passing model's result carries its price; `prices` is the price book for it, the
+    process-wide one when not given."""
     targets = check_targets(config)
     if not targets:
         return []
@@ -194,10 +201,14 @@ def check_models(
                 workdir=repo_root,
                 factory=factory,
             )
+            book = prices if prices is not None else shared_price_book()
             for call, (model, labels) in enumerate(targets, 1):
                 started = clock()
                 ok, detail, reminded = _check_one(ctx, model, labels, call, jev_transport)
-                results.append(CheckResult(", ".join(labels), model, ok, clock() - started, detail, reminded))
+                seconds = clock() - started
+                # Looked up after the clock stops: a first fetch of the list isn't the model's time.
+                price = price_label(config, model, book) if ok else None
+                results.append(CheckResult(", ".join(labels), model, ok, seconds, detail, reminded, price))
         finally:
             conn.close()
     return results

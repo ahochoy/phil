@@ -88,6 +88,7 @@ MIGRATIONS: list[str] = [
     "ALTER TABLE telemetry ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",  # of input_tokens
     "ALTER TABLE runs ADD COLUMN name TEXT",  # display only (spec 2026-10-16 §3.2); NULL for older runs
     "ALTER TABLE telemetry ADD COLUMN reminders INTEGER NOT NULL DEFAULT 0",  # spec 2026-10-22 §4.2
+    "ALTER TABLE telemetry ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0",  # spec 2026-11-09 §4.4
 ]
 
 

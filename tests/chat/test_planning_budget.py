@@ -77,6 +77,40 @@ def test_a_skipped_revision_is_reported(calc_repo, monkeypatch):
     assert "Plan CALC v1" in text
 
 
+LAB = {"lab": {"kind": "openai", "base_url": "http://localhost:8000/v1"}}
+
+
+def test_a_goal_with_an_unpriced_planning_model_says_so_once(calc_repo):
+    config = PhilConfig.model_validate({"models": TEST_MODELS | {"architect": "lab:llama"}, "providers": LAB})
+    text, *_ = run_chat(
+        calc_repo, ["add subtract", "n"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}, config=config
+    )
+    flat = " ".join(text.split())
+    assert flat.count("No price for `lab:llama` (architect)") == 1
+    assert "planning budget (chat.max_cost_usd)" in flat and "`[providers.lab]`" in flat
+
+
+def test_a_priced_goal_says_nothing_about_prices(calc_repo):
+    text, *_ = run_chat(
+        calc_repo, ["add subtract", "n"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
+        config=PhilConfig(models=TEST_MODELS),
+    )
+    assert "No price for" not in text
+
+
+def test_a_failing_price_check_doesnt_disturb_the_goal(calc_repo, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("price list exploded")
+
+    monkeypatch.setattr(controller_mod, "unpriced_models", boom)
+    config = PhilConfig.model_validate({"models": TEST_MODELS | {"architect": "lab:llama"}, "providers": LAB})
+    text, *_ = run_chat(
+        calc_repo, ["add subtract", "n"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}, config=config
+    )
+    assert "price list exploded" not in text and "No price for" not in text
+    assert "Plan CALC v1" in text
+
+
 def test_an_edit_at_the_limit_keeps_the_draft(calc_repo, monkeypatch):
     spent, seen = {"cost": 0.0}, {}
 

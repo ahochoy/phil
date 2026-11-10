@@ -66,6 +66,17 @@ def no_price_fetch(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPat
 
 
 @pytest.fixture(autouse=True)
+def no_vendor_base_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A base URL exported for a vendor SDK (e.g. a proxy's ANTHROPIC_BASE_URL) changes how Phil
+    # prices that vendor's calls (phil.agents.pricing.BASE_URL_ENV): tests must not depend on it.
+    from phil.agents.pricing import BASE_URL_ENV
+
+    for names in BASE_URL_ENV.values():
+        for name in names:
+            monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def isolated_git_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Tests must not pick up the machine's own global/system git config (e.g. a real
     # gpg.format=ssh signing key), or they could sign test commits with the user's real key.
