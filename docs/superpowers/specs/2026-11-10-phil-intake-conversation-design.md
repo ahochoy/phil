@@ -107,8 +107,9 @@ quick task already carries what it must do.
 
 ### 4.4 What the user sees
 
-- **While a turn runs:** the usual live status, "Thinking…", and "Reading `<path>`" while the
-  agent reads files (the answerer's activity feed already does this).
+- **While a turn runs:** the usual live status: "Reading the repo" while the snapshot is
+  exported, then "Thinking". (Showing each file the agent reads would need an activity feed for
+  chat jobs, which no chat agent has today; not in this spec.)
 - **A reply** prints as ordinary chat text. Choices print under it, numbered, with "Plan with what
   you know" always last. A typed number picks a choice; anything else is the user's own answer.
 - **The Plan block,** on a ready turn: a short titled list of the steps, then "Starting (quick)…"
