@@ -348,10 +348,12 @@ quick path  (/full to plan it properly)`, `Forced: full path` or `Forced: quick 
 Accepting a diagnosis's `Fix it? [Enter = quick fix / full = plan it / n]` offer says `Fix ·
 quick path` (or `Fix · full plan` for `full`). Force a path yourself by starting your message
 with `/ask`, `/quick` or `/full` — the prefix is stripped and the classifier is skipped
-entirely. The same prefixes, and `/full!`, skip the intake conversation too (typed during one,
-they start that goal). Otherwise the router's depth is only a hint for the conversation, which
-may make a quick request full or the other way round. When the request is too ambiguous to route (a missing target, conflicting goals, or
-no way to tell what done means), Phil asks first instead of guessing.
+entirely. The same prefixes, and `/full!`, skip the intake conversation too (typed while Phil is
+waiting for your reply, they replace the conversation with that goal; while it is thinking, finish
+the current goal first or press Ctrl-C). Otherwise the router's depth is only a hint for the
+conversation, which may make a quick request full or the other way round. When the request is too
+ambiguous to route (a missing target, conflicting goals, or no way to tell what done means), Phil
+asks first instead of guessing.
 
 Every run's `phil show <run-id>` header names its depth (`quick` or `full`; blank for a run
 from before M3b), right after the keyword: `Run <id> · CALC · quick · completed · ...`.
