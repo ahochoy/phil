@@ -23,7 +23,6 @@ from phil.chat.decision import (
     question_decision,
     replace_decision,
 )
-from phil.config import PhilConfig
 from phil.contracts import Approach, Question
 from phil.repo import resolve_repo
 from phil.run.launch import spawn_worker
@@ -36,7 +35,7 @@ from phil.ui.theme import make_console
 from tests.chat.conftest import ChatFactory, critique, goal, plan
 from tests.chat.test_controller import FULL_SCRIPT, run_chat, transcript
 from tests.chat.test_controller_run import _run, escalate, post, set_state, to_state
-from tests.helpers import TEST_MODELS, run_git
+from tests.helpers import classic_config, run_git
 from tests.run.conftest import TEST_CMD
 from tests.run.test_launch import worker_env
 from tests.run.worker_scenarios import BUILD
@@ -67,7 +66,7 @@ def bare_controller(repo) -> ChatController:
     conn = connect(ProjectPaths(info.slug).db_path)
     io = ChatIO(ask=lambda prompt: None, spawn=lambda *a: None)
     return ChatController(
-        info, PhilConfig(models=TEST_MODELS), conn, make_console(record=True, width=120), io,
+        info, classic_config(), conn, make_console(record=True, width=120), io,
         factory=ChatFactory({}), start_pr_monitor=False,
     )
 

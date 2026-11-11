@@ -1,13 +1,12 @@
 """Routing in the chat (spec §3.5, §3.6, §3.8): every message is answered, or planned quick or full."""
 
 import phil.chat.controller as controller_mod
-from phil.config import PhilConfig
 from phil.contracts.routing import Answer, RouteJudgement
 from phil.routing import Judgement
 from phil.routing.classify import Classification
 from tests.chat.conftest import critique, goal, plan
 from tests.chat.test_controller import FULL_SCRIPT, deferred, last_error, run_chat, transcript
-from tests.helpers import TEST_MODEL, TEST_MODELS
+from tests.helpers import TEST_MODEL, TEST_MODELS, classic_config
 
 FIX_PROMPT = "Fix it? [Enter = quick fix / full = plan it / n] › "
 QUICK_FALLBACK = "Couldn't plan this as a quick change; planning it fully."
@@ -237,7 +236,7 @@ def test_router_unavailable_line_when_jev_fails(calc_repo, monkeypatch):
     monkeypatch.setattr(
         controller_mod, "classify", lambda ctx, state, **kw: Classification(judgement, fallback_reason="http 429")
     )
-    config = PhilConfig(models={**TEST_MODELS, "classifier": "typesafe:jev-latest"})
+    config = classic_config(models={**TEST_MODELS, "classifier": "typesafe:jev-latest"})
     text, *_ = run_chat(
         calc_repo, ["what does calc do?"], {"answer": [Answer(text="It sums.")]}, config=config
     )
@@ -249,7 +248,7 @@ def test_router_unavailable_line_when_jev_fails(calc_repo, monkeypatch):
 
 def test_router_unavailable_line_when_jev_and_the_llm_fallback_both_fail(calc_repo, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)  # Jev fails: missing key
-    config = PhilConfig(models={**TEST_MODELS, "low": TEST_MODEL, "classifier": "typesafe:jev-latest"})
+    config = classic_config(models={**TEST_MODELS, "low": TEST_MODEL, "classifier": "typesafe:jev-latest"})
     text, spawned, runs, factory, _ = run_chat(
         calc_repo, ["add subtract", "n"], {"route": [RuntimeError("down")], **FULL_SCRIPT}, config=config
     )
@@ -263,7 +262,7 @@ def test_router_unavailable_line_when_jev_and_the_llm_fallback_both_fail(calc_re
 
 def test_router_unavailable_line_when_jev_fails_and_there_is_no_low_model(calc_repo, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
-    config = PhilConfig(models={**TEST_MODELS, "classifier": "typesafe:jev-latest"})  # no low tier
+    config = classic_config(models={**TEST_MODELS, "classifier": "typesafe:jev-latest"})  # no low tier
     text, spawned, runs, factory, _ = run_chat(
         calc_repo, ["add subtract", "n"], {"route": [route("question")], **FULL_SCRIPT}, config=config
     )
@@ -454,6 +453,6 @@ def test_jev_judgements_use_the_jev_detail_threshold(calc_repo, monkeypatch):
         source="jev", latency_ms=5, usage=None,
     )
     monkeypatch.setattr(controller_mod, "classify", lambda *a, **k: Classification(judgement, None))
-    config = PhilConfig(models=TEST_MODELS, routing={"jev_detail_threshold": 0.5})
+    config = classic_config(routing={"jev_detail_threshold": 0.5})
     text, *_ = run_chat(calc_repo, ["fix the page", peek({})], {"intake": [goal(open_questions=["Which page?"])]}, config=config)
     assert "Unclear request · asking first" in text  # 0.55 >= Jev's 0.5, though below the default 0.6

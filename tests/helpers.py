@@ -10,6 +10,17 @@ TEST_MODELS = {role: TEST_MODEL for role in ROLES}
 
 MODELS_TOML = "[models]\n" + "".join(f'{role} = "{TEST_MODEL}"\n' for role in ROLES)
 
+# Chat tests that script "intake" exercise the classic intake (spec 2026-11-10 §4.8); the
+# conversation has its own tests.
+CLASSIC_CHAT = {"intake": "classic"}
+
+
+def classic_config(**kw) -> "PhilConfig":
+    from phil.config import PhilConfig
+
+    chat = CLASSIC_CHAT | kw.pop("chat", {})
+    return PhilConfig(models=kw.pop("models", TEST_MODELS), chat=chat, **kw)
+
 
 def run_git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
     return subprocess.run(

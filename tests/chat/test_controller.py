@@ -2,7 +2,7 @@ import json
 
 from phil.chat.controller import WAKE, ChatController, ChatIO
 from phil.chat.watcher import RunWatcher
-from phil.config import PhilConfig, global_config_path, load_config
+from phil.config import global_config_path, load_config
 from phil.repo import resolve_repo
 from phil.store.artifacts import ArtifactStore
 from phil.store.db import connect
@@ -11,7 +11,7 @@ from phil.store.runs import list_runs
 from phil.ui.runs import run_label
 from phil.ui.theme import make_console
 from tests.chat.conftest import ChatFactory, critique, goal, plan
-from tests.helpers import MODELS_TOML, TEST_MODELS, run_git
+from tests.helpers import MODELS_TOML, classic_config, run_git
 
 
 class ManualWatcher(RunWatcher):
@@ -71,7 +71,7 @@ def run_chat(repo, answers, scripts, config=None, submit=None, wake=None, choose
     if wake is not None:
         io.wake = lambda: wake(holder["controller"])
     factory = ChatFactory(scripts)
-    config = config or PhilConfig(models=TEST_MODELS)
+    config = config or classic_config()
     # The run watcher is never started as a thread: scripts drive `controller._watcher.poll_once()`.
     kw.setdefault(
         "watcher_factory",
@@ -154,7 +154,7 @@ def test_approval_rereads_phil_toml(calc_repo):
     spawned = []
     io = ChatIO(ask=ask, spawn=lambda root, run_id, mode, decision=None: spawned.append(run_id))
     factory = ChatFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
-    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory, start_pr_monitor=False).run()
+    ChatController(info, classic_config(), conn, console, io, factory=factory, start_pr_monitor=False).run()
     text = console.export_text()
     assert "No model for implementer (tier low)" in text  # first y refused
     runs = list_runs(conn)
@@ -174,7 +174,7 @@ def test_approval_reports_a_broken_phil_toml(calc_repo):
 
     io = ChatIO(ask=ask, spawn=lambda *a: None)
     factory = ChatFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
-    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory, start_pr_monitor=False).run()
+    ChatController(info, classic_config(), conn, console, io, factory=factory, start_pr_monitor=False).run()
     assert "phil.toml" in console.export_text()
     assert list_runs(conn) == []
 
@@ -214,7 +214,7 @@ def test_permissions_prints_the_listing_and_points_to_the_cli(calc_repo):
     info = resolve_repo(calc_repo)
     path = ProjectPaths(info.slug).policy_path
     add_rule(path, "deny", "git push *", "manual", today=date(2026, 10, 13))
-    config = PhilConfig(models=TEST_MODELS)
+    config = classic_config()
     text, *_ = run_chat(calc_repo, ["/permissions", "/help"], {}, config=config)
     for line in listing_lines(info.root, ProjectPaths(info.slug), config):
         assert line in text
@@ -231,10 +231,10 @@ def test_a_broken_policy_file_is_reported_at_chat_start_and_by_permissions(calc_
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('[[allow]]\nrule = "gh * pr"\n', encoding="utf-8", newline="\n")
     prefix = f"⚠ {shown_path(path)}:2: "
-    text, *_ = run_chat(calc_repo, [], {}, config=PhilConfig(models=TEST_MODELS))
+    text, *_ = run_chat(calc_repo, [], {}, config=classic_config())
     [line] = [line for line in text.splitlines() if line.startswith(prefix)]
     assert line.endswith(" — saved allow rules are off until it's fixed")
-    text, *_ = run_chat(calc_repo, ["/permissions"], {}, config=PhilConfig(models=TEST_MODELS))
+    text, *_ = run_chat(calc_repo, ["/permissions"], {}, config=classic_config())
     assert [line for line in text.splitlines() if line.startswith(prefix)] == [line, line]  # start, then /permissions
 
 
@@ -258,7 +258,7 @@ def test_spawn_failure_reports_resume_and_keeps_chat_alive(calc_repo):
 
     io = ChatIO(ask=lambda prompt: queue.pop(0) if queue else None, spawn=spawn)
     factory = ChatFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
-    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory, start_pr_monitor=False).run()
+    ChatController(info, classic_config(), conn, console, io, factory=factory, start_pr_monitor=False).run()
     text = console.export_text()
     runs = list_runs(conn)
     assert len(runs) == 1
@@ -281,7 +281,7 @@ def test_keyboard_interrupt_at_idle_prompt_continues(calc_repo):
         return "/quit"
 
     io = ChatIO(ask=ask, spawn=lambda *a: None)
-    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, start_pr_monitor=False).run()
+    ChatController(info, classic_config(), conn, console, io, start_pr_monitor=False).run()
     assert "Cancelled." in console.export_text()
 
 
@@ -324,7 +324,7 @@ def test_base_sha_resolves_at_approval_when_not_pinned(calc_repo):
 
     io = ChatIO(ask=ask, spawn=lambda *a: None)
     factory = ChatFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
-    ChatController(info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory, start_pr_monitor=False).run()
+    ChatController(info, classic_config(), conn, console, io, factory=factory, start_pr_monitor=False).run()
     new_sha = run_git(calc_repo, "rev-parse", "HEAD").strip()
     runs = list_runs(conn)
     assert new_sha != info.head_sha
@@ -345,7 +345,7 @@ def test_base_sha_stays_fixed_when_explicit(calc_repo):
     io = ChatIO(ask=ask, spawn=lambda *a: None)
     factory = ChatFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]})
     ChatController(
-        info, PhilConfig(models=TEST_MODELS), conn, console, io, factory=factory, base_sha=info.head_sha,
+        info, classic_config(), conn, console, io, factory=factory, base_sha=info.head_sha,
         start_pr_monitor=False,
     ).run()
     runs = list_runs(conn)
@@ -382,7 +382,7 @@ def test_a_detected_test_command_is_shown_and_frozen_into_the_run(calc_repo):
 
 
 def test_the_test_command_source_is_labelled(calc_repo):
-    (calc_repo / "phil.toml").write_text(MODELS_TOML + '[project]\ntest_cmd = "make check"\n')
+    (calc_repo / "phil.toml").write_text(MODELS_TOML + '[chat]\nintake = "classic"\n[project]\ntest_cmd = "make check"\n')
     text, *_ = run_chat(
         calc_repo,
         ["add subtract", "n"],
@@ -395,7 +395,7 @@ def test_the_test_command_source_is_labelled(calc_repo):
 def test_a_test_command_from_the_global_config_names_that_file(calc_repo):
     global_config_path().parent.mkdir(parents=True, exist_ok=True)
     global_config_path().write_text('[project]\ntest_cmd = "make check"\n')
-    (calc_repo / "phil.toml").write_text(MODELS_TOML)
+    (calc_repo / "phil.toml").write_text(MODELS_TOML + '[chat]\nintake = "classic"\n')
     text, *_ = run_chat(
         calc_repo,
         ["add subtract", "n"],
