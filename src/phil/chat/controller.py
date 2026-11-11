@@ -395,6 +395,7 @@ class ChatController:
         self._held_input: list[str] = []  # typed while a turn was in flight: joins the next turn
         self._typing_choice_other = False  # "Something else" was picked: the next input is the answer
         self._turn_must_decide = False  # the turn in flight was sent with must_decide (saved for a reopen)
+        self._go_pending = False  # `go` was typed while a turn was in flight: the next turn decides
         self._skip_design = False  # the goal was typed with /full!
         self._replacement_skip = False  # a replacement typed with /full!
         self._approach_order: list[Approach] = []  # the designer's approaches, recommended first
@@ -864,6 +865,8 @@ class ChatController:
             self._begin_goal(text)
         elif stage == "conversation":
             self._conversation_input(text)
+        elif stage == "conversing" and text.lower() == PLAN_NOW:
+            self._plan_after_turn()
         elif stage == "conversing":
             self._held_input.append(text)
             self.console.print("[phil.muted]Got it; that goes with my next reply.[/]")
@@ -936,6 +939,8 @@ class ChatController:
         elif command == "/go":
             if self.stage == "conversation":
                 self._turn_job(must_decide=True)
+            elif self.stage == "conversing":
+                self._plan_after_turn()
             else:
                 self.console.print("Nothing to plan right now: /go answers Phil's questions during intake.")
         else:
@@ -987,7 +992,7 @@ class ChatController:
         self._describing, self._budget_warned = False, False
         self._trust = None
         self._turns, self._choices, self._user_replies, self._held_input = [], [], 0, []
-        self._typing_choice_other, self._turn_must_decide = False, False
+        self._typing_choice_other, self._turn_must_decide, self._go_pending = False, False, False
 
     def _forced_input(self, raw: str, forced: str, rest: str) -> None:
         """A message prefixed with /ask, /quick, /full or /full!: a goal whose depth skips the router."""
@@ -1423,12 +1428,13 @@ class ChatController:
 
     def _turn_job(self, *, must_decide: bool = False, check_prices: bool = False) -> None:
         """One conversation turn: the converse agent reads the base commit's snapshot and the turns so far."""
-        self._set_stage("conversing")
         if not must_decide and self._turn_budget_spent():
             must_decide = True
             self.console.print(f"[phil.warn]{BUDGET_DECIDES}[/]")
+        # Set before the stage change saves state.json, so a chat closed mid-turn resends it right.
+        self._choices, self._turn_must_decide, self._typing_choice_other = [], must_decide, False
+        self._set_stage("conversing")
         self._budget_note()
-        self._choices, self._turn_must_decide = [], must_decide
         self._converse_calls += 1
         call, generation = self._converse_calls, self._generation
         self._step("conversing", generation)
@@ -1463,6 +1469,7 @@ class ChatController:
         self._recent.append(f"phil: {turn.reply[:TURN_CHARS]}")
         self.console.print(escape(turn.reply))
         held, self._held_input = self._held_input, []
+        go, self._go_pending = self._go_pending, False
         if turn.ready and not held:
             self._finish_conversation(turn)
             return
@@ -1470,7 +1477,12 @@ class ChatController:
             # The user typed while this turn was in flight: they come first, even over a ready turn.
             for text in held[:-1]:
                 self._turns.append(ConverseTurn(speaker="user", text=text))
-            self._user_turn(held[-1])  # one more turn carries every held message, in order
+            self._user_replies += len(held) - 1  # each held message is a reply
+            # One more turn carries every held message, in order, still deciding if this one had to.
+            self._user_turn(held[-1], must_decide=data["must_decide"] or go)
+            return
+        if go:
+            self._turn_job(must_decide=True)  # `go` was typed while this turn was in flight
             return
         self._choices = list(turn.choices)
         if self._choices and self.io.choose is None:
@@ -1499,11 +1511,16 @@ class ChatController:
                 return
         self._user_turn(text)  # any other text, a number that matches no choice included, is their answer
 
-    def _user_turn(self, text: str) -> None:
+    def _user_turn(self, text: str, *, must_decide: bool = False) -> None:
         self._turns.append(ConverseTurn(speaker="user", text=text))
         self._recent.append(f"you: {text[:TURN_CHARS]}")
         self._user_replies += 1
-        self._turn_job(must_decide=self._user_replies >= MAX_CONVERSATION_TURNS)
+        self._turn_job(must_decide=must_decide or self._user_replies >= MAX_CONVERSATION_TURNS)
+
+    def _plan_after_turn(self) -> None:
+        """`go` or /go while a turn is in flight: the turn after it decides."""
+        self._go_pending = True
+        self.console.print("[phil.muted]Got it; I'll plan with what I know next.[/]")
 
     def _turn_budget_spent(self) -> bool:
         return self._goal_cost() >= self.config.chat.max_cost_usd
@@ -1516,7 +1533,7 @@ class ChatController:
     def _conversation_fallback(self, reason: str) -> None:
         """A turn failed: the user's messages so far, held ones last, go once to the classic intake
         (spec 2026-11-10 §4.7)."""
-        held, self._held_input = self._held_input, []
+        held, self._held_input, self._go_pending = self._held_input, [], False
         message = "\n\n".join([*(turn.text for turn in self._turns if turn.speaker == "user"), *held])
         self._safe_note("conversation_fallback", reason=reason)
         self.console.print(f"[phil.muted]{CONVERSATION_FALLBACK}[/]")
@@ -2937,6 +2954,7 @@ class ChatController:
                 self._choices = [c for c in saved.get("choices") or [] if isinstance(c, str)]
                 self._set_stage("conversation")
         elif stage in ("approval", "planning", "edit") and self._draft is not None:
+            self._turns = turns  # an `edit` revises with the conversation, like the first plan
             self._to_approval()
         else:
             self._reset_goal()

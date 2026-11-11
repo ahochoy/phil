@@ -142,6 +142,62 @@ def test_a_message_held_past_a_failed_turn_goes_to_the_classic_intake(calc_repo)
     assert intake.index("add subtract") < intake.index("and multiply")
 
 
+@pytest.mark.parametrize("go", ["/go", "Go"])
+def test_go_typed_during_a_turn_makes_the_next_turn_decide(calc_repo, go):
+    seen = {}
+    text, spawned, _, factory, _ = run_chat(
+        calc_repo, [opening(seen)],
+        {"converse": [typing(seen, go, asks()), ready(quick_goal())]}, config=CONVERSATION,
+    )
+    assert decided(factory) == [False, True]
+    assert "Nothing to plan right now" not in text and "plan with what I know next" in text
+    assert '"text": "Go"' not in payloads(factory, "converse")[1]  # not held as the user's words
+    assert len(spawned) == 1
+
+
+def test_a_message_held_past_a_go_turn_still_decides(calc_repo):
+    seen = {}
+    _, spawned, _, factory, _ = run_chat(
+        calc_repo, [opening(seen), "go"],
+        {"converse": [
+            asks(), typing(seen, "and multiply", ready(quick_goal())), ready(quick_goal(), reply="Adding both."),
+        ]},
+        config=CONVERSATION,
+    )
+    assert decided(factory) == [False, True, True]
+    assert "and multiply" in payloads(factory, "converse")[2]
+    assert len(spawned) == 1
+
+
+def test_a_go_typed_with_a_held_message_makes_the_held_turn_decide(calc_repo):
+    seen = {}
+
+    def turn(scripted_turn):
+        seen["controller"]._input("and multiply")
+        seen["controller"]._input("go")
+        return asks()
+
+    _, _, _, factory, _ = run_chat(
+        calc_repo, [opening(seen)], {"converse": [turn, ready(quick_goal())]}, config=CONVERSATION
+    )
+    assert decided(factory) == [False, True]
+    assert "and multiply" in payloads(factory, "converse")[1]
+
+
+def test_each_held_message_counts_toward_the_reply_limit(calc_repo):
+    seen = {}
+
+    def turn(scripted_turn):
+        for text in ("a", "b", "c", "d"):
+            seen["controller"]._input(text)
+        return asks()
+
+    _, _, _, factory, _ = run_chat(
+        calc_repo, [opening(seen)], {"converse": [turn, ready(quick_goal())]}, config=CONVERSATION
+    )
+    assert decided(factory) == [False, True]
+
+
 def test_ctrl_c_during_a_turn_cancels_the_goal(calc_repo):
     seen = {}
 

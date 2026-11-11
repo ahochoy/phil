@@ -100,8 +100,8 @@ Today's intake stays available behind a setting so the two can be compared.
 ### 4.3 What later agents see
 
 The full path today sees only the `Goal`. `ArchitectInput` and `DesignInput` gain an optional
-`conversation: list[ConverseTurn]`, filled from the intake conversation (None on the classic
-path). The architect and designer prompts say: the goal is the summary; the conversation is the
+`conversation: list[ConverseTurn]`, filled from the intake conversation, including after a
+fallback to the classic intake (§4.7); None only when the goal never had a conversation. The architect and designer prompts say: the goal is the summary; the conversation is the
 user's own words, which win where they differ. The quick implementer needs nothing new: the
 quick task already carries what it must do.
 

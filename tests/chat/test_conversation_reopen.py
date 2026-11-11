@@ -1,7 +1,10 @@
 import json
 
+from tests.chat.conftest import critique, plan
 from tests.chat.test_controller import deferred, run_chat, session_dir
-from tests.chat.test_conversation_flow import CONVERSATION, _detectable, asks, payloads, quick_goal, ready  # noqa: F401
+from tests.chat.test_conversation_flow import (  # noqa: F401
+    CONVERSATION, _detectable, asks, full_goal, payloads, quick_goal, ready,
+)
 from tests.chat.test_reopen_state import reopen
 
 
@@ -61,3 +64,17 @@ def test_a_go_turn_in_flight_is_resent_on_reopen(calc_repo):
     [call] = payloads(factory, "converse")
     assert '"must_decide": true' in call and "Which module?" in call
     assert len(spawned) == 1
+
+
+def test_an_edit_after_reopening_at_approval_keeps_the_conversation(calc_repo):
+    run_chat(  # EOF at approval
+        calc_repo, ["build a calculator CLI", "argparse"],
+        {"converse": [asks("Which CLI library?"), ready(full_goal())], "architect": [plan()], "critic": [critique()]},
+        config=CONVERSATION,
+    )
+    _, _, _, factory, _ = reopen(
+        calc_repo, ["edit", "make it two tasks", "n"], {"architect": [plan(n=2)], "critic": [critique()]},
+        config=CONVERSATION,
+    )
+    architect = payloads(factory, "architect")[0]
+    assert "Which CLI library?" in architect and "argparse" in architect
