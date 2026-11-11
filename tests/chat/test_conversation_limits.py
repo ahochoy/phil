@@ -48,7 +48,8 @@ def test_not_ready_when_asked_to_decide_falls_back_to_classic_intake(calc_repo):
         {"converse": [asks(), asks(), asks()], "intake": [goal()], "architect": [plan()], "critic": [critique()]},
         config=CONVERSATION,
     )
-    assert "classic intake" in text
+    assert "couldn't settle on a plan" in text
+    assert text.index("couldn't settle on a plan") < text.index("classic intake")
     intake = payloads(factory, "intake")[0]
     assert "add subtract" in intake and "in calc.py" in intake
     assert len(spawned) == 1
@@ -123,6 +124,22 @@ def test_a_message_held_past_a_ready_turn_continues_the_conversation(calc_repo):
     assert "and multiply" in payloads(factory, "converse")[1]
     assert text.count("Plan:") == 1 and "Adding both." in text  # only the second ready turn launches
     assert len(spawned) == 1
+
+
+def test_a_message_held_past_a_failed_turn_goes_to_the_classic_intake(calc_repo):
+    seen = {}
+
+    def fails(scripted_turn):
+        seen["controller"]._input("and multiply")
+        raise RuntimeError("provider down")
+
+    _, _, _, factory, _ = run_chat(
+        calc_repo, [opening(seen), "n"],
+        {"converse": [fails], "intake": [goal()], "architect": [plan()], "critic": [critique()]},
+        config=CONVERSATION,
+    )
+    intake = payloads(factory, "intake")[0]
+    assert intake.index("add subtract") < intake.index("and multiply")
 
 
 def test_ctrl_c_during_a_turn_cancels_the_goal(calc_repo):

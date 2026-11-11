@@ -197,6 +197,7 @@ CONVERSATION_STAGES = ("conversation", "conversing")  # waiting for the user; a 
 STARTING_QUICK = "Starting (quick)…"
 PLANNING_IN_DETAIL = "Planning in detail…"
 CONVERSATION_FALLBACK = "Continuing with the classic intake."
+CONVERSATION_UNDECIDED = "The conversation couldn't settle on a plan when asked to."
 BUDGET_DECIDES = "This goal's planning budget is spent (chat.max_cost_usd): planning with what I know."
 # The transcript's `stage` label for a non-command input typed at each chat stage (4a's labels).
 TRANSCRIPT_STAGES = {
@@ -1439,10 +1440,11 @@ class ChatController:
 
     def _on_turn_ready(self, data: dict) -> None:
         turn: IntakeTurn = data["turn"]
+        self.session.contract("intake_turn", turn)
         if data["must_decide"] and not turn.ready:
+            self.console.print(f"[phil.warn]{CONVERSATION_UNDECIDED}[/]")  # a failure (spec 2026-11-10 §4.6)
             self._conversation_fallback("the conversation didn't decide when asked to")
             return
-        self.session.contract("intake_turn", turn)
         self._turns.append(ConverseTurn(speaker="phil", text=turn.reply, choices=turn.choices))
         self._recent.append(f"phil: {turn.reply[:TURN_CHARS]}")
         self.console.print(escape(turn.reply))
@@ -1497,8 +1499,10 @@ class ChatController:
         self._conversation_fallback(data["error"])
 
     def _conversation_fallback(self, reason: str) -> None:
-        """A turn failed: the user's messages so far go once to the classic intake (spec 2026-11-10 §4.7)."""
-        message = "\n\n".join(turn.text for turn in self._turns if turn.speaker == "user")
+        """A turn failed: the user's messages so far, held ones last, go once to the classic intake
+        (spec 2026-11-10 §4.7)."""
+        held, self._held_input = self._held_input, []
+        message = "\n\n".join([*(turn.text for turn in self._turns if turn.speaker == "user"), *held])
         self._safe_note("conversation_fallback", reason=reason)
         self.console.print(f"[phil.muted]{CONVERSATION_FALLBACK}[/]")
         self._intake_mode = "classic"
