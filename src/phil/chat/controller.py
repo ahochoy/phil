@@ -196,6 +196,8 @@ MAX_CONVERSATION_TURNS = 4  # user replies before the next turn must decide (spe
 CONVERSATION_STAGES = ("conversation", "conversing")  # waiting for the user; a turn in flight
 STARTING_QUICK = "Starting (quick)…"
 PLANNING_IN_DETAIL = "Planning in detail…"
+CONVERSATION_FALLBACK = "Continuing with the classic intake."
+BUDGET_DECIDES = "This goal's planning budget is spent (chat.max_cost_usd): planning with what I know."
 # The transcript's `stage` label for a non-command input typed at each chat stage (4a's labels).
 TRANSCRIPT_STAGES = {
     "idle": "goal", "intake": "goal", "planning": "goal", "running": "goal", "questions": "answers",
@@ -1408,6 +1410,10 @@ class ChatController:
     def _turn_job(self, *, must_decide: bool = False, check_prices: bool = False) -> None:
         """One conversation turn: the converse agent reads the base commit's snapshot and the turns so far."""
         self._set_stage("conversing")
+        if not must_decide and self._turn_budget_spent():
+            must_decide = True
+            self.console.print(f"[phil.warn]{BUDGET_DECIDES}[/]")
+        self._budget_note()
         self._choices = []
         self._converse_calls += 1
         call, generation = self._converse_calls, self._generation
@@ -1433,12 +1439,22 @@ class ChatController:
 
     def _on_turn_ready(self, data: dict) -> None:
         turn: IntakeTurn = data["turn"]
+        if data["must_decide"] and not turn.ready:
+            self._conversation_fallback("the conversation didn't decide when asked to")
+            return
         self.session.contract("intake_turn", turn)
         self._turns.append(ConverseTurn(speaker="phil", text=turn.reply, choices=turn.choices))
         self._recent.append(f"phil: {turn.reply[:TURN_CHARS]}")
         self.console.print(escape(turn.reply))
-        if turn.ready:
+        held, self._held_input = self._held_input, []
+        if turn.ready and not held:
             self._finish_conversation(turn)
+            return
+        if held:
+            # The user typed while this turn was in flight: they come first, even over a ready turn.
+            for text in held[:-1]:
+                self._turns.append(ConverseTurn(speaker="user", text=text))
+            self._user_turn(held[-1])  # one more turn carries every held message, in order
             return
         self._choices = list(turn.choices)
         if self._choices and self.io.choose is None:
@@ -1472,6 +1488,23 @@ class ChatController:
         self._recent.append(f"you: {text[:TURN_CHARS]}")
         self._user_replies += 1
         self._turn_job(must_decide=self._user_replies >= MAX_CONVERSATION_TURNS)
+
+    def _turn_budget_spent(self) -> bool:
+        return self._goal_cost() >= self.config.chat.max_cost_usd
+
+    def _on_turn_failed(self, data: dict) -> None:
+        self._failed(data["error"], data.get("failure"))
+        self._conversation_fallback(data["error"])
+
+    def _conversation_fallback(self, reason: str) -> None:
+        """A turn failed: the user's messages so far go once to the classic intake (spec 2026-11-10 §4.7)."""
+        message = "\n\n".join(turn.text for turn in self._turns if turn.speaker == "user")
+        self._safe_note("conversation_fallback", reason=reason)
+        self.console.print(f"[phil.muted]{CONVERSATION_FALLBACK}[/]")
+        self._intake_mode = "classic"
+        self._goal_text = message
+        self._set_stage("intake")
+        self._intake_job(message)
 
     def _finish_conversation(self, turn: IntakeTurn) -> None:
         """A ready turn: show its Plan block, then the quick run, the designer, or full planning."""
