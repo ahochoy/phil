@@ -10,6 +10,7 @@ from phil.repo import resolve_repo
 from phil.store.db import connect
 from phil.store.paths import ProjectPaths
 from phil.store.runs import list_runs
+from tests.helpers import classic_repo
 
 runner = CliRunner()
 
@@ -19,6 +20,7 @@ def test_phil_opens_the_chat_and_starts_a_run(calc_repo, monkeypatch):
     monkeypatch.setenv("PHIL_TEST_SCENARIO", "approve")
     spawned = []
     monkeypatch.setattr(cli, "spawn_worker", lambda root, run_id, mode, *a, **k: spawned.append((run_id, mode)))
+    classic_repo(calc_repo)
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="add subtract\ny\n")
     assert result.exit_code == 0, result.output
     assert "calc @ main " in result.output
@@ -30,6 +32,7 @@ def test_phil_set_overrides_reach_the_chats_runs(calc_repo, monkeypatch):
     monkeypatch.setenv("PHIL_AGENT_FACTORY", "tests.chat.chat_scenarios:factory")
     monkeypatch.setenv("PHIL_TEST_SCENARIO", "approve")
     monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    classic_repo(calc_repo)
     result = runner.invoke(
         cli.app, ["--repo", str(calc_repo), "--set", "run.max_cost_usd=5"], input="add subtract\ny\n"
     )
@@ -141,6 +144,7 @@ def _approved_chat(calc_repo, monkeypatch) -> str:
     monkeypatch.setenv("PHIL_AGENT_FACTORY", "tests.chat.chat_scenarios:factory")
     monkeypatch.setenv("PHIL_TEST_SCENARIO", "approve")
     monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
+    classic_repo(calc_repo)
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="add subtract\ny\n")
     assert result.exit_code == 0, result.output
     [chat] = (ProjectPaths(resolve_repo(calc_repo).slug).project_dir / "chats").iterdir()

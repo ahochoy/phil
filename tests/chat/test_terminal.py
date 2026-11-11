@@ -287,14 +287,13 @@ def _until(predicate, what: str) -> None:
 def test_a_chat_runs_real_jobs_through_submit_post_and_wake(calc_repo):
     """End to end on real threads: jobs run via TerminalIO.submit, post events, and wake the prompt."""
     from phil.chat.controller import ChatController
-    from phil.config import PhilConfig
     from phil.repo import resolve_repo
     from phil.store.db import connect
     from phil.store.paths import ProjectPaths
     from phil.ui.theme import make_console
     from tests.chat.conftest import ChatFactory, critique, goal, plan
     from tests.chat.test_controller import ManualWatcher
-    from tests.helpers import TEST_MODELS
+    from tests.helpers import classic_config
 
     info = resolve_repo(calc_repo)
     console = make_console(record=True, width=120)
@@ -309,7 +308,7 @@ def test_a_chat_runs_real_jobs_through_submit_post_and_wake(calc_repo):
             conn = connect(ProjectPaths(info.slug).db_path)
             try:
                 controller = ChatController(
-                    info, PhilConfig(models=TEST_MODELS), conn, console, io_, start_pr_monitor=False,
+                    info, classic_config(), conn, console, io_, start_pr_monitor=False,
                     factory=ChatFactory({"intake": [goal()], "architect": [plan()], "critic": [critique()]}),
                     watcher_factory=lambda run_id: ManualWatcher(
                         ProjectPaths(info.slug), run_id, box["controller"].post,

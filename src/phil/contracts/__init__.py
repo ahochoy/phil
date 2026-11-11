@@ -1,5 +1,6 @@
 from phil.contracts.base import Contract, Part
 from phil.contracts.common import Claim, Issue, SelfCheck
+from phil.contracts.converse import ConverseInput, ConverseTurn, IntakeTurn
 from phil.contracts.design import Approach, Approaches, DesignInput
 from phil.contracts.inputs import (
     ArchitectInput,
@@ -42,6 +43,8 @@ ALL_CONTRACTS: list[type[Contract]] = [
     DesignInput,
     MemoryInput,
     MemoryUpdate,
+    ConverseInput,
+    IntakeTurn,
 ]
 
 __all__ = [
@@ -56,12 +59,15 @@ __all__ = [
     "BtwInput",
     "Claim",
     "Contract",
+    "ConverseInput",
+    "ConverseTurn",
     "CriticInput",
     "Decision",
     "DesignInput",
     "Goal",
     "ImplementInput",
     "IntakeInput",
+    "IntakeTurn",
     "Issue",
     "MemoryAdd",
     "MemoryInput",

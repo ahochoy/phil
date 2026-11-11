@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import Field
 
 from phil.contracts.base import Contract
+from phil.contracts.converse import ConverseTurn
 from phil.contracts.design import Approach
 from phil.contracts.interface import Goal, RunStatus
 from phil.contracts.planning import Plan, PlanCritique, Task
@@ -23,6 +24,11 @@ class ArchitectInput(Contract):
     )
     approach_note: str = Field(
         default="", description="When set, the user's own description of how to build it: plan that."
+    )
+    conversation: list[ConverseTurn] | None = Field(
+        default=None,
+        description="When set, the user's conversation with Phil before planning. The goal summarises it; "
+        "where they differ, the user's own words win.",
     )
 
 

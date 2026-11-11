@@ -20,6 +20,7 @@ from phil.store.telemetry import budget_warning_line
 from phil.ui.runs import run_label
 from tests.chat.conftest import critique, goal, plan
 from tests.chat.test_controller import FULL_SCRIPT, deferred, last_error, run_chat, session_dir
+from tests.helpers import classic_repo
 
 PAUSE_PROMPT = "CALC-001 failed 3 attempts — retry / skip / abort › "
 HINT_PROMPT = "Hint for the retry (optional) › "
@@ -253,7 +254,7 @@ def completed_with_a_commit(controller):
 def test_completion_notice_then_next_goal(calc_repo):
     seen = {}
     text, spawned, runs, factory, prompts = run_chat(
-        calc_repo,
+        classic_repo(calc_repo),
         [
             "add subtract", "y",
             completed_with_a_commit,
@@ -609,7 +610,7 @@ def test_a_failing_completion_notice_still_ends_the_run(calc_repo):
 
 def test_new_goal_after_a_failed_run_says_it_is_left(calc_repo):
     text, spawned, runs, *_ = run_chat(
-        calc_repo,
+        classic_repo(calc_repo),
         ["add subtract", "y", to_state("failed", needs_attention="boom"), "add multiply", "n"],
         {
             "intake": [goal(), goal("Add multiply")],
@@ -654,6 +655,7 @@ def test_reopen_restores_the_agent_call_counters(calc_repo):
     state = json.loads((directory / "state.json").read_text())
     assert state["counters"] == {
         "intake": 1, "planner_calls": 1, "planner_version": 1, "btw": 0, "route": 1, "answer": 0, "design": 0,
+        "converse": 0,
     }
     text, *_ = reopen(
         calc_repo, ["/btw hi", "edit", "two tasks", "n"],
@@ -902,7 +904,7 @@ def test_help_puts_each_command_on_its_own_line(calc_repo):
     lines = [line.strip() for line in text.splitlines()]
     commands = [line for line in lines[lines.index("Commands:") + 1:] if line.startswith("/")]
     assert [line.split("  ")[0] for line in commands] == [
-        "/runs", "/btw <question>", "/answer", "/resume", "/show", "/more <n>", "/more #<step>",
+        "/runs", "/btw <question>", "/answer", "/go", "/resume", "/show", "/more <n>", "/more #<step>",
         "/feed <agent>", "/park <note>", "/unpark <id…> | all", "/permissions", "/memory",
         "/remember <fact>", "/forget <n>", "/help", "/quit",
     ]

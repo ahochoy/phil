@@ -20,6 +20,22 @@ from tests.run.conftest import calc_repo  # noqa: F401
 DEFAULT_ROUTE = RouteJudgement(task_class="feature", confidence=0.9, needs_detail=0.1)
 
 
+@pytest.fixture(autouse=True)
+def _chat_tests_choose_their_intake(monkeypatch):
+    """Guard (spec 2026-11-10 §4.8): a chat test that doesn't say which intake it exercises fails,
+    so the default can never silently change what an old test covers."""
+    from phil.chat import controller as module
+
+    real = module.ChatController.__init__
+
+    def init(self, *args, **kw):
+        config = kw["config"] if "config" in kw else args[1]  # ChatController(info, config, ...)
+        assert "intake" in config.chat.model_fields_set, "chat tests must set chat.intake (classic_config())"
+        real(self, *args, **kw)
+
+    monkeypatch.setattr(module.ChatController, "__init__", init)
+
+
 class ChatFactory(ScriptedAgentFactory):
     """A ScriptedAgentFactory for chat tests: without a "route" script, every message is routed as
     `DEFAULT_ROUTE`, and `remaining()` leaves the unscripted router out."""

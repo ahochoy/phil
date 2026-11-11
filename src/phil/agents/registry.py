@@ -1,14 +1,16 @@
-from phil.agents.spec import ANSWER_NOW, FINISH_NOW, PLAN_NOW, PROPOSE_NOW, AgentSpec
+from phil.agents.spec import ANSWER_NOW, FINISH_NOW, PLAN_NOW, PROPOSE_NOW, REPLY_NOW, AgentSpec
 from phil.contracts import (
     Approaches,
     ArchitectInput,
     Brief,
     BtwInput,
+    ConverseInput,
     CriticInput,
     DesignInput,
     Goal,
     ImplementInput,
     IntakeInput,
+    IntakeTurn,
     Plan,
     PlanCritique,
     Review,
@@ -26,6 +28,8 @@ ANSWER_MAX_MODEL_CALLS = 12
 QUICK_IMPLEMENTER_MAX_MODEL_CALLS = 15
 # The designer's model-call budget, enforced like the answerer's.
 DESIGN_MAX_MODEL_CALLS = 8
+# The intake conversation's model-call budget per turn: a turn reads a few files at most.
+CONVERSE_MAX_MODEL_CALLS = 6
 # The architect's, likewise: every call resends the history so far, so an uncapped exploration
 # grows its cost quadratically (one live plan took 46 calls and 1.56M input tokens).
 ARCHITECT_MAX_MODEL_CALLS = 10
@@ -36,6 +40,12 @@ ARCHITECT_REVISE_MAX_MODEL_CALLS = 4
 SPECS: dict[str, AgentSpec] = {
     "intake": AgentSpec(
         "intake", "orchestrator", IntakeInput, Goal, harness="lean", repo_context=True
+    ),
+    # One turn of the intake conversation (spec 2026-11-10 §4.2): read-only, like the answerer.
+    "converse": AgentSpec(
+        "converse", "orchestrator", ConverseInput, IntakeTurn, tools=("shell",), harness="light",
+        shared_prompt=False, read_only_shell=True, max_model_calls=CONVERSE_MAX_MODEL_CALLS,
+        cap_message=REPLY_NOW, repo_context=True,
     ),
     # Light, not deep: it reads a handful of files, so it needs no sub-agent (whose calls the cap
     # can't see; live, one added 3 uncapped calls), no to-do tool and no summarization.
