@@ -394,6 +394,7 @@ class ChatController:
         self._user_replies = 0  # the user's messages after the opening one
         self._held_input: list[str] = []  # typed while a turn was in flight: joins the next turn
         self._typing_choice_other = False  # "Something else" was picked: the next input is the answer
+        self._turn_must_decide = False  # the turn in flight was sent with must_decide (saved for a reopen)
         self._skip_design = False  # the goal was typed with /full!
         self._replacement_skip = False  # a replacement typed with /full!
         self._approach_order: list[Approach] = []  # the designer's approaches, recommended first
@@ -734,6 +735,7 @@ class ChatController:
                     "choices": self._choices,
                     "user_replies": self._user_replies,
                     "intake_mode": self._intake_mode,
+                    "must_decide": self._turn_must_decide,
                     # Agent-call numbers name the chat's artifacts; a reopened chat continues from them.
                     "counters": {
                         "intake": self._intake_calls,
@@ -985,7 +987,7 @@ class ChatController:
         self._describing, self._budget_warned = False, False
         self._trust = None
         self._turns, self._choices, self._user_replies, self._held_input = [], [], 0, []
-        self._typing_choice_other = False
+        self._typing_choice_other, self._turn_must_decide = False, False
 
     def _forced_input(self, raw: str, forced: str, rest: str) -> None:
         """A message prefixed with /ask, /quick, /full or /full!: a goal whose depth skips the router."""
@@ -1426,7 +1428,7 @@ class ChatController:
             must_decide = True
             self.console.print(f"[phil.warn]{BUDGET_DECIDES}[/]")
         self._budget_note()
-        self._choices = []
+        self._choices, self._turn_must_decide = [], must_decide
         self._converse_calls += 1
         call, generation = self._converse_calls, self._generation
         self._step("conversing", generation)
@@ -1451,6 +1453,7 @@ class ChatController:
 
     def _on_turn_ready(self, data: dict) -> None:
         turn: IntakeTurn = data["turn"]
+        self._turn_must_decide = False
         self.session.contract("intake_turn", turn)
         if data["must_decide"] and not turn.ready:
             self.console.print(f"[phil.warn]{CONVERSATION_UNDECIDED}[/]")  # a failure (spec 2026-11-10 §4.6)
@@ -1506,6 +1509,7 @@ class ChatController:
         return self._goal_cost() >= self.config.chat.max_cost_usd
 
     def _on_turn_failed(self, data: dict) -> None:
+        self._turn_must_decide = False
         self._failed(data["error"], data.get("failure"))
         self._conversation_fallback(data["error"])
 
@@ -2923,9 +2927,11 @@ class ChatController:
             self._goal_text = turns[0].text
             replies = _count(saved.get("user_replies"))
             self._user_replies = replies or 0
-            last = turns[-1]
-            if last.speaker == "user":  # closed mid-turn: send it again
-                self._turn_job()
+            last, deciding = turns[-1], saved.get("must_decide") is True
+            # Closed mid-turn (after the user's message, or during a `go` turn): send it again,
+            # deciding if it had to.
+            if last.speaker == "user" or deciding:
+                self._turn_job(must_decide=deciding or self._user_replies >= MAX_CONVERSATION_TURNS)
             else:
                 self.console.print(escape(last.text))
                 self._choices = [c for c in saved.get("choices") or [] if isinstance(c, str)]
