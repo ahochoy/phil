@@ -12,9 +12,12 @@ from phil.contracts import (
     Approach,
     ArchitectInput,
     AttemptWorklog,
+    ConverseInput,
+    ConverseTurn,
     CriticInput,
     Goal,
     IntakeInput,
+    IntakeTurn,
     Issue,
     Plan,
     PlanCritique,
@@ -60,6 +63,34 @@ def intake(
     )
     packet = build_packet("orchestrator", contract, budget_tokens=_budget(ctx, "orchestrator"))
     return invoke_agent(get_spec("intake"), packet, ctx, node="intake", call=call)
+
+
+def converse(
+    ctx: AgentContext,
+    turns: Sequence[ConverseTurn],
+    *,
+    tree: Path,
+    overview: str,
+    route_depth: Literal["answer", "quick", "full"] | None = None,
+    route_class: str | None = None,
+    detected_test_cmd: str | None = None,
+    must_decide: bool = False,
+    call: int = 1,
+) -> IntakeTurn:
+    """One turn of the intake conversation (spec 2026-11-10 §4.2): the converse agent reads `tree`,
+    the base commit's snapshot (as the architect does), read-only."""
+    contract = ConverseInput(
+        turns=list(turns),
+        route_depth=route_depth,
+        route_class=route_class,
+        repo_overview=overview,
+        detected_test_cmd=detected_test_cmd,
+        must_decide=must_decide,
+    )
+    packet = build_packet("orchestrator", contract, budget_tokens=_budget(ctx, "orchestrator"))
+    out = invoke_agent(get_spec("converse"), packet, replace(ctx, workdir=tree), node="converse", call=call)
+    assert isinstance(out, IntakeTurn)
+    return out
 
 
 def quick_plan(goal: Goal, test_cmd: str | None) -> Plan | None:
