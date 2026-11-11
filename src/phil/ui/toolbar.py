@@ -18,6 +18,7 @@ STEP_LABELS = {
     "revise": "Architect revising",
     "critic": "Critic reviewing",
     "designing": "Proposing approaches",
+    "conversing": "Thinking",
 }  # /btw has no step: in-flight /btw questions show as `/btw ×N`
 NODE_LABELS = {
     "setup": "Setting up", "pick_task": "Picking the next task", "implement": "Implementing",

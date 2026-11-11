@@ -168,6 +168,15 @@ def question_decision(index: int, total: int, text: str, why: str, options: list
     return Decision("question", f"Question {index} of {total}: {text}", _capped([why] if why else []), tuple(opts))
 
 
+def conversation_decision(choices: list[str]) -> Decision:
+    """The intake conversation's choices (spec 2026-11-10 §4.4): each by its number, then typing
+    your own answer, then "Plan with what you know"."""
+    opts = [Option(choice, str(n)) for n, choice in enumerate(choices, 1)]
+    opts.append(Option("Something else (type it)", str(len(choices) + 1), typed=True))
+    opts.append(Option("Plan with what you know", "go"))
+    return Decision("question", "Pick one, or type your answer", (), tuple(opts))
+
+
 def approach_decision(approaches: list[tuple[str, str]]) -> Decision:
     opts = [Option(f"{name} (recommended)" if n == 1 else name, str(n), detail=summary)
             for n, (name, summary) in enumerate(approaches, 1)]

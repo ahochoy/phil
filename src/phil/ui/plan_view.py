@@ -30,6 +30,13 @@ def render_goal(console: Console, goal: Goal) -> None:
             console.print(f"  [phil.muted](+{extra} more)[/]")
 
 
+def render_steps(console: Console, steps: list[str]) -> None:
+    """The Plan block a ready intake turn shows before anything runs (spec 2026-11-10 §4.4)."""
+    console.print("[phil.brand]Plan:[/]")
+    for n, step in enumerate(steps, 1):
+        console.print(f"  {n}. {escape(_clip(step))}")
+
+
 SOURCE_LABELS = {"plan": " (from the plan)", "config": " (from your config)", "detected": " (detected)"}
 
 

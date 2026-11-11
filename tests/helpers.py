@@ -22,6 +22,15 @@ def classic_config(**kw) -> "PhilConfig":
     return PhilConfig(models=kw.pop("models", TEST_MODELS), chat=chat, **kw)
 
 
+def classic_repo(repo: Path) -> Path:
+    """Commit `[chat] intake = "classic"` to the repo's phil.toml, for a chat test that scripts "intake"
+    and whose config comes from that file: the CLI's, or the controller's reload at a quick or approved run."""
+    with (repo / "phil.toml").open("a") as toml:
+        toml.write('\n[chat]\nintake = "classic"\n')
+    run_git(repo, "commit", "-qam", "classic intake")
+    return repo
+
+
 def run_git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
     return subprocess.run(
         ["git", *args], cwd=repo, check=True, capture_output=True, text=True, env=env

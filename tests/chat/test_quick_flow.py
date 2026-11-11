@@ -16,7 +16,7 @@ from tests.chat.conftest import critique, goal, label_of, plan
 from tests.chat.test_controller import FULL_SCRIPT, last_error, run_chat, transcript
 from tests.chat.test_controller_run import escalate, set_state
 from tests.chat.test_routing_flow import FIX_PROMPT, payloads, peek, route
-from tests.helpers import run_git
+from tests.helpers import classic_repo, run_git
 
 FALLBACK = "Couldn't plan this as a quick change; planning it fully."
 APPROVE = "Approve? [y / edit / n] › "
@@ -502,7 +502,7 @@ def test_an_edit_after_moving_to_full_still_sends_the_worklogs(calc_repo):
 
 
 def test_a_new_goal_after_moving_to_full_has_no_prior_attempt(calc_repo):
-    detectable(calc_repo)
+    detectable(classic_repo(calc_repo))
     handoff = {"worklogs": [worklog()], "open_issues": []}
     text, spawned, runs, factory, prompts = run_chat(
         calc_repo,

@@ -41,6 +41,7 @@ from phil.chat.decision import (
     approach_decision,
     approval_decision,
     approval_lines,
+    conversation_decision,
     fix_decision,
     pause_decision,
     pr_decision,
@@ -54,14 +55,25 @@ from phil.chat.decision import (
 from phil.chat.design import propose_approaches
 from phil.chat.events import ChatEvent
 from phil.chat.overview import repo_overview
-from phil.chat.planning import Planner, PlanDraft, PlanningBudgetExceeded, intake, quick_plan
+from phil.chat.planning import Planner, PlanDraft, PlanningBudgetExceeded, converse, intake, quick_plan
 from phil.chat.session import ChatSession
 from phil.chat.session import failed_goal as _failed_goal
 from phil.chat.snapshot import export_tree, export_worktree
 from phil.chat.state import ChatState, LiveStep, RunView, SideJob, SubAgent
 from phil.chat.watcher import RunWatcher
 from phil.config import ConfigError, PhilConfig, load_config
-from phil.contracts import Approach, Approaches, Goal, Plan, PlanCritique, Question, Ref, RunStatus
+from phil.contracts import (
+    Approach,
+    Approaches,
+    ConverseTurn,
+    Goal,
+    IntakeTurn,
+    Plan,
+    PlanCritique,
+    Question,
+    Ref,
+    RunStatus,
+)
 from phil.contracts.results import AttemptWorklog
 from phil.contracts.routing import Answer
 from phil.memory.agents_md import active_run
@@ -108,7 +120,7 @@ from phil.ui.callout import failure_lines, overflows, to_rich
 from phil.ui.bursts import FeedItem, one_line
 from phil.ui.feed_view import FeedRenderer
 from phil.ui.links import opened_pr_line
-from phil.ui.plan_view import _clip, render_goal, render_plan
+from phil.ui.plan_view import _clip, render_goal, render_plan, render_steps
 from phil.ui.runs import label_for
 from phil.ui.runs_view import render_runs
 from phil.ui.show_view import detail_text, render_show, show_refs
@@ -132,6 +144,7 @@ HELP_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/runs", "this repo's runs"),
     ("/btw <question>", "ask while work continues"),
     ("/answer", "a paused run's question"),
+    ("/go", "plan with what Phil knows (during intake)"),
     ("/resume", "a failed or stopped run"),
     ("/show", "the chat's run: usage and numbered details"),
     ("/more <n>", "print detail n"),
@@ -179,10 +192,15 @@ MOVING_TO_FULL = "Moving this to a full plan, with what the quick attempt learne
 DESCRIBE_OWN = "Describe your own"
 DESCRIBE_PROMPT = "Describe your approach › "
 DESIGN_FALLBACK = "Couldn't propose designs; planning directly."
+MAX_CONVERSATION_TURNS = 4  # user replies before the next turn must decide (spec 2026-11-10 §4.6)
+CONVERSATION_STAGES = ("conversation", "conversing")  # waiting for the user; a turn in flight
+STARTING_QUICK = "Starting (quick)…"
+PLANNING_IN_DETAIL = "Planning in detail…"
 # The transcript's `stage` label for a non-command input typed at each chat stage (4a's labels).
 TRANSCRIPT_STAGES = {
     "idle": "goal", "intake": "goal", "planning": "goal", "running": "goal", "questions": "answers",
     "routing": "goal", "answering": "goal", "designing": "goal", "choose_approach": "approach",
+    "conversation": "answers", "conversing": "answers",
 }
 GOAL_JOB_STAGES = ("routing", "intake", "planning", "answering", "designing")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
@@ -204,13 +222,13 @@ ERROR_FILE = "last_error.txt"  # the last failure's raw error, in the session di
 # The role whose model a goal job calls, so a failure can name its provider.
 JOB_ROLES = {
     "route_ready": "classifier", "goal_ready": "orchestrator", "plan_ready": "architect",
-    "answer_ready": "answerer", "btw_answer": "orchestrator",
+    "answer_ready": "answerer", "btw_answer": "orchestrator", "turn_ready": "orchestrator",
 }
 # The role whose model a toolbar step calls; None is intake (the classifier's model if one is set, else
 # the orchestrator's). Steps not listed show no model.
 STEP_ROLES = {
     "intake": None, "architect": "architect", "revise": "architect", "critic": "critic", "designing": "architect",
-    "routing": JOB_ROLES["route_ready"], "answering": JOB_ROLES["answer_ready"],
+    "routing": JOB_ROLES["route_ready"], "answering": JOB_ROLES["answer_ready"], "conversing": "orchestrator",
 }
 # The role at work in a followed run's node. Nodes not listed keep the last role seen for the run.
 NODE_ROLES = {
@@ -366,6 +384,13 @@ class ChatController:
         self._pr_busy = threading.Event()
         self._pr_thread: threading.Thread | None = None
         self._design_calls = 0
+        self._converse_calls = 0
+        self._intake_mode = "classic"  # the goal's intake, read from [chat] intake when it begins
+        self._turns: list[ConverseTurn] = []  # the intake conversation so far
+        self._choices: list[str] = []  # the choices Phil's last turn offered
+        self._user_replies = 0  # the user's messages after the opening one
+        self._held_input: list[str] = []  # typed while a turn was in flight: joins the next turn
+        self._typing_choice_other = False  # "Something else" was picked: the next input is the answer
         self._skip_design = False  # the goal was typed with /full!
         self._replacement_skip = False  # a replacement typed with /full!
         self._approach_order: list[Approach] = []  # the designer's approaches, recommended first
@@ -578,6 +603,8 @@ class ChatController:
             return PR_ANYWAY_PROMPT
         if self.stage == "questions" and self._typing_other:
             return OTHER_PROMPT
+        if self.stage == "conversation" and self._typing_choice_other:
+            return OTHER_PROMPT
         if self.stage == "choose_approach" and self._describing:
             return DESCRIBE_PROMPT
         return PROMPTS.get(self.stage, "you › ")
@@ -595,6 +622,8 @@ class ChatController:
     def _build_decision(self) -> Decision | None:
         """The current stage's decision; a body that points at /more 1 also makes that detail (_with_details)."""
         stage = self.stage
+        if stage == "conversation" and self._choices and not self._typing_choice_other:
+            return conversation_decision(self._choices)
         if stage == "questions" and not self._typing_other and len(self._replies) < len(self._pending):
             index = len(self._replies)
             question = self._pending[index]
@@ -816,11 +845,16 @@ class ChatController:
             self.session.user(raw, stage="command")
             return self._command(text)
         stage = self.stage
-        if not text and stage in ("idle", "running", "paused", *GOAL_JOB_STAGES):
+        if not text and stage in ("idle", "running", "paused", *GOAL_JOB_STAGES, *CONVERSATION_STAGES):
             return True
         self.session.user(raw, stage=TRANSCRIPT_STAGES.get(stage, stage))
         if stage == "idle":
             self._begin_goal(text)
+        elif stage == "conversation":
+            self._conversation_input(text)
+        elif stage == "conversing":
+            self._held_input.append(text)
+            self.console.print("[phil.muted]Got it; that goes with my next reply.[/]")
         elif stage in GOAL_JOB_STAGES:
             self._replacement, self._replacement_forced = text, None
             self._replacement_skip = False
@@ -887,6 +921,11 @@ class ChatController:
             self._remember_command(text[len(command):].strip())
         elif command == "/forget":
             self._forget_command(text[len(command):].strip())
+        elif command == "/go":
+            if self.stage == "conversation":
+                self._turn_job(must_decide=True)
+            else:
+                self.console.print("Nothing to plan right now: /go answers Phil's questions during intake.")
         else:
             self.console.print(f"Unknown command {escape(command)}. Try /help.")
         return True
@@ -900,7 +939,7 @@ class ChatController:
             self._set_stage("approval")
             self.console.print("[phil.muted]Cancelled the revision.[/]")
             self._show_plan(self._draft)
-        elif self.stage in (*GOAL_JOB_STAGES, "questions", "choose_approach", "trust_repo"):
+        elif self.stage in (*GOAL_JOB_STAGES, *CONVERSATION_STAGES, "questions", "choose_approach", "trust_repo"):
             self._next_generation()  # an in-flight result is dropped when it lands
             self.state.set_cancelling(True)
             self._reset_goal()
@@ -935,6 +974,8 @@ class ChatController:
         self._skip_design, self._approach_order, self._approach, self._approach_note = False, [], None, ""
         self._describing, self._budget_warned = False, False
         self._trust = None
+        self._turns, self._choices, self._user_replies, self._held_input = [], [], 0, []
+        self._typing_choice_other = False
 
     def _forced_input(self, raw: str, forced: str, rest: str) -> None:
         """A message prefixed with /ask, /quick, /full or /full!: a goal whose depth skips the router."""
@@ -945,7 +986,7 @@ class ChatController:
         self.session.user(raw, stage="goal")
         skip = skips_design(raw)
         stage = self.stage
-        if stage in ("idle", "confirm_fix"):
+        if stage in ("idle", "confirm_fix", "conversation"):
             self._fix_offer = None
             self._begin_goal(rest, forced=forced, skip_design=skip)
         elif stage in GOAL_JOB_STAGES:
@@ -981,6 +1022,7 @@ class ChatController:
             self._forget_run()
         self._next_generation()
         self._reset_goal()
+        self._intake_mode = self.config.chat.intake
         self._failed_goal = None  # a goal that starts replaces the one an error stopped
         self._skip_design = skip_design
         self._goal_mark = last_telemetry_id(self.conn)
@@ -1037,6 +1079,8 @@ class ChatController:
         self.console.print(f"[phil.muted]{escape(self._status_line(route))}[/]")
         if route.depth == "answer":
             self._answer_job(route.text)
+        elif self._intake_mode == "conversation" and route.source not in ("forced", "fix_offer"):
+            self._open_conversation(route.text)
         else:
             self._set_stage("intake")
             self._intake_job(route.text, check_prices=True)
@@ -1355,7 +1399,100 @@ class ChatController:
         self._set_stage("intake")
         self._intake_job(self._goal_text, previous=self._goal, answers=replies)
 
-    def _plan(self, goal: Goal, prior_attempt: Sequence[AttemptWorklog] = (), show_goal: bool = True) -> None:
+    # --- the intake conversation (spec 2026-11-10) -------------------------------------------------
+
+    def _open_conversation(self, text: str) -> None:
+        self._turns = [ConverseTurn(speaker="user", text=text)]
+        self._turn_job(check_prices=True)
+
+    def _turn_job(self, *, must_decide: bool = False, check_prices: bool = False) -> None:
+        """One conversation turn: the converse agent reads the base commit's snapshot and the turns so far."""
+        self._set_stage("conversing")
+        self._choices = []
+        self._converse_calls += 1
+        call, generation = self._converse_calls, self._generation
+        self._step("conversing", generation)
+        turns, route, overview = list(self._turns), self._route, self.overview
+        route_depth = route.depth if route else None
+        route_class = route.judgement.task_class if route and route.judgement else None
+        detected = detect_test_cmd(self.info.root)  # reads only file names (and package.json's scripts)
+
+        def fn(ctx: AgentContext) -> dict:
+            if check_prices:
+                self._note_unpriced(ctx)
+            self._step("snapshot", generation)
+            tree = self._snapshot(generation)
+            self._step("conversing", generation)
+            turn = converse(
+                ctx, turns, tree=tree, overview=overview, route_depth=route_depth, route_class=route_class,
+                detected_test_cmd=detected, must_decide=must_decide, call=call,
+            )
+            return {"turn": turn, "must_decide": must_decide}
+
+        self._job("turn_ready", fn, failed="turn_failed")
+
+    def _on_turn_ready(self, data: dict) -> None:
+        turn: IntakeTurn = data["turn"]
+        self.session.contract("intake_turn", turn)
+        self._turns.append(ConverseTurn(speaker="phil", text=turn.reply, choices=turn.choices))
+        self._recent.append(f"phil: {turn.reply[:TURN_CHARS]}")
+        self.console.print(escape(turn.reply))
+        if turn.ready:
+            self._finish_conversation(turn)
+            return
+        self._choices = list(turn.choices)
+        if self._choices and self.io.choose is None:
+            for n, choice in enumerate(self._choices, 1):
+                self.console.print(f"     {n}. {escape(_clip(choice))}")
+            self.console.print("[phil.muted]     Type a number or your own answer; `go` plans with what I know.[/]")
+        self._set_stage("conversation")
+
+    def _conversation_input(self, text: str) -> None:
+        """A reply in the conversation: a choice's number, "go", or the user's own words."""
+        if self._typing_choice_other:
+            self._typing_choice_other = False
+            self._user_turn(text)
+            return
+        if text.lower() == PLAN_NOW:
+            self._turn_job(must_decide=True)
+            return
+        token = text.rstrip(".)")
+        if self._choices and token.isdigit():
+            choice = int(token)
+            if 1 <= choice <= len(self._choices):
+                self._user_turn(self._choices[choice - 1])
+                return
+            if choice == len(self._choices) + 1 and self.io.choose is not None:
+                self._typing_choice_other = True  # the menu's "Something else"
+                return
+        self._user_turn(text)  # any other text, a number that matches no choice included, is their answer
+
+    def _user_turn(self, text: str) -> None:
+        self._turns.append(ConverseTurn(speaker="user", text=text))
+        self._recent.append(f"you: {text[:TURN_CHARS]}")
+        self._user_replies += 1
+        self._turn_job(must_decide=self._user_replies >= MAX_CONVERSATION_TURNS)
+
+    def _finish_conversation(self, turn: IntakeTurn) -> None:
+        """A ready turn: show its Plan block, then the quick run, the designer, or full planning."""
+        goal = turn.goal
+        assert goal is not None  # IntakeTurn guarantees it when ready
+        self._goal = goal
+        self.session.contract("goal", goal)
+        self._safe_note("conversation_ready", depth=goal.depth, turns=len(self._turns))
+        render_steps(self.console, turn.steps)
+        if goal.depth == "quick":
+            self.console.print(f"[phil.muted]{STARTING_QUICK}[/]")
+            self._quick(goal)
+        elif self._wants_design(goal):
+            self._design_job(goal)
+        else:
+            self.console.print(f"[phil.muted]{PLANNING_IN_DETAIL}[/]")
+            self._plan(goal, show_goal=False, announce=False)
+
+    def _plan(
+        self, goal: Goal, prior_attempt: Sequence[AttemptWorklog] = (), show_goal: bool = True, announce: bool = True
+    ) -> None:
         # The architect plans from scratch: a stray intake task (a fallen-back quick task, or one written
         # on a full route) never reaches it.
         goal = goal.model_copy(update={"task": None})
@@ -1363,7 +1500,8 @@ class ChatController:
             self.console.print(f"[phil.muted]Planning with open questions: {len(goal.open_questions)}[/]")
         if show_goal:
             render_goal(self.console, goal)
-        self.console.print("[phil.muted]Planning…[/]")
+        if announce:
+            self.console.print("[phil.muted]Planning…[/]")
         self._revising = False
         self._set_stage("planning")
         generation = self._generation
