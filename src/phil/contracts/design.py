@@ -1,6 +1,7 @@
 from pydantic import Field, field_validator, model_validator
 
 from phil.contracts.base import Contract, Part
+from phil.contracts.converse import ConverseTurn
 from phil.contracts.interface import Goal
 
 MAX_APPROACHES = 3
@@ -32,3 +33,8 @@ class Approaches(Contract):
 class DesignInput(Contract):
     goal: Goal
     repo_overview: str = ""
+    conversation: list[ConverseTurn] | None = Field(
+        default=None,
+        description="When set, the user's conversation with Phil before planning. The goal summarises it; "
+        "where they differ, the user's own words win.",
+    )
