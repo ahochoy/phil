@@ -2,7 +2,7 @@ import pytest
 
 from phil.agents.fake import ScriptedAgentFactory
 from phil.chat.planning import Planner, intake, quick_plan
-from phil.contracts import Approach, AttemptWorklog, Question, Task
+from phil.contracts import Approach, AttemptWorklog, ConverseTurn, Question, Task
 from tests.chat.conftest import critique, goal, issue, plan
 
 
@@ -191,3 +191,10 @@ def test_the_chosen_approach_and_note_reach_the_architect(chat_ctx, tmp_path):
     planner.draft(goal(), tmp_path, approach=chosen, approach_note="keep it small")
     [payload] = [p for role, p in factory.calls if role == "architect"]
     assert "A band above the footer." in str(payload) and "keep it small" in str(payload)
+
+
+def test_the_architect_sees_the_conversation(chat_ctx, tmp_path):
+    factory = ScriptedAgentFactory({"architect": [plan()], "critic": [critique()]})
+    turns = [ConverseTurn(speaker="user", text="use argparse please")]
+    Planner(chat_ctx(factory), "calc.py").draft(goal(), tmp_path, conversation=turns)
+    assert "use argparse please" in str(factory.calls[0][1])

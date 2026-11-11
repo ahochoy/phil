@@ -91,7 +91,6 @@ def test_a_number_that_matches_no_choice_is_the_users_own_answer(calc_repo):
     assert len(spawned) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="Task 6")
 def test_a_ready_full_goal_goes_to_the_architect_with_the_conversation(calc_repo):
     text, spawned, _, factory, _ = run_chat(
         calc_repo, ["build a calculator CLI", "argparse", "y"],
@@ -105,7 +104,6 @@ def test_a_ready_full_goal_goes_to_the_architect_with_the_conversation(calc_repo
     assert len(spawned) == 1  # approved with "y"
 
 
-@pytest.mark.xfail(strict=True, reason="Task 6")
 def test_an_open_approach_goes_to_the_designer_with_the_conversation(calc_repo):
     from phil.contracts import Approach, Approaches
 

@@ -161,6 +161,7 @@ class Planner:
         prior_attempt: Sequence[AttemptWorklog] = (),
         approach: Approach | None = None,
         approach_note: str = "",
+        conversation: Sequence[ConverseTurn] | None = None,
     ) -> Plan:
         contract = ArchitectInput(
             goal=goal,
@@ -171,6 +172,7 @@ class Planner:
             prior_attempt=list(prior_attempt),
             chosen_approach=approach,
             approach_note=approach_note,
+            conversation=list(conversation) if conversation else None,
         )
         packet = build_packet("architect", contract, budget_tokens=_budget(ctx, "architect"))
         spec = get_spec("architect")
@@ -194,6 +196,7 @@ class Planner:
         approach: Approach | None = None,
         approach_note: str = "",
         over_budget: Callable[[], bool] | None = None,
+        conversation: Sequence[ConverseTurn] | None = None,
     ) -> PlanDraft:
         """`over_budget` is checked before each architect call: before the first it stops planning
         (PlanningBudgetExceeded); before a revision it keeps the plan so far (budget_stopped)."""
@@ -203,7 +206,9 @@ class Planner:
         if on_step:
             on_step("architect")
         call = self._next_call()
-        plan = self._architect(ctx, goal, previous, critique, tree, call, prior_attempt, approach, approach_note)
+        plan = self._architect(
+            ctx, goal, previous, critique, tree, call, prior_attempt, approach, approach_note, conversation
+        )
         if on_step:
             on_step("critic")
         review = self._critic(ctx, goal, plan, call)
@@ -215,7 +220,9 @@ class Planner:
             if on_step:
                 on_step("revise")
             call = self._next_call()
-            plan = self._architect(ctx, goal, plan, review, tree, call, prior_attempt, approach, approach_note)
+            plan = self._architect(
+                ctx, goal, plan, review, tree, call, prior_attempt, approach, approach_note, conversation
+            )
             if on_step:
                 on_step("critic")
             review = self._critic(ctx, goal, plan, call)
@@ -232,10 +239,11 @@ class Planner:
         approach: Approach | None = None,
         approach_note: str = "",
         over_budget: Callable[[], bool] | None = None,
+        conversation: Sequence[ConverseTurn] | None = None,
     ) -> PlanDraft:
         """`ctx` overrides the planner's context for this cycle (a chat job passes one with its own connection)."""
         return self._cycle(
-            goal, None, None, tree, on_step, ctx, prior_attempt, approach, approach_note, over_budget
+            goal, None, None, tree, on_step, ctx, prior_attempt, approach, approach_note, over_budget, conversation
         )
 
     def revise(
@@ -251,6 +259,7 @@ class Planner:
         approach: Approach | None = None,
         approach_note: str = "",
         over_budget: Callable[[], bool] | None = None,
+        conversation: Sequence[ConverseTurn] | None = None,
     ) -> PlanDraft:
         request = PlanCritique(
             verdict="revise",
@@ -259,5 +268,6 @@ class Planner:
             self_check=_empty_check(),
         )
         return self._cycle(
-            goal, draft.plan, request, tree, on_step, ctx, prior_attempt, approach, approach_note, over_budget
+            goal, draft.plan, request, tree, on_step, ctx, prior_attempt, approach, approach_note, over_budget,
+            conversation,
         )

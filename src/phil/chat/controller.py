@@ -712,6 +712,8 @@ class ChatController:
                 stage = "approval"  # a reopened chat returns to the draft being revised
             elif stage == "trust_repo" and self._draft is not None:
                 stage = "approval"  # a reopened chat asks about phil.toml again before approval
+            elif stage == "conversing":
+                stage = "conversation"  # a reopened chat sends the unanswered turn again
             draft = self._draft
             planner_calls, planner_version = self.planner.counters()
             self.session.save_state(
@@ -728,6 +730,10 @@ class ChatController:
                     "explicit_base_sha": self._explicit_base_sha,  # `--base`; None follows HEAD
                     "done_seen": self._done_seen,
                     "failed_goal": self._failed_goal,
+                    "conversation": [turn.model_dump(mode="json") for turn in self._turns],
+                    "choices": self._choices,
+                    "user_replies": self._user_replies,
+                    "intake_mode": self._intake_mode,
                     # Agent-call numbers name the chat's artifacts; a reopened chat continues from them.
                     "counters": {
                         "intake": self._intake_calls,
@@ -737,6 +743,7 @@ class ChatController:
                         "route": self._route_calls,
                         "answer": self._answer_calls,
                         "design": self._design_calls,
+                        "converse": self._converse_calls,
                     },
                 }
             )
@@ -1262,12 +1269,16 @@ class ChatController:
         self._set_stage("designing")
         self._design_calls += 1
         call, generation, overview = self._design_calls, self._generation, self.overview
+        conversation = list(self._turns) or None
 
         def fn(ctx: AgentContext) -> dict:
             self._step("snapshot", generation)
             tree = self._snapshot(generation)
             self._step("designing", generation)
-            return {"approaches": propose_approaches(ctx, goal, tree=tree, overview=overview, call=call)}
+            approaches = propose_approaches(
+                ctx, goal, tree=tree, overview=overview, call=call, conversation=conversation
+            )
+            return {"approaches": approaches}
 
         self._job("design_ready", fn, failed="design_failed")
 
@@ -1543,6 +1554,7 @@ class ChatController:
         self._set_stage("planning")
         generation = self._generation
         approach, note = self._approach, self._approach_note
+        conversation = list(self._turns) or None
         budget = self._budget_check()
 
         def fn(ctx: AgentContext) -> dict:
@@ -1552,7 +1564,7 @@ class ChatController:
             try:
                 draft = self.planner.draft(
                     goal, tree, on_step=on_step, ctx=ctx, prior_attempt=prior_attempt, approach=approach,
-                    approach_note=note, over_budget=budget(ctx.conn),
+                    approach_note=note, over_budget=budget(ctx.conn), conversation=conversation,
                 )
             except PlanningBudgetExceeded:
                 return {"over_budget": True}
@@ -1822,6 +1834,7 @@ class ChatController:
             return
         goal, draft, prior_attempt = self._goal, self._draft, self._prior_attempt
         approach, note = self._approach, self._approach_note
+        conversation = list(self._turns) or None
         self.console.print("[phil.muted]Revising…[/]")
         self._revising = True
         self._set_stage("planning")
@@ -1835,6 +1848,7 @@ class ChatController:
                 revised = self.planner.revise(
                     goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation), ctx=ctx,
                     prior_attempt=prior_attempt, approach=approach, approach_note=note, over_budget=budget(ctx.conn),
+                    conversation=conversation,
                 )
             except PlanningBudgetExceeded:
                 return {"over_budget": True}
@@ -2846,6 +2860,10 @@ class ChatController:
             approach = Approach.model_validate(saved["approach"]) if saved.get("approach") else None
         except Exception:
             approach = None  # a bad approach falls back alone; it doesn't mark the whole state bad
+        try:
+            turns = [ConverseTurn.model_validate(t) for t in saved.get("conversation") or []]
+        except Exception:
+            turns = []  # a bad conversation falls back alone, like a bad approach
         approach_note = saved.get("approach_note")
         approach_note = approach_note if isinstance(approach_note, str) else ""
         try:
@@ -2865,7 +2883,7 @@ class ChatController:
             bad, counters = True, {}
         values = {
             key: _count(counters.get(key, 0))
-            for key in ("intake", "btw", "route", "answer", "design", "planner_calls", "planner_version")
+            for key in ("intake", "btw", "route", "answer", "design", "converse", "planner_calls", "planner_version")
         }
         bad = bad or None in values.values()
         values = {key: value or 0 for key, value in values.items()}
@@ -2875,6 +2893,7 @@ class ChatController:
         self._route_calls = max(self._route_calls, values["route"])
         self._answer_calls = max(self._answer_calls, values["answer"])
         self._design_calls = max(self._design_calls, values["design"])
+        self._converse_calls = max(self._converse_calls, values["converse"])
         version = max(values["planner_version"], draft.version if draft and not bad else 0)
         self.planner.restore(values["planner_calls"], version)
         self._safe_note("reopened")
@@ -2899,6 +2918,18 @@ class ChatController:
             self._set_stage("running")
             self.console.print(f"[phil.muted]Following run {escape(self._label(self._run_id))}.[/]")
             self._follow()
+        elif stage == "conversation" and turns:
+            self._turns, self._intake_mode = turns, "conversation"
+            self._goal_text = turns[0].text
+            replies = _count(saved.get("user_replies"))
+            self._user_replies = replies or 0
+            last = turns[-1]
+            if last.speaker == "user":  # closed mid-turn: send it again
+                self._turn_job()
+            else:
+                self.console.print(escape(last.text))
+                self._choices = [c for c in saved.get("choices") or [] if isinstance(c, str)]
+                self._set_stage("conversation")
         elif stage in ("approval", "planning", "edit") and self._draft is not None:
             self._to_approval()
         else:
