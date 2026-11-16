@@ -8,7 +8,7 @@ from phil.chat.planning import Planner, PlanningBudgetExceeded
 from phil.config import PhilConfig
 from tests.chat.conftest import critique, goal, issue, plan
 from tests.chat.test_controller import run_chat
-from tests.helpers import TEST_MODELS
+from tests.helpers import TEST_MODELS, classic_config
 
 REVISE = critique("revise", [issue("too big", "CALC-001")])
 
@@ -41,7 +41,7 @@ def spend(monkeypatch, cost):
 
 def test_the_chat_stops_planning_a_goal_over_its_budget(calc_repo, monkeypatch):
     spend(monkeypatch, 1.5)
-    config = PhilConfig(models=TEST_MODELS, chat={"max_cost_usd": 1.0})
+    config = classic_config(chat={"max_cost_usd": 1.0})
     text, spawned, runs, factory, prompts = run_chat(
         calc_repo, ["add subtract"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}, config=config
     )
@@ -52,7 +52,7 @@ def test_the_chat_stops_planning_a_goal_over_its_budget(calc_repo, monkeypatch):
 
 def test_the_chat_warns_once_near_the_budget(calc_repo, monkeypatch):
     spend(monkeypatch, 0.85)
-    config = PhilConfig(models=TEST_MODELS, chat={"max_cost_usd": 1.0})
+    config = classic_config(chat={"max_cost_usd": 1.0})
     text, *_ = run_chat(
         calc_repo, ["add subtract", "n"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}, config=config
     )
@@ -68,7 +68,7 @@ def test_a_skipped_revision_is_reported(calc_repo, monkeypatch):
         return plan()
 
     monkeypatch.setattr(controller_mod, "chat_cost_since", lambda *a: spent["cost"])
-    config = PhilConfig(models=TEST_MODELS, chat={"max_cost_usd": 1.0})
+    config = classic_config(chat={"max_cost_usd": 1.0})
     text, *_ = run_chat(
         calc_repo, ["add subtract", "n"], {"intake": [goal()], "architect": [architect], "critic": [REVISE]},
         config=config,
@@ -81,7 +81,7 @@ LAB = {"lab": {"kind": "openai", "base_url": "http://localhost:8000/v1"}}
 
 
 def test_a_goal_with_an_unpriced_planning_model_says_so_once(calc_repo):
-    config = PhilConfig.model_validate({"models": TEST_MODELS | {"architect": "lab:llama"}, "providers": LAB})
+    config = classic_config(models=TEST_MODELS | {"architect": "lab:llama"}, providers=LAB)
     text, *_ = run_chat(
         calc_repo, ["add subtract", "n"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}, config=config
     )
@@ -93,7 +93,7 @@ def test_a_goal_with_an_unpriced_planning_model_says_so_once(calc_repo):
 def test_a_priced_goal_says_nothing_about_prices(calc_repo):
     text, *_ = run_chat(
         calc_repo, ["add subtract", "n"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]},
-        config=PhilConfig(models=TEST_MODELS),
+        config=classic_config(),
     )
     assert "No price for" not in text
 
@@ -103,7 +103,7 @@ def test_a_failing_price_check_doesnt_disturb_the_goal(calc_repo, monkeypatch):
         raise RuntimeError("price list exploded")
 
     monkeypatch.setattr(controller_mod, "unpriced_models", boom)
-    config = PhilConfig.model_validate({"models": TEST_MODELS | {"architect": "lab:llama"}, "providers": LAB})
+    config = classic_config(models=TEST_MODELS | {"architect": "lab:llama"}, providers=LAB)
     text, *_ = run_chat(
         calc_repo, ["add subtract", "n"], {"intake": [goal()], "architect": [plan()], "critic": [critique()]}, config=config
     )
@@ -123,7 +123,7 @@ def test_an_edit_at_the_limit_keeps_the_draft(calc_repo, monkeypatch):
         return None
 
     monkeypatch.setattr(controller_mod, "chat_cost_since", lambda *a: spent["cost"])
-    config = PhilConfig(models=TEST_MODELS, chat={"max_cost_usd": 1.0})
+    config = classic_config(chat={"max_cost_usd": 1.0})
     text, spawned, runs, factory, prompts = run_chat(
         calc_repo, ["add subtract", "edit", "split it", look],
         {"intake": [goal()], "architect": [architect, plan(n=2)], "critic": [critique(), critique()]}, config=config,

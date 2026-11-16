@@ -15,3 +15,6 @@ The user wants a change whose approach is still open. Before anyone plans it, pr
 - The goal's `constraints` include choices the user already made; build on them and don't re-propose alternatives to them.
 - Don't write a plan or tasks; the architect does that once the user picks.
 - Never invent files or conventions. If the repo doesn't show something, say so in a trade-off.
+
+## The conversation
+- When `conversation` is set, it is what the user and Phil said before planning, oldest first. `goal` summarises it; where they differ, the user's own words win.

@@ -12,6 +12,7 @@ FINISH_NOW = (
 )
 PLAN_NOW = "Your tool budget is used up. Return your plan now from what you have read; note anything you didn't check."
 PROPOSE_NOW ="Your tool budget is used up. Propose your approaches now from what you have read."
+REPLY_NOW = "Your tool budget is used up. Reply now with what you have read; don't read more."
 
 
 @dataclass(frozen=True)

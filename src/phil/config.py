@@ -85,6 +85,9 @@ class ChatConfig(_Section):
     # One goal's planning in the chat (intake, design, architect, critic): it stops at this limit,
     # warning first at [run] warn_at. A run's own spend has [run] max_cost_usd.
     max_cost_usd: float = 1.0
+    # How a goal's intake works: "conversation" talks with the user turn by turn (spec 2026-11-10);
+    # "classic" is the one-call intake with question menus.
+    intake: Literal["conversation", "classic"] = "conversation"
 
     @field_validator("max_cost_usd")
     @classmethod

@@ -314,4 +314,4 @@ def test_load_prompt_is_unchanged_without_context_and_appends_it_with():
 def test_which_roles_get_the_block():
     with_block = {name for name, spec in SPECS.items() if spec.repo_context}
     assert with_block == {"intake", "architect", "critic", "implementer", "tester", "reviewer", "btw",
-                          "answer", "quick_implementer", "design"}
+                          "answer", "quick_implementer", "design", "converse"}

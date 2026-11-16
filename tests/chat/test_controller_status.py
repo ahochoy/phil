@@ -15,7 +15,7 @@ from phil.ui.toolbar import render_toolbar, toolbar_text
 from tests.chat.conftest import critique, goal, plan
 from tests.chat.test_controller import run_chat
 from tests.chat.test_controller_run import set_state
-from tests.helpers import run_git
+from tests.helpers import classic_config, run_git
 
 SCRIPTS = {"intake": [goal()], "architect": [plan()], "critic": [critique()]}
 HIGH, LOW = "anthropic:claude-sonnet-5", "openrouter:google/gemini-3.8-flash"
@@ -79,7 +79,7 @@ def controller_following_a_scripted_run(calc_repo):
         box["controller"], box["view"] = controller, controller.state.view()
         return None
 
-    run_chat(calc_repo, ["add subtract", "y", progress, grab], SCRIPTS, config=PhilConfig(models=models))
+    run_chat(calc_repo, ["add subtract", "y", progress, grab], SCRIPTS, config=classic_config(models=models))
     return box["controller"], box["view"]
 
 

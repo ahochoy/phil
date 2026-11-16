@@ -487,3 +487,16 @@ def test_an_unset_jev_threshold_makes_every_source_use_the_default():
 def test_the_jev_detail_threshold_is_a_probability():
     with pytest.raises(ValueError):
         PhilConfig.model_validate({"routing": {"jev_detail_threshold": 1.2}})
+
+
+def test_chat_intake_defaults_to_the_conversation():
+    assert PhilConfig(models=TEST_MODELS).chat.intake == "conversation"
+
+
+def test_chat_intake_can_be_classic():
+    assert PhilConfig(models=TEST_MODELS, chat={"intake": "classic"}).chat.intake == "classic"
+
+
+def test_chat_intake_rejects_other_values():
+    with pytest.raises(ValidationError):
+        PhilConfig(models=TEST_MODELS, chat={"intake": "chatty"})

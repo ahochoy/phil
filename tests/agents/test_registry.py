@@ -10,7 +10,7 @@ def test_registry_covers_chat_and_run_roles():
     # Check registered agent names
     assert set(SPECS) == {
         "intake", "architect", "critic", "implementer", "tester", "reviewer", "btw", "route", "answer",
-        "quick_implementer", "design", "memory",
+        "quick_implementer", "design", "memory", "converse",
     }
     # Check that agents reference the correct roles. "classifier", "answerer", "designer" and "memory"
     # are not checked chat or run roles, but "route", "answer", "design" and "memory" register them here.
@@ -36,14 +36,15 @@ def test_only_implementers_and_tester_write_and_run_commands():
     writers = {name for name, spec in SPECS.items() if spec.writes_files}
     shell_users = {name for name, spec in SPECS.items() if "shell" in spec.tools}
     assert writers == {"implementer", "tester", "quick_implementer"}
-    # The answerer and designer have a shell too, but a read-only one: no project allowlist or approvals.
-    assert shell_users == writers | {"answer", "design"}
-    assert {name for name, spec in SPECS.items() if spec.read_only_shell} == {"answer", "design"}
+    # The answerer, designer and converse agent have a shell too, but a read-only one: no project
+    # allowlist or approvals.
+    assert shell_users == writers | {"answer", "design", "converse"}
+    assert {name for name, spec in SPECS.items() if spec.read_only_shell} == {"answer", "design", "converse"}
 
 
 def test_the_capped_read_and_plan_agents_use_the_light_harness():
     light = {name for name, spec in SPECS.items() if spec.harness == "light"}
-    assert light == {"answer", "quick_implementer", "design", "architect"}
+    assert light == {"answer", "quick_implementer", "design", "architect", "converse"}
     assert all(spec.max_model_calls is None for spec in SPECS.values() if spec.harness != "light")
 
 

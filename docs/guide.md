@@ -253,6 +253,18 @@ Configuration above):
     cd your-repo
     phil                     # type a goal; approve the plan with y / edit / n
 
+Intake is a short conversation. Phil replies in a line or two. When something only you can
+supply is missing it asks, with numbered choices when there are a few clear options (a menu in a
+terminal; type a number, your own answer, or `go` / `/go` to plan with what it knows). Before
+anything runs it shows a **Plan**: the 2–7 steps it will take. A small, clear request starts
+right after (`Starting (quick)…`); a larger one goes on to design proposals when the approach is
+open, then the architect's plan and your approval (`Planning in detail…`), as before. The
+architect and designer hear the conversation too. Phil may read the repo, read-only (a snapshot
+of the base commit), to make its questions specific. After 4 replies it decides with what it
+knows. A message you type while Phil is thinking is held and goes with its next reply. If a turn
+fails, or Phil can't decide when it must, the chat says so and continues with the classic intake
+on what was said. A reopened chat resumes its conversation.
+
 One chat follows one goal at a time — intake, plan, approval, then its run — and shows a live
 bottom toolbar (the current step and its elapsed time, then the run's node and task progress).
 That status line also shows the repo @ branch, the model at work (e.g. `low·gemini-3.8-flash`),
@@ -336,8 +348,12 @@ quick path  (/full to plan it properly)`, `Forced: full path` or `Forced: quick 
 Accepting a diagnosis's `Fix it? [Enter = quick fix / full = plan it / n]` offer says `Fix ·
 quick path` (or `Fix · full plan` for `full`). Force a path yourself by starting your message
 with `/ask`, `/quick` or `/full` — the prefix is stripped and the classifier is skipped
-entirely. When the request is too ambiguous to route (a missing target, conflicting goals, or
-no way to tell what done means), Phil asks first instead of guessing.
+entirely. The same prefixes, and `/full!`, skip the intake conversation too (typed while Phil is
+waiting for your reply, they replace the conversation with that goal; while it is thinking, finish
+the current goal first or press Ctrl-C). Otherwise the router's depth is only a hint for the
+conversation, which may make a quick request full or the other way round. When the request is too
+ambiguous to route (a missing target, conflicting goals, or no way to tell what done means), Phil
+asks first instead of guessing.
 
 Every run's `phil show <run-id>` header names its depth (`quick` or `full`; blank for a run
 from before M3b), right after the keyword: `Run <id> · CALC · quick · completed · ...`.
@@ -467,7 +483,7 @@ once at `[run] warn_at` (default `0.8`, i.e. 80%) of whichever limit it's closer
 Because every model call now counts, including a deep agent's sub-agent and summarisation calls,
 the token limit defaults to `1500000`; cost (`max_cost_usd`, default `2.0`) is the primary guard.
 
-The chat's own planning has a budget too. `[chat] max_cost_usd` (default `1.0`) covers one goal's planning in the chat: intake, design proposals, architect and critic. A run's spend counts against the run's budget instead.
+The chat's own planning has a budget too. `[chat] max_cost_usd` (default `1.0`) covers one goal's planning in the chat: the intake conversation's turns, design proposals, architect and critic. When it's spent, the next conversation turn plans with what it knows. A run's spend counts against the run's budget instead.
 - **Warning:** the chat warns once at `warn_at` of the limit.
 - **Revision:** once the limit is reached, a revision the critic asks for is skipped and the plan so far is shown.
 - **At the limit:** neither a new plan nor an `edit` starts. Approving the plan shown still works, and a raised limit lets planning continue.
@@ -486,7 +502,10 @@ Anthropic models cache their prompts, so an agent's repeated history is billed a
 ```toml
 [chat]
 max_cost_usd = 1.0
+intake = "conversation"   # or "classic": the one-call intake with question menus
 ```
+
+`intake` is read at the start of each goal.
 
 Model calls time out after `[run] model_timeout_s` (default `180`) and Phil's own retry policy
 runs instead of the provider SDK's (SDK retries are off for OpenRouter, OpenAI, Anthropic and
