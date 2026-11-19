@@ -265,16 +265,25 @@ knows. A message you type while Phil is thinking is held and goes with its next 
 fails, or Phil can't decide when it must, the chat says so and continues with the classic intake
 on what was said. A reopened chat resumes its conversation.
 
-One chat follows one goal at a time — intake, plan, approval, then its run — and shows a live
-bottom toolbar (the current step and its elapsed time, then the run's node and task progress).
-That status line also shows the repo @ branch, the model at work (e.g. `low·gemini-3.8-flash`),
-a dot per task, and the run's tokens and cost against its budget (`$0.41/$2.00`, yellow from 80%
-and red at 100%); on a narrow terminal it drops the least important detail first.
-The prompt stays usable while a goal is being planned or a run works in the background:
+**The full-screen chat.** `phil` opens the chat full screen: a header, the conversation in its own
+scrolling pane, a live line above the input, and the boxed input at the bottom. Scroll the
+conversation with the wheel, PgUp/PgDn or Shift+↑/↓; while you are scrolled up, a `↓ new` marker
+tells you something arrived below. The live line shows the agent at work, what it is doing and the
+task count, with the run time and cost on the right (`$0.41`, or `~$0.41` when estimated), and one
+line per sub-agent under it. Finished tasks fold to one line. The model is no longer on screen all
+the time; `/status` shows it. Select text by click-and-drag, or with your terminal's own selection
+(Option-drag in iTerm, Shift-drag elsewhere). The previous inline chat is still available — see
+Screen modes below.
 
-- Enter sends what you typed. Ctrl+Enter (where the terminal reports it, as Orca, kitty and
-  WezTerm do) or Option/Alt+Enter (any terminal) starts a new line instead, so a goal can span
-  several lines; text pasted with line breaks stays one message.
+One chat follows one goal at a time — intake, plan, approval, then its run. The input stays usable
+while a goal is being planned or a run works in the background; what you type then waits and goes
+out at the next prompt:
+
+- Enter sends what you typed. Alt+Enter starts a new line instead, so a goal can span several
+  lines (Shift+Enter and Ctrl+Enter also work where the terminal reports them; Alt+Enter is the
+  reliable one). Text pasted with line breaks stays one message.
+- Ctrl+C copies the selection when text is selected; otherwise it interrupts the current step and
+  drops any lines you typed ahead. Ctrl+D on an empty box leaves the chat.
 - Questions, plan approval, a paused run's choices and the other yes/no offers appear as a callout
   box you answer with ↑/↓ and Enter (or a number); a one-line note then records what you picked.
   Press Esc to type instead, and `/answer` to reopen the box. Piped input gets the same box,
@@ -296,10 +305,12 @@ The prompt stays usable while a goal is being planned or a run works in the back
   lot, and its open count shows in the toolbar. `/unpark P-001` (or `/unpark all`) drops items;
   outside the chat, `phil parked drop P-001 …` or `phil parked done P-001 …` close them, and
   `--all` closes every open one.
-- The toolbar shows the chat's running cost (its own agent calls plus its runs'), e.g. `$0.42`
+- The live line shows the chat's running cost (its own agent calls plus its runs'), e.g. `$0.42`
   reported by the provider or `~$0.42` estimated from a cached price list (see Observability).
-- `/runs` lists runs, `/help` shows the commands, `/quit` (or Ctrl-D) leaves the chat — a run
-  left running keeps going in the background.
+  `/status` prints the repo, the model, the run and the cost.
+- `/chat` reopens another open chat of this repo; `/copy` copies Phil's last reply.
+- `/runs` lists runs, `/help` shows the commands, `/quit` (or Ctrl-D on an empty box) leaves the
+  chat — a run left running keeps going in the background.
 
 **Following a run:** while a run works, the chat follows its live activity feed — a compact
 tool line per call (`run   pytest -q  → 7 passed  #14`) under highlighted milestone bands
@@ -314,11 +325,28 @@ under it with `└ sub-agent`), and each `/btw` question still being answered. `
 agent's tool lines, with milestones still shown; `/feed` shows everything again and says how many
 steps were hidden. The filter is cleared when the run ends.
 
-Reopen a chat later:
+Start, reopen and leave a chat:
 
-    phil                      # lists this repo's open chats; pick a number or press Enter for a new one
+    phil                      # a new chat; the first screen shows the banner and, when other
+                              # chats are open, `2 open chats · /chat`
+    phil chat                 # the picker: this repo's open chats; pick a number or Enter for a new one
+    phil --continue           # reopen the most recently active open chat
     phil --resume <chat-id>   # reopen a specific chat directly
-    phil --new                # skip the list and start a new chat
+    phil --new                # start a new chat (the default)
+
+When you leave a chat that is still open, Phil prints `To continue this chat:  phil --resume <id>`.
+
+### Screen modes
+
+```toml
+[chat]
+screen = "full"   # or "inline"
+```
+
+`screen = "inline"` keeps the previous chat, which stays in the terminal's scrollback. Phil also
+uses the inline chat, and says so, when the terminal is smaller than 60×15 or on a Windows console
+other than Windows Terminal or VS Code. With piped input or output the chat uses plain lines.
+`phil attach` is unchanged.
 
 ## Routing
 

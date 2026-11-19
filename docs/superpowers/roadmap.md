@@ -95,6 +95,9 @@ them in the chat. [Plan](plans/2026-10-13-phil-permissions.md) ·
   The chat stays part of the terminal's scrollback, keeping its own scroll, search and copy. A
   full-screen mode (fixed header, switchable sub-agent feeds, a details pane, mouse support) can
   come later as an option such as `phil --full-screen`, if there's usage or interest.
+  **Reversed 2026-11-18:** the chat now opens full screen, built on Textual, with `[chat] screen =
+  "inline"` keeping the previous chat. See the
+  [spec](specs/2026-11-18-phil-full-screen-design.md).
 
 ### M6 — Extensibility and learning
 
@@ -131,7 +134,7 @@ The goal is to reach a publishable state first.
 **After launch, in this order:**
 1. Skills, a basic version: Phil and its sub-agents use the `SKILL.md` skills the user already has installed, from folders the user approves.
 2. Design workflows in the browser: a local page that shows the reasoning and the visual options, where the user's choice is sent back to the terminal. This replaces "visual proposals" in M6.
-3. A full-screen mode, as an option. Other coding agents take over the terminal once a conversation starts, and Phil has its own command set and persistent on-screen elements, so this fits. It comes after launch because it means rebuilding how the whole chat is drawn.
+3. ✓ A full-screen mode (moved before launch, 2026-11-18; done on the `full-screen` branch; [spec](specs/2026-11-18-phil-full-screen-design.md)). Other coding agents take over the terminal once a conversation starts, and Phil has its own command set and persistent on-screen elements, so this fits. The inline chat stays as `[chat] screen = "inline"`.
 4. Memory across repositories: insights about how the user works and best practices not already in the agent files.
 5. Other local customizations: hooks, MCP servers and plugins.
 
