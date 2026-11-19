@@ -16,7 +16,7 @@ from tomlkit.exceptions import TOMLKitError
 
 from phil.agents.providers import ALIASES, is_known_provider, resolve_provider, split_model
 from phil.agents.unpriced import usd
-from phil.config import REPO_SOURCE, ROLES, PhilConfig, global_config_path
+from phil.config import REPO_SOURCE, ROLES, VISION_KEY, PhilConfig, global_config_path
 from phil.key_store import KeyStoreError, key_source, keychain_available, pending_keys, set_key
 from phil.routing.jev import JevError, ping_jev
 from phil.setup.catalog import CatalogModel, OllamaModel, ollama_models, openrouter_catalog, search_openrouter
@@ -133,6 +133,7 @@ def run_setup(
         with pending_keys(pending):
             models = _check_step(io, config, saved, provider, models, check, models_catalog)
         models = models | _classifier_step(io, config, target, provider, run_classifier_check, pending, to_save)
+        models = models | _vision_step(io, config, target, provider)
     except (SetupCancelled, KeyboardInterrupt):
         io.say("Setup cancelled; nothing was saved.")
         return False
@@ -532,12 +533,29 @@ def _classifier_step(
     return {"classifier": model}
 
 
+def _vision_step(io: SetupIO, config: PhilConfig, target: Path, provider: _Provider) -> dict[str, str]:
+    """Offer an optional model that can read images (spec 2026-11-19 images). Enter skips it, or
+    keeps the one the global file already has (which writes nothing). A model typed without a
+    provider goes on the main provider, like the other model steps."""
+    current = config.vision_model() if config.sources.get(f"models.{VISION_KEY}") == str(target) else None
+    if current:
+        io.say(f"Vision model: {current} (Enter to keep it).")
+    else:
+        io.say("A vision model is used when a request carries an image and the model it would run on can't read it.")
+    prefix = f"{provider.name}:"
+    answer = _ask(io, "vision model (optional, Enter to skip)", default=current)
+    if not answer or answer == current:
+        return {}
+    return {VISION_KEY: answer if answer.startswith(prefix) else prefix + answer}
+
+
 # 5. Summary
 
 
 def _summarise(io: SetupIO, config: PhilConfig, provider: _Provider, models: dict[str, str], path: Path) -> None:
     classifier = f" and models.classifier = {models['classifier']}" if "classifier" in models else ""
-    io.say(f"Wrote models.high = {models['high']} and models.low = {models['low']}{classifier} to {path}.")
+    vision = f" and models.vision = {models[VISION_KEY]}" if VISION_KEY in models else ""
+    io.say(f"Wrote models.high = {models['high']} and models.low = {models['low']}{classifier}{vision} to {path}.")
     if provider.custom:
         written = ", ".join(f"{key} = {value}" for key, value in provider.fields.items() if value is not None)
         io.say(f"Also wrote [providers.{provider.name}]: {written}.")
