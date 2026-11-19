@@ -13,6 +13,7 @@ from phil.store.events import EventLog, MILESTONE_KINDS, test_cmd_changed_line
 from phil.text import printable
 from phil.store.runs import RunRecord, get_run
 from phil.store.telemetry import budget_warning_line
+from phil.ui.blocks import BlockConsole
 from phil.ui.bursts import FeedItem
 from phil.ui.feed_view import FeedRenderer, interleave
 
@@ -40,9 +41,8 @@ def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRend
         console.print(f"state: [phil.id]{escape(event['state'])}[/]{note}")
     elif kind == "escalation":
         escalation = event["escalation"]
-        console.print(f"[phil.warn]⏸ {escape(printable(escalation['summary']))}[/]")
-        if escalation.get("error"):
-            console.print(f"[phil.error]{escape(escalation['error'])}[/]")
+        error = f"\n[phil.error]{escape(escalation['error'])}[/]" if escalation.get("error") else ""
+        console.print(f"[phil.warn]⏸ {escape(printable(escalation['summary']))}[/]{error}")  # one block
     elif kind == "worker":
         console.print(f"[phil.muted]worker {event.get('pid')} ({escape(str(event.get('mode')))})[/]")
     elif kind == "spawn":
@@ -58,9 +58,13 @@ def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRend
         console.print(f"[phil.warn]{escape(printable(event.get('message', '')))}[/]")
 
 
-def _print_items(console: Console, items: list[FeedItem]) -> None:
+def _print_items(console: BlockConsole, items: list[FeedItem]) -> None:
+    """Feed items: a burst summary starts a block; its diff lines and gate lines join the one above."""
     for item in items:
-        console.print(item.line, soft_wrap=True)
+        if item.starts_block:
+            console.blank()
+        with console.continued():
+            console.print(item.line, soft_wrap=True)
 
 
 def _prompt(escalation: dict) -> str:
@@ -95,6 +99,7 @@ def attach(
     poll_s: float = 1.0,
     start_timeout_s: float = 30.0,
 ) -> str:
+    console = BlockConsole(console)  # each event is a block, one blank line before it
     offset = 0
     idle_since = time.monotonic()
     proc: object = None

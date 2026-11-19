@@ -478,8 +478,10 @@ def test_feed_goes_to_task_output_when_given(controller_with_run):
     controller = controller_with_run
     out = _with_output(controller)
     _task_events(controller)
-    assert [call[0] for call in out.calls] == ["task_started", "task_line", "task_done"]
+    assert [call[0] for call in out.calls] == ["task_started", "task_line", "task_line", "task_done"]
     assert out.calls[0][2].plain == "▸ Task 1 Theme setting"
+    assert out.calls[1][2].plain == ""  # the burst summary starts a block: one empty line before it
+    assert "implementer ran 1 tool" in out.calls[2][2].plain
     assert out.calls[-1][2].plain.startswith("✓ Task 1 · Theme setting · done")
     assert controller.console.export_text() == ""  # nothing printed for the task
 
@@ -559,6 +561,47 @@ def test_a_scripted_run_shows_its_feed_in_the_chat(calc_repo):
     assert "▸ CALC-001" in text
     assert "implementer ran " in text and "(/more #" in text
     assert "✓ CALC-001 done" in text
+
+
+def test_feed_blocks_are_spaced_and_gate_lines_are_not(controller_with_run):
+    controller = controller_with_run
+    _task_started(controller, "CALC-001", "Add multiply")
+    for record in (_end(3, "engine", "pytest -q"), _end(4, "implementer", "make")):  # engine: its gate run
+        controller._handle(ChatEvent("activity", {"records": [record]}))
+    controller._handle(ChatEvent("milestone", {
+        "kind": "task_done", "task": "CALC-001", "ts": "2026-10-07T10:00:38Z", "seq": 9}))
+    lines = controller.console.export_text().splitlines()
+    assert len(lines) == 7, lines
+    assert lines[0] == "" and lines[1].startswith("▸ CALC-001 Add multiply")
+    assert "pytest -q" in lines[2]  # no blank between the band and its gate line
+    assert lines[3] == "" and "implementer ran 1 tool · ran make" in lines[4]
+    assert lines[5] == "" and lines[6].startswith("✓ CALC-001 done")
+
+
+def test_a_commands_lines_are_one_block_spaced_from_the_typed_line(calc_repo):
+    text, *_ = run_chat(calc_repo, ["/status", "/status"], {})
+    status = "calc @ main\nmodel: not set\nrun: no run\n0 parked\n"
+    # Each typed /status is above its block (on the terminal, not in this console): one blank line
+    # after it, none inside the block, and never two in a row.
+    assert text == f"\n{status}\n{status}"
+
+
+def test_a_hidden_burst_hides_its_blank_line_too(controller_with_run):
+    controller = controller_with_run
+    run_dir = ProjectPaths(controller.info.slug).run_dir(controller._run_id)
+    ActivityLog(run_dir).end(5, task="CALC-001", role="implementer", tool="edit_file", summary="edit a.py",
+                             result="+1 −1", ok=True, detail="--- before\n+++ after\n@@\n-old\n+new\n",
+                             duration_ms=10)
+    controller._command("/feed tester")
+    controller.console.export_text()
+    edit = {**_end(5, "implementer", "x"), "tool": "edit_file", "summary": "edit a.py", "result": "+1 −1",
+            "detail": "5.txt"}
+    _activity(controller, edit)
+    controller._end_burst()
+    assert controller.console.export_text() == ""  # not even its blank line
+    controller._handle(ChatEvent("milestone", {"kind": "task_done", "task": "CALC-001", "seq": 9}))
+    text = controller.console.export_text()
+    assert text.startswith("\n✓ CALC-001 done")  # one blank before the next block, not two
 
 
 def test_a_burst_summary_prints_its_diff_from_the_runs_detail(controller_with_run):

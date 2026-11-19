@@ -86,7 +86,7 @@ class FrameInput(Protocol):
 
 
 class PhilApp(App, inherit_bindings=False):
-    """The full-screen frame. `post_item`, the task output (`task_started`, `task_line`,
+    """The full-screen frame. `post_item`, `post_echo`, the task output (`task_started`, `task_line`,
     `sub_agent`, `task_done`), `set_header`, `clear_conversation`, `set_prompt`, `prefill`,
     `open_menu`, `close_menu`, `copy_text` and `request_exit` may be called from any
     thread; before the app mounts they are kept and applied on mount, and once it has exited they do
@@ -193,6 +193,11 @@ class PhilApp(App, inherit_bindings=False):
 
     def post_item(self, renderable: RenderableType) -> None:
         self._call(lambda: self.query_one(Conversation).add(Item(renderable)))
+
+    def post_echo(self, renderable: RenderableType) -> None:
+        """The user's own line, echoed: a block of its own, so one blank row above it (its top
+        margin) unless it is the first item. The chat's next block brings its own blank line."""
+        self._call(lambda: self.query_one(Conversation).add(Item(renderable, classes="echo")))
 
     def set_header(self, repo: str, branch: str, chat_id: str) -> None:
         self._call(lambda: self.query_one(HeaderBar).set_header(repo, branch, chat_id))

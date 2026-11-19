@@ -341,6 +341,38 @@ def test_attach_prints_a_gate_line_before_the_milestones_that_follow_it(calc_rep
     assert text.index("gate  pytest -q") < text.index("✓ CALC-001 green") < text.index("▸ CALC-002")
 
 
+def test_attach_spaces_its_blocks_and_keeps_gate_lines_under_their_band(calc_repo):
+    """One blank line before each block (a band, a burst summary, the summary path); none on top,
+    none between a band and the engine's gate line under it, and never two in a row."""
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha)
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    update_run(conn, record.run_id, state="running")
+    events = run_events(paths, record.run_id)
+    activity = ActivityLog(paths.run_dir(record.run_id))
+
+    def sleep(_):
+        events.append("task_started", task="CALC-001", title="Add subtract", seq=1)
+        activity.end(2, task="CALC-001", role="engine", tool="gate", summary="gate pytest -q",
+                     result="→ failed", ok=False, detail=None, duration_ms=1500)
+        activity.end(3, task="CALC-001", role="implementer", tool="run_shell", summary="run make",
+                     result="→ ok", ok=True, detail=None, duration_ms=10)
+        events.append("gate", task="CALC-001", name="green", seq=4)
+        update_run(conn, record.run_id, state="completed")
+
+    io = AttachIO(choose=lambda p, o: "abort", ask_hint=lambda: None, spawn=lambda m, d: None, sleep=sleep)
+    console = make_console(record=True, width=120)
+    assert attach(conn, record.run_id, events, console, io, poll_s=0) == "completed"
+    lines = console.export_text().splitlines()
+    assert len(lines) == 8, lines
+    assert lines[0].startswith("▸ CALC-001")  # nothing above the first block
+    assert "gate  pytest -q" in lines[1]  # the gate line sits right under its band
+    assert lines[2] == "" and "implementer ran 1 tool · ran make" in lines[3]
+    assert lines[4] == "" and lines[5].startswith("✓ CALC-001 green")
+    assert lines[6] == "" and lines[7].startswith("Summary: ")
+
+
 def test_attach_waits_instead_of_prompting_while_a_spawned_worker_is_starting(calc_repo):
     info, record = escalated_run(calc_repo)
     paths = ProjectPaths(info.slug)

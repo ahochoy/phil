@@ -124,6 +124,7 @@ from phil.store.telemetry import (
 )
 from phil.tomlw import toml_value
 from phil.ui.answer_view import render_answer
+from phil.ui.blocks import BlockConsole
 from phil.ui.brief_view import render_brief
 from phil.ui.chats_view import open_chat_line
 from phil.ui.callout import failure_lines, overflows, to_rich
@@ -332,7 +333,8 @@ class ChatController:
         config_overrides: Sequence[str] = (),
         pick_chat: bool = False,
     ) -> None:
-        self.info, self.config, self.conn, self.console, self.io = info, config, conn, console, io
+        self.info, self.config, self.conn, self.io = info, config, conn, io
+        self.console = BlockConsole(console)  # each top-level print is a block, one blank line before it
         self._pick_chat = pick_chat  # start in the /chat picker (`phil chat`)
         self._picker_chats: list[ChatSummary] = []  # the picker's chats, in the order it lists them
         self._picker_return = "idle"  # the stage /chat came from
@@ -393,6 +395,7 @@ class ChatController:
         self._feed = FeedRenderer(details=self._detail_text)  # the run's tool lines and milestone bands
         self._open_task: str | None = None  # the task of the last task_started, for a task output's sub-agents
         self._announced_subs: set[tuple[str, int]] = set()  # (task, seq) already sent to the task output
+        self._task_blank: dict[str, bool] = {}  # task -> the last line sent to its block is blank
         self._feed_filter: str | None = None  # /feed <agent>: only that agent's tool lines print
         self._hidden = 0  # tool steps (end records) the filter has hidden since it was set
         self._base_sha: str | None = None
@@ -864,6 +867,8 @@ class ChatController:
                     raw = self.io.ask(self._folded_prompt() if self._folded else self._prompt())
                 if raw is WAKE:
                     continue
+                if isinstance(raw, str) and decision is None:
+                    self.console.mark_line()  # the typed line stays on screen: the next block is spaced from it
                 if raw is not None and settled is not None:
                     if waits:
                         self._settled = settled
@@ -1211,7 +1216,8 @@ class ChatController:
         judgement = self._route.judgement if self._route else None
         task_class = judgement.task_class if judgement else None
         self._safe_note("answer", text=answer.text, files=answer.files, task_class=task_class)
-        render_answer(self.console, answer)
+        with self.console.group():  # the answer and the files it read
+            render_answer(self.console, answer)
         self._last_reply = answer.text
         self._recent.append(f"phil: {answer.text[:TURN_CHARS]}")
         self._reset_goal()
@@ -1338,7 +1344,8 @@ class ChatController:
         return (None, None, problems) if problems else (plan, setup_cmd, [])
 
     def _design_job(self, goal: Goal) -> None:
-        render_goal(self.console, goal)
+        with self.console.group():
+            render_goal(self.console, goal)
         self.console.print("[phil.muted]Proposing approaches…[/]")
         self._set_stage("designing")
         self._design_calls += 1
@@ -1366,10 +1373,11 @@ class ChatController:
         for n, approach in enumerate(self._approach_order, 1):
             mark = " (recommended)" if n == 1 else ""
             number = "" if menu else f"{n}. "
-            self.console.print(f"[phil.agent]{number}{escape(_clip(approach.name))}{mark}[/]")
-            self.console.print(f"   {escape(approach.summary)}")
-            for tradeoff in approach.tradeoffs:
-                self.console.print(f"   [phil.muted]– {escape(_clip(tradeoff))}[/]")
+            with self.console.group():  # each option is a block: its name, summary and trade-offs
+                self.console.print(f"[phil.agent]{number}{escape(_clip(approach.name))}{mark}[/]")
+                self.console.print(f"   {escape(approach.summary)}")
+                for tradeoff in approach.tradeoffs:
+                    self.console.print(f"   [phil.muted]– {escape(_clip(tradeoff))}[/]")
         if approaches.reason:
             self.console.print(f"[phil.muted]{escape(_clip(approaches.reason))}[/]")
         if not menu:
@@ -1417,15 +1425,16 @@ class ChatController:
         question = self._pending[len(self._replies)]
         if self.io.choose is not None and question.options:
             return
-        self.console.print(f"[phil.agent]{len(self._replies) + 1}. {escape(_clip(question.text))}[/]")
-        if question.why:
-            self.console.print(f"   [phil.muted]{escape(_clip(question.why))}[/]")
-        if self.io.choose is not None:
-            return
-        for n, option in enumerate(question.options, 1):
-            self.console.print(f"     {n}. {escape(_clip(option))}")
-        if question.options:
-            self.console.print(f"     {len(question.options) + 1}. {SOMETHING_ELSE}")
+        with self.console.group():  # the question, why it's asked and its options: one block
+            self.console.print(f"[phil.agent]{len(self._replies) + 1}. {escape(_clip(question.text))}[/]")
+            if question.why:
+                self.console.print(f"   [phil.muted]{escape(_clip(question.why))}[/]")
+            if self.io.choose is not None:
+                return
+            for n, option in enumerate(question.options, 1):
+                self.console.print(f"     {n}. {escape(_clip(option))}")
+            if question.options:
+                self.console.print(f"     {len(question.options) + 1}. {SOMETHING_ELSE}")
 
     def _answers(self, text: str) -> None:
         """One reply to the current question. No model call until the last one is answered; then one
@@ -1554,9 +1563,10 @@ class ChatController:
             return
         self._choices = list(turn.choices)
         if self._choices and self.io.choose is None:
-            for n, choice in enumerate(self._choices, 1):
-                self.console.print(f"     {n}. {escape(_clip(choice))}")
-            self.console.print("[phil.muted]     Type a number or your own answer; `go` plans with what I know.[/]")
+            with self.console.continued():  # the reply's choices sit under the reply
+                for n, choice in enumerate(self._choices, 1):
+                    self.console.print(f"     {n}. {escape(_clip(choice))}")
+                self.console.print("[phil.muted]     Type a number or your own answer; `go` plans with what I know.[/]")
         self._set_stage("conversation")
 
     def _conversation_input(self, text: str) -> None:
@@ -1617,7 +1627,8 @@ class ChatController:
         self._goal = goal
         self.session.contract("goal", goal)
         self._safe_note("conversation_ready", depth=goal.depth, turns=len(self._turns))
-        render_steps(self.console, turn.steps)
+        with self.console.group():
+            render_steps(self.console, turn.steps)
         if goal.depth == "quick":
             self.console.print(f"[phil.muted]{STARTING_QUICK}[/]")
             self._quick(goal)
@@ -1636,7 +1647,8 @@ class ChatController:
         if goal.open_questions:
             self.console.print(f"[phil.muted]Planning with open questions: {len(goal.open_questions)}[/]")
         if show_goal:
-            render_goal(self.console, goal)
+            with self.console.group():
+                render_goal(self.console, goal)
         if announce:
             self.console.print("[phil.muted]Planning…[/]")
         self._revising = False
@@ -1775,9 +1787,10 @@ class ChatController:
         self._set_stage("trust_repo")
         if self.io.choose is None:  # no menu shows it: print what is being trusted
             rules, labels, pass_env, bash = self._trust_parts(self._trust)
-            self.console.print(Text(repo_shell_title(self.info.root.name, rules)))
-            for line in repo_shell_lines(rules, labels, pass_env, bash):
-                self.console.print(Text(f"  {line}"))
+            with self.console.group():
+                self.console.print(Text(repo_shell_title(self.info.root.name, rules)))
+                for line in repo_shell_lines(rules, labels, pass_env, bash):
+                    self.console.print(Text(f"  {line}"))
         return True
 
     @staticmethod
@@ -1843,17 +1856,18 @@ class ChatController:
             # to no setup rather than detecting one on its own that the user never saw.
             setup_cmd_source = "unchecked"
         self._shown_setup_cmd = setup_cmd
-        render_plan(
-            self.console,
-            draft,
-            test_cmd=self._shown_test_cmd,
-            test_cmd_source=source,
-            test_cmd_origin=origin,
-            test_cmd_note=note,
-            git_note=git_policy_note(self.config),
-            setup_cmd=setup_cmd,
-            setup_cmd_source=setup_cmd_source,
-        )
+        with self.console.group():
+            render_plan(
+                self.console,
+                draft,
+                test_cmd=self._shown_test_cmd,
+                test_cmd_source=source,
+                test_cmd_origin=origin,
+                test_cmd_note=note,
+                git_note=git_policy_note(self.config),
+                setup_cmd=setup_cmd,
+                setup_cmd_source=setup_cmd_source,
+            )
 
     def _rules(self) -> PolicySet:
         """The permission rules in effect now, read fresh: their deny rules block a plan's commands."""
@@ -1889,9 +1903,12 @@ class ChatController:
                 draft.plan, self.config, root, check_root=root or self.info.root, policy=self._rules()
             )
             if problems:
-                for item in problems:
-                    self.console.print(f"[phil.error]{escape(terminated(item))}[/]")
-                self.console.print("[phil.muted]Fix your config and answer y again, or use edit to change the plan.[/]")
+                with self.console.group():  # the problems and what to do about them
+                    for item in problems:
+                        self.console.print(f"[phil.error]{escape(terminated(item))}[/]")
+                    self.console.print(
+                        "[phil.muted]Fix your config and answer y again, or use edit to change the plan.[/]"
+                    )
                 self._show_plan(draft)
                 return
             if effective_test_cmd(draft.plan, self.config, root)[0] != self._shown_test_cmd:
@@ -2092,7 +2109,7 @@ class ChatController:
         self._stop_watcher()
         self._run_id, self._lost, self._pause, self._answer_sent = None, False, None, False
         self._feed = FeedRenderer(details=self._detail_text)  # no task timings carried into the next run
-        self._open_task, self._announced_subs = None, set()
+        self._open_task, self._announced_subs, self._task_blank = None, set(), {}
         self._clear_run()
 
     def _clear_run(self) -> None:
@@ -2180,9 +2197,20 @@ class ChatController:
             if output is not None and task:
                 # A sub-agent is announced once, by its description; its tool lines aren't shown.
                 if not all(_shows(record, "sub-agent") for record in item.records):
-                    output.task_line(task, item.line)
+                    self._task_line(output, task, item.line, starts_block=item.starts_block)
                 continue
-            self.console.print(item.line, soft_wrap=True)
+            if item.starts_block:
+                self.console.blank()
+            with self.console.continued():  # a burst's lines and gate lines sit under the line above
+                self.console.print(item.line, soft_wrap=True)
+
+    def _task_line(self, output: TaskOutput, task: str, line: Text, *, starts_block: bool) -> None:
+        """`line` in `task`'s block in the frame; a line that starts a block gets one empty line
+        before it, unless the block's last line is already blank."""
+        if starts_block and not self._task_blank.get(task, False):
+            output.task_line(task, Text(""))
+        output.task_line(task, line)
+        self._task_blank[task] = not line.plain
 
     def _end_burst(self) -> None:
         """The open burst ended (a milestone, a pause, the run's end): its summary, and no rolling view."""
@@ -2208,9 +2236,10 @@ class ChatController:
                 self._open_task = None
         elif kind == "task_started":
             self._open_task = task
+            self._task_blank[task] = False  # a new block, headed by its band (its top margin spaces it)
             output.task_started(task, self._feed.milestone(data, self.console.width))
-        else:
-            output.task_line(task, self._feed.milestone(data, self.console.width))
+        else:  # a gate, a verdict, a failed attempt: each band is a block inside the task's
+            self._task_line(output, task, self._feed.milestone(data, self.console.width), starts_block=True)
 
     def _on_live_step(self, data: dict) -> None:
         if not data:
@@ -2400,40 +2429,43 @@ class ChatController:
         label = escape(self._label(run_id))
         summary = f"[phil.muted]Summary: {escape(str(data.get('summary', '')))}[/]"
         attention = data.get("needs_attention")
-        if state in ("failed", "stopped"):
-            failure = self._run_failure(run_id) if state == "failed" else None
-            if failure is not None:  # the worker crashed: say what happened in plain words
-                self.console.print(f"[phil.warn]Run {label} failed.[/]")
-                self.console.print(to_rich(failure_lines(failure, self.console.width)))
+        with self.console.group():  # the notice, its failure box or summary, and its details: one block
+            if state in ("failed", "stopped"):
+                failure = self._run_failure(run_id) if state == "failed" else None
+                if failure is not None:  # the worker crashed: say what happened in plain words
+                    self.console.print(f"[phil.warn]Run {label} failed.[/]")
+                    self.console.print(to_rich(failure_lines(failure, self.console.width)))
+                else:
+                    detail = f": {escape(attention)}" if attention else "."
+                    self.console.print(f"[phil.warn]Run {label} {escape(state)}{detail}[/]")
+                self.console.print("Continue it with /resume.")
+                log = ProjectPaths(self.info.slug).run_dir(run_id) / "logs" / "worker.log"
+                self._notice_refs(run_id, first=Ref(label="worker log", path=str(log)) if failure else None)
+                return
+            if state == "completed":
+                tokens, cost = data.get("tokens", 0), data.get("cost_usd", 0.0)
+                done, total = data.get("tasks_done", 0), data.get("tasks_total", 0)
+                self.console.print(
+                    f"[phil.gate.pass]✓ Run {label} completed · {done}/{total} tasks · {tokens:,} tokens · ${cost:.2f}[/]"
+                )
+                if attention:
+                    self.console.print(f"[phil.warn]Open issues: {escape(attention)}[/]")
+                self.console.print(f"[phil.muted]Review it: phil diff {rid}[/]")
+                self.console.print(summary, soft_wrap=True)  # the path stays whole
+            elif state == "incomplete":
+                # Finished with a blocker or major issue open: say so plainly; a PR is only offered
+                # "anyway". A finished run can't be resumed, so the chat then takes its next goal.
+                count = self._blocking_count(run_id)
+                issues = f"{count} blocking issue(s)" if count is not None else "blocking issues"
+                self.console.print(
+                    f"[phil.warn]Run {label} finished with {issues} open; nothing to merge yet. See /show.[/]"
+                )
+                self.console.print(f"[phil.muted]Review it: phil diff {rid}[/]")
+                self.console.print(summary, soft_wrap=True)  # the path stays whole
             else:
-                detail = f": {escape(attention)}" if attention else "."
-                self.console.print(f"[phil.warn]Run {label} {escape(state)}{detail}[/]")
-            self.console.print("Continue it with /resume.")
-            log = ProjectPaths(self.info.slug).run_dir(run_id) / "logs" / "worker.log"
-            self._notice_refs(run_id, first=Ref(label="worker log", path=str(log)) if failure else None)
-            return
-        if state == "completed":
-            tokens, cost = data.get("tokens", 0), data.get("cost_usd", 0.0)
-            done, total = data.get("tasks_done", 0), data.get("tasks_total", 0)
-            self.console.print(
-                f"[phil.gate.pass]✓ Run {label} completed · {done}/{total} tasks · {tokens:,} tokens · ${cost:.2f}[/]"
-            )
-            if attention:
-                self.console.print(f"[phil.warn]Open issues: {escape(attention)}[/]")
-            self.console.print(f"[phil.muted]Review it: phil diff {rid}[/]")
-            self.console.print(summary, soft_wrap=True)  # the path stays whole
-        elif state == "incomplete":
-            # Finished with a blocker or major issue open: say so plainly; a PR is only offered
-            # "anyway". A finished run can't be resumed, so the chat then takes its next goal.
-            count = self._blocking_count(run_id)
-            issues = f"{count} blocking issue(s)" if count is not None else "blocking issues"
-            self.console.print(f"[phil.warn]Run {label} finished with {issues} open; nothing to merge yet. See /show.[/]")
-            self.console.print(f"[phil.muted]Review it: phil diff {rid}[/]")
-            self.console.print(summary, soft_wrap=True)  # the path stays whole
-        else:
-            self.console.print(f"Run {label} was {escape(state)}.")
-            self.console.print(summary, soft_wrap=True)  # the path stays whole
-        self._notice_refs(run_id)
+                self.console.print(f"Run {label} was {escape(state)}.")
+                self.console.print(summary, soft_wrap=True)  # the path stays whole
+            self._notice_refs(run_id)
 
     def _blocking_count(self, run_id: str) -> int | None:
         """The run's open blocker and major issues, from its open_issues.json; None if unreadable."""
@@ -2563,8 +2595,9 @@ class ChatController:
         if view.cost is not None:
             lines.append(f"chat {format_cost(*view.cost)}")
         lines.append(f"{view.parked} parked")
-        for line in lines:
-            self.console.print(Text(line, style="phil.muted"))
+        with self.console.group():
+            for line in lines:
+                self.console.print(Text(line, style="phil.muted"))
 
     def _copy_command(self) -> None:
         if not self._last_reply:
@@ -2607,7 +2640,8 @@ class ChatController:
         if run_id is None or get_run(self.conn, run_id) is None:
             self.console.print("No run to show yet.")
             return
-        self._set_refs(render_show(self.console, self.conn, ProjectPaths(self.info.slug), run_id))
+        with self.console.group():  # its sections keep their own blank lines between them
+            self._set_refs(render_show(self.console, self.conn, ProjectPaths(self.info.slug), run_id))
 
     def _more_command(self, arg: str) -> None:
         if arg.startswith("#") and arg[1:].isdigit():
@@ -2645,21 +2679,22 @@ class ChatController:
             return
         log = activity_log(ProjectPaths(self.info.slug), run_id)
         calls = self._feed.burst(seq)  # a burst's number first (Ruling R15)
-        if calls is not None:
-            for line in self._feed.tool_lines(calls, self.console.width, cap=None):
-                self.console.print(line, soft_wrap=True)
-        path = log.detail_for(seq)
-        if path is None:
-            if calls is None:
-                self.console.print(f"#{seq} has no details.")
-            return
-        try:
-            text = detail_text(path)
-        except (OSError, UnicodeDecodeError) as exc:
-            self.console.print(f"[phil.error]Couldn't read {escape(str(path))}: {escape(type(exc).__name__)}[/]")
-            return
-        record = log.find(seq) or {}
-        self.console.print(Panel(Text(text), title=Text(str(record.get("summary", f"#{seq}"))), title_align="left"))
+        with self.console.group():  # the burst's tool lines and the step's detail panel: one block
+            if calls is not None:
+                for line in self._feed.tool_lines(calls, self.console.width, cap=None):
+                    self.console.print(line, soft_wrap=True)
+            path = log.detail_for(seq)
+            if path is None:
+                if calls is None:
+                    self.console.print(f"#{seq} has no details.")
+                return
+            try:
+                text = detail_text(path)
+            except (OSError, UnicodeDecodeError) as exc:
+                self.console.print(f"[phil.error]Couldn't read {escape(str(path))}: {escape(type(exc).__name__)}[/]")
+                return
+            record = log.find(seq) or {}
+            self.console.print(Panel(Text(text), title=Text(str(record.get("summary", f"#{seq}"))), title_align="left"))
 
     def _park_command(self, note: str) -> None:
         if not note:
@@ -2705,14 +2740,15 @@ class ChatController:
 
     def _permissions_command(self) -> None:
         """What `phil permissions` lists; changes are made with the CLI (spec 2026-10-13 §3.7)."""
-        for line in [*listing_lines(self.info.root, ProjectPaths(self.info.slug), self.config), CHANGE_HINT]:
-            self.console.print(Text(line), soft_wrap=True)
+        self._say(*listing_lines(self.info.root, ProjectPaths(self.info.slug), self.config), CHANGE_HINT)
 
     # --- /memory, /remember, /forget (spec 2026-10-15 §2.4) ----------------------------------------
 
     def _say(self, *lines: str) -> None:
-        for line in lines:
-            self.console.print(Text(line), soft_wrap=True)
+        """`lines` as one block (a command's output)."""
+        with self.console.group():
+            for line in lines:
+                self.console.print(Text(line), soft_wrap=True)
 
     def _memory_paths(self) -> ProjectPaths:
         return ProjectPaths(self.info.slug)
@@ -2834,10 +2870,11 @@ class ChatController:
             if self._run_id is None:
                 self.console.print("No run to filter yet.")
                 return
-            if self._hidden:  # switching filters: report what the old one hid first
-                self.console.print(self._hidden_line(), soft_wrap=True)
-            self._set_feed_filter(arg)
-            self.console.print(f"Showing only the {arg}'s lines. /feed to show everything.")
+            with self.console.group():  # what the old filter hid and what this one shows: one block
+                if self._hidden:  # switching filters: report what the old one hid first
+                    self.console.print(self._hidden_line(), soft_wrap=True)
+                self._set_feed_filter(arg)
+                self.console.print(f"Showing only the {arg}'s lines. /feed to show everything.")
             return
         line = self._hidden_line() if self._hidden else "Showing everything again."
         self._set_feed_filter(None)
@@ -2902,8 +2939,9 @@ class ChatController:
         self._end_side(data)
         brief = data["brief"]
         self._safe_note("btw", question=data.get("question"), brief=brief.model_dump(mode="json"))
-        self.console.print("[phil.muted]btw ›[/]")
-        render_brief(self.console, brief, numbered=True)
+        with self.console.group():
+            self.console.print("[phil.muted]btw ›[/]")
+            render_brief(self.console, brief, numbered=True)
         if brief.details:
             self._set_refs(brief.details, btw_tree=data.get("tree"), from_btw=True)
 
@@ -2992,8 +3030,9 @@ class ChatController:
             error = error.removeprefix(prefix)
         run_id = str(data.get("run_id", ""))
         self._safe_note("pr_open_failed", run_id=run_id, error=error)
-        self.console.print(f"[phil.warn]Couldn't open the PR: {escape(error)}[/]")
-        self.console.print(f"Fix that, then `phil pr {escape(run_id)}`.")
+        with self.console.group():
+            self.console.print(f"[phil.warn]Couldn't open the PR: {escape(error)}[/]")
+            self.console.print(f"Fix that, then `phil pr {escape(run_id)}`.")
 
     def _start_pr_monitor_thread(self) -> None:
         self._pr_stop.clear()
@@ -3101,10 +3140,11 @@ class ChatController:
         self.planner.restore(values["planner_calls"], version)
         self._safe_note("reopened")
         if bad:
-            self.console.print(f"[phil.brand]Reopened {escape(self.session.id)}[/].")
-            self.console.print(
-                "[phil.muted]This chat's saved state couldn't be fully restored; starting fresh.[/]"
-            )
+            with self.console.group():
+                self.console.print(f"[phil.brand]Reopened {escape(self.session.id)}[/].")
+                self.console.print(
+                    "[phil.muted]This chat's saved state couldn't be fully restored; starting fresh.[/]"
+                )
             self._reset_goal()
             self._set_stage("idle")
             return
