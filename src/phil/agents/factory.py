@@ -7,7 +7,7 @@ from typing import Any
 from phil.agents.providers import ProviderSpec, build_chat_model, resolve_provider, split_model
 from phil.agents.reminder import answer_reminder_middleware
 from phil.agents.spec import ANSWER_NOW, AgentSpec, load_prompt
-from phil.agents.tool_args import tool_args_middleware
+from phil.agents.tool_args import ToolCallRepair, tool_args_middleware
 
 
 def _case_variants(name: str) -> list[str]:
@@ -230,7 +230,7 @@ def _build_light_agent(
         human_message_token_limit_before_evict=None,
         _permissions=filesystem_permissions(spec),
     )
-    middleware: list[Any] = [filesystem, PhilModelRetryMiddleware(), tool_args_middleware()]
+    middleware: list[Any] = [filesystem, PhilModelRetryMiddleware(), ToolCallRepair(), tool_args_middleware()]
     if spec.max_model_calls is not None:
         middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
     middleware.append(answer_reminder_middleware(spec.out_contract, tools=True))
@@ -271,7 +271,7 @@ def _build_lean_agent(
 
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
-    middleware: list[Any] = [PhilModelRetryMiddleware(), answer_reminder_middleware(spec.out_contract)]
+    middleware: list[Any] = [PhilModelRetryMiddleware(), ToolCallRepair(), answer_reminder_middleware(spec.out_contract)]
     return create_agent(
         chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=[],
@@ -295,7 +295,7 @@ def _build_deep_agent(
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
     backend = FilesystemBackend(root_dir=workdir, virtual_mode=True) if workdir is not None else None
-    middleware: list[Any] = [PhilModelRetryMiddleware(), tool_args_middleware()]
+    middleware: list[Any] = [PhilModelRetryMiddleware(), ToolCallRepair(), tool_args_middleware()]
     if spec.max_model_calls is not None:
         # Caps the main agent's calls; a sub-agent it starts runs on its own (uncapped) loop.
         middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
@@ -324,4 +324,4 @@ def _general_purpose_subagent() -> Any:
 
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
-    return {**GENERAL_PURPOSE_SUBAGENT, "middleware": [PhilModelRetryMiddleware(), tool_args_middleware()]}
+    return {**GENERAL_PURPOSE_SUBAGENT, "middleware": [PhilModelRetryMiddleware(), ToolCallRepair(), tool_args_middleware()]}
