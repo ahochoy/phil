@@ -390,7 +390,7 @@ class ChatController:
         self._shown_test_cmd: str | None = None  # the effective test command in the last plan render
         self._shown_setup_cmd: str | None = None  # the setup command in the last plan render, pinned into its run
         self._revising = False
-        self._feed = FeedRenderer()  # the run's tool lines and milestone bands
+        self._feed = FeedRenderer(details=self._detail_text)  # the run's tool lines and milestone bands
         self._open_task: str | None = None  # the task of the last task_started, for a task output's sub-agents
         self._announced_subs: set[tuple[str, int]] = set()  # (task, seq) already sent to the task output
         self._feed_filter: str | None = None  # /feed <agent>: only that agent's tool lines print
@@ -2091,7 +2091,7 @@ class ChatController:
     def _forget_run(self) -> None:
         self._stop_watcher()
         self._run_id, self._lost, self._pause, self._answer_sent = None, False, None, False
-        self._feed = FeedRenderer()  # no task timings carried into the next run
+        self._feed = FeedRenderer(details=self._detail_text)  # no task timings carried into the next run
         self._open_task, self._announced_subs = None, set()
         self._clear_run()
 
@@ -2156,6 +2156,18 @@ class ChatController:
     def _on_notice(self, data: dict) -> None:
         """A line the worker wrote for the user, such as phil.toml settings nobody has trusted yet."""
         self.console.print(f"[phil.warn]{escape(printable(data.get('message', '')))}[/]")
+
+    def _detail_text(self, seq: int) -> str | None:
+        """Step `seq`'s saved detail in the run this chat follows, for a burst's diff lines; None if
+        there's no run, no detail or it can't be read."""
+        try:
+            run_id = self._chat_run()
+            if run_id is None:
+                return None
+            path = activity_log(ProjectPaths(self.info.slug), run_id).detail_for(seq)
+            return path.read_text(encoding="utf-8") if path is not None else None
+        except Exception:
+            return None
 
     def _print_feed(self, items: list[FeedItem]) -> None:
         """Print feed items the /feed filter shows: a summary shows when any of its calls would (R19)."""

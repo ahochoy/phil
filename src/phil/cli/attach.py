@@ -98,8 +98,16 @@ def attach(
     offset = 0
     idle_since = time.monotonic()
     proc: object = None
-    feed = FeedRenderer(more_hint=False)
     activity = ActivityLog(events.path.parent)
+
+    def details(seq: int) -> str | None:
+        try:
+            path = activity.detail_for(seq)
+            return path.read_text(encoding="utf-8") if path is not None else None
+        except Exception:
+            return None
+
+    feed = FeedRenderer(more_hint=False, details=details)
     activity_offset = activity.end_offset()
 
     def active(record: RunRecord) -> bool:

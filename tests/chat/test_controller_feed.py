@@ -559,3 +559,17 @@ def test_a_scripted_run_shows_its_feed_in_the_chat(calc_repo):
     assert "▸ CALC-001" in text
     assert "implementer ran " in text and "(/more #" in text
     assert "✓ CALC-001 done" in text
+
+
+def test_a_burst_summary_prints_its_diff_from_the_runs_detail(controller_with_run):
+    controller = controller_with_run
+    run_dir = ProjectPaths(controller.info.slug).run_dir(controller._run_id)
+    ActivityLog(run_dir).end(5, task="CALC-001", role="implementer", tool="edit_file", summary="edit a.py",
+                             result="+1 −1", ok=True, detail="--- before\n+++ after\n@@\n-old\n+new\n",
+                             duration_ms=10)
+    edit = {**_end(5, "implementer", "x"), "tool": "edit_file", "summary": "edit a.py", "result": "+1 −1",
+            "detail": "5.txt"}
+    _activity(controller, edit)
+    text = _flush(controller)
+    assert "implementer ran 1 tool · edited 1 file  (/more #5)" in text
+    assert text.index("a.py  +1 −1") < text.index("− old") < text.index("+ new")

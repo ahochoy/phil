@@ -2,6 +2,7 @@
 highlighted milestone bands. Shared by the chat and `phil attach`; burst state lives here
 (spec 2026-10-16 §5, §7)."""
 
+from collections.abc import Callable
 from datetime import datetime
 
 from rich.cells import cell_len
@@ -11,6 +12,7 @@ from phil.ui.bursts import (
     ENGINE, INDENT, LOOKS, TIMED, Burst, FeedItem, _cut, burst_text, fold, group_summary, is_failure, key_of,
     one_line, rolling_lines,
 )
+from phil.ui.diff_view import file_blocks
 from phil.ui.toolbar import elapsed
 
 BURST_LINES = 20
@@ -54,7 +56,8 @@ def interleave(events: list[dict], records: list[dict]) -> list[tuple[str, objec
 
 
 class FeedRenderer:
-    def __init__(self, *, more_hint: bool = True) -> None:
+    def __init__(self, *, more_hint: bool = True, details: Callable[[int], str | None] | None = None) -> None:
+        self._details = details or (lambda seq: None)  # a call's detail text by seq, for the diff lines
         self._task_started: dict[str, float] = {}
         self._titles: dict[str, str] = {}  # a started task's title, for its task-done band (titled=True)
         self._more_hint = more_hint  # `(/more #n)` on summaries; attach has no /more (Ruling R18)
@@ -137,8 +140,11 @@ class FeedRenderer:
         if number is not None:
             self._bursts[number] = list(burst.calls)
         ref = f"  (/more #{number})" if self._more_hint and number is not None else ""
-        body = _cut(f"{INDENT}{burst_text(burst)}", max(width - 1 - cell_len(ref), 0))
-        return [FeedItem(Text(body + ref, style="phil.muted"), tuple(burst.calls))]
+        blocks = file_blocks(burst.calls, self._details, width, more_hint=self._more_hint, number=number)
+        body = _cut(f"{INDENT}{burst_text(burst, counted=bool(blocks))}", max(width - 1 - cell_len(ref), 0))
+        records = tuple(burst.calls)
+        summary = FeedItem(Text(body + ref, style="phil.muted"), records, starts_block=True)
+        return [summary, *(FeedItem(line, records) for line in blocks)]
 
     def rolling(self) -> tuple[str, ...]:
         return rolling_lines(self._burst)
