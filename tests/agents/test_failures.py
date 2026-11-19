@@ -189,6 +189,33 @@ def test_real_openrouter_server_error():
     assert classify_failure(exc, provider="openrouter").category == "server"
 
 
+def _openrouter_not_found(message: str) -> Exception:
+    import openrouter.components.notfoundresponseerrordata as not_found_data
+    import openrouter.errors.notfoundresponse_error as not_found_error
+
+    data = not_found_error.NotFoundResponseErrorData(error=not_found_data.NotFoundResponseErrorData(code=404, message=message))
+    return not_found_error.NotFoundResponseError(data=data, raw_response=_httpx_response(404))
+
+
+def test_an_image_refusal_names_the_model_and_the_setting():
+    from phil.agents.vision import ImageRefusal
+
+    failure = classify_failure(ImageRefusal("openrouter:inclusionai/ling-3.0-flash"), provider="openrouter")
+    assert failure == Failure(
+        "refused",
+        "openrouter:inclusionai/ling-3.0-flash can't read images.",
+        "Phil won't retry this.",
+        'Set a vision model: [models] vision = "provider:model"',
+    )
+
+
+def test_openrouters_no_image_endpoint_404_is_an_image_refusal():
+    from phil.agents.vision import is_image_refusal
+
+    assert is_image_refusal(_openrouter_not_found("No endpoints found that support image input"))
+    assert not is_image_refusal(_openrouter_not_found("No endpoints found for inclusionai/ling-9"))
+
+
 def _refused_by_the_sdk(content, role="tool") -> Exception:
     """The ValidationError the OpenRouter SDK raises, offline, when a message's content isn't in its
     form (here: a LangChain block it doesn't know), before any request is sent."""

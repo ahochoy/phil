@@ -49,8 +49,8 @@ def test_architect_deep_agent_counts_every_model_call(tmp_path):
     (workdir / "calc.py").write_text("def add(a, b):\n    return a + b\n")
     results: list[dict] = []
 
-    def capturing_factory(spec, model, workdir, tools, *, timeout_s=180, provider=None):
-        agent = build_agent(spec, model, workdir, tools, timeout_s=timeout_s, provider=provider)
+    def capturing_factory(spec, model, workdir, tools, *, timeout_s=180, provider=None, **kwargs):
+        agent = build_agent(spec, model, workdir, tools, timeout_s=timeout_s, provider=provider, **kwargs)
 
         class Capturing:
             def invoke(self, payload, config=None):

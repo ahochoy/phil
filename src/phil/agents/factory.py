@@ -69,14 +69,24 @@ def build_agent(
     *,
     timeout_s: int = 180,
     provider: ProviderSpec | None = None,
+    vision: tuple[str, Any] | None = None,
+    sees: "bool | None | Callable[[], bool | None]" = None,
+    notice: Callable[[str], None] | None = None,
 ) -> Any:
     """`provider` is the resolved provider for `model` (invoke_agent resolves it from the config);
-    without one, `model`'s provider must be a built-in."""
+    without one, `model`'s provider must be a built-in.
+
+    `vision` (the `[models] vision` model string and its chat model), `sees` (can `model` read
+    images: True, False, None for unknown, or a function asked when first needed) and `notice` (the
+    feed's one-line notices) configure the `VisionSwitch` every harness runs first."""
+    from phil.agents.vision import VisionSwitch
+
+    switch = VisionSwitch(model, sees, vision, notice, agent=spec.role)
     if spec.harness == "lean":
-        return _build_lean_agent(spec, model, tools, timeout_s, provider)
+        return _build_lean_agent(spec, model, tools, timeout_s, provider, switch)
     if spec.harness == "light":
-        return _build_light_agent(spec, model, workdir, tools, timeout_s, provider)
-    return _build_deep_agent(spec, model, workdir, tools, timeout_s, provider)
+        return _build_light_agent(spec, model, workdir, tools, timeout_s, provider, switch)
+    return _build_deep_agent(spec, model, workdir, tools, timeout_s, provider, switch)
 
 
 READ_TOOLS = ("ls", "read_file", "glob", "grep")
@@ -210,6 +220,7 @@ def _build_light_agent(
     tools: list[Callable[..., str]],
     timeout_s: int,
     provider: ProviderSpec | None,
+    switch: Any,
 ) -> Any:
     if workdir is None:
         raise ValueError(f"{spec.name} uses the light harness, which needs a workdir")
@@ -230,7 +241,7 @@ def _build_light_agent(
         human_message_token_limit_before_evict=None,
         _permissions=filesystem_permissions(spec),
     )
-    middleware: list[Any] = [filesystem, PhilModelRetryMiddleware(), ToolCallRepair(), tool_args_middleware()]
+    middleware: list[Any] = [switch, filesystem, PhilModelRetryMiddleware(), ToolCallRepair(), tool_args_middleware()]
     if spec.max_model_calls is not None:
         middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
     middleware.append(answer_reminder_middleware(spec.out_contract, tools=True))
@@ -263,7 +274,12 @@ def _provider_kind(model: str, provider: ProviderSpec | None) -> str | None:
 
 
 def _build_lean_agent(
-    spec: AgentSpec, model: str, tools: list[Callable[..., str]], timeout_s: int, provider: ProviderSpec | None
+    spec: AgentSpec,
+    model: str,
+    tools: list[Callable[..., str]],
+    timeout_s: int,
+    provider: ProviderSpec | None,
+    switch: Any,
 ) -> Any:
     if spec.tools or tools:
         raise ValueError(f"{spec.name} uses the lean harness, which does not support tools")
@@ -271,7 +287,9 @@ def _build_lean_agent(
 
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
-    middleware: list[Any] = [PhilModelRetryMiddleware(), ToolCallRepair(), answer_reminder_middleware(spec.out_contract)]
+    middleware: list[Any] = [
+        switch, PhilModelRetryMiddleware(), ToolCallRepair(), answer_reminder_middleware(spec.out_contract)
+    ]
     return create_agent(
         chat_model(model, timeout_s, provider=provider, used_by=(spec.role,)),
         tools=[],
@@ -288,6 +306,7 @@ def _build_deep_agent(
     tools: list[Callable[..., str]],
     timeout_s: int,
     provider: ProviderSpec | None,
+    switch: Any,
 ) -> Any:
     from deepagents import create_deep_agent
     from deepagents.backends.filesystem import FilesystemBackend
@@ -295,7 +314,7 @@ def _build_deep_agent(
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
     backend = FilesystemBackend(root_dir=workdir, virtual_mode=True) if workdir is not None else None
-    middleware: list[Any] = [PhilModelRetryMiddleware(), ToolCallRepair(), tool_args_middleware()]
+    middleware: list[Any] = [switch, PhilModelRetryMiddleware(), ToolCallRepair(), tool_args_middleware()]
     if spec.max_model_calls is not None:
         # Caps the main agent's calls; a sub-agent it starts runs on its own (uncapped) loop.
         middleware.append(_call_budget_middleware(spec.max_model_calls, spec.cap_message))
@@ -308,20 +327,24 @@ def _build_deep_agent(
         permissions=filesystem_permissions(spec),
         response_format=_tool_strategy(spec),
         middleware=middleware,
-        subagents=[_general_purpose_subagent()],
+        subagents=[_general_purpose_subagent(switch)],
     )
 
 
-def _general_purpose_subagent() -> Any:
+def _general_purpose_subagent(switch: Any) -> Any:
     """deepagents' default general-purpose sub-agent, spelled out so it gets Phil's per-call
     retry and tool-argument middleware: `create_deep_agent(middleware=...)` applies to the main agent only — the
     auto-added general-purpose sub-agent inherits just the entries that replace one of its own
     default middleware by name. Passing a spec named "general-purpose" replaces the default;
     as a declarative spec it still gets deepagents' base stack (filesystem with the parent's
     permissions, summarization, patch-tool-calls, prompt caching), the parent's model and
-    tools, and the default description and prompt."""
+    tools, and the default description and prompt. It shares the parent's `switch` (VisionSwitch),
+    so a picture the parent hands it reaches the vision model too, and the run's notice is still one."""
     from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
     from phil.agents.model_retry import PhilModelRetryMiddleware
 
-    return {**GENERAL_PURPOSE_SUBAGENT, "middleware": [PhilModelRetryMiddleware(), ToolCallRepair(), tool_args_middleware()]}
+    return {
+        **GENERAL_PURPOSE_SUBAGENT,
+        "middleware": [switch, PhilModelRetryMiddleware(), ToolCallRepair(), tool_args_middleware()],
+    }

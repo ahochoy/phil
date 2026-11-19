@@ -16,7 +16,7 @@ class TextOnlyFactory:
         self.text = text
         self.calls = 0
 
-    def __call__(self, spec, model, workdir, tools, *, timeout_s=180, provider=None):
+    def __call__(self, spec, model, workdir, tools, *, timeout_s=180, provider=None, **_):
         return self
 
     def invoke(self, payload, config=None):
