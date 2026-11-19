@@ -2,9 +2,10 @@
 
 The Textual app runs on the main thread and the chat (the controller's loop) on a worker thread
 named `phil-chat`. They meet in one result channel: a lock-protected queue of entered lines plus
-flags (wake pending, interrupt held, frame closed) under a condition the chat thread waits on. The
-app thread only ever adds to it (`FrameInput` calls); the chat thread only ever takes from it
-(`ask`). Everything the chat changes on screen goes through `PhilApp`'s thread-safe methods.
+flags (wake pending, interrupt held, frame closed) and the open menu's answer, under a condition the
+chat thread waits on. The app thread only ever adds to it (`FrameInput` calls); the chat thread only
+ever takes from it (`ask`, `choose`). Everything the chat changes on screen goes through `PhilApp`'s
+thread-safe methods.
 """
 
 import itertools
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from phil.chat.controller import WAKE, ChatIO
+from phil.chat.decision import Decision
 from phil.chat.state import ToolbarView
 from phil.ui.screen.app import PhilApp
 from phil.ui.screen.console import PaneConsole
@@ -27,6 +29,7 @@ MAX_JOBS = 3
 Spawn = Callable[[Path, str, str, dict | None], object]
 
 _EOF = object()  # Ctrl+D, queued in order with the lines entered before it
+_NO_ANSWER = object()  # the open menu has no answer yet
 
 
 class ScreenIO:
@@ -44,6 +47,13 @@ class ScreenIO:
         self._run_fn: Callable[[], object] | None = None  # `run`'s fn, started once the app mounts
         self._future: Future | None = None
         self._width = 80
+        # The menu `choose` shows (None when none), its highlight and its answer; the highlight a
+        # wake interrupted, kept for the next menu if it is of the same decision.
+        self._menu: int | None = None
+        self._menu_numbers = itertools.count(1)
+        self._choice = 0
+        self._answer: object = _NO_ANSWER
+        self._carried_choice: tuple[Decision, int] | None = None
         # Jobs run on daemon threads, at most MAX_JOBS at once, as in `TerminalIO.submit`.
         self._slots = threading.Semaphore(MAX_JOBS)
         self._job_numbers = itertools.count(1)
@@ -53,16 +63,63 @@ class ScreenIO:
     # The chat's side (the worker thread).
 
     def chat_io(self, spawn: Spawn) -> ChatIO:
-        # choose comes with the docked menu (Task 8); task_output once ScreenIO implements it.
-        return ChatIO(ask=self.ask, spawn=spawn, wake=self.wake, submit=self.submit, choose=None,
+        # task_output once ScreenIO implements it.
+        return ChatIO(ask=self.ask, spawn=spawn, wake=self.wake, submit=self.submit, choose=self.choose,
                       prefill=self.prefill, copy=self.copy, task_output=None)
 
     def ask(self, prompt: str) -> object:
         """The next entered line; `WAKE` if a wake is pending; None at EOF (Ctrl+D, or the frame
         closed); raises `KeyboardInterrupt` if Ctrl+C was pressed. Blocks until one of those. The
         prompt shows on the box's border; the box's text is never touched."""
+        with self._ready:
+            if not self._wake_pending:
+                self._carried_choice = None  # a menu's highlight doesn't survive a typed prompt
         self.app.set_prompt(prompt)
         return self._next()
+
+    def choose(self, prompt: str, decision: Decision) -> object:
+        """Dock `decision`'s callout above the input box and answer it from the keyboard (the keys
+        are `DecisionMenu`'s). Returns the picked option's answer, `TYPE` (Esc), `WAKE` (keeping
+        the highlight for the next menu of the same decision), or None (Ctrl+D, or the frame
+        closed); raises `KeyboardInterrupt` for Ctrl+C. Lines typed before it stay queued for the
+        next `ask`. `prompt` isn't shown: the callout's title says what is being asked."""
+        n = len(decision.options)
+        with self._ready:
+            if self._interrupt_held:
+                self._interrupt_held = False
+                raise KeyboardInterrupt
+            if self._wake_pending:
+                self._wake_pending = False
+                return WAKE
+            if self._closed:
+                return None
+            carried, self._carried_choice = self._carried_choice, None
+            start = decision.default if 0 <= decision.default < n else 0
+            if carried is not None and carried[0] == decision and 0 <= carried[1] < n:
+                start = carried[1]
+            menu = self._menu = next(self._menu_numbers)
+            self._choice = start
+            self._answer = _NO_ANSWER
+        self.app.open_menu(menu, decision, start)
+        try:
+            with self._ready:
+                while True:
+                    if self._interrupt_held:
+                        self._interrupt_held = False
+                        raise KeyboardInterrupt
+                    if self._wake_pending:
+                        self._wake_pending = False
+                        self._carried_choice = (decision, self._choice)
+                        return WAKE
+                    if self._closed:
+                        return None
+                    if self._answer is not _NO_ANSWER:
+                        return self._answer
+                    self._ready.wait()
+        finally:
+            with self._ready:
+                self._menu = None
+            self.app.close_menu(menu)
 
     def _next(self) -> object:
         with self._ready:
@@ -154,6 +211,18 @@ class ScreenIO:
         with self._ready:
             self._closed = True
             self._ready.notify_all()
+
+    def choice_moved(self, menu_id: int, index: int) -> None:
+        with self._ready:
+            if menu_id == self._menu:
+                self._choice = index
+
+    def choice_made(self, menu_id: int, answer: object) -> None:
+        """An answer for menu `menu_id`; ignored if that menu has closed (a wake got there first)."""
+        with self._ready:
+            if menu_id == self._menu and self._answer is _NO_ANSWER:
+                self._answer = answer
+                self._ready.notify_all()
 
     def _put(self, line: object) -> None:
         with self._ready:

@@ -12,6 +12,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.widgets import TextArea
 
+from phil.chat.decision import Decision
 from phil.ui.screen.widgets import (
     Conversation,
     DecisionMenu,
@@ -72,12 +73,15 @@ class FrameInput(Protocol):
     def end_of_input(self) -> None: ...
     def interrupt(self) -> None: ...
     def frame_closed(self) -> None: ...
+    def choice_moved(self, menu_id: int, index: int) -> None: ...
+    def choice_made(self, menu_id: int, answer: object) -> None: ...
 
 
 class PhilApp(App, inherit_bindings=False):
     """The full-screen frame. `post_item`, `set_header`, `clear_conversation`, `set_prompt`,
-    `prefill`, `copy_text` and `request_exit` may be called from any thread; before the app mounts
-    they are kept and applied on mount, and once it has exited they do nothing."""
+    `prefill`, `open_menu`, `close_menu`, `copy_text` and `request_exit` may be called from any
+    thread; before the app mounts they are kept and applied on mount, and once it has exited they do
+    nothing."""
 
     CSS = CSS
     ENABLE_COMMAND_PALETTE = False
@@ -135,6 +139,14 @@ class PhilApp(App, inherit_bindings=False):
         if self._input is not None:
             self._input.end_of_input()
 
+    def on_decision_menu_moved(self, message: DecisionMenu.Moved) -> None:
+        if self._input is not None:
+            self._input.choice_moved(message.menu_id, message.index)
+
+    def on_decision_menu_chosen(self, message: DecisionMenu.Chosen) -> None:
+        if self._input is not None:
+            self._input.choice_made(message.menu_id, message.answer)
+
     def action_copy_or_interrupt(self) -> None:
         """Ctrl+C: copy the selection (in the conversation, else in the box) if there is one;
         otherwise interrupt."""
@@ -164,6 +176,32 @@ class PhilApp(App, inherit_bindings=False):
     def prefill(self, text: str) -> None:
         """Replace the input box's text with `text`, the cursor at its end."""
         self._call(lambda: self.query_one(PromptBox).set_text(text))
+
+    def open_menu(self, menu_id: int, decision: Decision, highlighted: int) -> None:
+        """Dock `decision`'s callout above the input box with the keys; the box keeps its text but
+        takes no keys (nor focus) and the live line collapses to one row until `close_menu`."""
+
+        def apply() -> None:
+            self.query_one(PromptBox).can_focus = False
+            self.query_one(LiveLine).set_max_lines(1)
+            self.query_one(DecisionMenu).show(menu_id, decision, highlighted)
+
+        self._call(apply)
+
+    def close_menu(self, menu_id: int) -> None:
+        """Hide menu `menu_id` (if it is still the one showing) and give the box its keys back."""
+
+        def apply() -> None:
+            menu = self.query_one(DecisionMenu)
+            if menu.menu_id != menu_id:
+                return
+            menu.hide()
+            self.query_one(LiveLine).set_max_lines(None)
+            box = self.query_one(PromptBox)
+            box.can_focus = True
+            box.focus()
+
+        self._call(apply)
 
     def copy_text(self, text: str) -> bool:
         """Put `text` on the clipboard; False (and nothing is kept) unless the app is running."""

@@ -10,6 +10,9 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Static, TextArea
 
+from phil.chat.controller import TYPE
+from phil.chat.decision import Decision
+from phil.ui.callout import callout_lines, to_rich
 from phil.ui.screen.themed import Themed
 
 
@@ -128,11 +131,95 @@ class Conversation(VerticalScroll):
 
 
 class LiveLine(Static):
-    """The live line under the conversation (content comes with the live status); hidden if empty."""
+    """The live line under the conversation (content comes with the live status); hidden if empty.
+    `max_lines` caps its rows (1 while a decision menu shows; None for no cap)."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.max_lines: int | None = None
+
+    def set_max_lines(self, max_lines: int | None) -> None:
+        self.max_lines = max_lines
+        self.refresh(layout=True)
 
 
-class DecisionMenu(Static):
-    """A docked decision callout; hidden unless a choice is being asked."""
+class DecisionMenu(Widget, can_focus=True):
+    """A docked decision callout; hidden unless a choice is being asked. While it shows it has the
+    keys: ↑/↓ move the highlight (wrapping), Enter picks it, 1-9 pick at once, Esc is `TYPE`,
+    Ctrl+D is None (EOF); every other key is ignored. Each answer is `Chosen`, once per menu."""
+
+    DEFAULT_CSS = """
+    DecisionMenu {
+        height: auto;
+    }
+    """
+
+    class Moved(Message):
+        def __init__(self, menu_id: int, index: int) -> None:
+            super().__init__()
+            self.menu_id = menu_id
+            self.index = index
+
+    class Chosen(Message):
+        def __init__(self, menu_id: int, answer: object) -> None:
+            super().__init__()
+            self.menu_id = menu_id
+            self.answer = answer
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.menu_id = 0
+        self.decision: Decision | None = None
+        self.highlighted = 0
+        self._answered = False
+
+    def show(self, menu_id: int, decision: Decision, highlighted: int) -> None:
+        self.menu_id = menu_id
+        self.decision = decision
+        self.highlighted = highlighted
+        self._answered = False
+        self.display = True
+        self.refresh(layout=True)
+        self.focus()
+
+    def hide(self) -> None:
+        self.decision = None
+        self.display = False
+
+    def _lines(self, width: int) -> list:
+        if self.decision is None or width < 1:
+            return []
+        return callout_lines(self.decision, self.highlighted, width, live=True)
+
+    def render(self) -> RenderableType:
+        return Themed(to_rich(self._lines(self.size.width)))
+
+    def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
+        return len(self._lines(width))
+
+    def on_key(self, event: events.Key) -> None:
+        event.stop()
+        event.prevent_default()
+        if self.decision is None or self._answered:
+            return
+        options = self.decision.options
+        key = event.key
+        if key in ("up", "down") and options:
+            self.highlighted = (self.highlighted + (1 if key == "down" else -1)) % len(options)
+            self.refresh(layout=True)
+            self.post_message(self.Moved(self.menu_id, self.highlighted))
+        elif key == "enter" and 0 <= self.highlighted < len(options):
+            self._choose(options[self.highlighted].answer)
+        elif key == "escape":
+            self._choose(TYPE)
+        elif key == "ctrl+d":
+            self._choose(None)
+        elif len(key) == 1 and key in "123456789" and int(key) <= len(options):
+            self._choose(options[int(key) - 1].answer)
+
+    def _choose(self, answer: object) -> None:
+        self._answered = True
+        self.post_message(self.Chosen(self.menu_id, answer))
 
 
 class PromptBox(TextArea):
