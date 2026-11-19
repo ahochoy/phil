@@ -5,12 +5,14 @@ handlers already accept, so picking from the menu and typing are the same thing 
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from rich.cells import cell_len, set_cell_size
 from rich.text import Text
 
 from phil.text import printable
 from phil.ui.bursts import one_line
 
 QUESTION_STYLE = "phil.callout.title.question"
+QUESTION_FLOOR = 20  # a record line's question is cut no shorter than this before its answer is
 BODY_LINES = 8
 SEE_MORE = "… see /more 1"  # a capped body's last line: the full body is detail 1
 DETAILS = "Details: /more 1"  # a body's pointer at detail 1 when nothing was cut (an attempts pause)
@@ -68,16 +70,32 @@ def _capped(lines: list[str]) -> tuple[str, ...]:
     return (*rendered[: BODY_LINES - 1], SEE_MORE)
 
 
+def _cut(text: str, cells: int) -> str:
+    """`text` cut to at most `cells` cells, ending in `…` when anything was dropped."""
+    if cell_len(text) <= cells:
+        return text
+    return set_cell_size(text, max(cells - 1, 0)).rstrip() + "…" if cells > 0 else ""
+
+
+def question_line(asked: str, answer: str, width: int | None = None) -> Text:
+    """`? <asked>  <answer>`: the one look of a settled question, and of a clarifying question's
+    record line. Both parts are one printable line. Given a `width`, the line fits in `width - 1`
+    cells: the question gives way first (down to QUESTION_FLOOR cells), then the answer."""
+    asked, answer = one_line(asked), one_line(answer)
+    if width is not None:
+        room = width - 1 - 4 - cell_len(answer)  # "? " and the two spaces take 4
+        if room < cell_len(asked):
+            asked = _cut(asked, max(room, min(cell_len(asked), QUESTION_FLOOR)))
+        answer = _cut(answer, max(width - 1 - 4 - cell_len(asked), 0))
+    return Text.assemble(("? ", QUESTION_STYLE), (asked, QUESTION_STYLE), "  ", (answer, "phil.user"))
+
+
 def settled_line(decision: Decision, option: Option) -> Text:
     """What a settled decision leaves in the feed. A question reads `? <asked>  <answer>`."""
     if decision.kind == "question":
         label = option.label.removesuffix(" (recommended)")
         if decision.asked:
-            line = Text("? ", style=QUESTION_STYLE)
-            line.append(decision.asked, style=QUESTION_STYLE)
-            line.append("  ")
-            line.append(label, style="phil.user")
-            return line
+            return question_line(decision.asked, label)
         return Text(f"Answer: {label}", style="phil.muted")
     if option.answer == "abort":
         prefix = "✗"

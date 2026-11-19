@@ -3,8 +3,9 @@ import pytest
 from phil.chat.decision import (
     BODY_LINES, Decision, Option, approach_decision, approval_decision, chat_picker_decision,
     conversation_decision, fix_decision, pause_decision, pr_decision, question_decision, replace_decision,
-    settled_line,
+    question_line, settled_line,
 )
+from rich.cells import cell_len
 
 
 def labels(decision):
@@ -184,6 +185,26 @@ def test_intake_question_asked_drops_the_counter():
 def test_intake_question_asked_is_one_printable_line():
     d = question_decision(1, 1, "Which\npages\x1b?", "", ["All"])
     assert d.asked == "Which pages??"
+
+
+def test_question_line_styles_the_question_and_the_answer():
+    line = question_line("Which pages?", "Devlog")
+    assert line.plain == "? Which pages?  Devlog"
+    spans = {line.plain[s.start:s.end]: str(s.style) for s in line.spans}
+    assert spans["? "] == spans["Which pages?"] == "phil.callout.title.question"
+    assert spans["Devlog"] == "phil.user"
+    assert settled_line(question_decision(1, 1, "Which pages?", "", ["Devlog"]), Option("Devlog", "1")) == line
+
+
+def test_question_line_is_one_printable_line():
+    assert question_line("Which\npages?", "a\nb\x1b").plain == "? Which pages?  a b?"
+
+
+def test_question_line_cuts_the_question_before_the_answer():
+    line = question_line("Which of all these many different pages should it go on?", "Devlog", width=40)
+    assert line.plain.endswith("  Devlog") and "…" in line.plain and cell_len(line.plain) <= 39
+    long = question_line("Which pages?", "x" * 80, width=40)
+    assert long.plain.startswith("? Which pages?  ") and long.plain.endswith("…") and cell_len(long.plain) <= 39
 
 
 def test_conversation_and_picker_asked():

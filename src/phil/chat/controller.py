@@ -48,6 +48,7 @@ from phil.chat.decision import (
     pause_decision,
     pr_decision,
     question_decision,
+    question_line,
     replace_decision,
     repo_shell_decision,
     repo_shell_lines,
@@ -1480,9 +1481,8 @@ class ChatController:
         return self.stage == "questions" and not self._plans_now(text)
 
     def _record_answer(self, question: str, answer: str) -> None:
-        """`? question → answer`, muted, cut to the width with … (spec 2026-10-16 §6.1; R22)."""
-        line = printable(f"? {question} → {answer}")
-        self.console.print(Text(_fit(line, self.console.width), style="phil.muted"))
+        """`? question  answer`, the settled question's look, cut to the width with … (R22)."""
+        self.console.print(question_line(question, answer, self.console.width))
 
     def _pick(self, question: Question, text: str) -> str | None:
         """The answer `text` gives `question`, or None while it still needs one (the "Something else"

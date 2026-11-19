@@ -185,7 +185,8 @@ def test_with_a_menu_a_question_shows_only_in_its_callout(controller_with_choose
     text, *_ = controller_with_choose(["add subtract", "1", "n"], scripts)
     assert "1. Which module?" not in text and "It decides the file." not in text
     assert "1. calc.py" not in text and "Something else" not in text
-    assert "? Which module? → calc.py" in text
+    assert "? Which module?  calc.py" in text
+    assert "→" not in text.split("Which module?")[1].splitlines()[0]
     assert "Answer: calc.py" not in text
     assert "· Cancel" in text  # other decisions keep their settled lines
 
@@ -194,7 +195,14 @@ def test_typed_text_is_recorded_as_typed(controller_with_choose):
     question = Question(text="Which module?", options=["calc.py", "ops.py"])
     scripts = {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()], "critic": [critique()]}
     text, *_ = controller_with_choose(["add subtract", "3", "lib/ops_extra.py", "n"], scripts)
-    assert "? Which module? → lib/ops_extra.py" in text
+    assert "? Which module?  lib/ops_extra.py" in text
+
+
+def test_a_multi_line_typed_answer_shows_on_one_line(controller_with_choose):
+    question = Question(text="Which module?", options=["calc.py", "ops.py"])
+    scripts = {"intake": [goal(open_questions=[question]), goal()], "architect": [plan()], "critic": [critique()]}
+    text, *_ = controller_with_choose(["add subtract", "3", "put it\nin lib", "n"], scripts)
+    assert "? Which module?  put it in lib" in text
 
 
 def test_a_long_record_line_is_cut_to_the_width(controller_with_choose):
@@ -210,7 +218,7 @@ def test_plan_with_what_you_know_keeps_its_settled_line(controller_with_choose):
     question = Question(text="Which module?", options=["calc.py", "ops.py"])
     scripts = {"intake": [goal(open_questions=[question])], "architect": [plan()], "critic": [critique()]}
     text, *_ = controller_with_choose(["add subtract", "go", "n"], scripts)
-    assert "? Which module?  Plan with what you know" in text and "? Which module? →" not in text
+    assert "? Which module?  Plan with what you know" in text and "? Which module?  calc.py" not in text
 
 
 def test_a_free_text_question_has_no_callout(calc_repo):
@@ -375,7 +383,7 @@ def test_each_answer_follows_its_question(controller_with_choose):
         ["add subtract", "1", "1", "n"],
         {"intake": [goal(open_questions=[first, second]), goal()], "architect": [plan()], "critic": [critique()]},
     )
-    order = [text.index(s) for s in ("? Which module? → calc.py", "? Which name? → minus")]
+    order = [text.index(s) for s in ("? Which module?  calc.py", "? Which name?  minus")]
     assert order == sorted(order), text
 
 
