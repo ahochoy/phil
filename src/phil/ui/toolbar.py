@@ -262,15 +262,17 @@ def render_frame_live(
     view: ToolbarView, now: float, width: int, max_lines: int | None = None
 ) -> FrameLive:
     """The live line's content (spec §5.2): the live rows on the left, each fitted to what the
-    right side (time and cost) leaves; a paused run's first row is the `needs you` notice."""
+    right side (time and cost) leaves; a paused run's first row is the `needs you` notice. The
+    first row, two cells and the right side fit in `width` (the right side is cut only when it
+    alone would leave the left no cell)."""
     run = view.run
     paused = run is not None and view.paused
-    right = _live_right(view, now)
-    room = max(width - cell_len(toolbar_text(right)) - 2, 2)
+    right = _fit_row([_Part(style, text) for style, text in _live_right(view, now)], width - 3)
+    room = max(width - cell_len(toolbar_text(right)) - 2, 2)  # each left row: at most room - 1 cells
     suffix = ""
     if run is not None and not paused and run.tasks_total > 0:
         suffix = f" · task {min(run.tasks_done + 1, run.tasks_total)}/{run.tasks_total}"
-    flat = render_live_rows(view, now, room - cell_len(suffix), max_lines)
+    flat = render_live_rows(view, now, max(room - cell_len(suffix), 2), max_lines)  # 2: a cell per row
     rows: list[Fragments] = [[]]
     for frag in flat:
         if frag[1] == "\n":
@@ -283,6 +285,7 @@ def render_frame_live(
         rows[0] = [("class:phil.warn", f"⏸ {run.name or run.run_id} needs you")]
     elif suffix:
         rows[0].append(("", suffix))
+    rows[0] = _fit_row([_Part(style, text) for style, text in rows[0]], room)  # too narrow for it all
     return FrameLive(rows, right)
 
 

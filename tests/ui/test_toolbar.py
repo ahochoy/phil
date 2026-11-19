@@ -365,3 +365,22 @@ def test_frame_live_budget_and_chat_cost():
     assert toolbar_text(live.right) == "1m 12s · $0.06 / $1.00"
     step = ToolbarView(step="designing", step_started=90.0, cost=(0.02, "reported"))
     assert toolbar_text(render_frame_live(step, 100.0, 80).right) == "$0.02"
+
+
+def _first_row_cells(live: FrameLive) -> int:
+    return cell_len(toolbar_text(live.left[0])) + 2 + cell_len(toolbar_text(live.right))
+
+
+def test_frame_live_narrow_width_fits_every_row():
+    subs = (SubAgent(1, "find theme", "grep x", 95.0),)
+    for width in (12, 16, 20, 24):
+        for view in (FRAME_VIEW, replace(FRAME_VIEW, subs=subs), replace(FRAME_VIEW, budget_usd=1.0)):
+            live = render_frame_live(view, 100.0, width)
+            assert live.left and _first_row_cells(live) <= width, (width, live)
+            assert all(cell_len(toolbar_text(row)) <= width for row in live.left)
+
+
+def test_frame_live_narrow_paused_row_is_fitted():
+    live = render_frame_live(replace(FRAME_VIEW, paused=True, budget_usd=1.0), 100.0, 30)
+    assert _first_row_cells(live) <= 30 and toolbar_text(live.left[0]).endswith("…")
+    assert live.left[0][0][0] == "class:phil.warn" and toolbar_text(live.left[0]).startswith("⏸")

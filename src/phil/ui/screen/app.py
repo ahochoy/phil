@@ -8,11 +8,13 @@ from collections.abc import Callable
 from typing import ClassVar, Literal, Protocol
 
 from rich.console import RenderableType
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.widgets import TextArea
 
 from phil.chat.decision import Decision
+from phil.chat.state import ToolbarView
 from phil.ui.screen.widgets import (
     Conversation,
     DecisionMenu,
@@ -21,9 +23,12 @@ from phil.ui.screen.widgets import (
     LiveLine,
     NewMarker,
     PromptBox,
+    TaskBlock,
 )
 
 _log = logging.getLogger(__name__)
+
+LIVE_REFRESH = 0.5  # seconds between live-line refreshes
 
 CSS = """
 Screen {
@@ -78,8 +83,9 @@ class FrameInput(Protocol):
 
 
 class PhilApp(App, inherit_bindings=False):
-    """The full-screen frame. `post_item`, `set_header`, `clear_conversation`, `set_prompt`,
-    `prefill`, `open_menu`, `close_menu`, `copy_text` and `request_exit` may be called from any
+    """The full-screen frame. `post_item`, the task output (`task_started`, `task_line`,
+    `sub_agent`, `task_done`), `set_header`, `clear_conversation`, `set_prompt`, `prefill`,
+    `open_menu`, `close_menu`, `copy_text` and `request_exit` may be called from any
     thread; before the app mounts they are kept and applied on mount, and once it has exited they do
     nothing."""
 
@@ -95,24 +101,33 @@ class PhilApp(App, inherit_bindings=False):
         Binding("ctrl+c", "copy_or_interrupt", show=False, priority=True),
     ]
 
-    def __init__(self, frame_input: FrameInput | None = None) -> None:
+    def __init__(
+        self, frame_input: FrameInput | None = None, view: Callable[[], ToolbarView | None] = lambda: None
+    ) -> None:
         super().__init__()
         self._input = frame_input
+        self._view = view  # what the live line shows, read on the app's thread every LIVE_REFRESH
         self._lock = threading.Lock()
         self._phase: Literal["pending", "running", "closed"] = "pending"
         self._pending: list[Callable[[], None]] = []
         self._entry_loop: asyncio.AbstractEventLoop | None = None  # not `_loop`: App has its own
+        self._pane_width: int | None = None  # set on the app's thread as the conversation resizes
+        self._tasks: dict[str, TaskBlock] = {}  # each task's block (app thread only)
+        self._subs: set[tuple[str, int]] = set()  # the sub-agents announced, by (task, seq)
 
     def compose(self) -> ComposeResult:
         yield HeaderBar(id="header")
         yield Conversation(id="conversation")
         yield NewMarker(id="new")
-        yield LiveLine(id="live")
+        yield LiveLine(self._view, id="live")
         yield DecisionMenu(id="menu")
         yield PromptBox(id="prompt")
 
     def on_mount(self) -> None:
         self.query_one(PromptBox).focus()
+        live = self.query_one(LiveLine)
+        live.tick()
+        self.set_interval(LIVE_REFRESH, live.tick)  # the live line only, not the conversation
         with self._lock:
             self._entry_loop = asyncio.get_running_loop()
             self._phase = "running"
@@ -221,17 +236,54 @@ class PhilApp(App, inherit_bindings=False):
     def request_exit(self) -> None:
         self._call(self.exit)
 
-    def pane_width(self) -> int | None:
-        """The conversation pane's content width (what items render at); None before layout.
-        Safe from any thread: it only reads sizes."""
+    def task_started(self, task: str, band: RenderableType) -> None:
+        """A new block for `task`, headed by `band`, at the end of the conversation."""
+
+        def apply() -> None:
+            block = self._tasks[task] = TaskBlock(band)
+            self.query_one(Conversation).add(block)
+
+        self._call(apply)
+
+    def task_line(self, task: str, line: RenderableType) -> None:
+        """`line` at the end of `task`'s block (opening it again if it was folded)."""
+        self._call(lambda: self._add_task_line(task, line))
+
+    def sub_agent(self, task: str, seq: int, description: str) -> None:
+        """`└ sub-agent  <description>` in `task`'s block, once per (task, seq)."""
+
+        def apply() -> None:
+            if (task, seq) not in self._subs:
+                self._subs.add((task, seq))
+                self._add_task_line(task, Text(f"└ sub-agent  {description}", style="phil.sub"))
+
+        self._call(apply)
+
+    def task_done(self, task: str, folded: RenderableType) -> None:
+        """Fold `task`'s block to the one line `folded`."""
+        self._call(lambda: self._block(task).fold(folded))
+
+    def _block(self, task: str) -> TaskBlock:
+        """`task`'s block; a task never announced gets one, headed by its id."""
+        block = self._tasks.get(task)
+        if block is None:
+            block = self._tasks[task] = TaskBlock(Text(task))
+            self.query_one(Conversation).add(block)
+        return block
+
+    def _add_task_line(self, task: str, line: RenderableType) -> None:
+        self.query_one(Conversation).add(Item(line), into=self._block(task))
+
+    def note_pane_width(self, width: int) -> None:
+        """The conversation's content width after a resize (the app's thread)."""
         with self._lock:
-            if self._phase != "running":
-                return None
-        try:
-            width = self.query_one(Conversation).scrollable_content_region.width
-        except Exception:  # the tree is changing (shutdown): no width to report
-            return None
-        return width or None
+            self._pane_width = width or None
+
+    def pane_width(self) -> int | None:
+        """The conversation pane's content width (what items render at); None before layout and
+        once closed. Safe from any thread: it returns the width the app's thread last noted."""
+        with self._lock:
+            return self._pane_width if self._phase == "running" else None
 
     def action_scroll_conversation(self, how: str) -> None:
         conversation = self.query_one(Conversation)

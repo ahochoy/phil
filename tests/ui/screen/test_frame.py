@@ -364,3 +364,53 @@ def test_items_appear_in_call_order_across_threads():
         assert [item.renderable.plain for item in _items(app)] == ["first", "second"]
 
     pilot_run(app, script)
+
+
+def test_pane_width_is_cached_on_the_app_thread():
+    app = PhilApp()
+    got = []
+
+    async def script(pilot):
+        conversation = app.query_one(Conversation)
+        await until(pilot, lambda: app.pane_width() == conversation.scrollable_content_region.width)
+        await pilot.resize_terminal(60, 30)
+        await until(pilot, lambda: app.pane_width() == conversation.scrollable_content_region.width < 60)
+        narrow = app.pane_width()
+        for n in range(100):                                   # a scrollbar takes its column
+            app.post_item(Text(f"line {n}"))
+        await until(pilot, lambda: conversation.max_scroll_y > 0)
+        await pilot.pause()
+        assert app.pane_width() == conversation.scrollable_content_region.width < narrow
+
+        def no_queries(*args, **kwargs):
+            raise AssertionError("pane_width must not read the widget tree")
+
+        app.query_one = no_queries  # type: ignore[method-assign]
+        worker = threading.Thread(target=lambda: got.append(app.pane_width()))
+        worker.start()
+        worker.join()
+        del app.query_one
+        assert got == [conversation.scrollable_content_region.width]
+
+    pilot_run(app, script)
+    assert app.pane_width() is None                  # closed
+
+
+def test_item_height_is_cached_with_its_styled_text(monkeypatch):
+    app = PhilApp()
+
+    async def script(pilot):
+        app.post_item(Text("a\nb\nc"))
+        await until(pilot, lambda: len(_items(app)) == 1)
+        await pilot.pause()
+        item = _items(app)[0]
+        width = item.size.width
+
+        def no_split(*args, **kwargs):
+            raise AssertionError("height must come from the cache")
+
+        monkeypatch.setattr(Text, "split", no_split)
+        assert item.get_content_height(item.size, item.size, width) == 3
+        monkeypatch.undo()
+
+    pilot_run(app, script)

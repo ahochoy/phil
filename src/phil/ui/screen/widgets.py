@@ -1,5 +1,8 @@
 """The full-screen frame's widgets (the tree is in `app.py`'s `PhilApp.compose`)."""
 
+import time
+from collections.abc import Callable
+
 from rich.console import RenderableType
 from rich.table import Table
 from rich.text import Text
@@ -12,8 +15,11 @@ from textual.widgets import Static, TextArea
 
 from phil.chat.controller import TYPE
 from phil.chat.decision import Decision
+from phil.chat.state import ToolbarView
 from phil.ui.callout import callout_lines, to_rich
+from phil.ui.fragments import to_text
 from phil.ui.screen.themed import Themed
+from phil.ui.toolbar import render_frame_live
 
 
 class HeaderBar(Static):
@@ -56,10 +62,15 @@ class Item(Widget):
     def __init__(self, renderable: RenderableType) -> None:
         super().__init__()
         self.renderable = renderable
-        self._styled: tuple[int, Text] | None = None
+        self._styled: tuple[int, Text, int] | None = None  # (width, styled text, its height)
 
-    def styled(self, width: int) -> Text:
-        """The renderable as styled text, `width` cells wide at most (cached for the last width)."""
+    def set_renderable(self, renderable: RenderableType) -> None:
+        """Show `renderable` instead (a task block's header when it folds or opens again)."""
+        self.renderable = renderable
+        self._styled = None
+        self.refresh(layout=True)
+
+    def _render_at(self, width: int) -> tuple[int, Text, int]:
         if self._styled is None or self._styled[0] != width:
             console = self.app.console
             lines = console.render_lines(Themed(self.renderable), console.options.update_width(width), pad=False)
@@ -70,8 +81,12 @@ class Item(Widget):
                 for segment in line:
                     if not segment.control:
                         text.append(segment.text, segment.style)
-            self._styled = (width, text)
-        return self._styled[1]
+            self._styled = (width, text, max(len(lines), 1))
+        return self._styled
+
+    def styled(self, width: int) -> Text:
+        """The renderable as styled text, `width` cells wide at most (cached for the last width)."""
+        return self._render_at(width)[1]
 
     def render(self) -> Text:
         return self.styled(max(self.size.width, 1))
@@ -79,11 +94,53 @@ class Item(Widget):
     def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
         if not width:
             return 0
-        return len(self.styled(width).split("\n"))
+        return self._render_at(width)[2]
 
 
 class TaskBlock(Vertical):
-    """A task's band and its feed lines, foldable (behaviour comes with the task output)."""
+    """A task's band (`header`) and its feed lines below it, each an `Item`. `fold` removes the
+    lines and shows the folded band instead; a line added to a folded block opens it again, under
+    the original band. Lines are added through `Conversation.add`, so they follow like any item."""
+
+    DEFAULT_CSS = """
+    TaskBlock {
+        height: auto;
+    }
+    """
+
+    def __init__(self, band: RenderableType) -> None:
+        self.band = band
+        self.header = Item(band)
+        self.folded = False
+        self._early: list[Item] = []  # lines added before the block (and its header) mounted
+        super().__init__(self.header)
+
+    def on_mount(self) -> None:
+        early, self._early = self._early, []
+        if early:
+            self.mount(*early)
+
+    @property
+    def lines(self) -> list[Item]:
+        mounted = [child for child in self.children if isinstance(child, Item) and child is not self.header]
+        return mounted + self._early
+
+    def add_line(self, item: Item) -> None:
+        """`item` below the block's lines, opening the block if it is folded."""
+        if self.folded:
+            self.folded = False
+            self.header.set_renderable(self.band)
+        if self.is_mounted:
+            self.mount(item)
+        else:  # the header mounts with the block: a line mounted now would land above it
+            self._early.append(item)
+
+    def fold(self, folded: RenderableType) -> None:
+        self.folded = True
+        self._early = []
+        for line in self.lines:
+            line.remove()
+        self.header.set_renderable(folded)
 
 
 class NewMarker(Static):
@@ -101,8 +158,12 @@ class Conversation(VerticalScroll):
         super().__init__(**kwargs)
         self.following = True
 
-    def add(self, widget: Item | TaskBlock) -> None:
-        self.mount(widget)
+    def add(self, widget: Item | TaskBlock, into: TaskBlock | None = None) -> None:
+        """Add `widget` at the end, or at the end of the task block `into` (opening it if folded)."""
+        if into is None:
+            self.mount(widget)
+        else:
+            into.add_line(widget)
         if self.following:
             self.scroll_end(animate=False)
         else:
@@ -126,21 +187,75 @@ class Conversation(VerticalScroll):
         elif new_value < old_value:
             self.following = False
 
+    def watch_virtual_size(self, old: Size, new: Size) -> None:
+        """Content grew after the add's own scroll (a task block's line lays out a pass later)."""
+        if self.following and new.height > old.height:
+            self.scroll_end(animate=False)
+
+    # The pane's content width, noted for other threads whenever it can change.
+    def on_resize(self, event: events.Resize) -> None:
+        self.app.note_pane_width(self.scrollable_content_region.width)
+
+    def watch_show_vertical_scrollbar(self, show: bool) -> None:
+        self.app.note_pane_width(self.scrollable_content_region.width)
+
     def _marker(self) -> NewMarker:
         return self.screen.query_one(NewMarker)
 
 
-class LiveLine(Static):
-    """The live line under the conversation (content comes with the live status); hidden if empty.
-    `max_lines` caps its rows (1 while a decision menu shows; None for no cap)."""
+class LiveLine(Widget):
+    """The live line under the conversation: `render_frame_live` of the view, each left row a line
+    and the right side (time, cost) right-aligned on the first; hidden when there is nothing live.
+    `tick` takes a fresh view (the app calls it every 0.5 s); the rows are laid out at the widget's
+    own width. `max_lines` caps its rows (1 while a decision menu shows; None for no cap)."""
 
-    def __init__(self, **kwargs) -> None:
+    DEFAULT_CSS = """
+    LiveLine {
+        height: auto;
+    }
+    """
+
+    def __init__(self, view: Callable[[], ToolbarView | None] = lambda: None, **kwargs) -> None:
         super().__init__(**kwargs)
+        self._view = view
         self.max_lines: int | None = None
+        self._snapshot: tuple[ToolbarView, float] | None = None
+        self._lines: tuple[int, list[Text]] | None = None  # (width, lines) for the snapshot
 
     def set_max_lines(self, max_lines: int | None) -> None:
         self.max_lines = max_lines
+        self.tick()
+
+    def tick(self) -> None:
+        view = self._view()
+        self._snapshot = None if view is None else (view, time.time())
+        self._lines = None
+        # Hidden, it has no width: lay out at the screen's, less the padding, to see if it shows.
+        width = self.content_size.width or self.app.size.width - self.styles.gutter.width
+        self.display = bool(self._rows(max(width, 1)))
         self.refresh(layout=True)
+
+    def _rows(self, width: int) -> list[Text]:
+        if self._snapshot is None:
+            return []
+        if self._lines is None or self._lines[0] != width:
+            view, now = self._snapshot
+            live = render_frame_live(view, now, width, self.max_lines)
+            rows = [to_text(row) for row in live.left]
+            if rows:
+                right = to_text(live.right)
+                gap = max(width - rows[0].cell_len - right.cell_len, 1 if right else 0)
+                rows[0] = Text.assemble(rows[0], " " * gap, right)
+            self._lines = (width, rows)
+        return self._lines[1]
+
+    def render(self) -> RenderableType:
+        text = Text("\n").join(self._rows(max(self.content_size.width, 1)))
+        text.no_wrap, text.overflow, text.end = True, "crop", ""
+        return Themed(text)
+
+    def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
+        return len(self._rows(width)) if width else 0
 
 
 class DecisionMenu(Widget, can_focus=True):

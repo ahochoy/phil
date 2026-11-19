@@ -16,6 +16,8 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import TypeVar
 
+from rich.text import Text
+
 from phil.chat.controller import WAKE, ChatIO
 from phil.chat.decision import Decision
 from phil.chat.state import ToolbarView
@@ -57,15 +59,28 @@ class ScreenIO:
         # Jobs run on daemon threads, at most MAX_JOBS at once, as in `TerminalIO.submit`.
         self._slots = threading.Semaphore(MAX_JOBS)
         self._job_numbers = itertools.count(1)
-        self.app = PhilApp(self)
+        self.app = PhilApp(self, view=lambda: self._view())
         self.console = PaneConsole(self.app.post_item, self.width)
 
     # The chat's side (the worker thread).
 
     def chat_io(self, spawn: Spawn) -> ChatIO:
-        # task_output once ScreenIO implements it.
         return ChatIO(ask=self.ask, spawn=spawn, wake=self.wake, submit=self.submit, choose=self.choose,
-                      prefill=self.prefill, copy=self.copy, task_output=None)
+                      prefill=self.prefill, copy=self.copy, task_output=self)
+
+    # The controller's `TaskOutput`: a run's task feed, grouped by task in the conversation.
+
+    def task_started(self, task: str, band: Text) -> None:
+        self.app.task_started(task, band)
+
+    def task_line(self, task: str, line: Text) -> None:
+        self.app.task_line(task, line)
+
+    def sub_agent(self, task: str, seq: int, description: str) -> None:
+        self.app.sub_agent(task, seq, description)
+
+    def task_done(self, task: str, folded: Text) -> None:
+        self.app.task_done(task, folded)
 
     def ask(self, prompt: str) -> object:
         """The next entered line; `WAKE` if a wake is pending; None at EOF (Ctrl+D, or the frame
