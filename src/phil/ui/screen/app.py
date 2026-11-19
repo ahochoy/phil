@@ -139,6 +139,13 @@ class PhilApp(App, inherit_bindings=False):
         if self._input is not None:
             self._input.end_of_input()
 
+    def on_descendant_focus(self, event) -> None:
+        """While a menu shows it keeps the keyboard: a click elsewhere (a drag to select text in
+        the conversation, say) hands focus straight back; the selection is the screen's and stays."""
+        menu = self.query_one(DecisionMenu)
+        if menu.decision is not None and event.widget is not menu:
+            menu.focus(scroll_visible=False)
+
     def on_decision_menu_moved(self, message: DecisionMenu.Moved) -> None:
         if self._input is not None:
             self._input.choice_moved(message.menu_id, message.index)

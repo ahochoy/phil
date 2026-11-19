@@ -255,6 +255,11 @@ class PromptBox(TextArea):
             self._handled(event)
             self.post_message(self.EndOfInput())
 
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if not self.can_focus:  # a decision menu has the keys: a click leaves the cursor alone
+            event.stop()
+            event.prevent_default()
+
     def set_text(self, text: str) -> None:
         """Replace the box's text, the cursor at its end."""
         self.text = text

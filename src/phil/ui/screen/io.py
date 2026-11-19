@@ -107,14 +107,14 @@ class ScreenIO:
                     if self._interrupt_held:
                         self._interrupt_held = False
                         raise KeyboardInterrupt
+                    if self._answer is not _NO_ANSWER:  # a pick beats a later wake, which stays pending
+                        return self._answer
                     if self._wake_pending:
                         self._wake_pending = False
                         self._carried_choice = (decision, self._choice)
                         return WAKE
                     if self._closed:
                         return None
-                    if self._answer is not _NO_ANSWER:
-                        return self._answer
                     self._ready.wait()
         finally:
             with self._ready:

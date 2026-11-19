@@ -3,11 +3,13 @@
 
 import threading
 
+from rich.text import Text
+
 from phil.chat.controller import TYPE, WAKE
 from phil.chat.decision import Decision, Option
 from phil.ui.screen.io import ScreenIO
 from phil.ui.screen.widgets import Conversation, DecisionMenu, Item, LiveLine, PromptBox
-from tests.ui.screen.pilot import pilot_run, render, until
+from tests.ui.screen.pilot import drag, pilot_run, render, until
 
 D = Decision("pause", "⏸ r-1 needs you · setup failed", ("x",),
              (Option("Retry the task", "retry"), Option("Abort the run", "abort")))
@@ -260,6 +262,68 @@ def test_a_typed_prompt_clears_a_carried_highlight():
         await pilot.press("enter")
         await until(pilot, lambda: len(got) == 3)
         assert got == [WAKE, "x", "retry"]
+
+    pilot_run(io.app, script)
+
+
+def test_a_pick_beats_a_wake_that_lands_after_it():
+    io, chat = _io()
+    got = []
+
+    def fn():
+        got.append(chat.choose("", D))
+        got.append(chat.ask("you › "))
+
+    async def script(pilot):
+        io.start(fn)
+        await _opened(pilot, io, 1)
+        with io._ready:                                 # both land before the chat thread runs
+            io.choice_made(1, "abort")
+            io._wake_pending = True
+            io._ready.notify_all()
+        await until(pilot, lambda: len(got) == 2)
+        assert got == ["abort", WAKE]                   # the pick is kept; the wake waits for ask
+
+    pilot_run(io.app, script)
+
+
+def test_a_drag_in_the_conversation_keeps_the_menu_on_the_keys():
+    io, chat = _io()
+
+    async def script(pilot):
+        io.app.post_item(Text("hello selectable world"))
+        await until(pilot, lambda: len(io.app.query_one(Conversation).query(Item)) == 1)
+        got = _choosing(io, chat, D)
+        await _opened(pilot, io, 1)
+        await drag(pilot, io.app.query_one(Item), (0, 0), (15, 0))
+        assert "hello selectable" in io.app.screen.get_selected_text()
+        await until(pilot, lambda: io.app.focused is _menu(io))
+        await pilot.press("down", "enter")
+        await until(pilot, lambda: got == ["abort"])
+
+    pilot_run(io.app, script)
+
+
+def test_a_click_on_the_box_leaves_its_cursor_while_the_menu_shows():
+    io, chat = _io()
+    go = threading.Event()
+    got = []
+
+    def fn():
+        go.wait(5)
+        got.append(chat.choose("", D))
+
+    async def script(pilot):
+        io.start(fn)
+        await pilot.press(*"draft")
+        await until(pilot, lambda: _box(io).text == "draft")
+        go.set()
+        await _opened(pilot, io, 1)
+        await pilot.click(_box(io), offset=(2, 1))
+        await pilot.pause()
+        assert _box(io).cursor_location == (0, 5) and io.app.focused is _menu(io)
+        await pilot.press("enter")
+        await until(pilot, lambda: got == ["retry"])
 
     pilot_run(io.app, script)
 
