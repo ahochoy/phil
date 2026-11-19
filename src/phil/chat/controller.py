@@ -661,6 +661,8 @@ class ChatController:
 
     def _handle(self, event: ChatEvent) -> None:
         if event.generation not in (-1, self._generation):
+            if event.kind == "agent_notice":
+                return  # a cancelled job's notice: its result, still to come, ends the cancelling
             self.state.set_cancelling(False)
             return
         if event.kind in RUN_EVENTS and self._run_id is None:

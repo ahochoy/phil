@@ -1,6 +1,7 @@
 """The full-screen frame's widgets (the tree is in `app.py`'s `PhilApp.compose`)."""
 
 import logging
+import re
 import time
 from collections.abc import Callable
 
@@ -422,11 +423,12 @@ class PromptBox(TextArea):
             return
         event.stop()
         event.prevent_default()
+        self._chips = self._present_chips()  # a chip the user deleted is neither counted nor reused
         labels: dict[str, str] = {}  # pasted path -> its chip, numbered in the paste's order
         for item in found:
             label = next((label for label, raw in self._chips.items() if raw == item.raw), None)
             if label is None:
-                label = chip(len(self._chips) + 1, item.path.name)
+                label = chip(self._next_chip_number(), item.path.name)
                 self._chips[label] = item.raw
             labels[item.raw] = label
         text = event.text
@@ -437,15 +439,36 @@ class PromptBox(TextArea):
         self.move_cursor(result.end_location)
         self.focus()
 
+    def _present_chips(self) -> dict[str, str]:
+        """The remembered chips still in the box's text."""
+        text = self.text
+        return {label: raw for label, raw in self._chips.items() if label in text}
+
+    def _next_chip_number(self) -> int:
+        """One past the highest chip number in `_chips` (`[image N: …]`), so no two chips share one."""
+        numbers = [int(label[len("[image "):label.index(":")]) for label in self._chips]
+        return max(numbers, default=0) + 1
+
     def _expanded(self, text: str) -> str:
-        """`text` with each chip back as the path it stands for (the chat attaches from the paths)."""
+        """`text` with each chip still in it back as the path it stands for (the chat attaches from
+        the paths). A path that would touch the text beside it gets a space, so it is still found."""
         chips, self._chips = self._chips, {}
-        for label, raw in chips.items():
-            text = text.replace(label, raw)
-        return text
+        chips = {label: raw for label, raw in chips.items() if label in text}
+        if not chips:
+            return text
+        pattern = re.compile("|".join(re.escape(label) for label in sorted(chips, key=len, reverse=True)))
+
+        def path_for(match: re.Match[str]) -> str:
+            start, end = match.span()
+            before = " " if start > 0 and not text[start - 1].isspace() else ""
+            after = " " if end < len(text) and not text[end].isspace() else ""
+            return f"{before}{chips[match.group(0)]}{after}"
+
+        return pattern.sub(path_for, text)
 
     def set_text(self, text: str) -> None:
-        """Replace the box's text, the cursor at its end."""
+        """Replace the box's text, the cursor at its end. The old text's chips are forgotten."""
+        self._chips = {}
         self.text = text
         self.move_cursor(self.document.end)
 

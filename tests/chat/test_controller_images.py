@@ -171,6 +171,30 @@ def test_an_agents_image_notice_prints_as_a_feed_line(calc_repo, images, monkeyp
     assert text.index("↪ image:") < text.index("Which module?")
 
 
+def test_a_stale_agent_notice_leaves_the_cancel_pending(calc_repo):
+    """After Ctrl-C, a cancelled job's `↪ image:` notice prints nothing and doesn't end "cancelling":
+    the cancelled job's own result still has to land."""
+    from phil.chat.controller import WAKE
+    from phil.chat.events import ChatEvent
+    from tests.chat.test_controller import deferred
+
+    submit, _, _ = deferred()
+    seen = {}
+
+    def stale_notice(controller):
+        controller.post(ChatEvent("agent_notice", {"line": "↪ image: route runs on x"}, controller._generation - 1))
+        return WAKE
+
+    def look(controller):
+        seen["cancelling"] = controller.state.view().cancelling
+        return None
+
+    text, *_ = run_chat(calc_repo, ["fix the layout", _interrupt, stale_notice, look], {}, config=CONVERSATION,
+                        submit=submit)
+    assert seen == {"cancelling": True}
+    assert "↪ image" not in text
+
+
 def test_a_command_never_attaches(calc_repo, images):
     run_chat(calc_repo, [f"/park look at {images / 'a.png'}"], {}, config=CONVERSATION)
     assert not (session_dir(calc_repo) / "images").exists()
