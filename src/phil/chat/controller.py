@@ -9,6 +9,7 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Protocol
 
 from pydantic import ValidationError
 from rich.cells import cell_len
@@ -257,6 +258,15 @@ class TrustAsk:
     goal: Goal | None = None
 
 
+class TaskOutput(Protocol):
+    """Where the full-screen frame takes the feed; None on ChatIO means print it (inline, line)."""
+
+    def task_started(self, task: str, band: Text) -> None: ...
+    def task_line(self, task: str, line: Text) -> None: ...
+    def sub_agent(self, task: str, seq: int, description: str) -> None: ...
+    def task_done(self, task: str, folded: Text) -> None: ...
+
+
 @dataclass
 class ChatIO:
     ask: Callable[[str], object]  # prompt -> str | None (EOF) | WAKE; may raise KeyboardInterrupt
@@ -266,6 +276,7 @@ class ChatIO:
     # (prompt, decision) -> the picked option's answer | TYPE | WAKE | None (EOF); None: no menu
     choose: Callable[[str, Decision], object] | None = None
     prefill: Callable[[str], None] = lambda text: None  # put text in the next prompt, to edit or send
+    task_output: TaskOutput | None = None  # the full-screen frame takes a run's task feed; None prints it
 
 
 class ChatController:
@@ -348,6 +359,8 @@ class ChatController:
         self._shown_setup_cmd: str | None = None  # the setup command in the last plan render, pinned into its run
         self._revising = False
         self._feed = FeedRenderer()  # the run's tool lines and milestone bands
+        self._open_task: str | None = None  # the task of the last task_started, for a task output's sub-agents
+        self._announced_subs: set[tuple[str, int]] = set()  # (task, seq) already sent to the task output
         self._feed_filter: str | None = None  # /feed <agent>: only that agent's tool lines print
         self._hidden = 0  # tool steps (end records) the filter has hidden since it was set
         self._base_sha: str | None = None
@@ -2024,6 +2037,7 @@ class ChatController:
         self._stop_watcher()
         self._run_id, self._lost, self._pause, self._answer_sent = None, False, None, False
         self._feed = FeedRenderer()  # no task timings carried into the next run
+        self._open_task, self._announced_subs = None, set()
         self._clear_run()
 
     def _clear_run(self) -> None:
@@ -2091,9 +2105,17 @@ class ChatController:
     def _print_feed(self, items: list[FeedItem]) -> None:
         """Print feed items the /feed filter shows: a summary shows when any of its calls would (R19)."""
         agent = self._feed_filter
+        output = self.io.task_output
         for item in items:
-            if agent is None or any(_shows(record, agent) for record in item.records):
-                self.console.print(item.line, soft_wrap=True)
+            if agent is not None and not any(_shows(record, agent) for record in item.records):
+                continue
+            task = next((r.get("task") for r in item.records if r.get("task")), None)
+            if output is not None and task:
+                # A sub-agent is announced once, by its description; its tool lines aren't shown.
+                if not all(_shows(record, "sub-agent") for record in item.records):
+                    output.task_line(task, item.line)
+                continue
+            self.console.print(item.line, soft_wrap=True)
 
     def _end_burst(self) -> None:
         """The open burst ended (a milestone, a pause, the run's end): its summary, and no rolling view."""
@@ -2110,7 +2132,18 @@ class ChatController:
 
     def _on_milestone(self, data: dict) -> None:
         self._end_burst()
-        self.console.print(self._feed.milestone(data, self.console.width))
+        output, task, kind = self.io.task_output, data.get("task"), data.get("kind")
+        if output is None or not task:
+            self.console.print(self._feed.milestone(data, self.console.width))
+        elif kind == "task_done":
+            output.task_done(task, self._feed.milestone(data, self.console.width, titled=True))
+            if self._open_task == task:
+                self._open_task = None
+        elif kind == "task_started":
+            self._open_task = task
+            output.task_started(task, self._feed.milestone(data, self.console.width))
+        else:
+            output.task_line(task, self._feed.milestone(data, self.console.width))
 
     def _on_live_step(self, data: dict) -> None:
         if not data:
@@ -2130,6 +2163,13 @@ class ChatController:
                      started=float(sub.get("started", time.time())))
             for sub in data.get("subs") or ()
         ))
+        output, task = self.io.task_output, self._open_task
+        if output is not None and task is not None:
+            for sub in data.get("subs") or ():
+                seq = int(sub.get("seq", 0))
+                if (task, seq) not in self._announced_subs:
+                    self._announced_subs.add((task, seq))
+                    output.sub_agent(task, seq, str(sub.get("description", "")))
 
     def _on_run_paused(self, data: dict) -> None:
         self._end_burst()
