@@ -93,12 +93,89 @@ class ProseAgent:
         return {"messages": [HumanMessage(content="packet"), AIMessage(content=self.answers.pop(0))]}
 
 
+class MessagesAgent:
+    """Answers each call with the next scripted message list; `structured` (if given) is every call's
+    structured response."""
+
+    def __init__(self, *runs, structured=None) -> None:
+        self.runs = list(runs)
+        self.structured = structured
+        self.calls: list[dict] = []
+
+    def __call__(self, spec, model, workdir, tools, *, timeout_s=180, provider=None, **_):
+        return self
+
+    def invoke(self, payload, config=None):
+        from langchain_core.messages import HumanMessage
+
+        self.calls.append(payload)
+        result = {"messages": [HumanMessage(content="packet"), *self.runs.pop(0)]}
+        if self.structured is not None:
+            result["structured_response"] = self.structured
+        return result
+
+
+def _broken_answer_call():
+    from langchain_core.messages import AIMessage
+
+    args = json.dumps(critique().model_dump())[:-1]  # the closing brace never arrived
+    return AIMessage(
+        content="",
+        invalid_tool_calls=[{"name": "PlanCritique", "args": args, "id": "c1", "error": "bad json", "type": "invalid_tool_call"}],
+    )
+
+
+def test_a_broken_answer_call_is_salvaged(config, conn, artifacts, critic_packet):
+    factory = MessagesAgent([_broken_answer_call()])
+    result = invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic")
+    assert isinstance(result, PlanCritique)
+    assert [row["outcome"] for row in telemetry(conn)] == ["salvaged"]
+    assert len(factory.calls) == 1
+    assert not list((artifacts.run_dir / "outputs").glob("*.rejected.json"))
+
+
+def test_a_rejected_answer_records_last_messages(config, conn, artifacts, critic_packet):
+    from langchain_core.messages import AIMessage
+
+    final = AIMessage(content="I am out of calls.", response_metadata={"finish_reason": "length"})
+    factory = MessagesAgent([AIMessage(content="looking"), final])
+    spec = get_spec("critic")
+    with pytest.raises(ContractViolation):
+        invoke_agent(spec, critic_packet, context(config, conn, artifacts, factory), node="critic", max_attempts=1)
+    rejected = json.loads((artifacts.run_dir / "outputs" / "critic-run-1.rejected.json").read_text())
+    assert rejected["last_messages"][-1]["role"] == "ai"
+    assert rejected["last_messages"][-1]["finish_reason"] == "length"
+    assert rejected["model_calls"] == 2
+    assert rejected["max_model_calls"] == spec.max_model_calls
+    assert rejected["problems"] == ["no structured output was returned"]
+
+
+def test_failed_salvage_adds_its_problem_to_the_retry(config, conn, artifacts, critic_packet):
+    from langchain_core.messages import AIMessage
+
+    wrong = AIMessage(content='{"verdict": "maybe"}')
+    factory = MessagesAgent([wrong], [AIMessage(content="still nothing")])
+    with pytest.raises(ContractViolation):
+        invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic")
+    retry = factory.calls[1]["messages"][-1]["content"]
+    assert "no structured output was returned" in retry
+    assert "salvage: verdict" in retry
+
+
+def test_a_structured_response_skips_salvage(config, conn, artifacts, critic_packet):
+    factory = MessagesAgent([_broken_answer_call()], structured=critique())
+    result = invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic")
+    assert isinstance(result, PlanCritique)
+    assert [row["outcome"] for row in telemetry(conn)] == ["ok"]
+
+
 def test_a_rejected_no_structured_output_record_keeps_the_last_ai_text(config, conn, artifacts, critic_packet):
     factory = ProseAgent("Here is my critique: looks fine.", [{"type": "text", "text": "a" * 3000}, "tail"])
     with pytest.raises(ContractViolation):
         invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, factory), node="critic")
     first = json.loads((artifacts.run_dir / "outputs" / "critic-run-1.rejected.json").read_text())
-    assert first == {"raw": "Here is my critique: looks fine.", "problems": ["no structured output was returned"]}
+    assert first["raw"] == "Here is my critique: looks fine."
+    assert first["problems"] == ["no structured output was returned"]
     second = json.loads((artifacts.run_dir / "outputs" / "critic-run-2.rejected.json").read_text())
     assert second["raw"] == ("a" * 3000 + "tail")[:2000]
 

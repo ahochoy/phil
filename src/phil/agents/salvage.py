@@ -11,8 +11,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from phil.agents.tool_args import repair_arguments
-
 LAST_MESSAGES = 6
 TEXT_LIMIT = 2000
 _IMAGE_PLACEHOLDER = "[image]"
@@ -111,6 +109,8 @@ def extract_json(text: str) -> str | None:
 
 def _object_from(raw: str) -> dict | None:
     """The object `raw` holds, as written or repaired; None when it holds none."""
+    from phil.agents.tool_args import repair_arguments  # imports langchain: kept out of import time
+
     try:
         value = json.loads(raw)
     except ValueError:
@@ -123,6 +123,8 @@ def _object_from(raw: str) -> dict | None:
 def salvage(messages: list, tool_name: str, validate: Callable[[dict], list[str]]) -> tuple[Salvaged | None, list[str]]:
     """The first answer in the last `LAST_MESSAGES` AI messages (newest first) that `validate`
     accepts (no problems), and the problems of the last candidate tried, each prefixed `salvage: `."""
+    from phil.agents.tool_args import repair_arguments  # imports langchain: kept out of import time
+
     problems: list[str] = []
 
     def accepted(data: dict | None, route: str) -> Salvaged | None:

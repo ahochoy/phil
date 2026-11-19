@@ -57,7 +57,7 @@ class TelemetryRow(BaseModel):
     output_tokens: int
     latency_ms: int
     cost_usd: float
-    outcome: Literal["ok", "invalid", "evidence_fail", "error"]
+    outcome: Literal["ok", "invalid", "evidence_fail", "error", "salvaged"]
     call: int = 1
     chat_id: str | None = None
     model_calls: int = 0
