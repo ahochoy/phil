@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from rich.text import Text
 
+from phil.text import printable
 from phil.ui.bursts import EDITS, _cut, edited_files, one_line
 
 DIFF_LINES = 8  # changed lines shown per file
@@ -82,7 +83,7 @@ def file_blocks(calls: list[dict], details: Callable[[int], str | None], width: 
                 truncated = truncated or cut
         for marker, text in lines[:DIFF_LINES]:
             style = "phil.diff.add" if marker == "+" else "phil.diff.del"
-            out.append(_styled(_cut(f"{LINE_INDENT}{marker} {one_line(text)}", room), style))
+            out.append(_styled(_cut(f"{LINE_INDENT}{marker} {printable(text.expandtabs(4).rstrip())}", room), style))
         if len(lines) > DIFF_LINES:
             out.append(_styled(_cut(f"{LINE_INDENT}… {len(lines) - DIFF_LINES} more lines", room), "phil.muted"))
         if truncated:

@@ -647,6 +647,28 @@ def test_a_switch_to_a_chat_held_elsewhere_stays_on_the_current_chat(calc_repo, 
     assert not lock_file.exists()  # released when the chat ended
 
 
+def test_a_refused_switch_notes_start_blocks_with_a_blank_line_above(calc_repo, monkeypatch, phil_home):
+    from phil.chat.session import ChatLocked, ChatSession
+
+    older, newer = _two_chats(calc_repo, monkeypatch)
+    original = ChatSession.lock
+
+    def lock(self):
+        if self.id == newer:
+            raise ChatLocked(4242)
+        original(self)
+
+    monkeypatch.setattr(ChatSession, "lock", lock)
+    _full(monkeypatch, phil_home)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "chat"], input="1\n", env=FULL_ENV)
+    assert result.exit_code == 0, result.output
+    [screen] = screens
+    lines = [line.rstrip() for line in screen.text().splitlines()]
+    locked = next(n for n, line in enumerate(lines) if "is already open in another window" in line)
+    staying = next(n for n, line in enumerate(lines) if "Staying in chat" in line)
+    assert lines[locked - 1] == "" and lines[staying - 1] == "", lines[locked - 2:staying + 1]
+
+
 def test_a_refused_switch_whose_chat_cant_be_relocked_says_so_after_the_frame(calc_repo, monkeypatch, phil_home):
     from phil.chat.session import ChatLocked, ChatSession
 

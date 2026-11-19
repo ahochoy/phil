@@ -207,6 +207,13 @@ def test_question_line_cuts_the_question_before_the_answer():
     assert long.plain.startswith("? Which pages?  ") and long.plain.endswith("…") and cell_len(long.plain) <= 39
 
 
+def test_question_line_keeps_the_answer_visible_at_a_very_narrow_width():
+    line = question_line("Which of all these many different pages should it go on?", "Devlog pages", width=20)
+    assert cell_len(line.plain) <= 19 and "Devlog" in line.plain
+    tight = question_line("Which pages?", "x" * 30, width=20)
+    assert cell_len(tight.plain) <= 19 and "xxxxx" in tight.plain
+
+
 def test_conversation_and_picker_asked():
     assert conversation_decision(["a"]).asked == "Your answer"
     assert chat_picker_decision([("one", "c1")]).asked == "Reopen which chat?"

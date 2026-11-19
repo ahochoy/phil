@@ -2190,8 +2190,7 @@ class ChatController:
             run_id = self._chat_run()
             if run_id is None:
                 return None
-            path = activity_log(ProjectPaths(self.info.slug), run_id).detail_for(seq)
-            return path.read_text(encoding="utf-8") if path is not None else None
+            return activity_log(ProjectPaths(self.info.slug), run_id).read_detail(seq)
         except Exception:
             return None
 

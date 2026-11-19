@@ -111,6 +111,12 @@ def test_hanging_breaks_a_word_longer_than_the_line():
     assert "".join(t.plain.strip(" -") for t in out) == "x" * 30
 
 
+def test_hanging_in_a_very_narrow_window_drops_the_indent_on_later_lines():
+    out = hanging("abcdefghij klmnopqrst", 8, indent="  ", lead="- ")
+    assert [t.plain for t in out] == ["  - abc", "defghij", "klmnopq", "rst"]
+    assert all(cell_len(t.plain) <= 7 for t in out)
+
+
 def test_hanging_measures_wide_characters_in_cells():
     out = hanging("日本語 日本語 日本語", 14, indent="  ")
     assert all(cell_len(t.plain) <= 13 for t in out) and len(out) > 1

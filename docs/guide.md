@@ -333,7 +333,8 @@ steps were hidden. The filter is cleared when the run ends.
 The feed puts one blank line before each block — your typed line, each design option, a reply,
 a notice, a milestone band and each burst summary — never two in a row; a task's gate lines and
 failures stay inside its block. Design options wrap under their indent instead of being cut off.
-Every answered question, picked or typed, stays as `? Which approach?  <answer>`. A burst that
+An answer you pick, and an answer to one of Phil's clarifying questions, stays as
+`? Which approach?  <answer>`; any other answer you type stays as your own line. A burst that
 edited files reads `implementer ran 6 tools · edited 2 files  (/more #14)`, and under it each
 file gets `path  +A −R` followed by up to 8 of its changed lines (added in green, removed in red,
 no context). Three files show at most, then `+N more files · /more #14`; `/more #n` prints the

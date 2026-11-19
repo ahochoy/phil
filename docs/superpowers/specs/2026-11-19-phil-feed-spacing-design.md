@@ -155,8 +155,10 @@ Planning…
   - At most 8 diff lines per file, then `… N more lines`.
   - At most 3 files per burst, then `+N more files · /more #<n>`.
 - **Long lines** are cut to the width with `…`. A diff line never wraps.
-- **Safety.** Diff text is agent and repo content: every line goes through `one_line()`, so
-  escape codes and hidden characters show as `?`.
+- **Safety.** Diff text is agent and repo content: every line goes through
+  `printable(text.expandtabs(4).rstrip())`, so escape codes and hidden characters show as `?`.
+  It keeps a line's leading spaces (tabs become spaces), because the indentation is what makes
+  a diff readable; `one_line()` would collapse it.
 - **Source.** The diff text is each edit's recorded detail file (`ActivityLog.detail_path(seq)`,
   `store/activity.py`). `FeedRenderer` has no file access today, so it gets a detail reader
   (for example a `details: Callable[[int], str | None]` passed in by the chat and by `attach`).

@@ -30,7 +30,18 @@ class AttachIO:
     starting: Callable[[EventLog], bool] = field(default=worker_starting)
 
 
+JOINED_KINDS = ("node", "state", "worker", "spawn", "outcome")  # small status lines: they join the block above
+
+
 def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRenderer | None = None) -> None:
+    if event["kind"] in JOINED_KINDS and isinstance(console, BlockConsole):
+        with console.continued():
+            _render_event(console, event, run_id, feed)
+    else:
+        _render_event(console, event, run_id, feed)
+
+
+def _render_event(console: Console, event: dict, run_id: str, feed: FeedRenderer | None) -> None:
     kind = event["kind"]
     if kind in MILESTONE_KINDS:
         console.print((feed or FeedRenderer()).milestone(event, console.width))
@@ -41,7 +52,7 @@ def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRend
         console.print(f"state: [phil.id]{escape(event['state'])}[/]{note}")
     elif kind == "escalation":
         escalation = event["escalation"]
-        error = f"\n[phil.error]{escape(escalation['error'])}[/]" if escalation.get("error") else ""
+        error = f"\n[phil.error]{escape(printable(escalation['error']))}[/]" if escalation.get("error") else ""
         console.print(f"[phil.warn]⏸ {escape(printable(escalation['summary']))}[/]{error}")  # one block
     elif kind == "worker":
         console.print(f"[phil.muted]worker {event.get('pid')} ({escape(str(event.get('mode')))})[/]")
@@ -105,14 +116,7 @@ def attach(
     proc: object = None
     activity = ActivityLog(events.path.parent)
 
-    def details(seq: int) -> str | None:
-        try:
-            path = activity.detail_for(seq)
-            return path.read_text(encoding="utf-8") if path is not None else None
-        except Exception:
-            return None
-
-    feed = FeedRenderer(more_hint=False, details=details)
+    feed = FeedRenderer(more_hint=False, details=activity.read_detail)
     activity_offset = activity.end_offset()
 
     def active(record: RunRecord) -> bool:

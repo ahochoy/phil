@@ -13,6 +13,7 @@ from phil.ui.bursts import one_line
 
 QUESTION_STYLE = "phil.callout.title.question"
 QUESTION_FLOOR = 20  # a record line's question is cut no shorter than this before its answer is
+ANSWER_FLOOR = 10  # ...and the answer is cut no shorter than this before the question gives way further
 BODY_LINES = 8
 SEE_MORE = "… see /more 1"  # a capped body's last line: the full body is detail 1
 DETAILS = "Details: /more 1"  # a body's pointer at detail 1 when nothing was cut (an attempts pause)
@@ -80,13 +81,17 @@ def _cut(text: str, cells: int) -> str:
 def question_line(asked: str, answer: str, width: int | None = None) -> Text:
     """`? <asked>  <answer>`: the one look of a settled question, and of a clarifying question's
     record line. Both parts are one printable line. Given a `width`, the line fits in `width - 1`
-    cells: the question gives way first (down to QUESTION_FLOOR cells), then the answer."""
+    cells: the question gives way first (down to QUESTION_FLOOR cells, then, to keep ANSWER_FLOOR
+    cells of the answer, down to `…`), and only then the answer."""
     asked, answer = one_line(asked), one_line(answer)
     if width is not None:
-        room = width - 1 - 4 - cell_len(answer)  # "? " and the two spaces take 4
+        avail = max(width - 1 - 4, 0)  # "? " and the two spaces take 4
+        room = avail - cell_len(answer)
         if room < cell_len(asked):
-            asked = _cut(asked, max(room, min(cell_len(asked), QUESTION_FLOOR)))
-        answer = _cut(answer, max(width - 1 - 4 - cell_len(asked), 0))
+            wanted = max(room, min(cell_len(asked), QUESTION_FLOOR))
+            most = min(max(avail - min(cell_len(answer), ANSWER_FLOOR), 1), avail)  # leaves the answer its floor
+            asked = _cut(asked, min(wanted, most))
+        answer = _cut(answer, max(avail - cell_len(asked), 0))
     return Text.assemble(("? ", QUESTION_STYLE), (asked, QUESTION_STYLE), "  ", (answer, "phil.user"))
 
 

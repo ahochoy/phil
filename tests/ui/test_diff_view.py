@@ -58,6 +58,16 @@ def test_narrow_width_cuts_every_line():  # Review Focus 1
     out = file_blocks([_edit(1, "a_long_file_name.py")], {1: EDIT}.get, 12, more_hint=True, number=1)
     assert out and all(cell_len(t.plain) <= 11 for t in out)
 
+def test_an_indented_line_keeps_its_indent():
+    detail = "--- before\n+++ after\n@@ -1 +1 @@\n+        return 1"
+    out = file_blocks([_edit(1, "a.py")], {1: detail}.get, 80, more_hint=True, number=1)
+    assert out[1].plain == "          +         return 1"  # indent, marker, one space, then the 8 original spaces
+
+def test_a_tab_expands_to_spaces_not_a_question_mark():
+    detail = "--- before\n+++ after\n@@ -1 +1 @@\n+\treturn 1"
+    out = file_blocks([_edit(1, "a.py")], {1: detail}.get, 80, more_hint=True, number=1)
+    assert out[1].plain == "          +     return 1"
+
 def test_wide_chars_and_escapes_stay_inside_the_width():  # Review Focus 3
     detail = "--- before\n+++ after\n@@ -1 +1 @@\n+" + "漢字" * 40 + "\t\x1b[2J"
     out = file_blocks([_edit(1, "a.py")], {1: detail}.get, 40, more_hint=True, number=1)

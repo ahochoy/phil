@@ -12,6 +12,9 @@ from rich.text import Text
 from phil.ui.bursts import one_line
 
 
+NARROW = 10  # under this many cells beside the indent and lead, a wrapped line stops hanging
+
+
 def _chunks(text: str, room: int) -> list[str]:
     """`text` broken at spaces into pieces of at most `room` cells; a word longer than that is cut."""
     lines: list[str] = []
@@ -41,11 +44,17 @@ def _chunks(text: str, room: int) -> list[str]:
 def hanging(text: str, width: int, *, indent: str, lead: str = "", style: str = "") -> list[Text]:
     """`text` wrapped to `width` as plain `Text` lines (never `Padding`: the frame selects `Text`).
     The first line is `indent + lead + text`; the rest are indented by `indent` and spaces the
-    width of `lead`. Every line is at most `width - 1` cells. Hidden characters show as `?`."""
+    width of `lead`; when that leaves under NARROW cells, the later lines have neither and use the
+    whole width. Every line is at most `width - 1` cells. Hidden characters show as `?`."""
     first, rest = indent + lead, indent + " " * cell_len(lead)
+    flat = one_line(text)
     room = max(1, width - 1 - cell_len(first))
-    return [Text((first if n == 0 else rest) + chunk, style=style)
-            for n, chunk in enumerate(_chunks(one_line(text), room))]
+    if width - 1 - cell_len(rest) >= NARROW:
+        return [Text((first if n == 0 else rest) + chunk, style=style) for n, chunk in enumerate(_chunks(flat, room))]
+    head = _chunks(flat, room)[:1]  # too narrow to hang: the first line only, the rest at full width
+    lines = [Text(first + chunk, style=style) for chunk in head]
+    tail = flat[len(head[0]):].lstrip(" ") if head else ""
+    return lines + [Text(chunk, style=style) for chunk in _chunks(tail, max(1, width - 1))]
 
 
 def _is_blank(objects: tuple[Any, ...]) -> bool:

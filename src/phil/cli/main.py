@@ -567,13 +567,13 @@ def _drive_chats(
             target = ChatSession.open(paths, outcome.switch_to)
             target.lock()
         except (ValueError, FileNotFoundError) as exc:
-            out.print(f"[phil.error]cannot reopen: {escape(str(exc))}[/]")
+            controller.console.print(f"[phil.error]cannot reopen: {escape(str(exc))}[/]")
             target = None
         except ChatLocked as exc:
-            out.print(_locked_line(outcome.switch_to, exc.pid))
+            controller.console.print(_locked_line(outcome.switch_to, exc.pid))
             target = None
         if target is None:
-            out.print(f"[phil.muted]Staying in chat {escape(previous.id)}.[/]")
+            controller.console.print(f"[phil.muted]Staying in chat {escape(previous.id)}.[/]")
             try:
                 previous.lock()
             except ChatLocked as exc:  # another window took it meanwhile: said once the frame has closed

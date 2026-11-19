@@ -14,6 +14,7 @@ from phil.store.db import connect, utcnow
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
+from phil.ui.blocks import BlockConsole
 from phil.ui.theme import make_console
 from tests.run.conftest import bad_green, calc_plan, review, tester_report, write_green, write_red
 
@@ -114,6 +115,26 @@ def test_render_event_handles_the_spawn_kind_without_raising():
     text = console.export_text()
     assert "4242" in text
     assert "resume" in text
+
+
+def test_render_event_shows_hidden_characters_in_an_escalation_error_as_question_marks():
+    console = make_console(record=True, width=120)
+    render_event(console, {"kind": "escalation", "escalation": {"summary": "paused", "error": "bad\x1b[2Jthing"}})
+    text = console.export_text()
+    assert "\x1b" not in text and "bad?[2Jthing" in text
+
+
+def test_node_state_and_worker_lines_join_the_block_above_them():
+    console = make_console(record=True, width=120)
+    blocks = BlockConsole(console)
+    blocks.print("▸ CALC-001 Add subtract")
+    render_event(blocks, {"kind": "node", "node": "tester"})
+    render_event(blocks, {"kind": "state", "state": "running"})
+    render_event(blocks, {"kind": "worker", "pid": 7, "mode": "start"})
+    render_event(blocks, {"kind": "spawn", "pid": 8, "mode": "resume"})
+    render_event(blocks, {"kind": "outcome", "status": "completed"})
+    lines = console.export_text().splitlines()
+    assert "" not in lines and len(lines) == 6, lines
 
 
 def test_render_event_prints_the_budget_warning_line():
