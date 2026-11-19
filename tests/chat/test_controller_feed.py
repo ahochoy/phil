@@ -583,7 +583,26 @@ def test_a_commands_lines_are_one_block_spaced_from_the_typed_line(calc_repo):
     status = "calc @ main\nmodel: not set\nrun: no run\n0 parked\n"
     # Each typed /status is above its block (on the terminal, not in this console): one blank line
     # after it, none inside the block, and never two in a row.
-    assert text == f"\n{status}\n{status}"
+    assert text == f"\n{status}\n\n{status}\n"  # each prompt (not in this console) has a blank above it
+
+
+def test_one_blank_line_between_a_block_and_the_inline_prompt_below_it(calc_repo):
+    status = "calc @ main\nmodel: not set\nrun: no run\n0 parked\n"
+    seen = []
+    run_chat(calc_repo, ["/status", lambda controller: seen.append(controller.console.export_text())], {})
+    assert seen == [f"\n{status}\n"]  # the block, then one blank line, then the prompt
+
+
+def test_no_blank_line_before_the_prompt_in_the_frame(calc_repo):
+    """The frame's echo has its own top margin: a blank line before the prompt would double it."""
+    seen = []
+
+    def prompt_with_frame(controller):
+        controller.io.task_output = object()  # what marks the full-screen frame
+        return "/status"
+
+    run_chat(calc_repo, [prompt_with_frame, lambda controller: seen.append(controller.console.export_text())], {})
+    assert seen == ["\ncalc @ main\nmodel: not set\nrun: no run\n0 parked\n"]
 
 
 def test_a_hidden_burst_hides_its_blank_line_too(controller_with_run):

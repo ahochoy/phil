@@ -119,6 +119,16 @@ def test_resume_leaves_the_reopened_chat_out_of_the_reminder(calc_repo):
     assert f"phil --resume {newer}" not in result.output
 
 
+def test_one_blank_line_between_the_banner_and_the_chats_first_block(calc_repo):
+    paths = _add_run(calc_repo, "r-0001", "running", "completed")
+    chat = ChatSession.create(paths)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "--resume", chat.id], input="")
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    reopened = next(n for n, line in enumerate(lines) if line.startswith(f"Reopened {chat.id}"))
+    assert lines[reopened - 1] == "" and lines[reopened - 2] != "", lines[:reopened + 1]
+
+
 def test_base_shows_the_ref_and_no_uncommitted(calc_repo):
     _add_run(calc_repo, "r-0001", "running", "completed")
     (calc_repo / "scratch.txt").write_text("dirty\n", encoding="utf-8", newline="\n")

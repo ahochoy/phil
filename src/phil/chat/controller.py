@@ -847,6 +847,10 @@ class ChatController:
                     self._settled = None  # only a retry's settled line waits past its own answer
                 decision = self._decision() if self.io.choose is not None else None
                 settled, waits = None, False
+                if self.io.task_output is None:
+                    # Inline, the prompt (and a docked menu) is a block too: one blank line above it.
+                    # The frame's echoed line has its own top margin instead.
+                    self.console.blank()
                 if decision is not None:
                     raw = self.io.choose(self._prompt(), decision)
                     if raw is TYPE:
