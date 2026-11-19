@@ -95,6 +95,52 @@ def test_live_line_grows_with_sub_agents_and_shrinks_back():
     pilot_run(io.app, script)
 
 
+def test_a_view_that_raises_is_logged_and_the_next_tick_renders(caplog):
+    io = ScreenIO()
+    calls = []
+
+    def view():
+        calls.append(1)
+        if len(calls) == 2:
+            raise ValueError("bad view")
+        return _view()
+
+    io.set_view(view)
+
+    async def script(pilot):
+        live = _live(io)
+        await until(pilot, lambda: len(calls) >= 3 and live.display)
+        await pilot.pause()
+        assert io.app.is_running and "task 2/3" in _rows(io)[0]
+        assert any("bad view" in str(r.exc_info) for r in caplog.records if r.name.startswith("phil.ui.screen"))
+
+    with caplog.at_level(logging.ERROR):
+        pilot_run(io.app, script)
+    assert not io.app.return_code
+
+
+def test_an_idle_tick_does_not_relayout():
+    io = ScreenIO()
+    io.set_view(_view)
+    layouts = []
+
+    async def script(pilot):
+        live = _live(io)
+        await until(pilot, lambda: live.display)
+        original = live.refresh
+
+        def refresh(*args, **kwargs):
+            layouts.append(kwargs.get("layout", False))
+            return original(*args, **kwargs)
+
+        live.refresh = refresh  # type: ignore[method-assign]
+        live.tick()
+        live.tick()
+        assert layouts and not any(layouts)
+
+    pilot_run(io.app, script)
+
+
 def test_live_line_keeps_to_one_row_while_a_menu_shows():
     io = ScreenIO()
     now = time.time()

@@ -112,8 +112,7 @@ class PhilApp(App, inherit_bindings=False):
         self._pending: list[Callable[[], None]] = []
         self._entry_loop: asyncio.AbstractEventLoop | None = None  # not `_loop`: App has its own
         self._pane_width: int | None = None  # set on the app's thread as the conversation resizes
-        self._tasks: dict[str, TaskBlock] = {}  # each task's block (app thread only)
-        self._subs: set[tuple[str, int]] = set()  # the sub-agents announced, by (task, seq)
+        self._tasks: dict[str, TaskBlock] = {}  # each task id's latest block (app thread only)
 
     def compose(self) -> ComposeResult:
         yield HeaderBar(id="header")
@@ -189,7 +188,13 @@ class PhilApp(App, inherit_bindings=False):
         self._call(lambda: self.query_one(HeaderBar).set_header(repo, branch, chat_id))
 
     def clear_conversation(self) -> None:
-        self._call(lambda: self.query_one(Conversation).clear())
+        """Empty the conversation; tasks after it start new blocks."""
+
+        def apply() -> None:
+            self._tasks.clear()
+            self.query_one(Conversation).clear()
+
+        self._call(apply)
 
     def set_prompt(self, label: str) -> None:
         """Show what is being asked on the input box's border (never as text in the box)."""
@@ -237,7 +242,8 @@ class PhilApp(App, inherit_bindings=False):
         self._call(self.exit)
 
     def task_started(self, task: str, band: RenderableType) -> None:
-        """A new block for `task`, headed by `band`, at the end of the conversation."""
+        """A new block for `task`, headed by `band`, at the end of the conversation (always new: a
+        later run reusing the id starts its own block; earlier ones stay as they are)."""
 
         def apply() -> None:
             block = self._tasks[task] = TaskBlock(band)
@@ -250,14 +256,9 @@ class PhilApp(App, inherit_bindings=False):
         self._call(lambda: self._add_task_line(task, line))
 
     def sub_agent(self, task: str, seq: int, description: str) -> None:
-        """`└ sub-agent  <description>` in `task`'s block, once per (task, seq)."""
-
-        def apply() -> None:
-            if (task, seq) not in self._subs:
-                self._subs.add((task, seq))
-                self._add_task_line(task, Text(f"└ sub-agent  {description}", style="phil.sub"))
-
-        self._call(apply)
+        """`└ sub-agent  <description>` in `task`'s block. The controller announces each sub-agent
+        once per run, so every call shows."""
+        self._call(lambda: self._add_task_line(task, Text(f"└ sub-agent  {description}", style="phil.sub")))
 
     def task_done(self, task: str, folded: RenderableType) -> None:
         """Fold `task`'s block to the one line `folded`."""

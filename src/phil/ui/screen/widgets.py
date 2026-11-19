@@ -1,5 +1,6 @@
 """The full-screen frame's widgets (the tree is in `app.py`'s `PhilApp.compose`)."""
 
+import logging
 import time
 from collections.abc import Callable
 
@@ -20,6 +21,8 @@ from phil.ui.callout import callout_lines, to_rich
 from phil.ui.fragments import to_text
 from phil.ui.screen.themed import Themed
 from phil.ui.toolbar import render_frame_live
+
+_log = logging.getLogger(__name__)
 
 
 class HeaderBar(Static):
@@ -227,13 +230,24 @@ class LiveLine(Widget):
         self.tick()
 
     def tick(self) -> None:
-        view = self._view()
-        self._snapshot = None if view is None else (view, time.time())
-        self._lines = None
-        # Hidden, it has no width: lay out at the screen's, less the padding, to see if it shows.
-        width = self.content_size.width or self.app.size.width - self.styles.gutter.width
-        self.display = bool(self._rows(max(width, 1)))
-        self.refresh(layout=True)
+        """Take a fresh view and redraw; a re-layout only when the row count (or showing) changes.
+        A view or render that fails is logged and the last good rows stay (it runs on a timer, where
+        an exception would end the app)."""
+        before = (self._snapshot, self._lines)
+        shown = len(self._lines[1]) if self.display and self._lines is not None else 0
+        try:
+            view = self._view()
+            self._snapshot = None if view is None else (view, time.time())
+            self._lines = None
+            # Hidden, it has no width: lay out at the screen's, less the padding, to see if it shows.
+            width = self.content_size.width or self.app.size.width - self.styles.gutter.width
+            rows = len(self._rows(max(width, 1)))
+        except Exception:
+            _log.exception("the live line's view failed")
+            self._snapshot, self._lines = before
+            return
+        self.display = rows > 0
+        self.refresh(layout=rows != shown)
 
     def _rows(self, width: int) -> list[Text]:
         if self._snapshot is None:

@@ -91,8 +91,9 @@ def test_sub_agent_line_shows_once():
     io = ScreenIO()
 
     async def script(pilot):
+        # The controller announces each (task, seq) once per run (`_announced_subs`); the frame
+        # shows each announcement as one line.
         io.task_started("t1", BAND)
-        io.sub_agent("t1", 1, "find theme")
         io.sub_agent("t1", 1, "find theme")
         io.sub_agent("t1", 2, "check tests")
         await until(pilot, lambda: _blocks(io) and len(_blocks(io)[0].lines) == 2)
@@ -100,6 +101,57 @@ def test_sub_agent_line_shows_once():
         lines = _blocks(io)[0].lines
         assert [item.renderable.plain for item in lines] == ["└ sub-agent  find theme", "└ sub-agent  check tests"]
         assert lines[0].renderable.style == "phil.sub"
+
+    pilot_run(io.app, script)
+
+
+def test_a_later_run_reusing_a_task_id_gets_a_new_block_with_its_sub_agents():
+    io = ScreenIO()
+
+    async def script(pilot):
+        for run in ("first", "second"):
+            io.task_started("Task 1", Text(f"▶ Task 1 · {run}"))
+            io.sub_agent("Task 1", 1, f"{run} helper")
+            io.task_done("Task 1", Text(f"✓ Task 1 · {run} · done"))
+        io.task_line("Task 1", Text("  after both"))
+        await until(pilot, lambda: len(_blocks(io)) == 2 and len(_blocks(io)[1].lines) == 1)
+        await pilot.pause()
+        first, second = _blocks(io)
+        assert first.folded and first.header.renderable.plain == "✓ Task 1 · first · done"
+        assert second.header.renderable.plain == "▶ Task 1 · second"      # opened again by the line
+        assert [item.renderable.plain for item in second.lines] == ["  after both"]
+
+    pilot_run(io.app, script)
+
+
+def test_each_run_shows_its_sub_agent_line():
+    io = ScreenIO()
+
+    async def script(pilot):
+        io.task_started("Task 1", Text("▶ Task 1 · first"))
+        io.sub_agent("Task 1", 1, "first helper")
+        io.task_started("Task 1", Text("▶ Task 1 · second"))
+        io.sub_agent("Task 1", 1, "second helper")
+        await until(pilot, lambda: len(_blocks(io)) == 2 and all(b.lines for b in _blocks(io)))
+        first, second = _blocks(io)
+        assert [item.renderable.plain for item in first.lines] == ["└ sub-agent  first helper"]
+        assert [item.renderable.plain for item in second.lines] == ["└ sub-agent  second helper"]
+
+    pilot_run(io.app, script)
+
+
+def test_a_line_after_clear_conversation_shows_in_a_new_block():
+    io = ScreenIO()
+
+    async def script(pilot):
+        io.task_started("Task 1", BAND)
+        io.task_line("Task 1", Text("  before"))
+        await until(pilot, lambda: _blocks(io) and _blocks(io)[0].lines)
+        io.app.clear_conversation()
+        io.task_line("Task 1", Text("  after"))
+        await until(pilot, lambda: len(_blocks(io)) == 1 and _blocks(io)[0].header.renderable.plain == "Task 1")
+        await pilot.pause()
+        assert [item.renderable.plain for item in _blocks(io)[0].lines] == ["  after"]
 
     pilot_run(io.app, script)
 
