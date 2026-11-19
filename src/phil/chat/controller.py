@@ -42,6 +42,7 @@ from phil.chat.decision import (
     approach_decision,
     approval_decision,
     approval_lines,
+    chat_picker_decision,
     conversation_decision,
     fix_decision,
     pause_decision,
@@ -57,7 +58,7 @@ from phil.chat.design import propose_approaches
 from phil.chat.events import ChatEvent
 from phil.chat.overview import repo_overview
 from phil.chat.planning import Planner, PlanDraft, PlanningBudgetExceeded, converse, intake, quick_plan
-from phil.chat.session import ChatSession
+from phil.chat.session import ChatSession, ChatSummary, list_open_chats
 from phil.chat.session import failed_goal as _failed_goal
 from phil.chat.snapshot import export_tree, export_worktree
 from phil.chat.state import ChatState, LiveStep, RunView, SideJob, SubAgent
@@ -113,10 +114,18 @@ from phil.text import printable
 from phil.store.paths import ProjectPaths, global_policy_path
 from phil.store.parked import open_count, park
 from phil.store.runs import get_run, list_runs
-from phil.store.telemetry import budget_warning_line, chat_cost_since, chat_usage, last_telemetry_id, run_totals
+from phil.store.telemetry import (
+    budget_warning_line,
+    chat_cost_since,
+    chat_usage,
+    format_cost,
+    last_telemetry_id,
+    run_totals,
+)
 from phil.tomlw import toml_value
 from phil.ui.answer_view import render_answer
 from phil.ui.brief_view import render_brief
+from phil.ui.chats_view import open_chat_line
 from phil.ui.callout import failure_lines, overflows, to_rich
 from phil.ui.bursts import FeedItem, one_line
 from phil.ui.feed_view import FeedRenderer
@@ -125,7 +134,7 @@ from phil.ui.plan_view import _clip, render_goal, render_plan, render_steps
 from phil.ui.runs import label_for
 from phil.ui.runs_view import render_runs
 from phil.ui.show_view import detail_text, render_show, show_refs
-from phil.ui.toolbar import _fit, short_model
+from phil.ui.toolbar import _fit, _run_cost, _run_segment, short_model, toolbar_text
 
 logger = logging.getLogger(__name__)  # the chat sends `phil` loggers to its phil.log, never the console
 
@@ -157,6 +166,9 @@ HELP_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/memory", "what Phil remembers about this repo"),
     ("/remember <fact>", "add a fact to Phil's memory"),
     ("/forget <n>", "remove line n of Phil's memory"),
+    ("/chat", "reopen another open chat"),
+    ("/status", "repo, model, run and cost"),
+    ("/copy", "copy Phil's last reply"),
     ("/help", "this list"),
     ("/quit", "leave the chat (or Ctrl-D)"),
 )
@@ -184,6 +196,7 @@ PROMPTS = {
     "choose_approach": "Pick an approach [Enter = 1 / number / describe your own] › ",
     "trust_repo": "Trust phil.toml's settings? [trust / ignore] › ",
     "confirm_agents_md": "[y / n] › ",
+    "pick_chat": "Reopen which chat? [number / Enter to stay] › ",
 }
 MEMORY_TRY = "Try /memory, /memory edit, /memory suggestions, /memory apply or /memory dismiss."
 LEFT_AGENTS_MD = "Left AGENTS.md as it is."
@@ -277,6 +290,14 @@ class ChatIO:
     choose: Callable[[str, Decision], object] | None = None
     prefill: Callable[[str], None] = lambda text: None  # put text in the next prompt, to edit or send
     task_output: TaskOutput | None = None  # the full-screen frame takes a run's task feed; None prints it
+    copy: Callable[[str], bool] | None = None  # text -> True when copied to the clipboard; None: no clipboard
+
+
+@dataclass(frozen=True)
+class ChatOutcome:
+    """What `ChatController.run()` ends with: the chat to switch to (`/chat`), or None to just leave."""
+
+    switch_to: str | None = None
 
 
 class ChatController:
@@ -305,8 +326,14 @@ class ChatController:
         pr_check_interval_s: float = PR_CHECK_INTERVAL_S,
         start_pr_monitor: bool = True,
         config_overrides: Sequence[str] = (),
+        pick_chat: bool = False,
     ) -> None:
         self.info, self.config, self.conn, self.console, self.io = info, config, conn, console, io
+        self._pick_chat = pick_chat  # start in the /chat picker (`phil chat`)
+        self._picker_chats: list[ChatSummary] = []  # the picker's chats, in the order it lists them
+        self._picker_return = "idle"  # the stage /chat came from
+        self._switch_to: str | None = None  # the chat the user picked
+        self._last_reply: str | None = None  # Phil's last reply, for /copy
         # The chat's `--set` overrides: applied again whenever the config is reloaded, and kept by its runs.
         self._config_overrides = tuple(config_overrides)
         # `conn` belongs to the main thread; each job opens its own connection to this database.
@@ -653,6 +680,11 @@ class ChatController:
             return approach_decision([(a.name, a.summary) for a in self._approach_order])
         if stage == "approval":
             return approval_decision()
+        if stage == "pick_chat" and self._picker_chats:
+            return chat_picker_decision([
+                (open_chat_line(n, chat, self.console.width).plain.split(". ", 1)[1], chat.id)
+                for n, chat in enumerate(self._picker_chats, 1)
+            ])
         if stage == "trust_repo" and self._trust is not None:
             rules, labels, pass_env, bash = self._trust_parts(self._trust)
             decision = repo_shell_decision(self.info.root.name, rules, labels, pass_env, bash)
@@ -729,6 +761,8 @@ class ChatController:
                 stage = "approval"  # a reopened chat asks about phil.toml again before approval
             elif stage == "conversing":
                 stage = "conversation"  # a reopened chat sends the unanswered turn again
+            elif stage == "pick_chat":
+                stage = self._picker_return  # the picker is never reopened
             draft = self._draft
             planner_calls, planner_version = self.planner.counters()
             self.session.save_state(
@@ -780,7 +814,7 @@ class ChatController:
 
     # --- the loop --------------------------------------------------------------------------------
 
-    def run(self) -> None:
+    def run(self) -> ChatOutcome:
         try:
             self._report_policy_problems()
             if self._resume:
@@ -789,7 +823,10 @@ class ChatController:
             self._refresh_parked()
             if self._start_pr_monitor:
                 self._start_pr_monitor_thread()
+            if self._pick_chat:
+                self._chat_command(start=True)
             self._loop()
+            return ChatOutcome(switch_to=self._switch_to)
         finally:
             self._stop_pr_monitor()
             self._stop_watcher()
@@ -813,7 +850,8 @@ class ChatController:
                         option = next((o for o in decision.options if o.answer == raw), None)
                         # A clarifying question's answer leaves its record line instead (_answers; R21).
                         recorded = option is not None and self._records_answer(option.answer)
-                        if option is not None and not option.typed and not recorded:  # a typed option's answer comes next
+                        picking = self.stage == "pick_chat"  # the picker leaves no line: staying prints nothing
+                        if option is not None and not option.typed and not recorded and not picking:  # a typed option's answer comes next
                             settled = settled_line(decision, option)
                             # An approved plan settles once its run starts; a pause once its resume is sent.
                             waits = decision.kind in ("pause", "approval") or (
@@ -831,6 +869,8 @@ class ChatController:
                 if raw is None or not self._input(raw):
                     self._closing()
                     return
+                if self._switch_to is not None:
+                    return  # the user picked another chat: run() hands it back
             except KeyboardInterrupt:
                 self._interrupt()
             except Exception as exc:  # agent, provider, or command failure: report and keep the chat alive
@@ -894,6 +934,8 @@ class ChatController:
             self._choose_approach(text)
         elif stage == "approval":
             self._approval(text)
+        elif stage == "pick_chat":
+            self._pick_chat_answer(text)
         elif stage == "trust_repo":
             self._trust_answer(text)
         elif stage == "edit":
@@ -949,6 +991,12 @@ class ChatController:
             self._remember_command(text[len(command):].strip())
         elif command == "/forget":
             self._forget_command(text[len(command):].strip())
+        elif command == "/chat":
+            self._chat_command()
+        elif command == "/status":
+            self._status_command()
+        elif command == "/copy":
+            self._copy_command()
         elif command == "/go":
             if self.stage == "conversation":
                 self._turn_job(must_decide=True)
@@ -1159,6 +1207,7 @@ class ChatController:
         task_class = judgement.task_class if judgement else None
         self._safe_note("answer", text=answer.text, files=answer.files, task_class=task_class)
         render_answer(self.console, answer)
+        self._last_reply = answer.text
         self._recent.append(f"phil: {answer.text[:TURN_CHARS]}")
         self._reset_goal()
         # A forced /ask has no class: the answerer says whether its answer was a diagnosis.
@@ -1481,6 +1530,7 @@ class ChatController:
         self._turns.append(ConverseTurn(speaker="phil", text=turn.reply, choices=turn.choices))
         self._recent.append(f"phil: {turn.reply[:TURN_CHARS]}")
         self.console.print(escape(turn.reply))
+        self._last_reply = turn.reply
         held, self._held_input = self._held_input, []
         go, self._go_pending = self._go_pending, False
         if turn.ready and not held:
@@ -2441,6 +2491,64 @@ class ChatController:
         self._set_stage("running")
         self.console.print(f"Continuing [phil.id]{escape(self._label(run_id))}[/] from its last checkpoint.")
         self._follow()
+
+    # --- /chat, /status, /copy --------------------------------------------------------------------
+
+    def _chat_command(self, *, start: bool = False) -> None:
+        """Offer the other open chats (not this one, not one open in another window)."""
+        chats = [
+            chat for chat in list_open_chats(ProjectPaths(self.info.slug), self.conn)
+            if chat.id != self.session.id and not chat.open_elsewhere
+        ]
+        if not chats:
+            self.console.print("No open chats; starting a new one." if start else "No other open chats.")
+            return
+        self._picker_chats = chats
+        if self.stage != "pick_chat":
+            self._picker_return = self.stage
+        self._set_stage("pick_chat")
+
+    def _pick_chat_answer(self, text: str) -> None:
+        """The picker's answer: a chat id (picked, or its number or id typed), or nothing/`stay`."""
+        chats = self._picker_chats
+        chat = next((c for c in chats if c.id == text), None)
+        if chat is None and text.isdigit() and 1 <= int(text) <= len(chats):
+            chat = chats[int(text) - 1]
+        if chat is None and text and text != "stay":
+            self.console.print("[phil.muted]Pick a number from the list, or press Enter to stay.[/]")
+            return
+        self._set_stage(self._picker_return)  # saves the stage the chat came from, never "pick_chat"
+        if chat is not None:
+            self._switch_to = chat.id
+
+    def _status_command(self) -> None:
+        view = self.state.view()
+        lines = [f"{view.repo or self.info.root.name} @ {view.branch or '?'}"]
+        lines.append(f"model: {view.model[0]}·{view.model[1]}" if view.model else "model: not set")
+        if view.run is not None:
+            run = toolbar_text(_run_segment(view.run).fragments)
+            cost = _run_cost(view)
+            lines.append(f"run: {run}" + (f" · {cost[1]}" if cost else ""))
+        else:
+            lines.append("run: no run")
+        if view.cost is not None:
+            lines.append(f"chat {format_cost(*view.cost)}")
+        lines.append(f"{view.parked} parked")
+        for line in lines:
+            self.console.print(Text(line, style="phil.muted"))
+
+    def _copy_command(self) -> None:
+        if not self._last_reply:
+            self.console.print("Nothing to copy yet.")
+            return
+        try:
+            copied = self.io.copy is not None and self.io.copy(self._last_reply)
+        except Exception:
+            copied = False
+        if copied:
+            self.console.print("Copied Phil's last reply.")
+        else:
+            self.console.print("Copy isn't available here; select the text instead.")
 
     # --- /show, /more, /park ----------------------------------------------------------------------
 

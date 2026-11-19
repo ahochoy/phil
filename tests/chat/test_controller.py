@@ -29,7 +29,8 @@ class ManualWatcher(RunWatcher):
 
 
 def run_chat(
-    repo, answers, scripts, config=None, submit=None, wake=None, choose=False, calls=None, spawn=None, usage=None, **kw
+    repo, answers, scripts, config=None, submit=None, wake=None, choose=False, calls=None, spawn=None, usage=None,
+    copy=None, **kw
 ):
     """Drive a chat. Script items are strings, None (EOF), or callables `(controller) -> str | None | WAKE`.
 
@@ -66,7 +67,7 @@ def run_chat(
         if spawn is not None:
             spawn(root, run_id, mode, decision)
 
-    io = ChatIO(ask=ask, spawn=spawn_one, prefill=lambda text: calls.append(("prefill", text)))
+    io = ChatIO(ask=ask, spawn=spawn_one, prefill=lambda text: calls.append(("prefill", text)), copy=copy)
     if choose:
         io.choose = choose_one
     if submit is not None:
@@ -86,7 +87,7 @@ def run_chat(
     controller = ChatController(info, config, conn, console, io, factory=factory, **kw)
     holder["controller"] = controller
     controller.run()
-    return console.export_text(), spawned, list_runs(conn), factory, holder["prompts"]
+    return console.export_text(), spawned, list_runs(conn), factory, holder.get("prompts", [])
 
 
 def test_goal_to_approved_run(calc_repo):

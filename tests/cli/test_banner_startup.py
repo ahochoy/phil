@@ -11,6 +11,7 @@ from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import create_run, update_run
 from phil.ui.banner import FIRST_TIPS
+from phil.ui.chats_view import open_chat_line
 from tests.cli.test_chat_command import _FakeTerminal, _plain
 
 runner = CliRunner()
@@ -186,7 +187,7 @@ def test_each_open_chat_row_says_what_it_waits_on_and_how_long_ago(calc_repo):
                     active_at=now - timedelta(minutes=2), run_name="divide-op"),
         ChatSummary("c-6", None, "idle", "r-0002", None),  # an unreadable time leaves the age out
     ]
-    assert [cli._open_chat_line(n, chat, 200, now=now).plain for n, chat in enumerate(rows, 1)] == [
+    assert [open_chat_line(n, chat, 200, now=now).plain for n, chat in enumerate(rows, 1)] == [
         "1. r-4f1c · run failed · 12 days ago · Add a CTA section",
         "2. planning failed · 1 hour ago · Add an about the owner section",
         "3. answer failed · yesterday · Explain the build",

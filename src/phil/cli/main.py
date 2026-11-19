@@ -44,6 +44,7 @@ from phil.text import printable
 from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, get_run, list_runs, update_run
 from phil.tomlw import toml_value
+from phil.ui.chats_view import open_chat_line
 from phil.ui.links import opened_pr_line
 from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
@@ -185,40 +186,11 @@ def _terminal(toolbar, live_row=None):
     return TerminalIO(toolbar, live_row=live_row)
 
 
-def _open_chat_line(n: int, chat, width: int, *, now: datetime | None = None) -> Text:
-    """`n. what it waits on · how long ago · goal`, cut to the width with … (spec 2026-10-16 §6.2).
-    What it waits on: its run (`label · run failed`), a goal an error stopped (`planning failed`), or
-    a plan (`plan to approve`). `open elsewhere` sits before the goal so a cut can't hide it (R23)."""
-    from phil.ui.runs import label_for
-    from phil.ui.when import ago
-
-    line = Text(f"{n}. ")
-    if chat.failed:
-        line.append(f"{chat.failed} failed", "phil.warn")
-        line.append(" · ")
-    elif chat.run_id:
-        line.append(label_for(chat.run_id, chat.run_name, first=False), "phil.id")
-        line.append(f" · run {chat.run_state or 'unknown'} · ")
-    elif chat.stage == "approval":
-        line.append("plan to approve · ")
-    if chat.active_at is not None:
-        line.append(f"{ago(chat.active_at, now or datetime.now(UTC))} · ", "phil.muted")
-    if chat.open_elsewhere:
-        line.append("open elsewhere", "phil.warn")
-        line.append(" · ")
-    if chat.objective:
-        line.append(printable(chat.objective))
-    else:
-        line.append("(no goal)", "phil.muted")
-    line.truncate(max(width - 1, 1), overflow="ellipsis")
-    return line
-
-
 def _choose_open_chat(out, chats, ask) -> str | None:
     """List open chats and ask which to reopen; None starts a new chat."""
     out.print("Open chats:")
     for n, chat in enumerate(chats, 1):
-        out.print(_open_chat_line(n, chat, out.width), soft_wrap=True)
+        out.print(open_chat_line(n, chat, out.width), soft_wrap=True)
     while True:
         try:
             answer = ask("Reopen one? [number / Enter for a new chat] › ")
