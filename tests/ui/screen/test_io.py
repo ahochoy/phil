@@ -60,6 +60,7 @@ def test_typing_before_ask_is_queued():
         await pilot.press(*"early", "enter")
         await until(pilot, lambda: _box(io).text == "")
         await pilot.pause()
+        assert not io.asking and list(io._lines) == ["early"]   # queued while busy
         go.set()
         await until(pilot, lambda: got)
         assert got == ["early"]
@@ -194,6 +195,7 @@ def test_ctrl_c_while_busy_raises_at_next_ask():
         io.start(fn)
         await pilot.press("ctrl+c")
         await pilot.pause()
+        assert not io.asking and io._interrupt_held       # held while busy
         go.set()
         await until(pilot, lambda: got)
         assert got == ["interrupted"]
@@ -203,6 +205,84 @@ def test_ctrl_c_while_busy_raises_at_next_ask():
         assert got == ["interrupted", "ok"]
 
     pilot_run(io.app, script)
+
+
+def test_ctrl_c_drops_lines_typed_ahead():
+    io, chat = _io()
+    go = threading.Event()
+    got = []
+
+    def fn():
+        go.wait(5)
+        try:
+            chat.ask("you › ")
+        except KeyboardInterrupt:
+            got.append("interrupted")
+        got.append(chat.ask("you › "))
+
+    async def script(pilot):
+        io.start(fn)
+        await pilot.press(*"fix the tests", "enter")
+        await until(pilot, lambda: list(io._lines) == ["fix the tests"])
+        await pilot.press(*"draft", "ctrl+c")
+        await pilot.pause()
+        assert not io.asking and io._interrupt_held and not io._lines
+        go.set()
+        await until(pilot, lambda: got == ["interrupted"])
+        await until(pilot, lambda: io.asking)
+        await pilot.pause()
+        assert got == ["interrupted"]                   # the cancelled line is gone: ask blocks
+        assert _box(io).text == "draft"                 # text still in the box is untouched
+        await pilot.press("enter")
+        await until(pilot, lambda: len(got) == 2)
+        assert got == ["interrupted", "draft"]
+
+    pilot_run(io.app, script)
+
+
+def test_ctrl_c_keeps_a_queued_eof():
+    io, chat = _io()
+    go = threading.Event()
+    got = []
+
+    def fn():
+        go.wait(5)
+        try:
+            chat.ask("you › ")
+        except KeyboardInterrupt:
+            got.append("interrupted")
+        got.append(chat.ask("you › "))
+
+    async def script(pilot):
+        io.start(fn)
+        await pilot.press(*"x", "enter", "ctrl+d", "ctrl+c")
+        await until(pilot, lambda: io._interrupt_held)
+        go.set()
+        await until(pilot, lambda: len(got) == 2)
+        assert got == ["interrupted", None]
+
+    pilot_run(io.app, script)
+
+
+def test_queued_lines_are_not_delivered_after_the_frame_closes():
+    io, chat = _io()
+    go = threading.Event()
+    got = []
+    futures = []
+
+    def fn():
+        go.wait(5)
+        got.append(chat.ask("you › "))
+
+    async def script(pilot):
+        futures.append(io.start(fn))
+        await pilot.press(*"late", "enter")
+        await until(pilot, lambda: list(io._lines) == ["late"])
+
+    pilot_run(io.app, script)
+    go.set()
+    futures[0].result(timeout=5)
+    assert got == [None]
 
 
 def test_held_interrupt_is_dropped_at_exit():         # Review Focus 3
@@ -414,6 +494,24 @@ def test_run_reraises_fn_exception_after_exit():
             order.append("raised")
     assert order == ["app returned", "raised"]
     assert not io.app.is_running
+
+
+def test_run_raises_when_the_frame_crashes(capfd):
+    io, chat = _io()
+    order = []
+    _headless(io, order)
+
+    def boom():
+        raise ValueError("handler failed")
+
+    def fn():
+        io.app.call_from_thread(io.app.call_later, boom)
+        return chat.ask("you › ")                      # None once the crashed frame closes
+
+    with pytest.raises(RuntimeError, match="stopped unexpectedly") as caught:
+        io.run(fn)
+    assert isinstance(caught.value.__cause__, ValueError)
+    assert order == ["app returned"] and not io.app.is_running
 
 
 def test_width_is_the_conversation_pane_content_width():

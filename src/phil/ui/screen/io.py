@@ -75,11 +75,11 @@ class ScreenIO:
                     if self._wake_pending:
                         self._wake_pending = False
                         return WAKE
+                    if self._closed:  # nothing typed is acted on once the frame is gone
+                        return None
                     if self._lines:
                         line = self._lines.popleft()
                         return None if line is _EOF else line
-                    if self._closed:
-                        return None
                     self._ready.wait()
             finally:
                 self._waiting -= 1
@@ -139,8 +139,14 @@ class ScreenIO:
         self._put(_EOF)
 
     def interrupt(self) -> None:
-        """Ctrl+C with no selection: raised at once from a blocked `ask`, else held for the next."""
+        """Ctrl+C with no selection: raised at once from a blocked `ask`, else held for the next.
+        Lines typed ahead are dropped (as the inline prompt drops them), so nothing the user just
+        cancelled runs after the interrupt; a queued EOF stays. The box's text is untouched."""
         with self._ready:
+            eof = _EOF in self._lines
+            self._lines.clear()
+            if eof:
+                self._lines.append(_EOF)
             self._interrupt_held = True
             self._ready.notify_all()
 
@@ -181,7 +187,9 @@ class ScreenIO:
 
     def run(self, fn: Callable[[], T]) -> T:
         """Run the app on this thread and `fn` on a worker started once the app mounts; return
-        `fn`'s value, or re-raise its exception, after the app has exited (terminal restored)."""
+        `fn`'s value, or re-raise its exception, after the app has exited (terminal restored).
+        If the app itself failed (a handler raised), raise `RuntimeError` chained to that failure
+        instead: the chat saw EOF, which is not a clean exit."""
         self._run_fn = fn
         try:
             self.app.run()
@@ -190,7 +198,13 @@ class ScreenIO:
                 self._interrupt_held = False
         if self._future is None:
             raise RuntimeError("the full-screen frame closed before the chat started")
-        return self._future.result()
+        try:
+            result = self._future.result()  # the chat finishes: a closed frame answers EOF
+        finally:
+            if self.app.return_code:
+                cause = getattr(self.app, "_exception", None)  # Textual keeps the first failure
+                raise RuntimeError("the full-screen chat stopped unexpectedly") from cause
+        return result
 
     def close(self) -> None:
         self.app.request_exit()
