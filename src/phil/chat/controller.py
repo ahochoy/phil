@@ -140,6 +140,9 @@ logger = logging.getLogger(__name__)  # the chat sends `phil` loggers to its phi
 
 WAKE = object()  # ChatIO.ask returns this when a background event interrupted the prompt
 TYPE = object()  # ChatIO.choose returns this when the user left the menu to type (Esc)
+# ChatIO.copy returns this when the text could only be sent to the terminal (OSC 52), which some
+# terminals ignore: not known to be on the clipboard.
+SENT_TO_TERMINAL = "sent-to-terminal"
 MAX_QUESTION_ROUNDS = 2
 SOMETHING_ELSE = "Something else (type it)"
 PLAN_NOW = "go"  # the answer that plans with what's known (decision.py's "Plan with what you know")
@@ -290,7 +293,8 @@ class ChatIO:
     choose: Callable[[str, Decision], object] | None = None
     prefill: Callable[[str], None] = lambda text: None  # put text in the next prompt, to edit or send
     task_output: TaskOutput | None = None  # the full-screen frame takes a run's task feed; None prints it
-    copy: Callable[[str], bool] | None = None  # text -> True when copied to the clipboard; None: no clipboard
+    # text -> True when copied to the clipboard, SENT_TO_TERMINAL, or False; None: no clipboard
+    copy: Callable[[str], bool | str] | None = None
 
 
 @dataclass(frozen=True)
@@ -2558,7 +2562,12 @@ class ChatController:
             copied = self.io.copy is not None and self.io.copy(self._last_reply)
         except Exception:
             copied = False
-        if copied:
+        if copied == SENT_TO_TERMINAL:
+            self.console.print(
+                "Sent Phil's last reply to the terminal's clipboard. Some terminals ignore this; "
+                "if it didn't arrive, select the text instead."
+            )
+        elif copied:
             self.console.print("Copied Phil's last reply.")
         else:
             self.console.print("Copy isn't available here; select the text instead.")

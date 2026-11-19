@@ -124,6 +124,17 @@ def test_copy_says_it_copied(calc_repo):
     assert "Copied Phil's last reply." in text
 
 
+def test_copy_sent_only_to_the_terminal_says_so(calc_repo):
+    from phil.chat.controller import SENT_TO_TERMINAL
+
+    text, *_ = run_chat(
+        calc_repo, ["what does calc do?", "/copy"],
+        {"route": [route("question")], "answer": [Answer(text="It sums.")]}, copy=lambda text: SENT_TO_TERMINAL,
+    )
+    assert "Sent Phil's last reply to the terminal's clipboard." in flat(text)
+    assert "Copied Phil's last reply." not in text
+
+
 def test_copy_without_io_copy_says_so(calc_repo):
     text, *_ = run_chat(
         calc_repo, ["what does calc do?", "/copy"],

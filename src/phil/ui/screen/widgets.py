@@ -153,9 +153,11 @@ class NewMarker(Static):
         super().__init__("↓ new", **kwargs)
 
 
-class Conversation(VerticalScroll):
+class Conversation(VerticalScroll, can_focus=False):
     """The scrolling conversation: follows new output while at the bottom; when the user has
-    scrolled up, new output shows the `NewMarker` and the view stays where it is."""
+    scrolled up, new output shows the `NewMarker` and the view stays where it is. It never takes
+    focus (a click, a drag or Tab leaves the keys with the input box): the scroll keys are the
+    app's bindings, and a drag's selection is the screen's."""
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)

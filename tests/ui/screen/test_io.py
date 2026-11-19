@@ -388,17 +388,237 @@ def test_ctrl_c_with_a_selection_in_the_box_copies_it():
     pilot_run(io.app, script)
 
 
+def test_a_second_ctrl_c_after_a_copy_interrupts():
+    io, chat = _io()
+    got = []
+
+    def fn():
+        try:
+            got.append(chat.ask("you › "))
+        except KeyboardInterrupt:
+            got.append("interrupted")
+
+    notes = []
+    io.app.notify = lambda message, **kwargs: notes.append(message)  # type: ignore[method-assign]
+
+    async def script(pilot):
+        io.app.post_item(Text("hello selectable world"))
+        await until(pilot, lambda: len(io.app.query_one(Conversation).query(Item)) == 1)
+        io.start(fn)
+        await until(pilot, lambda: io.asking)
+        await drag(pilot, io.app.query_one(Item), (0, 0), (15, 0))
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert "hello selectable" in io.app.clipboard and got == []
+        assert not io.app.screen.get_selected_text()                 # the copy cleared the selection
+        assert notes == ["Copied"]
+        await pilot.press("ctrl+c")
+        await until(pilot, lambda: got)
+        assert got == ["interrupted"]
+
+    pilot_run(io.app, script)
+
+
+def test_a_second_ctrl_c_after_copying_from_the_box_interrupts():
+    io, chat = _io()
+    got = []
+
+    def fn():
+        try:
+            got.append(chat.ask("you › "))
+        except KeyboardInterrupt:
+            got.append("interrupted")
+
+    async def script(pilot):
+        io.start(fn)
+        await until(pilot, lambda: io.asking)
+        await pilot.press(*"abc", "shift+left", "shift+left", "ctrl+c")
+        await pilot.pause()
+        assert io.app.clipboard == "bc" and got == []
+        assert _box(io).selected_text == "" and _box(io).text == "abc"
+        await pilot.press("ctrl+c")
+        await until(pilot, lambda: got)
+        assert got == ["interrupted"]
+
+    pilot_run(io.app, script)
+
+
 def test_copy_puts_text_on_the_clipboard_while_running():
+    from phil.chat.controller import SENT_TO_TERMINAL
+
     io, chat = _io()
     assert chat.copy("early") is False               # not mounted yet
 
     async def script(pilot):
         await pilot.pause()
-        assert chat.copy("some text") is True
+        assert chat.copy("some text") == SENT_TO_TERMINAL   # no clipboard command in tests: OSC 52 only
         await until(pilot, lambda: io.app.clipboard == "some text")
 
     pilot_run(io.app, script)
     assert chat.copy("late") is False
+
+
+def _fake_clipboard(monkeypatch, returncode=0):
+    """A clipboard command on PATH (each `which` answers its own name) that records its calls."""
+    import subprocess
+
+    from phil.ui.screen import clipboard
+
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, returncode)
+
+    monkeypatch.setattr(clipboard, "_which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(clipboard, "_run", run)
+    return calls
+
+
+def test_copy_uses_the_system_clipboard_command(monkeypatch):
+    calls = _fake_clipboard(monkeypatch)
+    io, chat = _io()
+
+    async def script(pilot):
+        await pilot.pause()
+        assert chat.copy("some text") is True
+        await until(pilot, lambda: io.app.clipboard == "some text")   # OSC 52 too
+
+    pilot_run(io.app, script)
+    [(args, kwargs)] = calls
+    assert args[0].startswith("/bin/") and kwargs["input"] == b"some text"
+    assert not kwargs.get("shell") and kwargs["timeout"] > 0
+
+
+def test_copy_with_a_failing_command_is_sent_to_the_terminal(monkeypatch):
+    from phil.chat.controller import SENT_TO_TERMINAL
+
+    _fake_clipboard(monkeypatch, returncode=1)
+    io, chat = _io()
+
+    async def script(pilot):
+        await pilot.pause()
+        assert chat.copy("some text") == SENT_TO_TERMINAL
+
+    pilot_run(io.app, script)
+
+
+def test_ctrl_c_copy_uses_the_system_clipboard_command(monkeypatch):
+    calls = _fake_clipboard(monkeypatch)
+    io, chat = _io()
+
+    async def script(pilot):
+        io.start(lambda: chat.ask("you › "))
+        await until(pilot, lambda: io.asking)
+        await pilot.press(*"abc", "shift+left", "ctrl+c")
+        await until(pilot, lambda: calls)
+        assert calls[0][1]["input"] == b"c"
+
+    pilot_run(io.app, script)
+
+
+@pytest.mark.parametrize("first", ["click", "tab", "escape"])
+def test_typing_reaches_the_box_after_clicking_the_conversation_or_tab(first):
+    io, chat = _io()
+    got = []
+
+    async def script(pilot):
+        for n in range(40):
+            io.app.post_item(Text(f"line {n} " * 5))
+        io.start(lambda: got.append(chat.ask("you › ")))
+        await until(pilot, lambda: io.asking)
+        if first == "click":
+            await pilot.click(Conversation, offset=(5, 3))
+        else:
+            await pilot.press(first)
+        await pilot.pause()
+        assert io.app.focused is _box(io)
+        await pilot.press(*"hi", "enter")
+        await until(pilot, lambda: got)
+        assert got == ["hi"]
+
+    pilot_run(io.app, script)
+
+
+def test_a_drag_in_the_conversation_still_selects_and_typing_goes_to_the_box():
+    io, chat = _io()
+    got = []
+
+    async def script(pilot):
+        io.app.post_item(Text("hello selectable world"))
+        await until(pilot, lambda: len(io.app.query_one(Conversation).query(Item)) == 1)
+        io.start(lambda: got.append(chat.ask("you › ")))
+        await until(pilot, lambda: io.asking)
+        await drag(pilot, io.app.query_one(Item), (0, 0), (15, 0))
+        assert "hello selectable" in io.app.screen.get_selected_text()
+        await pilot.press(*"hi", "enter")
+        await until(pilot, lambda: got)
+        assert got == ["hi"]
+
+    pilot_run(io.app, script)
+
+
+def _conversation_text(io) -> str:
+    return "\n".join(item.renderable.plain for item in io.app.query_one(Conversation).query(Item))
+
+
+def test_the_users_lines_show_in_the_conversation_as_they_are_taken():
+    io, chat = _io()
+    go = threading.Event()
+    got = []
+
+    def fn():
+        got.append(chat.ask("you › "))
+        go.wait(5)
+        got.append(chat.ask("you › "))
+        got.append(chat.ask("goal › "))
+
+    async def script(pilot):
+        io.start(fn)
+        await until(pilot, lambda: io.asking)
+        await pilot.press(*"first", "enter")
+        await until(pilot, lambda: got == ["first"])
+        await pilot.press(*"second", "enter", *"third", "enter")   # typed ahead while busy
+        await until(pilot, lambda: len(io._lines) == 2)
+        await pilot.pause()
+        assert _conversation_text(io) == "you › first"           # echoed when taken, not when typed
+        go.set()
+        await until(pilot, lambda: len(got) == 3)
+        await until(pilot, lambda: _conversation_text(io).count("\n") == 2)
+        assert _conversation_text(io) == "you › first\nyou › second\ngoal › third"
+        [echo, *_] = io.app.query_one(Conversation).query(Item)
+        assert echo.renderable.spans[0].style == "phil.user"
+
+    pilot_run(io.app, script)
+
+
+def test_lines_dropped_by_ctrl_c_are_not_echoed():
+    io, chat = _io()
+    go = threading.Event()
+    got = []
+
+    def fn():
+        go.wait(5)
+        try:
+            chat.ask("you › ")
+        except KeyboardInterrupt:
+            got.append("interrupted")
+        got.append(chat.ask("you › "))
+
+    async def script(pilot):
+        io.start(fn)
+        await pilot.press(*"cancelled", "enter")
+        await until(pilot, lambda: list(io._lines) == ["cancelled"])
+        await pilot.press("ctrl+c")
+        await until(pilot, lambda: io._interrupt_held)
+        go.set()
+        await until(pilot, lambda: got == ["interrupted"])
+        await until(pilot, lambda: io.asking)
+        await pilot.press(*"kept", "enter")
+        await until(pilot, lambda: len(got) == 2)
+        await until(pilot, lambda: _conversation_text(io) == "you › kept")
+
+    pilot_run(io.app, script)
 
 
 def test_paste_keeps_newlines_and_does_not_send():   # Review Focus 4

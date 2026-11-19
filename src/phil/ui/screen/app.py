@@ -12,9 +12,11 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.widgets import TextArea
+from textual.widgets.text_area import Selection
 
 from phil.chat.decision import Decision
 from phil.chat.state import ToolbarView
+from phil.ui.screen import clipboard
 from phil.ui.screen.widgets import (
     Conversation,
     DecisionMenu,
@@ -169,13 +171,20 @@ class PhilApp(App, inherit_bindings=False):
             self._input.choice_made(message.menu_id, message.answer)
 
     def action_copy_or_interrupt(self) -> None:
-        """Ctrl+C: copy the selection (in the conversation, else in the box) if there is one;
-        otherwise interrupt."""
+        """Ctrl+C: copy the selection (in the conversation, else in the box) if there is one, then
+        clear it, so the next Ctrl+C interrupts; otherwise interrupt."""
         text = self.screen.get_selected_text()
-        if not text and isinstance(self.focused, TextArea):
-            text = self.focused.selected_text
+        if text:
+            self.screen.clear_selection()
+        elif isinstance(self.focused, TextArea) and self.focused.selected_text:
+            box = self.focused
+            text = box.selected_text
+            box.selection = Selection.cursor(box.selection.end)
         if text:
             self.copy_to_clipboard(text)
+            # The clipboard command may take a moment: not on the app's thread.
+            threading.Thread(target=clipboard.system_copy, args=(text,), name="phil-copy", daemon=True).start()
+            self.notify("Copied", timeout=1.5)
         elif self._input is not None:
             self._input.interrupt()
 
@@ -230,13 +239,16 @@ class PhilApp(App, inherit_bindings=False):
 
         self._call(apply)
 
-    def copy_text(self, text: str) -> bool:
-        """Put `text` on the clipboard; False (and nothing is kept) unless the app is running."""
+    def copy_text(self, text: str) -> Literal["clipboard", "terminal"] | None:
+        """Put `text` on the clipboard: with the system's clipboard command ("clipboard" when one
+        succeeded; it runs on the calling thread) and through the terminal (OSC 52) as well, which
+        is all there is otherwise ("terminal"). None (and nothing is sent) unless the app is running."""
         with self._lock:
             if self._phase != "running":
-                return False
+                return None
+        copied = clipboard.system_copy(text)
         self._call(lambda: self.copy_to_clipboard(text))
-        return True
+        return "clipboard" if copied else "terminal"
 
     def request_exit(self) -> None:
         self._call(self.exit)

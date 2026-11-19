@@ -18,7 +18,7 @@ from typing import TypeVar
 
 from rich.text import Text
 
-from phil.chat.controller import WAKE, ChatIO
+from phil.chat.controller import SENT_TO_TERMINAL, WAKE, ChatIO
 from phil.chat.decision import Decision
 from phil.chat.state import ToolbarView
 from phil.ui.screen.app import PhilApp
@@ -85,12 +85,17 @@ class ScreenIO:
     def ask(self, prompt: str) -> object:
         """The next entered line; `WAKE` if a wake is pending; None at EOF (Ctrl+D, or the frame
         closed); raises `KeyboardInterrupt` if Ctrl+C was pressed. Blocks until one of those. The
-        prompt shows on the box's border; the box's text is never touched."""
+        prompt shows on the box's border; the box's text is never touched. A line it returns is
+        echoed into the conversation behind its prompt, as the inline chat leaves it in the
+        scrollback: lines typed ahead show in the order they are answered."""
         with self._ready:
             if not self._wake_pending:
                 self._carried_choice = None  # a menu's highlight doesn't survive a typed prompt
         self.app.set_prompt(prompt)
-        return self._next()
+        line = self._next()
+        if isinstance(line, str):
+            self.app.post_item(Text.assemble((prompt, "phil.user"), line))
+        return line
 
     def choose(self, prompt: str, decision: Decision) -> object:
         """Dock `decision`'s callout above the input box and answer it from the keyboard (the keys
@@ -183,9 +188,14 @@ class ScreenIO:
         thread.start()
         return thread
 
-    def copy(self, text: str) -> bool:
-        """Put `text` on the clipboard; True when the frame is running."""
-        return self.app.copy_text(text)
+    def copy(self, text: str) -> bool | str:
+        """Put `text` on the clipboard: True when the system's clipboard command took it;
+        `SENT_TO_TERMINAL` when it could only be sent to the terminal (OSC 52, which some terminals
+        ignore); False when the frame isn't running."""
+        copied = self.app.copy_text(text)
+        if copied is None:
+            return False
+        return True if copied == "clipboard" else SENT_TO_TERMINAL
 
     def width(self) -> int:
         """The conversation pane's content width (80 before the frame is laid out; the last known

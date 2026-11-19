@@ -108,6 +108,7 @@ def test_a_goal_runs_on_the_frames_worker_thread(calc_repo, full_screen):
     [conversation] = seen
     assert "ProgrammingError" not in conversation and "Something went wrong" not in conversation
     assert "No other open chats." in conversation  # /chat read the db on the worker thread too
+    assert "add subtract" in conversation and "/chat" in conversation  # the user's lines are echoed
     paths = ProjectPaths(resolve_repo(calc_repo).slug)
     [run] = list_runs(connect(paths.db_path))
     assert run.chat_id is not None
