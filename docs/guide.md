@@ -330,6 +330,16 @@ Besides the main agent, the live line shows each sub-agent it started (indented 
 agent's tool lines, with milestones still shown; `/feed` shows everything again and says how many
 steps were hidden. The filter is cleared when the run ends.
 
+The feed puts one blank line before each block — your typed line, each design option, a reply,
+a notice, a milestone band and each burst summary — never two in a row; a task's gate lines and
+failures stay inside its block. Design options wrap under their indent instead of being cut off.
+Every answered question, picked or typed, stays as `? Which approach?  <answer>`. A burst that
+edited files reads `implementer ran 6 tools · edited 2 files  (/more #14)`, and under it each
+file gets `path  +A −R` followed by up to 8 of its changed lines (added in green, removed in red,
+no context). Three files show at most, then `+N more files · /more #14`; `/more #n` prints the
+full detail. The full-screen chat, the inline chat and `phil attach` look the same (`phil attach`
+leaves out `/more`).
+
 Start, reopen and leave a chat:
 
     phil                      # a new chat; the first screen shows the banner and, when other
