@@ -5,8 +5,47 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from rich.cells import cell_len
 from rich.console import Console
 from rich.text import Text
+
+from phil.ui.bursts import one_line
+
+
+def _chunks(text: str, room: int) -> list[str]:
+    """`text` broken at spaces into pieces of at most `room` cells; a word longer than that is cut."""
+    lines: list[str] = []
+    line = ""
+    for word in text.split(" "):
+        while cell_len(word) > room:  # a word too long for any line: fill the current one, cut the rest
+            if line:
+                lines.append(line)
+                line = ""
+            cut = ""
+            for char in word:
+                if cell_len(cut + char) > room and cut:
+                    break
+                cut += char
+            lines.append(cut)
+            word = word[len(cut):]
+        joined = f"{line} {word}" if line else word
+        if line and cell_len(joined) > room:
+            lines.append(line)
+            joined = word
+        line = joined
+    if line:
+        lines.append(line)
+    return lines
+
+
+def hanging(text: str, width: int, *, indent: str, lead: str = "", style: str = "") -> list[Text]:
+    """`text` wrapped to `width` as plain `Text` lines (never `Padding`: the frame selects `Text`).
+    The first line is `indent + lead + text`; the rest are indented by `indent` and spaces the
+    width of `lead`. Every line is at most `width - 1` cells. Hidden characters show as `?`."""
+    first, rest = indent + lead, indent + " " * cell_len(lead)
+    room = max(1, width - 1 - cell_len(first))
+    return [Text((first if n == 0 else rest) + chunk, style=style)
+            for n, chunk in enumerate(_chunks(one_line(text), room))]
 
 
 def _is_blank(objects: tuple[Any, ...]) -> bool:

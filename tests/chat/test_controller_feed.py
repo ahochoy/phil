@@ -1,11 +1,13 @@
 """The chat follows its run's activity feed: tool lines, milestone bands and the live row."""
 
 import pytest
+from rich.cells import cell_len
 
 from phil.agents.fake import ScriptedAgentFactory, Turn, fire_tool
 from phil.chat.controller import WAKE, _short_event
 from phil.chat.events import ChatEvent
 from phil.chat.state import LiveStep, SubAgent
+from phil.contracts import Approach, Approaches
 from phil.run.worker import run_worker
 from phil.store.activity import ActivityLog
 from phil.store.paths import ProjectPaths
@@ -635,3 +637,28 @@ def test_a_burst_summary_prints_its_diff_from_the_runs_detail(controller_with_ru
     text = _flush(controller)
     assert "implementer ran 1 tool · edited 1 file  (/more #5)" in text
     assert text.index("a.py  +1 −1") < text.index("− old") < text.index("+ new")
+
+
+def test_design_options_wrap_instead_of_cutting(controller_with_run):
+    controller = controller_with_run
+    controller.console._console.width = 60
+    tradeoff = " ".join(f"word{n}" for n in range(1, 26))  # 25 words, over 150 characters
+    assert len(tradeoff) >= 150
+    approaches = Approaches(
+        options=[
+            Approach(name="Footer band", summary="A full-width band above the footer.", tradeoffs=[tradeoff]),
+            Approach(name="Inline card", summary="A card after the hero.", tradeoffs=["Only on the home page"]),
+        ],
+        recommended=0,
+        reason="The home page is where visitors decide, so the band belongs above the fold where they land.",
+    )
+    controller._on_design_ready({"approaches": approaches})
+    text = controller.console.export_text()
+    lines = text.splitlines()
+    assert not any(line.endswith("…") for line in lines)
+    assert all(cell_len(line) <= 59 for line in lines)
+    assert tradeoff in " ".join(text.split())  # the whole trade-off, across wrapped lines
+    [first] = [i for i, line in enumerate(lines) if line.startswith("    – word1 ")]
+    assert lines[first + 1].startswith("      word")  # continuation lines up under its text
+    assert lines[lines.index("2. Inline card") - 1] == ""  # a blank line separates the options
+    assert "visitors decide" in text and "where they land." in " ".join(text.split())

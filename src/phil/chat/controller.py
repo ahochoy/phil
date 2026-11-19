@@ -124,11 +124,11 @@ from phil.store.telemetry import (
 )
 from phil.tomlw import toml_value
 from phil.ui.answer_view import render_answer
-from phil.ui.blocks import BlockConsole
+from phil.ui.blocks import BlockConsole, hanging
 from phil.ui.brief_view import render_brief
 from phil.ui.chats_view import open_chat_line
 from phil.ui.callout import failure_lines, overflows, to_rich
-from phil.ui.bursts import FeedItem, one_line
+from phil.ui.bursts import INDENT, FeedItem, one_line
 from phil.ui.feed_view import FeedRenderer
 from phil.ui.links import opened_pr_line
 from phil.ui.plan_view import _clip, render_goal, render_plan, render_steps
@@ -461,7 +461,7 @@ class ChatController:
         self._detailed: Decision | None = None  # the decision whose details are detail 1
         # A settled line that waits for its answer to take effect: an approved plan's run starting,
         # or a pause's resume being sent (a retry's, past its hint prompt).
-        self._settled: str | None = None
+        self._settled: Text | None = None
         self._trust: TrustAsk | None = None  # the repo's phil.toml settings the trust_repo stage asks about
 
     # --- events and jobs -------------------------------------------------------------------------
@@ -877,7 +877,7 @@ class ChatController:
                     if waits:
                         self._settled = settled
                     else:
-                        self.console.print(Text(settled, style="phil.muted"))
+                        self.console.print(settled)
                 if raw is None or not self._input(raw):
                     self._closing()
                     return
@@ -892,7 +892,7 @@ class ChatController:
         """Print the settled line that waited for its answer to take effect, if there is one."""
         settled, self._settled = self._settled, None
         if settled is not None:
-            self.console.print(Text(settled, style="phil.muted"))
+            self.console.print(settled)
 
     def _report(self, exc: BaseException) -> None:
         self._failed(f"{type(exc).__name__}: {exc}", classify_failure(exc).as_dict())
@@ -1379,11 +1379,16 @@ class ChatController:
             number = "" if menu else f"{n}. "
             with self.console.group():  # each option is a block: its name, summary and trade-offs
                 self.console.print(f"[phil.agent]{number}{escape(_clip(approach.name))}{mark}[/]")
-                self.console.print(f"   {escape(approach.summary)}")
+                width = self.console.width
+                for line in hanging(approach.summary, width, indent=INDENT):
+                    self.console.print(line)
                 for tradeoff in approach.tradeoffs:
-                    self.console.print(f"   [phil.muted]– {escape(_clip(tradeoff))}[/]")
+                    for line in hanging(tradeoff, width, indent=INDENT, lead="– ", style="phil.muted"):
+                        self.console.print(line)
         if approaches.reason:
-            self.console.print(f"[phil.muted]{escape(_clip(approaches.reason))}[/]")
+            with self.console.group():
+                for line in hanging(approaches.reason, self.console.width, indent="", style="phil.muted"):
+                    self.console.print(line)
         if not menu:
             self.console.print(f"{len(self._approach_order) + 1}. {DESCRIBE_OWN}")
         self._set_stage("choose_approach")

@@ -4,7 +4,10 @@ import io
 
 from rich.console import Console
 
-from phil.ui.blocks import BlockConsole
+from rich.cells import cell_len
+from rich.text import Text
+
+from phil.ui.blocks import BlockConsole, hanging
 
 
 def _console() -> tuple[BlockConsole, io.StringIO]:
@@ -89,3 +92,31 @@ def test_an_empty_print_is_a_blank_line_not_two():
 def test_other_console_attributes_pass_through():
     console, _ = _console()
     assert console.width == 80
+
+
+def test_hanging_wraps_under_its_lead():
+    out = hanging("alpha beta gamma delta", 20, indent="    ", lead="– ")
+    assert [t.plain for t in out] == ["    – alpha beta", "      gamma delta"]
+    assert all(type(t) is Text for t in out)
+
+
+def test_hanging_without_a_lead_indents_every_line():
+    out = hanging("alpha beta gamma", 16, indent="  ")
+    assert [t.plain for t in out] == ["  alpha beta", "  gamma"]
+
+
+def test_hanging_breaks_a_word_longer_than_the_line():
+    out = hanging("x" * 30, 12, indent="  ", lead="- ")
+    assert all(cell_len(t.plain) <= 11 for t in out)
+    assert "".join(t.plain.strip(" -") for t in out) == "x" * 30
+
+
+def test_hanging_measures_wide_characters_in_cells():
+    out = hanging("日本語 日本語 日本語", 14, indent="  ")
+    assert all(cell_len(t.plain) <= 13 for t in out) and len(out) > 1
+
+
+def test_hanging_shows_hidden_characters_and_collapses_whitespace():
+    out = hanging("a\nb\x1b[31m c", 40, indent="  ", style="phil.muted")
+    assert [t.plain for t in out] == ["  a b?[31m c"]
+    assert out[0].style == "phil.muted"

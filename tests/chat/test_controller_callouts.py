@@ -210,7 +210,7 @@ def test_plan_with_what_you_know_keeps_its_settled_line(controller_with_choose):
     question = Question(text="Which module?", options=["calc.py", "ops.py"])
     scripts = {"intake": [goal(open_questions=[question])], "architect": [plan()], "critic": [critique()]}
     text, *_ = controller_with_choose(["add subtract", "go", "n"], scripts)
-    assert "Answer: Plan with what you know" in text and "? Which module? →" not in text
+    assert "? Which module?  Plan with what you know" in text and "? Which module? →" not in text
 
 
 def test_a_free_text_question_has_no_callout(calc_repo):

@@ -5,8 +5,12 @@ handlers already accept, so picking from the menu and typing are the same thing 
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from phil.text import printable
+from rich.text import Text
 
+from phil.text import printable
+from phil.ui.bursts import one_line
+
+QUESTION_STYLE = "phil.callout.title.question"
 BODY_LINES = 8
 SEE_MORE = "… see /more 1"  # a capped body's last line: the full body is detail 1
 DETAILS = "Details: /more 1"  # a body's pointer at detail 1 when nothing was cut (an attempts pause)
@@ -54,6 +58,7 @@ class Decision:
     default: int = 0
     settled_prefix: str = "✓"
     note: str = ""  # appended to the settled line (an approval's commands)
+    asked: str = ""  # a question's short text for its settled line: `? <asked>  <answer>`
 
 
 def _capped(lines: list[str]) -> tuple[str, ...]:
@@ -63,9 +68,17 @@ def _capped(lines: list[str]) -> tuple[str, ...]:
     return (*rendered[: BODY_LINES - 1], SEE_MORE)
 
 
-def settled_line(decision: Decision, option: Option) -> str:
+def settled_line(decision: Decision, option: Option) -> Text:
+    """What a settled decision leaves in the feed. A question reads `? <asked>  <answer>`."""
     if decision.kind == "question":
-        return f"Answer: {option.label}"
+        label = option.label.removesuffix(" (recommended)")
+        if decision.asked:
+            line = Text("? ", style=QUESTION_STYLE)
+            line.append(decision.asked, style=QUESTION_STYLE)
+            line.append("  ")
+            line.append(label, style="phil.user")
+            return line
+        return Text(f"Answer: {label}", style="phil.muted")
     if option.answer == "abort":
         prefix = "✗"
     elif option.answer == "n":
@@ -73,7 +86,7 @@ def settled_line(decision: Decision, option: Option) -> str:
     else:
         prefix = decision.settled_prefix
     text = f"{prefix} {option.label}"
-    return f"{text} · {decision.note}" if decision.note else text
+    return Text(f"{text} · {decision.note}" if decision.note else text, style="phil.muted")
 
 
 def answered_elsewhere(run_id: str) -> str:
@@ -165,7 +178,8 @@ def question_decision(index: int, total: int, text: str, why: str, options: list
     opts = [Option(o, str(n)) for n, o in enumerate(options, 1)]
     opts.append(Option("Something else (type it)", str(len(options) + 1), typed=True))
     opts.append(Option("Plan with what you know", "go"))
-    return Decision("question", f"Question {index} of {total}: {text}", _capped([why] if why else []), tuple(opts))
+    return Decision("question", f"Question {index} of {total}: {text}", _capped([why] if why else []), tuple(opts),
+                    asked=one_line(text))
 
 
 def conversation_decision(choices: list[str]) -> Decision:
@@ -174,14 +188,14 @@ def conversation_decision(choices: list[str]) -> Decision:
     opts = [Option(choice, str(n)) for n, choice in enumerate(choices, 1)]
     opts.append(Option("Something else (type it)", str(len(choices) + 1), typed=True))
     opts.append(Option("Plan with what you know", "go"))
-    return Decision("question", "Pick one, or type your answer", (), tuple(opts))
+    return Decision("question", "Pick one, or type your answer", (), tuple(opts), asked="Your answer")
 
 
 def approach_decision(approaches: list[tuple[str, str]]) -> Decision:
     opts = [Option(f"{name} (recommended)" if n == 1 else name, str(n), detail=summary)
             for n, (name, summary) in enumerate(approaches, 1)]
     opts.append(Option("Describe your own", str(len(approaches) + 1), typed=True))
-    return Decision("question", "Pick an approach", (), tuple(opts))
+    return Decision("question", "Pick an approach", (), tuple(opts), asked="Which approach?")
 
 
 def repo_shell_title(repo: str, rules: Sequence[str]) -> str:
@@ -224,7 +238,8 @@ def approval_decision() -> Decision:
 def chat_picker_decision(chats: Sequence[tuple[str, str]]) -> Decision:
     """`/chat`: the other open chats as `(label, chat_id)` pairs, then staying here."""
     options = tuple(Option(label, chat_id) for label, chat_id in chats)
-    return Decision("question", "Reopen which chat?", (), (*options, Option("Stay in this chat", "stay")))
+    return Decision("question", "Reopen which chat?", (), (*options, Option("Stay in this chat", "stay")),
+                    asked="Reopen which chat?")
 
 
 def pr_decision(run_id: str, force: bool) -> Decision:
