@@ -374,7 +374,7 @@ def invoke_agent(
     from phil.agents.collector import UsageCollector
     from phil.agents.model_retry import TRACKER_KEY, ModelRetryTracker, model_call_retried
 
-    messages: list[dict[str, str]] = [{"role": "user", "content": packet.render()}]
+    messages: list[dict[str, Any]] = [{"role": "user", "content": packet.render_content()}]
     problems: list[str] = []
     last_rejected_path: str | None = None
     for attempt in range(1, max_attempts + 1):

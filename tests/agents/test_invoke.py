@@ -11,7 +11,7 @@ from phil.agents.invoke import AgentContext, ContractViolation, invoke_agent
 from phil.agents.pricing import PriceBook
 from phil.agents.registry import get_spec
 from phil.config import PhilConfig, ShellConfig
-from phil.contracts import ImplementInput, PlanCritique, Task, TaskResult
+from phil.contracts import CriticInput, Goal, ImplementInput, Plan, PlanCritique, Task, TaskResult
 from phil.packets import build_packet
 from tests.helpers import TEST_MODEL, TEST_MODELS
 from tests.agents.conftest import critique, self_check
@@ -687,3 +687,20 @@ def test_a_failing_call_is_tagged_with_its_provider(config, conn, critic_packet,
     with pytest.raises(Exception) as excinfo:
         invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
     assert getattr(excinfo.value, PROVIDER_ATTR).name == config.model_for("critic").partition(":")[0]
+
+
+def test_invoke_agent_sends_image_parts(config, conn, artifacts, tmp_path):
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(b"\x89PNG-bytes")
+    task = Task(id="CALC-001", description="Add subtract", acceptance_criteria=["subtract(3, 1) == 2"])
+    contract = CriticInput(goal=Goal(objective="Add subtract"), plan=Plan(keyword="CALC", description="x", tasks=[task]))
+    packet = build_packet("critic", contract, budget_tokens=4000, images=[shot])
+    factory = FakeAgentFactory([{"verdict": "maybe"}, critique()])
+    invoke_agent(get_spec("critic"), packet, context(config, conn, artifacts, factory), node="critic")
+    [message] = factory.agent.calls[0]["messages"]
+    assert message["content"][0] == {"type": "text", "text": packet.render()}
+    assert message["content"][1]["type"] == "image"
+    assert message["content"][1]["mime_type"] == "image/png"
+    assert len(factory.agent.calls[1]["messages"]) == 2  # the retry still follows the picture message
+    saved = json.loads((artifacts.run_dir / "packets" / "critic-run-1.json").read_text())
+    assert saved["images"] == [str(shot)]

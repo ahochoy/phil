@@ -1,3 +1,4 @@
+import base64
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
@@ -27,6 +28,14 @@ _LEDGER_HEADER = "\n## Assumptions so far\n"
 _OMITTED_HEADER = "\n## Omitted for budget\n"
 
 
+IMAGE_TOKENS = 1600  # a flat charge per attached image, toward the budget and the cost estimate
+
+
+def image_paths_section(paths: Sequence[str | Path]) -> str:
+    """The text-only form of the images: their paths, for agents that don't get the pictures."""
+    return "Images the user attached:\n" + "".join(f"- {path}\n" for path in paths)
+
+
 class Packet(BaseModel):
     role: str
     contract_type: str
@@ -35,6 +44,31 @@ class Packet(BaseModel):
     ledger: list[str]
     omitted: list[str]
     tokens: int = 0
+    images: list[str] = []
+
+    def render_content(self) -> str | list[dict]:
+        """The text, or (with images) the text part followed by one image part per readable image.
+
+        An image that has gone missing is left out and named in the text instead."""
+        if not self.images:
+            return self.render()
+        from phil.chat.attachments import mime_type  # lazy: attachments pulls in the UI helpers
+
+        parts: list[dict] = []
+        missing: list[str] = []
+        for image in self.images:
+            path = Path(image)
+            try:
+                data = base64.b64encode(path.read_bytes()).decode("ascii")
+                mime = mime_type(path)
+            except (OSError, KeyError):
+                missing.append(f"(image {path.name} is no longer available)\n")
+                continue
+            parts.append({"type": "image", "base64": data, "mime_type": mime})
+        text = self.render() + "".join(missing)
+        if not parts:
+            return text
+        return [{"type": "text", "text": text}, *parts]
 
     def render(self) -> str:
         parts = [_contract_section(self.contract_type, self.contract_json)]
@@ -75,10 +109,12 @@ def build_packet(
     root: Path | None = None,
     files: Sequence[str] = (),
     ledger: Sequence[str] = (),
+    images: Sequence[Path] = (),
 ) -> Packet:
     contract_type = type(contract).__name__
     contract_json = contract.model_dump_json(indent=2)
-    used = estimate_tokens(_contract_section(contract_type, contract_json))
+    image_tokens = IMAGE_TOKENS * len(images)
+    used = estimate_tokens(_contract_section(contract_type, contract_json)) + image_tokens
     if used > budget_tokens:
         raise PacketTooLarge(f"{contract_type} alone needs {used} tokens; budget is {budget_tokens}")
     if files and root is None:
@@ -127,8 +163,9 @@ def build_packet(
             files=kept_files,
             ledger=kept_ledger,
             omitted=omitted,
+            images=[str(image) for image in images],
         )
-        packet.tokens = estimate_tokens(packet.render())
+        packet.tokens = estimate_tokens(packet.render()) + image_tokens
         return packet
 
     packet = _build()

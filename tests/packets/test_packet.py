@@ -1,7 +1,10 @@
+import base64
+
 import pytest
 
 from phil.contracts import Goal
-from phil.packets import PacketTooLarge, build_packet, estimate_tokens
+from phil.packets import Packet, PacketTooLarge, build_packet, estimate_tokens
+from phil.packets.packet import IMAGE_TOKENS, image_paths_section
 
 
 def goal() -> Goal:
@@ -81,3 +84,59 @@ def test_rendered_packet_never_exceeds_budget(budget, entries):
     assert estimate_tokens(packet.render()) <= budget
     if len(packet.ledger) < entries:
         assert f"{entries - len(packet.ledger)} ledger entries" in packet.omitted
+
+
+PNG = b"\x89PNG\r\n\x1a\nfake-bytes"
+
+
+def _png(tmp_path, name="shot.png"):
+    path = tmp_path / name
+    path.write_bytes(PNG)
+    return path
+
+
+def test_images_add_tokens_and_can_overflow_the_budget(tmp_path):
+    plain = build_packet("designer", goal(), budget_tokens=5000)
+    with_image = build_packet("designer", goal(), budget_tokens=5000, images=[_png(tmp_path)])
+    assert with_image.tokens == plain.tokens + IMAGE_TOKENS
+    assert with_image.images == [str(tmp_path / "shot.png")]
+    with pytest.raises(PacketTooLarge):
+        build_packet("designer", goal(), budget_tokens=plain.tokens + IMAGE_TOKENS - 1, images=[_png(tmp_path)])
+
+
+def test_render_content_has_text_then_image_parts(tmp_path):
+    packet = build_packet("designer", goal(), budget_tokens=5000, images=[_png(tmp_path)])
+    text, image = packet.render_content()
+    assert text == {"type": "text", "text": packet.render()}
+    assert image == {"type": "image", "base64": base64.b64encode(PNG).decode(), "mime_type": "image/png"}
+
+
+def test_render_content_is_plain_text_without_images():
+    packet = build_packet("designer", goal(), budget_tokens=5000)
+    assert packet.render_content() == packet.render()
+
+
+def test_missing_image_noted_not_crashing(tmp_path):
+    gone = tmp_path / "gone.png"
+    packet = build_packet("designer", goal(), budget_tokens=5000, images=[gone])
+    content = packet.render_content()
+    assert isinstance(content, str) and content.startswith(packet.render())
+    assert "(image gone.png is no longer available)" in content
+
+
+def test_a_missing_image_is_noted_beside_the_ones_that_remain(tmp_path):
+    packet = build_packet("designer", goal(), budget_tokens=5000, images=[_png(tmp_path), tmp_path / "gone.png"])
+    text, image = packet.render_content()
+    assert "(image gone.png is no longer available)" in text["text"]
+    assert image["type"] == "image"
+
+
+def test_old_packet_json_without_images_still_loads():
+    packet = build_packet("designer", goal(), budget_tokens=5000)
+    data = packet.model_dump()
+    del data["images"]
+    assert Packet.model_validate(data).images == []
+
+
+def test_image_paths_section_lists_paths():
+    assert image_paths_section(["/a/one.png", "/b/two.jpg"]) == "Images the user attached:\n- /a/one.png\n- /b/two.jpg\n"
