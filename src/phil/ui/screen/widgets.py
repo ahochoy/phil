@@ -6,6 +6,7 @@ from rich.text import Text
 from textual import events
 from textual.containers import Vertical, VerticalScroll
 from textual.geometry import Size
+from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Static, TextArea
 
@@ -135,8 +136,44 @@ class DecisionMenu(Static):
 
 
 class PromptBox(TextArea):
-    """The input box. Any key typed here returns the conversation to the bottom."""
+    """The input box, always live. Enter sends its text (`Submitted`) and clears it; Alt+Enter,
+    Shift+Enter and Ctrl+Enter insert a newline; Ctrl+D in an empty box is `EndOfInput`; a paste
+    inserts as text. Any key typed here returns the conversation to the bottom."""
 
-    async def _on_key(self, event: events.Key) -> None:
+    NEWLINE_KEYS = frozenset({"alt+enter", "shift+enter", "ctrl+enter"})
+
+    class Submitted(Message):
+        def __init__(self, text: str) -> None:
+            super().__init__()
+            self.text = text
+
+    class EndOfInput(Message):
+        pass
+
+    # A public `on_key`, not an `_on_key` override calling super: Textual dispatches each class's
+    # handler along the MRO, so this runs first and TextArea's `_on_key` runs once after it (not at
+    # all for a key handled here, which prevents the default).
+    def on_key(self, event: events.Key) -> None:
         self.screen.query_one(Conversation).to_bottom()
-        await super()._on_key(event)
+        if event.key == "enter":
+            self._handled(event)
+            text = self.text
+            self.clear()
+            self.post_message(self.Submitted(text))
+        elif event.key in self.NEWLINE_KEYS:
+            self._handled(event)
+            start, end = self.selection
+            self.replace("\n", start, end, maintain_selection_offset=False)
+        elif event.key == "ctrl+d" and not self.text:
+            self._handled(event)
+            self.post_message(self.EndOfInput())
+
+    def set_text(self, text: str) -> None:
+        """Replace the box's text, the cursor at its end."""
+        self.text = text
+        self.move_cursor(self.document.end)
+
+    @staticmethod
+    def _handled(event: events.Key) -> None:
+        event.stop()
+        event.prevent_default()
