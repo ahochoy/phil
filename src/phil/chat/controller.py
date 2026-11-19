@@ -336,7 +336,8 @@ class ChatController:
         self._last_reply: str | None = None  # Phil's last reply, for /copy
         # The chat's `--set` overrides: applied again whenever the config is reloaded, and kept by its runs.
         self._config_overrides = tuple(config_overrides)
-        # `conn` belongs to the main thread; each job opens its own connection to this database.
+        # `conn` belongs to the thread that runs this controller (the full screen's `phil-chat` worker,
+        # or the main thread inline); each job opens its own connection to this database.
         self._db_path = ProjectPaths(info.slug).db_path
         # None means "resolve HEAD when a run is actually started" (_start), not at chat start,
         # so a long-running chat starts its run from the commit current at approval time.

@@ -624,6 +624,28 @@ def test_a_switch_to_a_chat_held_elsewhere_stays_on_the_current_chat(calc_repo, 
     assert not lock_file.exists()  # released when the chat ended
 
 
+def test_a_refused_switch_whose_chat_cant_be_relocked_says_so_after_the_frame(calc_repo, monkeypatch, phil_home):
+    from phil.chat.session import ChatLocked, ChatSession
+
+    older, newer = _two_chats(calc_repo, monkeypatch)
+    original = ChatSession.lock
+    locks: dict[str, int] = {}
+
+    def lock(self):
+        locks[self.id] = locks.get(self.id, 0) + 1
+        if self.id == newer or locks[self.id] > 1:  # the switch is refused, then the relock too
+            raise ChatLocked(5151)
+        original(self)
+
+    monkeypatch.setattr(ChatSession, "lock", lock)
+    _full(monkeypatch, phil_home)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo), "chat"], input="1\n", env=FULL_ENV)
+    assert result.exit_code == 1
+    [first] = _chat_ids(calc_repo) - {older, newer}
+    # Printed on the restored terminal (`result.output`), not into the closed frame.
+    assert f"Chat {first} is already open in another window (pid 5151)." in " ".join(_plain(result.output).split())
+
+
 def test_a_crash_inside_the_frame_reaches_the_crash_handler(calc_repo, monkeypatch, phil_home):
     from phil import diagnostics
     from phil.chat.controller import ChatController

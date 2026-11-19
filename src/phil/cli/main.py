@@ -335,10 +335,6 @@ def _banner_facts(info, config, conn, paths, base_label, header_sha, base, sessi
 def _chat(ctx: typer.Context, *, pick_chat: bool = False) -> None:
     """Start the chat: bare `phil`, and `phil chat` (`pick_chat`: it opens in the /chat picker).
     Everything that can stop it happens here, before the full screen opens."""
-    from phil.chat.session import ChatSession, list_open_chats
-    from phil.ui.banner import banner_plain, render_banner
-    from phil.ui.screen.mode import choose_mode, windows_console_ok
-
     resume_id, new = ctx.obj.get("resume"), ctx.obj.get("new", False)
     continue_chat = ctx.obj.get("continue", False)
     if resume_id is not None and new:
@@ -349,6 +345,18 @@ def _chat(ctx: typer.Context, *, pick_chat: bool = False) -> None:
         console.print(f"[phil.error]choose --continue or {other}, not both[/]")
         raise typer.Exit(1)
     info, conn = _open_project(ctx)
+    try:  # this thread's connection: the start's lookups; the driver opens its own (`_drive`)
+        _start_chat(ctx, info, conn, resume_id, new, continue_chat, pick_chat=pick_chat)
+    finally:
+        conn.close()
+
+
+def _start_chat(ctx: typer.Context, info, conn, resume_id, new: bool, continue_chat: bool, *, pick_chat: bool) -> None:
+    """`_chat` once the project is open; `conn` is for the lookups made on this thread."""
+    from phil.chat.session import ChatSession, list_open_chats
+    from phil.ui.banner import banner_plain, render_banner
+    from phil.ui.screen.mode import choose_mode, windows_console_ok
+
     overrides = ctx.obj.get("overrides", [])
     config = _load_config(info.root, overrides)
     _require_bash(config, info)
@@ -414,7 +422,7 @@ def _chat(ctx: typer.Context, *, pick_chat: bool = False) -> None:
         _lock_chat(session, console)
         try:
             last = _run_full(
-                info, config, conn, factory, base_sha, session, resume, overrides,
+                info, config, factory, base_sha, session, resume, overrides,
                 facts=facts, hint_count=0 if pick_chat else len(listed), notes=notes, pick_chat=pick_chat,
             )
         finally:
@@ -457,7 +465,7 @@ def _chat(ctx: typer.Context, *, pick_chat: bool = False) -> None:
     session = session or ChatSession.create(paths)
     _lock_chat(session, out)
     try:
-        _run_chat(info, config, conn, out, tty, factory, base_sha, session, resume, overrides, pick_chat=pick_chat)
+        _run_chat(info, config, out, tty, factory, base_sha, session, resume, overrides, pick_chat=pick_chat)
     finally:
         session.unlock()
 
@@ -499,14 +507,33 @@ def _header(info: RepoInfo) -> tuple[str, str]:
 
 
 def _drive(
-    io_adapter, out, info, config, conn, factory, base_sha, session, resume: bool,
+    io_adapter, out, info, config, factory, base_sha, session, resume: bool,
     overrides: Sequence[str] = (), *, pick_chat: bool = False, point=lambda controller: None, frame=None,
 ):
     """Run chats until one ends without a `/chat` switch, and return the last one: the loop every
     mode uses. `session` comes locked; each chat is unlocked as it is left. A switch reopens the
     picked chat (a chat another window took meanwhile is refused, and the current one goes on). In
     the full screen (`frame`) a switch clears the conversation, shows the new chat's id and drops a
-    held Ctrl+C; inline, the chat being left says how to come back to its run, as quitting would."""
+    held Ctrl+C; inline, the chat being left says how to come back to its run, as quitting would.
+
+    The controllers' database connection is opened here, on the thread that runs them (the full
+    screen's `phil-chat` worker), and closed on the way out: a SQLite connection can't cross threads."""
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    try:
+        return _drive_chats(
+            io_adapter, out, info, config, conn, factory, base_sha, session, resume, overrides,
+            pick_chat=pick_chat, point=point, frame=frame,
+        )
+    finally:
+        conn.close()
+
+
+def _drive_chats(
+    io_adapter, out, info, config, conn, factory, base_sha, session, resume: bool, overrides: Sequence[str],
+    *, pick_chat: bool, point, frame,
+):
+    """`_drive`'s loop, on the connection it opened."""
     from phil.chat.controller import ChatController
     from phil.chat.session import LOG_FILE, ChatLocked, ChatSession
 
@@ -542,7 +569,10 @@ def _drive(
             target = None
         if target is None:
             out.print(f"[phil.muted]Staying in chat {escape(previous.id)}.[/]")
-            _lock_chat(previous, out)
+            try:
+                previous.lock()
+            except ChatLocked as exc:  # another window took it meanwhile: said once the frame has closed
+                raise _StartFailed(_locked_line(previous.id, exc.pid)) from exc
             session = previous
         else:
             if frame is None:
@@ -557,7 +587,7 @@ def _drive(
 
 
 def _run_full(
-    info, config, conn, factory, base_sha, session, resume: bool, overrides: Sequence[str], *,
+    info, config, factory, base_sha, session, resume: bool, overrides: Sequence[str], *,
     facts, hint_count: int, notes: Sequence[str], pick_chat: bool,
 ):
     """The full-screen chat: the banner card and the open-chats hint as its first items, then the
@@ -582,7 +612,7 @@ def _run_full(
         try:
             return screen.run(
                 lambda: _drive(
-                    screen, screen.console, info, config, conn, factory, base_sha, session, resume, overrides,
+                    screen, screen.console, info, config, factory, base_sha, session, resume, overrides,
                     pick_chat=pick_chat, point=lambda controller: screen.set_view(controller.state.view),
                     frame=screen,
                 )
@@ -595,7 +625,7 @@ def _run_full(
 
 
 def _run_chat(
-    info, config, conn, out, tty, factory, base_sha, session, resume: bool, overrides: Sequence[str] = (),
+    info, config, out, tty, factory, base_sha, session, resume: bool, overrides: Sequence[str] = (),
     *, pick_chat: bool = False,
 ) -> None:
     """The inline chat (a terminal) or plain lines (piped)."""
@@ -623,7 +653,7 @@ def _run_chat(
     def drive() -> None:
         try:
             _drive(
-                terminal, out, info, config, conn, factory, base_sha, session, resume, overrides,
+                terminal, out, info, config, factory, base_sha, session, resume, overrides,
                 pick_chat=pick_chat, point=point,
             )
         except _StartFailed as exc:
