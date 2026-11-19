@@ -67,6 +67,22 @@ def test_a_dragged_path_becomes_a_chip_and_is_copied(calc_repo, images):
     assert user["attachments"] == [str(copy)]
 
 
+def test_a_message_that_starts_with_a_dragged_image_is_not_a_command(calc_repo, images):
+    """A dropped file pastes its absolute path, which starts with `/`: that's an image, not a command."""
+    shot = images / "Screenshot 2026-11-19.png"
+    shot.write_bytes(PNG)
+    dragged = str(shot).replace(" ", "\\ ")
+    run_chat(calc_repo, [f"{dragged} make the header match this"], {"converse": [asks()]}, config=CONVERSATION)
+    [user] = _users(calc_repo)
+    assert user["text"] == "[image 1: Screenshot 2026-11-19.png] make the header match this"
+    assert (session_dir(calc_repo) / "images" / "1-Screenshot 2026-11-19.png").exists()
+
+
+def test_a_slash_command_is_still_a_command(calc_repo, images):
+    out, *_ = run_chat(calc_repo, ["/nosuch"], {}, config=CONVERSATION)
+    assert "Unknown command /nosuch" in out
+
+
 def test_attachments_reach_converse_and_planning_packets(calc_repo, images, packets):
     approaches = Approaches(options=[Approach(name="Grid", summary="g"), Approach(name="Flex", summary="f")])
     run_chat(  # EOF at approval

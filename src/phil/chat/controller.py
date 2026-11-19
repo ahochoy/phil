@@ -25,7 +25,7 @@ from phil.agents.invoke import AgentContext, price_book_for
 from phil.agents.providers import provider_for_model
 from phil.agents.unpriced import PLANNING_ROLES, planning_notice, unpriced_models
 from phil.chat.answer import ask_answer
-from phil.chat.attachments import Attached, attach, chip, find_images
+from phil.chat.attachments import Attached, attach, chip, find_images, starts_with_image
 from phil.chat.approval import (
     effective_setup_cmd,
     effective_test_cmd,
@@ -955,7 +955,7 @@ class ChatController:
         if forced is not None:
             self._forced_input(raw, forced, rest)
             return True
-        if text.startswith("/"):
+        if text.startswith("/") and not starts_with_image(text):
             self.session.user(raw, stage="command")
             return self._command(text)
         stage = self.stage

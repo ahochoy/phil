@@ -128,6 +128,12 @@ def find_images(text: str) -> list[Found]:
     return found
 
 
+def starts_with_image(text: str) -> bool:
+    """Whether `text` (already stripped) opens with a pasted image path. A dropped file pastes its
+    absolute path, so a message that starts with one begins with `/` without being a command."""
+    return any(start == 0 for start, _end, _item in _scan(text))
+
+
 def attach(text: str, images_dir: Path, *, first_number: int) -> Attached:
     """`text` with each pasted image replaced by a chip (numbered from 1), and each copied to
     `images_dir/<n>-<name>` with `n` counting up from `first_number`. An image that is over the
