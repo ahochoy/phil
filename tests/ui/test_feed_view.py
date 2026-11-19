@@ -134,6 +134,31 @@ def test_task_done_with_files_none_still_shows_elapsed_time_when_known():
     assert feed.milestone({"kind": "task_done", "task": "T6", "files": None, "ts": "2026-10-07T10:00:41Z"}, 120).plain == "✓ T6 done · 41s"
 
 
+def test_titled_task_done_inserts_the_title():
+    feed = FeedRenderer()
+    feed.milestone({"kind": "task_started", "task": "Task 1", "title": "Theme setting",
+                    "ts": "2026-11-18T10:00:00Z"}, 80)
+    done = feed.milestone({"kind": "task_done", "task": "Task 1", "files": 2,
+                           "ts": "2026-11-18T10:00:38Z"}, 80, titled=True)
+    assert done.plain == "✓ Task 1 · Theme setting · done · 2 files · 38s"
+
+
+def test_untitled_task_done_is_unchanged():
+    feed = FeedRenderer()
+    feed.milestone({"kind": "task_started", "task": "Task 1", "title": "Theme setting",
+                    "ts": "2026-11-18T10:00:00Z"}, 80)
+    done = feed.milestone({"kind": "task_done", "task": "Task 1", "files": 2,
+                           "ts": "2026-11-18T10:00:38Z"}, 80)
+    assert done.plain == "✓ Task 1 done · 2 files · 38s"
+
+
+def test_titled_task_done_without_a_known_title_is_unchanged():
+    feed = FeedRenderer()
+    done = feed.milestone({"kind": "task_done", "task": "Task 2", "files": 1,
+                           "ts": "2026-11-18T10:00:00Z"}, 80, titled=True)
+    assert done.plain == "✓ Task 2 done · 1 file"
+
+
 def test_a_milestone_with_task_none_never_renders_the_word_none():
     """A record's task can be None (e.g. the tester or reviewer at the end of a run); it must
     render as empty, not the literal string "None"."""

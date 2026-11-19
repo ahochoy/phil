@@ -69,6 +69,7 @@ def _cut(text: str, cells: int) -> str:
 class FeedRenderer:
     def __init__(self, *, more_hint: bool = True) -> None:
         self._task_started: dict[str, float] = {}
+        self._titles: dict[str, str] = {}  # a started task's title, for its task-done band (titled=True)
         self._more_hint = more_hint  # `(/more #n)` on summaries; attach has no /more (Ruling R18)
         self._burst: Burst | None = None  # the burst still running
         self._bursts: dict[int, list[dict]] = {}  # closed bursts by number, for /more #n
@@ -159,12 +160,14 @@ class FeedRenderer:
         calls = self._bursts.get(number)
         return list(calls) if calls is not None else None
 
-    def milestone(self, event: dict, width: int) -> Text:
+    def milestone(self, event: dict, width: int, *, titled: bool = False) -> Text:
         kind, task = event.get("kind"), event.get("task") or ""
         if kind == "task_started":
             started = _seconds(event.get("ts"))
             if started is not None:
                 self._task_started[task] = started
+            if event.get("title"):
+                self._titles[task] = str(event["title"])
             return Text(f"▸ {task} {event.get('title', '')}".rstrip(), style="phil.band.start")
         if kind == "gate":
             words = {"red": "red: the new tests fail as expected", "green": "green: tests pass",
@@ -178,7 +181,9 @@ class FeedRenderer:
                         style="phil.band.fail" if retrying else "phil.band.wait")
         if kind == "task_done":
             files = event.get("files")
-            text = f"✓ {task} done" if files is None else f"✓ {task} done · {files} file{'s' if files != 1 else ''}"
+            title = self._titles.pop(task, None)
+            head = f"✓ {task} · {title} · done" if titled and title else f"✓ {task} done"
+            text = head if files is None else f"{head} · {files} file{'s' if files != 1 else ''}"
             started, ended = self._task_started.pop(task, None), _seconds(event.get("ts"))
             if started is not None and ended is not None:
                 text += f" · {elapsed(ended - started)}"
