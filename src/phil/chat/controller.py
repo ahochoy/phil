@@ -1747,7 +1747,18 @@ class ChatController:
 
     def _on_turn_failed(self, data: dict) -> None:
         self._turn_must_decide = False
-        self._failed(data["error"], data.get("failure"))
+        failure = data.get("failure")
+        self._failed(data["error"], failure)
+        if isinstance(failure, dict) and failure.get("action") == VISION_ACTION:
+            # The classic intake would send the same image to the same blind model: say how to go on.
+            self._held_input, self._go_pending = [], False
+            self._safe_note("image_refused", reason=data["error"])
+            self.console.print(
+                "[phil.muted]Set the vision model in phil.toml or ~/.phil/config.toml, then reopen this chat "
+                f"with `phil --resume {escape(self.session.id)}` to go on with the image.[/]"
+            )
+            self._set_stage("conversation")
+            return
         self._conversation_fallback(data["error"])
 
     def _conversation_fallback(self, reason: str) -> None:

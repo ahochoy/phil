@@ -9,7 +9,7 @@ from phil.agents.pricing import PriceBook
 from phil.contracts import Approach, Approaches
 from tests.chat.conftest import critique, plan
 from tests.chat.test_controller import run_chat, session_dir
-from tests.chat.test_conversation_flow import CONVERSATION, asks, full_goal, ready
+from tests.chat.test_conversation_flow import CONVERSATION, asks, full_goal, payloads, ready
 from tests.chat.test_reopen_state import reopen
 from tests.helpers import TEST_MODELS
 
@@ -141,6 +141,21 @@ def test_early_warning_when_no_model_can_see(calc_repo, images, tmp_path, monkey
     )
     warning = f"{BLIND} can't read images. Set a vision model: [models] vision = \"provider:model\""
     assert text.count(warning) == 1
+
+
+def test_an_image_refusal_stops_the_turn_instead_of_falling_back(calc_repo, images):
+    """The classic intake would carry the same image to the same blind model: one refusal, not two,
+    and the chat says how to go on."""
+    from phil.agents.vision import ImageRefusal
+
+    text, _, _, factory, _ = run_chat(
+        calc_repo, [f"fix the layout {images / 'a.png'}"],
+        {"converse": [ImageRefusal(BLIND)], "intake": [ImageRefusal(BLIND)]}, config=CONVERSATION,
+    )
+    assert text.count(f"{BLIND} can't read images.") == 1
+    assert "classic intake" not in text
+    assert "phil --resume" in text
+    assert not payloads(factory, "intake")
 
 
 def test_no_early_warning_with_a_vision_model(calc_repo, images, tmp_path, monkeypatch):
