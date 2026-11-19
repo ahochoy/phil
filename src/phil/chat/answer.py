@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,13 +12,22 @@ __all__ = ["ANSWER_MAX_MODEL_CALLS", "ask_answer"]
 
 
 def ask_answer(
-    ctx: AgentContext, question: str, *, root: Path, overview: str, context: str = "", call: int = 1
+    ctx: AgentContext,
+    question: str,
+    *,
+    root: Path,
+    overview: str,
+    context: str = "",
+    call: int = 1,
+    images: Sequence[Path] = (),
 ) -> Answer:
     """Answer `question` about the repository at `root` with the read-only answerer: no run, no
     changes, at most `ANSWER_MAX_MODEL_CALLS` model calls. Without an answerer model it uses the
-    orchestrator's."""
+    orchestrator's. `images` (the goal's attachments) go into its packet as pictures."""
     contract = AnswerInput(question=question, context=context, repo_overview=overview)
-    packet = build_packet("answerer", contract, budget_tokens=ctx.config.budget_for("answerer").max_input_tokens)
+    packet = build_packet(
+        "answerer", contract, budget_tokens=ctx.config.budget_for("answerer").max_input_tokens, images=images
+    )
     # A config without an answerer model (a legacy per-role one has no low tier) answers on the orchestrator's.
     model = ctx.config.model_for("orchestrator") if ctx.config.missing_models(("answerer",)) else None
     log = ctx.command_log if ctx.command_log is not None else CommandLog()

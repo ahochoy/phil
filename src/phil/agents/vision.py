@@ -93,7 +93,8 @@ class VisionSwitch(AgentMiddleware):
       (`(model string, a zero-argument function building its chat model)`), or raises
       `ImageRefusal` when there is none.
     - Otherwise the call runs as it is; if the provider refuses it over the image, it is retried
-      once on `vision` when that is a different model, else it raises `ImageRefusal`.
+      once on `vision` when that is a different model, else it raises `ImageRefusal`. After such a
+      refusal the model counts as blind, so later image calls go straight to `vision`.
 
     A call without an image is passed through untouched. `notice` gets one line per agent run the
     first time a call moves: `↪ image: <agent> runs on <vision model>`. `sees` may be a function,
@@ -136,6 +137,11 @@ class VisionSwitch(AgentMiddleware):
                 self._sees = self._sees()
             return self._sees is False
 
+    def _mark_blind(self) -> None:
+        """The provider refused an image: later image calls go straight to vision."""
+        with self._sees_lock:
+            self._sees = False
+
     def _vision_chat(self) -> Any:
         """The vision chat model, built (and tagged) on first use; a failed build re-raises its error."""
         assert self.vision is not None
@@ -177,6 +183,7 @@ class VisionSwitch(AgentMiddleware):
                 raise
             if not self._can_retry():
                 raise ImageRefusal(self.own_model) from exc
+            self._mark_blind()
         assert self.vision is not None
         return _refused_as_image(self.vision[0], handler, self._on_vision(request))
 
@@ -194,6 +201,7 @@ class VisionSwitch(AgentMiddleware):
                 raise
             if not self._can_retry():
                 raise ImageRefusal(self.own_model) from exc
+            self._mark_blind()
         assert self.vision is not None
         return await _arefused_as_image(self.vision[0], handler, self._on_vision(request))
 

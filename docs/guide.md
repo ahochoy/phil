@@ -382,14 +382,14 @@ Drag an image file (`.png`, `.jpg`, `.jpeg`, `.webp` or `.gif`) onto the input b
 pastes its path, and Phil accepts backslash-escaped, quoted and `file://` forms. In the
 full-screen chat the path becomes a chip, `[image 1: name]`, straight away. In the inline chat a
 muted line, `attached [image 1: name]`, prints under your message. A message takes up to 5 images
-of up to 10 MB each; anything skipped gets a notice that says why.
+of up to 5 MB each; anything skipped gets a notice that says why.
 
 Phil copies each image into the chat's folder (`~/.phil/projects/<slug>/chats/<id>/images/`).
 Images belong to the current goal and build up across its messages, and they survive
 `phil --resume`. A new goal starts with none.
 
-The intake conversation, designer, architect, critic and implementer see the pictures. The tester
-and reviewer get the file paths only.
+The intake conversation, answerer, designer, architect, critic and implementer see the pictures.
+The tester and reviewer are told the file paths for reference, but can't open the images.
 
 Set a vision model with `[models] vision = "provider:model"`. It's optional, `phil setup` offers
 it and `phil models check` checks it. When an agent's model can't read images, any agent run that

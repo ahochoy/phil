@@ -106,9 +106,19 @@ def test_images_add_tokens_and_can_overflow_the_budget(tmp_path):
 
 def test_render_content_has_text_then_image_parts(tmp_path):
     packet = build_packet("designer", goal(), budget_tokens=5000, images=[_png(tmp_path)])
-    text, image = packet.render_content()
+    text, label, image = packet.render_content()
     assert text == {"type": "text", "text": packet.render()}
+    assert label == {"type": "text", "text": "Image: shot.png"}
     assert image == {"type": "image", "base64": base64.b64encode(PNG).decode(), "mime_type": "image/png"}
+
+
+def test_each_image_part_follows_a_label_with_its_original_name(tmp_path):
+    before, after = _png(tmp_path, "1-before.png"), _png(tmp_path, "12-after-2.png")
+    packet = build_packet("designer", goal(), budget_tokens=5000, images=[before, after])
+    content = packet.render_content()
+    assert [part["type"] for part in content] == ["text", "text", "image", "text", "image"]
+    assert content[1] == {"type": "text", "text": "Image: before.png"}
+    assert content[3] == {"type": "text", "text": "Image: after-2.png"}
 
 
 def test_render_content_is_plain_text_without_images():
@@ -126,7 +136,7 @@ def test_missing_image_noted_not_crashing(tmp_path):
 
 def test_a_missing_image_is_noted_beside_the_ones_that_remain(tmp_path):
     packet = build_packet("designer", goal(), budget_tokens=5000, images=[_png(tmp_path), tmp_path / "gone.png"])
-    text, image = packet.render_content()
+    text, _label, image = packet.render_content()
     assert "(image gone.png is no longer available)" in text["text"]
     assert image["type"] == "image"
 
@@ -139,4 +149,6 @@ def test_old_packet_json_without_images_still_loads():
 
 
 def test_image_paths_section_lists_paths():
-    assert image_paths_section(["/a/one.png", "/b/two.jpg"]) == "Images the user attached:\n- /a/one.png\n- /b/two.jpg\n"
+    assert image_paths_section(["/a/one.png", "/b/two.jpg"]) == (
+        "Images the user attached (for reference; you can't open these):\n- /a/one.png\n- /b/two.jpg\n"
+    )

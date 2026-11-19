@@ -20,7 +20,7 @@ from phil.ui.bursts import one_line
 
 IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
 MAX_IMAGES = 5
-MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_IMAGE_BYTES = 5 * 1024 * 1024  # Anthropic's API refuses larger images, and an attachment rides every later call
 _CHIP_CELLS = 40
 _TRAILING = ".,;:!?)]}"
 _MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}

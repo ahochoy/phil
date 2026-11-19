@@ -141,11 +141,11 @@ def test_no_early_warning_with_a_vision_model(calc_repo, images, tmp_path, monke
 
 def test_skipped_image_notice(calc_repo, images):
     with open(images / "big.png", "wb") as handle:
-        handle.truncate(11 * 1024 * 1024)
+        handle.truncate(6 * 1024 * 1024)
     text, *_ = run_chat(
         calc_repo, [f"fix {images / 'big.png'} and {images / 'a.png'}"], {"converse": [asks()]}, config=CONVERSATION
     )
-    assert "Skipped big.png: over 10 MB" in text
+    assert "Skipped big.png: over 5 MB" in text
     [user] = _users(calc_repo)
     assert user["text"] == f"fix {images / 'big.png'} and [image 1: a.png]"
     assert user["attachments"] == [str(session_dir(calc_repo) / "images" / "1-a.png")]
@@ -213,3 +213,27 @@ def test_a_forced_goal_attaches(calc_repo, images, packets):
     copy = str(session_dir(calc_repo) / "images" / "1-a.png")
     assert [user["text"] for user in _users(calc_repo)] == ["/full fix [image 1: a.png]"]
     assert packets == [("orchestrator", [copy]), ("architect", [copy]), ("critic", [copy])]
+
+
+def test_ask_puts_the_image_in_the_answerers_packet(calc_repo, images, packets, monkeypatch):
+    from phil.chat import answer
+    from phil.contracts.routing import Answer
+
+    real = answer.build_packet
+
+    def build(role, contract, **kw):
+        packet = real(role, contract, **kw)
+        packets.append((role, list(packet.images)))
+        return packet
+
+    monkeypatch.setattr(answer, "build_packet", build)
+    text, *_ = run_chat(calc_repo, [f"/ask what is wrong in {images / 'a.png'}"], {"answer": [Answer(text="A gap.")]},
+                        config=CONVERSATION)
+    assert "A gap." in text
+    assert packets == [("answerer", [str(session_dir(calc_repo) / "images" / "1-a.png")])]
+
+
+def test_the_answerer_is_a_vision_role():
+    from phil.chat.controller import VISION_ROLES
+
+    assert "answerer" in VISION_ROLES

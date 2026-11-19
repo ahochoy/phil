@@ -226,10 +226,28 @@ def test_unknown_model_refused_then_retried_on_vision():
     assert middleware.wrap_model_call(request(with_image(), own), handler) == "response"
     assert handler.models == [own, vision_model]
     assert notices == ["↪ image: implementer runs on openrouter:anthropic/claude-sonnet-5"]
+    middleware = switch(own="ollama:llama3", sees=None, vision_model=vision_model, notices=notices)
     handler = Handler(NotFound("No endpoints found that support image input"))
     assert asyncio.run(middleware.awrap_model_call(request(with_image(), own), handler.acall)) == "response"
     assert handler.models == [own, vision_model]
-    assert len(notices) == 1
+    assert len(notices) == 2  # one per agent run (a fresh switch)
+
+
+def test_a_refusal_keeps_later_image_calls_on_vision():
+    import asyncio
+
+    own, vision_model = chat("own"), chat("vision")
+    for run in ("sync", "async"):
+        notices = []
+        middleware = switch(own="ollama:llama3", sees=None, vision_model=vision_model, notices=notices)
+        handler = Handler(NotFound("No endpoints found that support image input"))
+        for _ in range(2):
+            if run == "sync":
+                assert middleware.wrap_model_call(request(with_image(), own), handler) == "response"
+            else:
+                assert asyncio.run(middleware.awrap_model_call(request(with_image(), own), handler.acall)) == "response"
+        assert handler.models == [own, vision_model, vision_model]  # the blind model saw it once in total
+        assert notices == [NOTICE]
 
 
 def test_refusal_not_retried_twice():

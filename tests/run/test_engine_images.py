@@ -39,7 +39,8 @@ def test_implementer_packet_carries_images(make_harness, tmp_path):
     harness.start()
     content = content_of(harness, "implementer")
     assert isinstance(content, list)
-    assert [part["type"] for part in content] == ["text", "image"]
+    assert [part["type"] for part in content] == ["text", "text", "image"]
+    assert content[1]["text"] == "Image: shot.png"
 
 
 def test_tester_and_reviewer_get_paths_not_pictures(make_harness, tmp_path):
@@ -49,7 +50,7 @@ def test_tester_and_reviewer_get_paths_not_pictures(make_harness, tmp_path):
     for role in ("tester", "reviewer"):
         content = content_of(harness, role)
         assert isinstance(content, str), role
-        assert "Images the user attached:" in content and path in content
+        assert "Images the user attached (for reference; you can't open these):\n" in content and path in content
 
 
 def test_missing_attachments_file_is_fine(make_harness):

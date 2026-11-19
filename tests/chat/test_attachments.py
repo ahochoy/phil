@@ -31,7 +31,7 @@ def _png(directory: Path, name: str) -> Path:
 def test_constants():
     assert IMAGE_EXTS == frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
     assert MAX_IMAGES == 5
-    assert MAX_IMAGE_BYTES == 10 * 1024 * 1024
+    assert MAX_IMAGE_BYTES == 5 * 1024 * 1024  # Anthropic's API refuses larger images
 
 
 def test_bare_and_tilde_paths(tmp_path, monkeypatch):
@@ -138,11 +138,17 @@ def test_limits(tmp_path):
 
     big = src / "big.png"
     with big.open("wb") as handle:
-        handle.truncate(11 * 1024 * 1024)
+        handle.truncate(6 * 1024 * 1024)
     result = attach(f"look {big}", tmp_path / "images2", first_number=1)
-    assert result.skipped == ("Skipped big.png: over 10 MB",)
+    assert result.skipped == ("Skipped big.png: over 5 MB",)
     assert result.text == f"look {big}"
     assert result.images == ()
+
+    edge = src / "edge.png"
+    with edge.open("wb") as handle:
+        handle.truncate(5 * 1024 * 1024)
+    result = attach(f"look {edge}", tmp_path / "images3", first_number=1)
+    assert result.skipped == () and len(result.images) == 1  # exactly 5 MB is allowed
 
 
 def test_long_name_chip_is_cut():

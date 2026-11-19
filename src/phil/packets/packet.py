@@ -1,4 +1,5 @@
 import base64
+import re
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
@@ -29,11 +30,20 @@ _OMITTED_HEADER = "\n## Omitted for budget\n"
 
 
 IMAGE_TOKENS = 1600  # a flat charge per attached image, toward the budget and the cost estimate
+_COPY_NUMBER = re.compile(r"^\d+-")
+
+
+def original_name(path: Path) -> str:
+    """The name the user's file had: the chat's copy's name without its `<n>-` prefix."""
+    return _COPY_NUMBER.sub("", path.name, count=1) or path.name
 
 
 def image_paths_section(paths: Sequence[str | Path]) -> str:
-    """The text-only form of the images: their paths, for agents that don't get the pictures."""
-    return "Images the user attached:\n" + "".join(f"- {path}\n" for path in paths)
+    """The text-only form of the images: their paths, for agents that don't get the pictures. They
+    are for reference only: the reviewer has no tools and the tester's are rooted in the worktree."""
+    return "Images the user attached (for reference; you can't open these):\n" + "".join(
+        f"- {path}\n" for path in paths
+    )
 
 
 class Packet(BaseModel):
@@ -48,7 +58,9 @@ class Packet(BaseModel):
     extra_text: str = ""  # closing text, e.g. the image paths for an agent that gets no pictures
 
     def render_content(self) -> str | list[dict]:
-        """The text, or (with images) the text part followed by one image part per readable image.
+        """The text, or (with images) the text part followed, for each readable image, by a label
+        part (`Image: <original name>`, so the agent can match a chip or the user's words to the
+        picture) and the image part.
 
         An image that has gone missing is left out and named in the text instead."""
         if not self.images:
@@ -65,6 +77,7 @@ class Packet(BaseModel):
             except (OSError, KeyError):
                 missing.append(f"(image {path.name} is no longer available)\n")
                 continue
+            parts.append({"type": "text", "text": f"Image: {original_name(path)}"})
             parts.append({"type": "image", "base64": data, "mime_type": mime})
         text = self.render() + "".join(missing)
         if not parts:

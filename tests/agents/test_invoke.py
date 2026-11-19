@@ -133,6 +133,23 @@ def test_second_attempt_saves_the_retry_payload(config, conn, artifacts, critic_
     assert "verdict" in retry["messages"][1]["content"]
 
 
+def test_the_retry_payload_names_images_instead_of_holding_their_base64(config, conn, artifacts, critic_packet, tmp_path):
+    import base64
+
+    picture = tmp_path / "1-after.png"
+    data = b"\x89PNG\r\n\x1a\n" + b"\x07" * 64
+    picture.write_bytes(data)
+    packet = build_packet("critic", CriticInput.model_validate_json(critic_packet.contract_json), budget_tokens=4000,
+                          images=[picture])
+    factory = FakeAgentFactory([{"verdict": "maybe"}, critique()])
+    invoke_agent(get_spec("critic"), packet, context(config, conn, artifacts, factory), node="critic")
+    saved = (artifacts.run_dir / "packets" / "critic-run-2.retry.json").read_text()
+    assert base64.b64encode(data).decode() not in saved and '"base64"' not in saved
+    assert str(picture) in saved
+    sent = factory.agent.calls[1]["messages"][0]["content"]
+    assert any(part.get("base64") == base64.b64encode(data).decode() for part in sent)  # what's sent is unchanged
+
+
 def test_structured_output_parse_error_is_treated_as_invalid_and_retried(config, conn, artifacts, critic_packet):
     class StructuredOutputValidationError(Exception):
         pass
@@ -699,8 +716,9 @@ def test_invoke_agent_sends_image_parts(config, conn, artifacts, tmp_path):
     invoke_agent(get_spec("critic"), packet, context(config, conn, artifacts, factory), node="critic")
     [message] = factory.agent.calls[0]["messages"]
     assert message["content"][0] == {"type": "text", "text": packet.render()}
-    assert message["content"][1]["type"] == "image"
-    assert message["content"][1]["mime_type"] == "image/png"
+    assert message["content"][1] == {"type": "text", "text": "Image: shot.png"}
+    assert message["content"][2]["type"] == "image"
+    assert message["content"][2]["mime_type"] == "image/png"
     assert len(factory.agent.calls[1]["messages"]) == 2  # the retry still follows the picture message
     saved = json.loads((artifacts.run_dir / "packets" / "critic-run-1.json").read_text())
     assert saved["images"] == [str(shot)]

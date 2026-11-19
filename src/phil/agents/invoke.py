@@ -256,6 +256,26 @@ def _retry_message(problems: list[str]) -> dict[str, str]:
     }
 
 
+def _images_as_paths(messages: list[dict[str, Any]], images: list[str]) -> list[dict[str, Any]]:
+    """`messages` as saved in a `.retry.json` artifact: each image part becomes
+    `{"type": "image", "path": <its file>}` (`images`, in the order they were sent), never base64.
+    The messages themselves are left as they are."""
+    paths = iter(images)
+    saved: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            content = [
+                {"type": "image", "path": next(paths, "(unknown)")}
+                if isinstance(part, dict) and part.get("type") == "image"
+                else part
+                for part in content
+            ]
+            message = {**message, "content": content}
+        saved.append(message)
+    return saved
+
+
 def _record_error(
     ctx: AgentContext,
     *,
@@ -421,6 +441,8 @@ def invoke_agent(
     from phil.agents.model_retry import TRACKER_KEY, ModelRetryTracker, model_call_retried
 
     messages: list[dict[str, Any]] = [{"role": "user", "content": packet.render_content()}]
+    # The images render_content sent, in order (a missing one is left out of the content too).
+    sent_images = [image for image in packet.images if Path(image).is_file()]
     problems: list[str] = []
     last_rejected_path: str | None = None
     for attempt in range(1, max_attempts + 1):
@@ -429,7 +451,9 @@ def invoke_agent(
         if ctx.artifacts is not None:
             ctx.artifacts.write("packets", name, packet)
             if attempt > 1:
-                ctx.artifacts.write_json("packets", f"{name}.retry", {"messages": payload_messages})
+                ctx.artifacts.write_json(
+                    "packets", f"{name}.retry", {"messages": _images_as_paths(payload_messages, sent_images)}
+                )
         started = time.monotonic()
         parse_problems: list[str] | None = None
         collector = UsageCollector(ignore_tools={spec.out_contract.__name__}, tool_paths=log.tool_paths)

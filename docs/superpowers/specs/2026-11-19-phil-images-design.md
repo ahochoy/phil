@@ -94,8 +94,9 @@ paste a dropped file as its path, so Phil detects image paths in what was typed.
     frame sees a paste event). The box shows the chip, not the path.
   - In the inline chat, the chip shows on the echoed line after Enter. The prompt keeps the raw
     path while the user types.
-- **Limits.** At most 5 images per message and 10 MB per image. For each image skipped, one notice
-  says why (`Skipped big.png: over 10 MB`) and the message still goes.
+- **Limits.** At most 5 images per message and 5 MB per image (Anthropic's API refuses larger
+  images, and an attachment rides every later call of its goal). For each image skipped, one notice
+  says why (`Skipped big.png: over 5 MB`) and the message still goes.
 - **Storage.** Each attached image is copied into the chat's folder, at
   `~/.phil/projects/<slug>/chats/<chat id>/images/<n>-<file name>`. The attachment keeps the copy's
   path, so it survives `phil --resume` and the original being deleted. The chat's saved transcript
@@ -107,15 +108,22 @@ paste a dropped file as its path, so Phil detects image paths in what was typed.
 
 - **Intake.** The image travels with the user's message to the intake conversation (the `converse`
   agent), as image parts next to the text.
+- **Answering.** A question answered directly (`/ask`, or routed to the answer path) carries the
+  goal's attachments to the answerer, as image parts in its packet.
 - **Planning.** When planning starts, the goal carries the chat's attachments to the designer, the
   architect and the critic, as image parts in their packets.
 - **Building.** The implementer's task packets carry the images too, because it is building the
   design. The tester and the reviewer get the paths in text, without the pictures.
 - **Packets.** A packet gains `images: list[Path]`. `render()` stays text. A new
-  `render_content()` returns the text plus one image part per image (base64 with its MIME type).
-  `invoke_agent` sends that content when `images` is non-empty.
+  `render_content()` returns the text, then for each image a short text label, `Image: <original
+  file name>` (the copy's name without its `<n>-` prefix), and the image part (base64 with its
+  MIME type). The label lets the agent match a chip or the user's words ("after.png") to the
+  right picture. `invoke_agent` sends that content when `images` is non-empty. The packet's
+  `.retry.json` artifact names each image by its path in place of the base64.
 - **Image paths in text.** Agents that get text only see the paths in a short section of their
-  packet, `Images the user attached: …`, so they can open one with `read_file` if they need to.
+  packet, `Images the user attached (for reference; you can't open these):`, then one `- <path>`
+  line each. The reviewer has no tools and the tester's file tools are rooted in the worktree, so
+  the paths are for reference only.
 - **Which images, when (design call).** Attachments belong to the current goal. They build up
   across every message from the goal's first message on, answers to clarifying questions
   included. Each `converse` call carries all of the goal's attachments so far, because its earlier

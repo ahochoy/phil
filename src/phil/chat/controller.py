@@ -236,7 +236,7 @@ ATTACH_STAGES = (*NEW_GOAL_STAGES, *CONVERSATION_STAGES, "questions", "choose_ap
 FORCED_GOAL_STAGES = ("idle", "confirm_fix", "conversation", "confirm_pr", *GOAL_JOB_STAGES)
 IMAGES_DIR = "images"  # the goal's attached images, copied into the chat's folder
 # The roles whose models get the goal's pictures: the early warning checks each of them.
-VISION_ROLES = ("orchestrator", "designer", "architect", "critic", "implementer")
+VISION_ROLES = ("orchestrator", "answerer", "designer", "architect", "critic", "implementer")
 RUN_EVENTS = (
     "run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning",
     "budget_raised", "test_cmd_changed", "notice", "activity", "milestone", "live_step", "live_agents",
@@ -1329,6 +1329,7 @@ class ChatController:
         context = "\n".join(self._prior_turns[-CONTEXT_TURNS:])
         root, overview = self.info.root, self.overview
         tree = self.session.dir / "tree" / f"answer{call}"
+        images = list(self._attachments)
 
         def fn(ctx: AgentContext) -> dict:
             # The answerer reads a working-tree snapshot, never the live root: uncommitted edits are
@@ -1336,7 +1337,9 @@ class ChatController:
             # chat's end removes all of tree/ in any case.
             try:
                 snapshot = export_worktree(root, tree)
-                answer = ask_answer(ctx, question, root=snapshot, overview=overview, context=context, call=call)
+                answer = ask_answer(
+                    ctx, question, root=snapshot, overview=overview, context=context, call=call, images=images
+                )
             finally:
                 shutil.rmtree(tree, ignore_errors=True)
             return {"answer": answer, "question": question}
