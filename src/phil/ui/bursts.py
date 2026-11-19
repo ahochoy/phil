@@ -51,6 +51,20 @@ def one_line(text: object) -> str:
     return printable(" ".join(str(text).split()))
 
 
+def _cut(text: str, cells: int) -> str:
+    """`text` cut to at most `cells` terminal cells, ending in `…` when anything was dropped."""
+    if cells <= 1:
+        return "…" if cells == 1 else ""
+    if cell_len(text) <= cells:
+        return text
+    out = ""
+    for char in text:
+        if cell_len(out + char) > cells - 1:
+            break
+        out += char
+    return out + "…"
+
+
 def key_of(record: dict) -> tuple[str | None, str]:
     return (record.get("task"), str(record.get("role") or ""))
 

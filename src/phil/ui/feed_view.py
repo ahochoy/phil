@@ -8,7 +8,7 @@ from rich.cells import cell_len
 from rich.text import Text
 
 from phil.ui.bursts import (
-    ENGINE, INDENT, LOOKS, TIMED, Burst, FeedItem, burst_text, fold, group_summary, is_failure, key_of,
+    ENGINE, INDENT, LOOKS, TIMED, Burst, FeedItem, _cut, burst_text, fold, group_summary, is_failure, key_of,
     one_line, rolling_lines,
 )
 from phil.ui.toolbar import elapsed
@@ -51,19 +51,6 @@ def interleave(events: list[dict], records: list[dict]) -> list[tuple[str, objec
     if unplaced:
         out.append(("records", unplaced))
     return out
-
-
-def _cut(text: str, cells: int) -> str:
-    if cells <= 1:
-        return "…" if cells == 1 else ""
-    if cell_len(text) <= cells:
-        return text
-    out = ""
-    for char in text:
-        if cell_len(out + char) > cells - 1:
-            break
-        out += char
-    return out + "…"
 
 
 class FeedRenderer:

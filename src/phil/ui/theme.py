@@ -21,6 +21,8 @@ PHIL_THEME = Theme(
         "phil.band.fail": "red on grey15",
         "phil.band.wait": "yellow on grey15",
         "phil.ref": "blue",
+        "phil.diff.add": "green",
+        "phil.diff.del": "red",
         "phil.callout.border.question": "cyan", "phil.callout.border.confirm": "cyan",
         "phil.callout.border.approval": "yellow", "phil.callout.border.pause": "yellow", "phil.callout.border.failure": "red",
         "phil.callout.title.question": "bold cyan", "phil.callout.title.confirm": "bold cyan",
