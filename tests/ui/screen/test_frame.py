@@ -3,6 +3,9 @@ import threading
 from rich.console import Console
 from rich.text import Text
 
+from phil.chat.controller import help_view
+from phil.chat.decision import Decision, Option
+from phil.ui.callout import callout_lines, to_rich
 from phil.ui.screen.app import PhilApp
 from phil.ui.screen.console import PaneConsole
 from phil.ui.screen.themed import Themed
@@ -15,7 +18,7 @@ from phil.ui.screen.widgets import (
     NewMarker,
     PromptBox,
 )
-from tests.ui.screen.pilot import pilot_run, render, until
+from tests.ui.screen.pilot import drag, pilot_run, render, until
 
 
 def test_themed_resolves_phil_styles():
@@ -242,3 +245,122 @@ def test_post_after_exit_is_dropped():          # Review Focus 2
     app.post_item(Text("late"))                  # must not raise
     app.set_header("r", "b", "c")
     app.clear_conversation()
+
+
+CALLOUT = Decision("approval", "⏸ r-1 needs you · approve a command", ("CALC-002 wants to run:", "  node build.mjs"),
+                   (Option("Approve for this run", "approve"), Option("Deny", "deny")))
+
+
+def _items(app):
+    return list(app.query_one(Conversation).query(Item))
+
+
+def test_drag_selects_a_text_item():
+    app = PhilApp()
+
+    async def script(pilot):
+        app.post_item(Text("hello selectable world", style="phil.warn"))
+        await until(pilot, lambda: len(_items(app)) == 1)
+        await pilot.pause()
+        await drag(pilot, _items(app)[0], (0, 0), (15, 0))
+        assert "hello selectable" in app.screen.get_selected_text()
+
+    pilot_run(app, script)
+
+
+def test_drag_selects_a_callout_item():
+    app = PhilApp()
+
+    async def script(pilot):
+        app.post_item(to_rich(callout_lines(CALLOUT, 0, 80, live=False)))
+        await until(pilot, lambda: len(_items(app)) == 1)
+        await pilot.pause()
+        item = _items(app)[0]
+        await drag(pilot, item, (0, 0), (item.size.width - 1, item.size.height - 1))
+        selected = app.screen.get_selected_text()
+        assert "CALC-002 wants to run:" in selected and "Approve for this run" in selected
+
+    pilot_run(app, script)
+
+
+def test_drag_selects_a_group_item():
+    app = PhilApp()
+
+    async def script(pilot):
+        app.post_item(help_view())
+        await until(pilot, lambda: len(_items(app)) == 1)
+        await pilot.pause()
+        item = _items(app)[0]
+        await drag(pilot, item, (0, 0), (item.size.width - 1, min(item.size.height, 20) - 1))
+        assert "/" in app.screen.get_selected_text()    # the slash commands are selectable text
+
+    pilot_run(app, script)
+
+
+def test_items_reflow_on_resize():
+    app = PhilApp()
+
+    async def script(pilot):
+        app.post_item(Text(" ".join(f"word{n}" for n in range(40))))
+        await until(pilot, lambda: len(_items(app)) == 1)
+        await pilot.pause()
+        item = _items(app)[0]
+        wide = item.size.height
+        await pilot.resize_terminal(60, 30)
+        await until(pilot, lambda: item.size.height > wide)
+        assert all(len(line) <= 60 for line in render(item).splitlines())
+
+    pilot_run(app, script)
+
+
+def test_a_failing_cross_thread_call_is_logged_not_printed(capfd, caplog):
+    app = PhilApp()
+
+    def broken():
+        raise ValueError("boom")
+
+    async def script(pilot):
+        await pilot.pause()
+        worker = threading.Thread(target=app._call, args=(broken,))
+        worker.start()
+        worker.join()
+        await until(pilot, lambda: any("boom" in str(r.exc_info) for r in caplog.records))
+        assert all(r.name.startswith("phil.") for r in caplog.records if "boom" in str(r.exc_info))
+        app.post_item(Text("still alive"))
+        await until(pilot, lambda: "still alive" in render(app.query_one(Conversation)))
+        assert app.is_running
+
+    pilot_run(app, script)
+    assert "boom" not in capfd.readouterr().err
+
+
+def test_cross_thread_calls_run_in_app_context():
+    from textual._context import active_app, active_message_pump
+
+    app = PhilApp()
+    seen = []
+
+    async def script(pilot):
+        await pilot.pause()
+        worker = threading.Thread(target=app._call, args=(lambda: seen.append((active_app.get(), active_message_pump.get())),))
+        worker.start()
+        worker.join()
+        await until(pilot, lambda: seen)
+        assert seen[0][0] is app and seen[0][1] is app
+
+    pilot_run(app, script)
+
+
+def test_items_appear_in_call_order_across_threads():
+    app = PhilApp()
+
+    async def script(pilot):
+        await pilot.pause()
+        worker = threading.Thread(target=app.post_item, args=(Text("first"),))
+        worker.start()
+        worker.join()                      # queued on the loop, not yet applied
+        app.post_item(Text("second"))      # from the app thread, after it
+        await until(pilot, lambda: len(_items(app)) == 2)
+        assert [item.renderable.plain for item in _items(app)] == ["first", "second"]
+
+    pilot_run(app, script)

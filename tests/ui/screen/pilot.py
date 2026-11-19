@@ -26,6 +26,14 @@ async def until(pilot, predicate, timeout=5.0):
         await pilot.pause(0.01)
 
 
+async def drag(pilot, widget, start, end):
+    """Press the mouse at `start` in `widget`, move to `end`, release: a click-and-drag selection."""
+    await pilot.mouse_down(widget, offset=start)
+    await pilot.hover(widget, offset=end)
+    await pilot.mouse_up(widget, offset=end)
+    await pilot.pause()
+
+
 def render(widget: Widget) -> str:
     """The text `widget` renders (its own lines, then its displayed children's), one line per row."""
     lines = []

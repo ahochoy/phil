@@ -2,6 +2,7 @@
 thread-safe entry points the chat (running on another thread) calls."""
 
 import asyncio
+import logging
 import threading
 from collections.abc import Callable
 from typing import ClassVar, Literal
@@ -19,6 +20,8 @@ from phil.ui.screen.widgets import (
     NewMarker,
     PromptBox,
 )
+
+_log = logging.getLogger(__name__)
 
 CSS = """
 Screen {
@@ -81,7 +84,6 @@ class PhilApp(App, inherit_bindings=False):
         self._phase: Literal["pending", "running", "closed"] = "pending"
         self._pending: list[Callable[[], None]] = []
         self._entry_loop: asyncio.AbstractEventLoop | None = None  # not `_loop`: App has its own
-        self._app_thread: int | None = None
 
     def compose(self) -> ComposeResult:
         yield HeaderBar(id="header")
@@ -95,11 +97,10 @@ class PhilApp(App, inherit_bindings=False):
         self.query_one(PromptBox).focus()
         with self._lock:
             self._entry_loop = asyncio.get_running_loop()
-            self._app_thread = threading.get_ident()
             self._phase = "running"
             pending, self._pending = self._pending, []
         for apply in pending:
-            apply()
+            self._apply_if_running(apply)
 
     def on_unmount(self) -> None:
         self._close()
@@ -134,23 +135,29 @@ class PhilApp(App, inherit_bindings=False):
             self._pending = []
 
     def _call(self, apply: Callable[[], None]) -> None:
-        """Run `apply` on the app's thread: now if called there, else soon; keep it until mount;
-        drop it once the app has exited. Never raises for a closed app."""
+        """Run `apply` on the app's thread, in call order whichever thread calls; keep it until
+        mount; drop it once the app has exited. Never raises, and never blocks."""
         with self._lock:
             if self._phase == "pending":
                 self._pending.append(apply)
                 return
             if self._phase == "closed":
                 return
-            loop, app_thread = self._entry_loop, self._app_thread
-        if threading.get_ident() == app_thread:
-            apply()
-            return
+            loop = self._entry_loop
         try:
+            # Through the loop even from the app's own thread, so a call can't overtake calls
+            # other threads queued before it.
             loop.call_soon_threadsafe(self._apply_if_running, apply)  # type: ignore[union-attr]
         except RuntimeError:  # the loop closed between the check and the call
             pass
 
     def _apply_if_running(self, apply: Callable[[], None]) -> None:
-        if self._phase == "running":
-            apply()
+        """Run `apply` in Textual's context (the loop callback carries the caller's contextvars,
+        not the app's); a failure is logged, never printed over the frame."""
+        if self._phase != "running":
+            return
+        with self._context():
+            try:
+                apply()
+            except Exception:
+                _log.exception("a frame update failed")

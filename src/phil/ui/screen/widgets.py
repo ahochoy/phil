@@ -5,6 +5,8 @@ from rich.table import Table
 from rich.text import Text
 from textual import events
 from textual.containers import Vertical, VerticalScroll
+from textual.geometry import Size
+from textual.widget import Widget
 from textual.widgets import Static, TextArea
 
 from phil.ui.screen.themed import Themed
@@ -34,11 +36,46 @@ class HeaderBar(Static):
         return Themed(grid)
 
 
-class Item(Static):
-    """One printed renderable in the conversation."""
+class Item(Widget):
+    """One printed renderable in the conversation, shown as selectable text.
+
+    Textual selects text only in `Text`/`Content` visuals, so the renderable (a Text, a Group, a
+    table, a callout...) is rendered under `PHIL_THEME` at the pane's width into `Text` with the
+    styles resolved to colours, and rendered again when the width changes."""
+
+    DEFAULT_CSS = """
+    Item {
+        height: auto;
+    }
+    """
 
     def __init__(self, renderable: RenderableType) -> None:
-        super().__init__(Themed(renderable))
+        super().__init__()
+        self.renderable = renderable
+        self._styled: tuple[int, Text] | None = None
+
+    def styled(self, width: int) -> Text:
+        """The renderable as styled text, `width` cells wide at most (cached for the last width)."""
+        if self._styled is None or self._styled[0] != width:
+            console = self.app.console
+            lines = console.render_lines(Themed(self.renderable), console.options.update_width(width), pad=False)
+            text = Text(no_wrap=True, overflow="crop", end="")
+            for n, line in enumerate(lines):
+                if n:
+                    text.append("\n")
+                for segment in line:
+                    if not segment.control:
+                        text.append(segment.text, segment.style)
+            self._styled = (width, text)
+        return self._styled[1]
+
+    def render(self) -> Text:
+        return self.styled(max(self.size.width, 1))
+
+    def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
+        if not width:
+            return 0
+        return len(self.styled(width).split("\n"))
 
 
 class TaskBlock(Vertical):
