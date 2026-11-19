@@ -155,6 +155,36 @@ def attach(text: str, images_dir: Path, *, first_number: int) -> Attached:
     return Attached(text="".join(pieces), images=tuple(copies), skipped=tuple(skipped))
 
 
+def preview(text: str) -> str:
+    """`text` with its pasted images chipped as `attach` would chip them (numbered from 1, the
+    same limits), without copying anything: how the full-screen frame echoes a submitted line."""
+    pieces: list[str] = []
+    chips: dict[Path, str] = {}
+    refused: set[Path] = set()
+    cursor = 0
+    for start, end, item in _scan(text):
+        path = item.path
+        replacement = chips.get(path)
+        if replacement is None and path not in refused:
+            if len(chips) < MAX_IMAGES and _within_size(path):
+                replacement = chips[path] = chip(len(chips) + 1, path.name)
+            else:
+                refused.add(path)
+        if replacement is not None:
+            pieces.append(text[cursor:start])
+            pieces.append(replacement)
+            cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+def _within_size(path: Path) -> bool:
+    try:
+        return path.stat().st_size <= MAX_IMAGE_BYTES
+    except OSError:
+        return False
+
+
 def _copy(path: Path, images_dir: Path, number: int, attached: int, skipped: list[str], copies: list[Path]) -> str | None:
     """Copy one image and return its chip, or add a skip reason and return None."""
     name = one_line(path.name)

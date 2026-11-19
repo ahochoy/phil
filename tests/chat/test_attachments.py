@@ -197,3 +197,19 @@ def test_copy_failure_is_skipped(tmp_path, monkeypatch):
 )
 def test_mime_type(name, mime):
     assert mime_type(Path(name)) == mime
+
+
+def test_preview_chips_as_attach_does_without_copying(tmp_path):
+    from phil.chat.attachments import preview
+
+    folder = tmp_path / "shots"
+    folder.mkdir()
+    a, b = _png(folder, "a.png"), _png(folder, "b.png")
+    big = folder / "big.png"
+    with open(big, "wb") as handle:
+        handle.truncate(MAX_IMAGE_BYTES + 1)
+    text = f"see {a} and {big} then {b} and {a} again"
+    assert preview(text) == f"see [image 1: a.png] and {big} then [image 2: b.png] and [image 1: a.png] again"
+    assert sorted(path.name for path in folder.iterdir()) == ["a.png", "b.png", "big.png"]  # nothing copied
+    assert preview(text) == attach(text, tmp_path / "out", first_number=1).text
+    assert preview("no images here") == "no images here"

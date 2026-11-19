@@ -2,7 +2,7 @@ import json
 import os
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -100,8 +100,10 @@ class ChatSession:
             raise FileNotFoundError(f"no chat {chat_id}")
         return cls(chat_id, directory, ArtifactStore(directory), EventLog(directory / "transcript.jsonl"))
 
-    def user(self, text: str, *, stage: str) -> None:
-        self.transcript.append("user", stage=stage, text=text)
+    def user(self, text: str, *, stage: str, attachments: Sequence[Path] = ()) -> None:
+        """The user's message; `attachments`, the copies of the images it attached, as path strings."""
+        extra = {"attachments": [str(path) for path in attachments]} if attachments else {}
+        self.transcript.append("user", stage=stage, text=text, **extra)
 
     def contract(self, kind: str, contract: Contract) -> None:
         self.transcript.append(kind, contract=contract.model_dump(mode="json"))
