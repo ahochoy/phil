@@ -227,7 +227,7 @@ def _implementer_shell(ctx_values: dict, conn, artifacts, tmp_path) -> object:
 
     task = Task(id="CALC-001", description="Add subtract", acceptance_criteria=["subtract(3, 1) == 2"])
     packet = build_packet("implementer", ImplementInput(task=task, phase="red", test_cmd="pytest"), budget_tokens=4000)
-    config =PhilConfig(shell=ShellConfig(allow=["make *"]), models=TEST_MODELS)
+    config = PhilConfig(shell=ShellConfig(allow=["make *"]), models=TEST_MODELS)
     ctx = AgentContext(config=config, conn=conn, layer="run", run_id="r-0001", artifacts=artifacts, factory=factory,
                        workdir=tmp_path, **ctx_values)
     invoke_agent(get_spec("implementer"), packet, ctx, node="implement", task_id="CALC-001")
@@ -743,10 +743,59 @@ def test_invoke_builds_the_vision_model_and_hands_it_to_the_factory(conn, artifa
     ctx = context(config, conn, artifacts, _capturing_factory(seen), notice=notices.append,
                   prices=no_fetch_price_book(tmp_path))
     invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+    assert built == []  # not built up front: only a call that needs it builds it
+    name, build = seen["vision"]
+    assert name == VISION_MODEL
+    assert build() is vision_chat
     assert built == [(VISION_MODEL, config.run.model_timeout_s, BUILTIN_PROVIDERS["openrouter"], ("vision",))]
-    assert seen["vision"] == (VISION_MODEL, vision_chat)
     assert seen["notice"] == notices.append
     assert callable(seen["sees"])  # asked only when a call carries an image: the book wasn't consulted
+
+
+def _unbuildable(model, timeout_s, provider=None, used_by=()):
+    from phil.config import ConfigError
+
+    if model == VISION_MODEL:
+        raise ConfigError("openrouter needs OPENROUTER_API_KEY (used by vision).")
+    raise AssertionError(f"unexpected build of {model}")
+
+
+def test_a_vision_model_without_its_key_leaves_text_only_runs_alone(conn, artifacts, critic_packet, tmp_path, monkeypatch):
+    # Through the real lean harness: the agent's own model answers, the vision model is never built.
+    from langchain_core.messages import AIMessage
+
+    from phil.agents.factory import build_agent
+    from tests.agents.test_model_retry import ScriptedChatModel, usage
+
+    answer = usage(AIMessage(content="", tool_calls=[{"name": "PlanCritique", "args": critique().model_dump(), "id": "c1"}]))
+    own = ScriptedChatModel(script=[answer])
+    monkeypatch.setattr("phil.agents.factory.chat_model",
+                        lambda name, timeout_s, **kw: own if name == "ollama:qwen3:32b" else _unbuildable(name, timeout_s, **kw))
+    config = PhilConfig(models=TEST_MODELS | {"critic": "ollama:qwen3:32b", "vision": VISION_MODEL})
+    ctx = context(config, conn, artifacts, build_agent, prices=no_fetch_price_book(tmp_path))
+    assert invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic") == critique()
+
+
+def test_an_image_run_on_a_blind_model_names_the_missing_vision_key(conn, artifacts, tmp_path, monkeypatch):
+    from phil.agents.factory import build_agent
+    from phil.agents.failures import classify_failure
+    from phil.config import ConfigError
+    from tests.agents.test_model_retry import ScriptedChatModel
+
+    listing = {"data": [{"id": "inclusionai/ling-3.0-flash", "pricing": {"prompt": "0", "completion": "0"},
+                         "architecture": {"input_modalities": ["text"]}}]}
+    book = PriceBook(tmp_path / "m.json", fetch=lambda: listing, clock=lambda: 1_000_000.0)
+    own = ScriptedChatModel(script=[])
+    blind = "openrouter:inclusionai/ling-3.0-flash"
+    monkeypatch.setattr("phil.agents.factory.chat_model",
+                        lambda name, timeout_s, **kw: own if name == blind else _unbuildable(name, timeout_s, **kw))
+    config = PhilConfig(models=TEST_MODELS | {"critic": blind, "vision": VISION_MODEL})
+    ctx = context(config, conn, artifacts, build_agent, prices=book)
+    with pytest.raises(ConfigError) as caught:
+        invoke_agent(get_spec("critic"), _image_packet(tmp_path), ctx, node="critic")
+    assert own.received == []
+    failure = classify_failure(caught.value)
+    assert (failure.category, failure.headline) == ("config", "openrouter needs OPENROUTER_API_KEY (used by vision).")
 
 
 def test_no_vision_model_is_built_when_unset_or_the_agents_own(conn, artifacts, critic_packet, tmp_path, monkeypatch):

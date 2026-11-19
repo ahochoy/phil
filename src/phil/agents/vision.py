@@ -90,13 +90,19 @@ class VisionSwitch(AgentMiddleware):
     """Sends a model call that carries an image to a model that can see it.
 
     - The agent's own model is known not to see (`sees` is False): the call runs on `vision`
-      (`(model string, chat model)`), or raises `ImageRefusal` when there is none.
+      (`(model string, a zero-argument function building its chat model)`), or raises
+      `ImageRefusal` when there is none.
     - Otherwise the call runs as it is; if the provider refuses it over the image, it is retried
       once on `vision` when that is a different model, else it raises `ImageRefusal`.
 
     A call without an image is passed through untouched. `notice` gets one line per agent run the
     first time a call moves: `↪ image: <agent> runs on <vision model>`. `sees` may be a function,
     asked once, on the first call that carries an image (it may read the price list).
+
+    The vision chat model is built on the first call that moves, at most once (a failed build is
+    not tried again): a text-only run never builds it, so a vision model without its key costs it
+    nothing, and a call that needs it raises the build error (e.g. the missing-key ConfigError
+    naming "vision"). The built model is tagged so its calls are priced as its own.
 
     The first middleware of every harness, outside the per-call retry: a refusal isn't transient,
     so it passes straight through `PhilModelRetryMiddleware`, and the vision call gets the
@@ -106,7 +112,7 @@ class VisionSwitch(AgentMiddleware):
         self,
         own_model: str,
         sees: "bool | None | Callable[[], bool | None]",
-        vision: tuple[str, Any] | None,
+        vision: tuple[str, Callable[[], Any]] | None,
         notice: Callable[[str], None] | None,
         *,
         agent: str = "agent",
@@ -119,8 +125,10 @@ class VisionSwitch(AgentMiddleware):
         self._sees = sees
         self._sees_lock = threading.Lock()
         self._once = _Once(notice)
-        if vision is not None:
-            _tag_served_by(vision[1], vision[0])
+        self._build_lock = threading.Lock()
+        self._built: Any = None
+        self._build_error: BaseException | None = None
+        self._build_tried = False
 
     def _known_blind(self) -> bool:
         with self._sees_lock:
@@ -128,12 +136,29 @@ class VisionSwitch(AgentMiddleware):
                 self._sees = self._sees()
             return self._sees is False
 
+    def _vision_chat(self) -> Any:
+        """The vision chat model, built (and tagged) on first use; a failed build re-raises its error."""
+        assert self.vision is not None
+        with self._build_lock:
+            if not self._build_tried:
+                self._build_tried = True
+                try:
+                    self._built = self.vision[1]()
+                except Exception as exc:
+                    self._build_error = exc
+                else:
+                    _tag_served_by(self._built, self.vision[0])
+            if self._build_error is not None:
+                raise self._build_error
+            return self._built
+
     def _on_vision(self, request: Any) -> Any:
         assert self.vision is not None
         from phil.text import printable
 
+        moved = request.override(model=self._vision_chat())  # raises the build error, before any notice
         self._once(f"↪ image: {self.agent} runs on {printable(self.vision[0])}")
-        return request.override(model=self.vision[1])
+        return moved
 
     def _can_retry(self) -> bool:
         return self.vision is not None and self.vision[0] != self.own_model

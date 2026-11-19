@@ -69,14 +69,15 @@ def build_agent(
     *,
     timeout_s: int = 180,
     provider: ProviderSpec | None = None,
-    vision: tuple[str, Any] | None = None,
+    vision: tuple[str, Callable[[], Any]] | None = None,
     sees: "bool | None | Callable[[], bool | None]" = None,
     notice: Callable[[str], None] | None = None,
 ) -> Any:
     """`provider` is the resolved provider for `model` (invoke_agent resolves it from the config);
     without one, `model`'s provider must be a built-in.
 
-    `vision` (the `[models] vision` model string and its chat model), `sees` (can `model` read
+    `vision` (the `[models] vision` model string and a zero-argument function building its chat
+    model, called only when a call needs it), `sees` (can `model` read
     images: True, False, None for unknown, or a function asked when first needed) and `notice` (the
     feed's one-line notices) configure the `VisionSwitch` every harness runs first."""
     from phil.agents.vision import VisionSwitch

@@ -325,16 +325,22 @@ def _shell_for(
     )
 
 
-def _vision_model(config: PhilConfig, model: str, timeout_s: int) -> tuple[str, Any] | None:
-    """The `[models] vision` model as (`provider:model`, its chat model), built the way the agent's
-    own model is; None when it isn't set or is the agent's own model."""
+def _vision_model(config: PhilConfig, model: str, timeout_s: int) -> tuple[str, Callable[[], Any]] | None:
+    """The `[models] vision` model as (`provider:model`, a function building its chat model the way
+    the agent's own model is built); None when it isn't set or is the agent's own model. Nothing is
+    resolved or built here: VisionSwitch builds it on the first call that needs it, so a vision model
+    whose provider or key is missing never fails a text-only run."""
     vision = config.vision_model()
     if not vision or vision == model:
         return None
-    from phil.agents.factory import chat_model  # lazy: loads the LLM stack
 
-    provider = provider_for_model(config, vision, "vision")
-    return vision, chat_model(vision, timeout_s, provider=provider, used_by=("vision",))
+    def build() -> Any:
+        from phil.agents.factory import chat_model  # lazy: loads the LLM stack
+
+        provider = provider_for_model(config, vision, "vision")
+        return chat_model(vision, timeout_s, provider=provider, used_by=("vision",))
+
+    return vision, build
 
 
 def invoke_agent(

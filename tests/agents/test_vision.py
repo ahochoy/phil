@@ -116,7 +116,7 @@ class Handler:
 def switch(own=BLIND, sees=False, vision_model=None, notices=None):
     from phil.agents.vision import VisionSwitch
 
-    vision = (VISION, vision_model) if vision_model is not None else None
+    vision = (VISION, lambda: vision_model) if vision_model is not None else None
     return VisionSwitch(own, sees, vision, notices.append if notices is not None else None, agent="implementer")
 
 
@@ -186,7 +186,7 @@ def test_sees_can_be_asked_lazily_and_only_once():
         return False
 
     vision_model = chat("vision")
-    middleware = VisionSwitch(BLIND, sees, (VISION, vision_model), None, agent="implementer")
+    middleware = VisionSwitch(BLIND, sees, (VISION, lambda: vision_model), None, agent="implementer")
     handler = Handler()
     middleware.wrap_model_call(request(text_only()), handler)
     assert asked == []  # a text-only call never asks
@@ -277,7 +277,7 @@ def test_no_retry_when_vision_is_the_model_that_failed():
     from phil.agents.vision import ImageRefusal, VisionSwitch
 
     handler = Handler(NotFound("does not support image input"))
-    middleware = VisionSwitch(VISION, None, (VISION, chat("vision")), None, agent="implementer")
+    middleware = VisionSwitch(VISION, None, (VISION, lambda: chat("vision")), None, agent="implementer")
     with pytest.raises(ImageRefusal):
         middleware.wrap_model_call(request(with_image()), handler)
     assert len(handler.models) == 1
@@ -336,7 +336,8 @@ def test_a_vision_served_call_is_recorded_with_its_model_and_provider():
                                                              response_metadata={"model_name": name})]))
 
     own, vision_model = model("inclusionai/ling-3.0-flash"), model("anthropic/claude-sonnet-5")
-    switch(vision_model=vision_model)  # tags the vision model, so its calls are told apart
+    # The switch builds (and tags) the vision model on the first call that moves, then the handler runs it.
+    switch(vision_model=vision_model).wrap_model_call(request(with_image()), lambda req: req.model)
     collector = UsageCollector()
     own.invoke("hi", config={"callbacks": [collector]})
     vision_model.invoke("hi", config={"callbacks": [collector], "run_id": uuid.uuid4()})
@@ -344,3 +345,115 @@ def test_a_vision_served_call_is_recorded_with_its_model_and_provider():
     assert (first.model, first.provider) == ("inclusionai/ling-3.0-flash", None)
     assert (second.model, second.provider) == (VISION, "openrouter")
     assert (second.input_tokens, second.output_tokens) == (10, 2)
+
+
+# --- the vision model is built only when a call needs it (findings r1) --------------------------
+
+
+class Builder:
+    """A zero-argument vision-model factory that counts its calls; raises `error` if given."""
+
+    def __init__(self, model=None, error=None):
+        self.model, self.error, self.calls = model, error, 0
+
+    def __call__(self):
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.model
+
+
+def missing_key():
+    from phil.config import ConfigError
+
+    return ConfigError("openrouter needs OPENROUTER_API_KEY (used by vision).")
+
+
+@pytest.mark.parametrize("run", ["sync", "async"])
+def test_a_vision_model_that_cant_be_built_leaves_text_only_calls_alone(run):
+    import asyncio
+
+    from phil.agents.vision import VisionSwitch
+
+    builder = Builder(error=missing_key())
+    middleware = VisionSwitch(BLIND, False, (VISION, builder), None, agent="implementer")
+    handler = Handler()
+    req = request(text_only())
+    if run == "sync":
+        assert middleware.wrap_model_call(req, handler) == "response"
+    else:
+        assert asyncio.run(middleware.awrap_model_call(req, handler.acall)) == "response"
+    assert handler.requests == [req]
+    assert builder.calls == 0
+
+
+@pytest.mark.parametrize("run", ["sync", "async"])
+def test_an_image_call_to_a_blind_model_surfaces_the_build_error(run):
+    import asyncio
+
+    from phil.agents.failures import classify_failure
+    from phil.agents.vision import VisionSwitch
+    from phil.config import ConfigError
+
+    error = missing_key()
+    middleware = VisionSwitch(BLIND, False, (VISION, Builder(error=error)), None, agent="implementer")
+    handler = Handler()
+    with pytest.raises(ConfigError) as caught:
+        if run == "sync":
+            middleware.wrap_model_call(request(with_image()), handler)
+        else:
+            asyncio.run(middleware.awrap_model_call(request(with_image()), handler.acall))
+    assert caught.value is error
+    assert handler.models == []  # never sent
+    failure = classify_failure(caught.value)
+    assert (failure.category, failure.headline) == ("config", "openrouter needs OPENROUTER_API_KEY (used by vision).")
+
+
+@pytest.mark.parametrize("run", ["sync", "async"])
+def test_the_safety_net_surfaces_the_build_error_too(run):
+    import asyncio
+
+    from phil.agents.vision import VisionSwitch
+    from phil.config import ConfigError
+
+    error = missing_key()
+    middleware = VisionSwitch("ollama:llama3", None, (VISION, Builder(error=error)), None, agent="implementer")
+    handler = Handler(NotFound("No endpoints found that support image input"))
+    with pytest.raises(ConfigError) as caught:
+        if run == "sync":
+            middleware.wrap_model_call(request(with_image()), handler)
+        else:
+            asyncio.run(middleware.awrap_model_call(request(with_image()), handler.acall))
+    assert caught.value is error
+    assert len(handler.models) == 1
+
+
+@pytest.mark.parametrize("run", ["sync", "async"])
+def test_the_vision_model_is_built_once_across_image_calls(run):
+    import asyncio
+
+    from phil.agents.vision import VisionSwitch
+
+    vision_model = chat("vision")
+    builder = Builder(model=vision_model)
+    middleware = VisionSwitch(BLIND, False, (VISION, builder), None, agent="implementer")
+    handler = Handler()
+    for _ in range(2):
+        if run == "sync":
+            middleware.wrap_model_call(request(with_image()), handler)
+        else:
+            asyncio.run(middleware.awrap_model_call(request(with_image()), handler.acall))
+    assert builder.calls == 1
+    assert handler.models == [vision_model, vision_model]
+
+
+def test_a_failed_build_is_not_tried_again():
+    from phil.agents.vision import VisionSwitch
+    from phil.config import ConfigError
+
+    builder = Builder(error=missing_key())
+    middleware = VisionSwitch(BLIND, False, (VISION, builder), None, agent="implementer")
+    for _ in range(2):
+        with pytest.raises(ConfigError):
+            middleware.wrap_model_call(request(with_image()), Handler())
+    assert builder.calls == 1

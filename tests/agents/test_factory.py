@@ -278,7 +278,7 @@ def _first_middleware(tmp_path, monkeypatch, name, **kwargs):
 def test_every_harness_runs_the_vision_switch_first(name, tmp_path, monkeypatch):
     from phil.agents.vision import VisionSwitch
 
-    vision = ("openrouter:anthropic/claude-sonnet-5", object())
+    vision = ("openrouter:anthropic/claude-sonnet-5", lambda: object())
     notices = []
     first = _first_middleware(tmp_path, monkeypatch, name, vision=vision, sees=False, notice=notices.append)
     assert all(isinstance(m, VisionSwitch) for m in first)
