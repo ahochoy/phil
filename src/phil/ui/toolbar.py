@@ -84,6 +84,17 @@ def _run_segment(run: RunView) -> _Segment:
     return _Segment(P_PROGRESS, frags)
 
 
+def _run_cost(view: ToolbarView) -> tuple[str, str] | None:
+    """The run's cost as a styled fragment (`$0.41 / $1.00` with a budget), None when unknown."""
+    if view.run_cost is None:
+        return None
+    cost, source = view.run_cost
+    shown = format_cost(cost, source)
+    if view.budget_usd > 0:
+        shown += f" / ${view.budget_usd:.2f}"
+    return (budget_style(cost, view.budget_usd), shown)
+
+
 def _segments(view: ToolbarView, now: float) -> list[_Segment]:
     segs: list[_Segment] = []
     if view.repo:
@@ -94,12 +105,9 @@ def _segments(view: ToolbarView, now: float) -> list[_Segment]:
     elif run:
         segs.append(_run_segment(run))
         segs.append(_Segment(P_ELAPSED, [("", elapsed(now - run.started))]))
-        if view.run_cost is not None:
-            cost, source = view.run_cost
-            shown = format_cost(cost, source)
-            if view.budget_usd > 0:
-                shown += f" / ${view.budget_usd:.2f}"
-            segs.append(_Segment(P_COST, [(budget_style(cost, view.budget_usd), shown)]))
+        run_cost = _run_cost(view)
+        if run_cost is not None:
+            segs.append(_Segment(P_COST, [run_cost]))
     elif not view.step:  # a goal's step shows once, in its live row above the prompt
         segs.append(_Segment(P_PROGRESS, [("class:phil.muted", "Phil · type a goal, or /help")]))
     if not run:
@@ -227,6 +235,55 @@ def render_live_rows(
             out.append(("", "\n"))
         out += _fit_row(row, width)
     return out
+
+
+@dataclass(frozen=True)
+class FrameLive:
+    """The full-screen live line: `left` one `Fragments` per row, `right` the time and cost.
+    Both empty when nothing is running (the widget hides)."""
+
+    left: list[Fragments]
+    right: Fragments
+
+
+def _live_right(view: ToolbarView, now: float) -> Fragments:
+    if view.run is not None:
+        right: Fragments = [("", elapsed(now - view.run.started))]
+        run_cost = _run_cost(view)
+        if run_cost is not None:
+            right += [("class:phil.muted", " · "), run_cost]
+        return right
+    if view.cost is not None:
+        return [("class:phil.cost", format_cost(*view.cost))]
+    return []
+
+
+def render_frame_live(
+    view: ToolbarView, now: float, width: int, max_lines: int | None = None
+) -> FrameLive:
+    """The live line's content (spec §5.2): the live rows on the left, each fitted to what the
+    right side (time and cost) leaves; a paused run's first row is the `needs you` notice."""
+    run = view.run
+    paused = run is not None and view.paused
+    right = _live_right(view, now)
+    room = max(width - cell_len(toolbar_text(right)) - 2, 2)
+    suffix = ""
+    if run is not None and not paused and run.tasks_total > 0:
+        suffix = f" · task {min(run.tasks_done + 1, run.tasks_total)}/{run.tasks_total}"
+    flat = render_live_rows(view, now, room - cell_len(suffix), max_lines)
+    rows: list[Fragments] = [[]]
+    for frag in flat:
+        if frag[1] == "\n":
+            rows.append([])
+        else:
+            rows[-1].append(frag)
+    if not flat:
+        return FrameLive([], [])
+    if paused:
+        rows[0] = [("class:phil.warn", f"⏸ {run.name or run.run_id} needs you")]
+    elif suffix:
+        rows[0].append(("", suffix))
+    return FrameLive(rows, right)
 
 
 @dataclass
