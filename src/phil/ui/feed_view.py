@@ -161,23 +161,25 @@ class FeedRenderer:
         return list(calls) if calls is not None else None
 
     def milestone(self, event: dict, width: int, *, titled: bool = False) -> Text:
-        kind, task = event.get("kind"), event.get("task") or ""
+        # Ids, titles, gate names and problems come from agents: one printable line each.
+        kind, task = event.get("kind"), one_line(event.get("task") or "")
         if kind == "task_started":
             started = _seconds(event.get("ts"))
             if started is not None:
                 self._task_started[task] = started
-            if event.get("title"):
-                self._titles[task] = str(event["title"])
-            return Text(f"▸ {task} {event.get('title', '')}".rstrip(), style="phil.band.start")
+            title = one_line(event.get("title") or "")
+            if title:
+                self._titles[task] = title
+            return Text(f"▸ {task} {title}".rstrip(), style="phil.band.start")
         if kind == "gate":
             words = {"red": "red: the new tests fail as expected", "green": "green: tests pass",
-                     "check": "check passed"}.get(event.get("name"), f"{event.get('name')} passed")
+                     "check": "check passed"}.get(event.get("name"), f"{one_line(event.get('name'))} passed")
             return Text(f"✓ {task} {words}", style="phil.band.pass")
         if kind == "attempt_failed":
             attempt, limit = event.get("attempt", 1), event.get("limit", 1)
             retrying = bool(event.get("retrying"))
             then = f"retrying ({attempt + 1} of {limit})" if retrying else "needs you"
-            return Text(f"✗ {task} attempt {attempt} failed: {event.get('problem', '')} · {then}",
+            return Text(f"✗ {task} attempt {attempt} failed: {one_line(event.get('problem', ''))} · {then}",
                         style="phil.band.fail" if retrying else "phil.band.wait")
         if kind == "task_done":
             files = event.get("files")

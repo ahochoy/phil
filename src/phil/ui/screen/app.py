@@ -16,6 +16,7 @@ from textual.widgets.text_area import Selection
 
 from phil.chat.decision import Decision
 from phil.chat.state import ToolbarView
+from phil.ui.bursts import one_line
 from phil.ui.screen import clipboard
 from phil.ui.screen.widgets import (
     Conversation,
@@ -269,8 +270,9 @@ class PhilApp(App, inherit_bindings=False):
 
     def sub_agent(self, task: str, seq: int, description: str) -> None:
         """`└ sub-agent  <description>` in `task`'s block. The controller announces each sub-agent
-        once per run, so every call shows."""
-        self._call(lambda: self._add_task_line(task, Text(f"└ sub-agent  {description}", style="phil.sub")))
+        once per run, so every call shows. The description is model output: one printable line."""
+        line = Text(f"└ sub-agent  {one_line(description)}", style="phil.sub")
+        self._call(lambda: self._add_task_line(task, line))
 
     def task_done(self, task: str, folded: RenderableType) -> None:
         """Fold `task`'s block to the one line `folded`."""

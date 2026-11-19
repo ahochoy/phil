@@ -105,6 +105,19 @@ def test_sub_agent_line_shows_once():
     pilot_run(io.app, script)
 
 
+def test_a_sub_agent_description_cannot_reach_the_terminal_as_escape_codes():
+    """The description is model output: ESC and newlines show as `?` and a space, on one line."""
+    io = ScreenIO()
+
+    async def script(pilot):
+        io.task_started("t1", BAND)
+        io.sub_agent("t1", 1, "evil\x1b]52;c;aGk=\x07\nnext")
+        await until(pilot, lambda: _blocks(io) and len(_blocks(io)[0].lines) == 1)
+        assert _blocks(io)[0].lines[0].renderable.plain == "└ sub-agent  evil?]52;c;aGk=? next"
+
+    pilot_run(io.app, script)
+
+
 def test_a_later_run_reusing_a_task_id_gets_a_new_block_with_its_sub_agents():
     io = ScreenIO()
 

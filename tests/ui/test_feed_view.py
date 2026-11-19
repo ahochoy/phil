@@ -167,6 +167,19 @@ def test_a_milestone_with_task_none_never_renders_the_word_none():
     assert "None" not in feed.milestone({"kind": "task_started", "task": None, "title": "x", "ts": "2026-10-07T10:00:00Z"}, 120).plain
 
 
+def test_milestone_task_ids_titles_and_problems_show_escape_codes_as_question_marks():
+    """Task ids, titles and failure text come from agents: no ESC reaches the terminal."""
+    feed = FeedRenderer()
+    started = feed.milestone({"kind": "task_started", "task": "T\x1b1", "title": "x\x1b[2J"}, 120).plain
+    assert "\x1b" not in started and started == "▸ T?1 x?[2J"
+    done = feed.milestone({"kind": "task_done", "task": "T\x1b1"}, 120, titled=True).plain
+    assert "\x1b" not in done and "x?[2J" in done
+    failed = feed.milestone({"kind": "attempt_failed", "task": "T1", "problem": "bad\x1b[31m"}, 120).plain
+    assert "\x1b" not in failed
+    gate = feed.milestone({"kind": "gate", "task": "T\x1b1", "name": "g\x1b"}, 120).plain
+    assert "\x1b" not in gate
+
+
 def test_a_failed_tool_line_shows_its_result_in_the_fail_style():
     """A tool line whose record has ok: False shows its result in phil.gate.fail, not muted."""
     record = end(5, "run_shell", "run pytest -q", "→ 2 failed", "5.txt", ms=1800)
