@@ -5,7 +5,8 @@ import json
 import pytest
 
 from phil.chat import controller as controller_mod
-from phil.chat.controller import HELP_COMMANDS, ChatController, ChatOutcome
+from phil.chat.controller import HELP_COMMANDS, WAKE, ChatController, ChatOutcome
+from phil.chat.events import ChatEvent
 from phil.chat.state import RunView
 from phil.contracts.routing import Answer
 from tests.chat.conftest import critique, goal, plan
@@ -137,18 +138,25 @@ def test_copy_with_no_reply_yet(calc_repo):
 
 
 def test_status_lists_model_run_and_cost(calc_repo):
+    seen = {}
+
     def status(controller):
         controller.state.set_run(RunView("r-0001", "CALC", None, 1, 3, 0.0, name="calc-run"))
         controller.state.set_run_usage(None, (0.42, "reported"))
         controller.state.set_cost(1.5, "reported")
         controller.state.set_parked(2)
+        controller.state.set_model(("high", "sonnet"))
+        view = controller.state.view()
+        seen["place"] = f"{view.repo} @ {view.branch}"
+        assert view.repo and view.branch
         return "/status"
 
     text, *_ = run_chat(calc_repo, [status], {})
     text = flat(text)
-    assert "calc_repo" in text or "@" in text  # repo and branch
+    assert seen["place"] in text
+    assert "model: high·sonnet" in text
     assert "calc-run · task 2 of 3" in text and "$0.42" in text
-    assert "chat $1.50" in text and "2 parked" in text and "model" in text
+    assert "chat $1.50" in text and "2 parked" in text
 
 
 def test_status_with_no_run(calc_repo):
@@ -161,3 +169,53 @@ def test_help_lists_chat_status_copy():
     assert names.index("/chat") < names.index("/status") < names.index("/copy") < names.index("/help")
     assert dict(HELP_COMMANDS)["/chat"] == "reopen another open chat"
     assert controller_mod.help_view() is not None
+
+
+def other_chat_state(repo, open_chat):
+    [directory] = [d for d in session_dir_all(repo) if d.name != open_chat]
+    return json.loads((directory / "state.json").read_text())
+
+
+def test_eof_in_a_picker_opened_from_edit_saves_approval(calc_repo, open_chat):
+    run_chat(calc_repo, ["add subtract", "edit", "/chat", None], FULL_SCRIPT, choose=True)  # EOF in the picker
+    assert other_chat_state(calc_repo, open_chat)["stage"] == "approval"
+
+
+def test_opening_the_picker_from_edit_saves_approval_at_once(calc_repo, open_chat):
+    seen = {}
+
+    def look(controller):
+        seen["stage"] = json.loads((controller.session.dir / "state.json").read_text())["stage"]
+        return None
+
+    run_chat(calc_repo, ["add subtract", "edit", "/chat", look], FULL_SCRIPT, choose=True)
+    assert seen["stage"] == "approval"
+
+
+def test_a_pause_landing_in_the_picker_shows_the_pause_after_stay(calc_repo, open_chat):
+    calls = []
+    paused = {"summary": "CALC-001 failed 3 attempts", "options": ["retry", "skip", "abort"]}
+
+    def pause(controller):
+        controller.post(ChatEvent("run_paused", {"escalation": paused}))
+        return WAKE
+
+    run_chat(
+        calc_repo, ["add subtract", "y", "/chat", pause, "stay", None], FULL_SCRIPT, choose=True, calls=calls,
+    )
+    chosen = [c[2] for c in calls if c[0] == "choose"]
+    assert chosen[-1].kind == "pause"  # after staying, the pause menu is what's asked
+
+
+def test_ctrl_c_closes_the_picker(calc_repo, open_chat):
+    seen = {}
+
+    def interrupt(controller):
+        raise KeyboardInterrupt
+
+    def look(controller):
+        seen["stage"] = controller.stage
+        return None
+
+    text, *_ = run_chat(calc_repo, ["/chat", interrupt, look], {}, choose=False)
+    assert "Cancelled." not in text and seen["stage"] == "idle"

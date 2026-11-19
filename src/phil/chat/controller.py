@@ -750,7 +750,7 @@ class ChatController:
     def _save(self) -> None:
         """Write state.json so a reopened chat can rebuild itself; a failed write never interrupts the chat."""
         try:
-            stage = self.stage
+            stage = self._picker_return if self.stage == "pick_chat" else self.stage  # the picker is never reopened
             if stage == "confirm_replace":
                 stage = self._parent_stage
             elif stage in ("confirm_pr", "confirm_fix", "confirm_agents_md"):
@@ -761,8 +761,6 @@ class ChatController:
                 stage = "approval"  # a reopened chat asks about phil.toml again before approval
             elif stage == "conversing":
                 stage = "conversation"  # a reopened chat sends the unanswered turn again
-            elif stage == "pick_chat":
-                stage = self._picker_return  # the picker is never reopened
             draft = self._draft
             planner_calls, planner_version = self.planner.counters()
             self.session.save_state(
@@ -1010,7 +1008,9 @@ class ChatController:
 
     def _interrupt(self) -> None:
         """Ctrl-C: cancel an in-flight goal, back out of a sub-prompt, or just acknowledge."""
-        if self.stage == "planning" and self._revising and self._draft is not None:
+        if self.stage == "pick_chat":
+            self._set_stage(self._picker_return)  # close the picker; the next Ctrl-C acts on that stage
+        elif self.stage == "planning" and self._revising and self._draft is not None:
             self._next_generation()  # the revision is dropped when it lands
             self.state.set_cancelling(True)
             self._revising = False
@@ -2235,8 +2235,8 @@ class ChatController:
         self.console.print(
             f"[phil.warn]⏸ {escape(self._label(self._run_id))} needs you: {escape(printable(escalation.get('summary', '')))}[/]"
         )
-        if self.stage in RUN_STAGES:
-            self._set_stage("paused")
+        if self._underlying_stage() in RUN_STAGES:
+            self._move_to("paused")
         self._detailed = None  # a pause that opens again points /more 1 back at its details
         try:
             self._pause_decision(escalation)
@@ -2245,14 +2245,26 @@ class ChatController:
 
     def _on_run_resumed(self, data: dict) -> None:
         # Answered here (the resume worker took the run) or elsewhere (drop the pending question).
-        elsewhere = self.stage in ("paused", "hint") and not self._answer_sent
+        elsewhere = self._underlying_stage() in ("paused", "hint") and not self._answer_sent
         self._pause, self._answer_sent = None, False
         self.state.set_paused(False)
         if elsewhere:  # the open callout closes: say why it went away
             self.console.print(Text(answered_elsewhere(self._label(self._run_id)), style="phil.muted"))
         self.console.print(f"[phil.muted]{escape(self._label(self._run_id))} resumed.[/]")
-        if self.stage in ("paused", "hint"):
-            self._set_stage("running")
+        if self._underlying_stage() in ("paused", "hint"):
+            self._move_to("running")
+
+    def _underlying_stage(self) -> str:
+        """The stage the chat is in, looking through an open /chat picker to the stage it came from."""
+        return self._picker_return if self.stage == "pick_chat" else self.stage
+
+    def _move_to(self, stage: str) -> None:
+        """Set the stage; with the picker open, change the stage it returns to and leave it open."""
+        if self.stage == "pick_chat":
+            self._picker_return = stage
+            self._save()
+        else:
+            self._set_stage(stage)
 
     def _pause_answer(self, text: str) -> None:
         options = self._options()
