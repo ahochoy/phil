@@ -12,7 +12,7 @@ from phil.store.paths import ProjectPaths
 from phil.store.runs import create_run, update_run
 from phil.ui.banner import FIRST_TIPS
 from phil.ui.chats_view import open_chat_line
-from tests.cli.test_chat_command import _FakeTerminal, _plain
+from tests.cli.test_chat_command import _FakeTerminal, _plain, inline_screen  # noqa: F401 (autouse fixture)
 
 runner = CliRunner()
 

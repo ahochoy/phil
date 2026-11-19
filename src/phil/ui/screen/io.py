@@ -198,6 +198,11 @@ class ScreenIO:
     def set_view(self, view: Callable[[], ToolbarView | None]) -> None:
         self._view = view
 
+    def discard_interrupt(self) -> None:
+        """Drop a held Ctrl+C (one no `ask` took): a `/chat` switch starts the next chat without it."""
+        with self._ready:
+            self._interrupt_held = False
+
     # The frame's side (`FrameInput`, called on the app's thread).
 
     def frame_mounted(self) -> None:

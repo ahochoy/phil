@@ -307,6 +307,14 @@ def test_held_interrupt_is_dropped_at_exit():         # Review Focus 3
     assert chat.ask("you › ") is None                 # the frame is gone: EOF, not a stale interrupt
 
 
+def test_discard_interrupt_drops_a_held_ctrl_c():     # a /chat switch: the next chat starts clean
+    io, chat = _io()
+    io.interrupt()                                    # Ctrl+C while no ask was waiting
+    io.discard_interrupt()
+    io.line_entered("next")
+    assert chat.ask("you › ") == "next"
+
+
 def test_fn_returning_exits_the_app():
     io, chat = _io()
     seen = []
