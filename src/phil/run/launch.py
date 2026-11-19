@@ -16,6 +16,17 @@ from phil.store.events import EventLog, run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, create_run, new_run_id
 
+ATTACHMENTS_FILE = "attachments.json"  # in the run dir: {"images": [absolute path, ...]}
+
+
+def read_attachments(run_dir: Path) -> list[str]:
+    """The goal's image paths for this run; [] when the file is missing or unreadable."""
+    try:
+        images = json.loads((run_dir / ATTACHMENTS_FILE).read_text(encoding="utf-8"))["images"]
+        return [str(image) for image in images]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
 
 def prepare_run(
     info: RepoInfo,
@@ -26,14 +37,19 @@ def prepare_run(
     overrides: Sequence[str] = (),
     depth: str = "full",
     goal: Goal | None = None,
+    images: Sequence[Path] = (),
 ) -> RunRecord:
     """Record a pending run; its worker reloads the config with the same `--set` `overrides`. A run
-    started from a `goal` is named from it (run_name; the fallback needs the ID allocated here)."""
+    started from a `goal` is named from it (run_name; the fallback needs the ID allocated here).
+    The goal's attached `images` reach the worker through the run's attachments.json."""
     paths = ProjectPaths(info.slug)
     conn = connect(paths.db_path)
     try:
         run_id = new_run_id(conn)
         ArtifactStore(paths.run_dir(run_id)).write_plan(plan)
+        if images:
+            attachments = {"images": [str(Path(image).absolute()) for image in images]}
+            (paths.run_dir(run_id) / ATTACHMENTS_FILE).write_text(json.dumps(attachments), encoding="utf-8")
         return create_run(
             conn,
             run_id=run_id,

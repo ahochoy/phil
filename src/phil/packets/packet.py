@@ -45,6 +45,7 @@ class Packet(BaseModel):
     omitted: list[str]
     tokens: int = 0
     images: list[str] = []
+    extra_text: str = ""  # closing text, e.g. the image paths for an agent that gets no pictures
 
     def render_content(self) -> str | list[dict]:
         """The text, or (with images) the text part followed by one image part per readable image.
@@ -81,6 +82,8 @@ class Packet(BaseModel):
         if self.omitted:
             parts.append(_OMITTED_HEADER)
             parts.extend(f"- {item}\n" for item in self.omitted)
+        if self.extra_text:
+            parts.append("\n" + self.extra_text)
         return "".join(parts)
 
 
@@ -110,11 +113,13 @@ def build_packet(
     files: Sequence[str] = (),
     ledger: Sequence[str] = (),
     images: Sequence[Path] = (),
+    extra_text: str = "",
 ) -> Packet:
     contract_type = type(contract).__name__
     contract_json = contract.model_dump_json(indent=2)
     image_tokens = IMAGE_TOKENS * len(images)
     used = estimate_tokens(_contract_section(contract_type, contract_json)) + image_tokens
+    used += estimate_tokens(extra_text) if extra_text else 0
     if used > budget_tokens:
         raise PacketTooLarge(f"{contract_type} alone needs {used} tokens; budget is {budget_tokens}")
     if files and root is None:
@@ -164,6 +169,7 @@ def build_packet(
             ledger=kept_ledger,
             omitted=omitted,
             images=[str(image) for image in images],
+            extra_text=extra_text,
         )
         packet.tokens = estimate_tokens(packet.render()) + image_tokens
         return packet

@@ -37,6 +37,7 @@ from phil.git import GitError, branch_for, git
 from phil.memory.context import read_run_context
 from phil.memory.learn import learn_from_run
 from phil.packets import Packet, PacketTooLarge, build_packet
+from phil.packets.packet import image_paths_section
 from phil.permissions.catalog import label_for
 from phil.permissions.listing import shown_path
 from phil.permissions.load import policy_or_fallback, trusted_shell
@@ -55,6 +56,7 @@ from phil.run.gates import (
     verify_green,
     verify_red,
 )
+from phil.run.launch import read_attachments
 from phil.run.state import (
     RunState,
     blocking_count,
@@ -181,6 +183,18 @@ class RunEngine:
         self.worktrees = WorktreeManager(deps.repo_root)
         self._milestone_warned = False
         self._repo_context: str | None = None
+        self._images: list[str] | None = None
+
+    def _attachments(self) -> list[str]:
+        """The goal's image paths, read once from the run's attachments.json ([] when it has none)."""
+        if self._images is None:
+            self._images = read_attachments(self.deps.artifacts.run_dir)
+        return self._images
+
+    def _image_text(self) -> str:
+        """For the agents that get no pictures (tester, reviewer): the images' paths as text."""
+        images = self._attachments()
+        return image_paths_section(images) if images else ""
 
     def _run_context(self) -> str:
         """The run's context snapshot, read once. Always a string, so a run never builds a block."""
@@ -389,6 +403,7 @@ class RunEngine:
             repo_root=self.deps.repo_root,
             paths=self.deps.paths,
             repo_context=self._run_context(),
+            notice=self._notice,
         )
 
     def _policy(self) -> PolicySet | None:
@@ -871,6 +886,7 @@ class RunEngine:
                 root=self.deps.worktree,
                 files=files,
                 ledger=ledger,
+                images=[Path(image) for image in self._attachments()],
             )
 
         try:
@@ -1168,7 +1184,9 @@ class RunEngine:
             plan=plan, diff=self.worktrees.diff(worktree, diff_base), final_report=before, test_cmd=state["test_cmd"]
         )
         try:
-            packet = build_packet("tester", contract, budget_tokens=self._budget("tester"))
+            packet = build_packet(
+                "tester", contract, budget_tokens=self._budget("tester"), extra_text=self._image_text()
+            )
             report = invoke_agent(get_spec("tester"), packet, self._context(state, log), node=node, call=seq)
             issues = list(report.issues)
         except PacketTooLarge as exc:
@@ -1257,7 +1275,9 @@ class RunEngine:
         )
         carried = list(state.get("open_issues", []))
         try:
-            packet = build_packet("reviewer", contract, budget_tokens=self._budget("reviewer"))
+            packet = build_packet(
+                "reviewer", contract, budget_tokens=self._budget("reviewer"), extra_text=self._image_text()
+            )
             verdict = invoke_agent(get_spec("reviewer"), packet, self._context(state, CommandLog()), node="review", call=seq)
         except (PacketTooLarge, ContractViolation) as exc:
             problems = exc.problems if isinstance(exc, ContractViolation) else [str(exc)]
