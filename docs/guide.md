@@ -126,6 +126,14 @@ tester = "high"                     # give the tester the strong model too
 A `phil.toml` that sets every role individually (the old six-role style) keeps working
 unchanged — each role's own `[models]` key always wins over any tier.
 
+An optional `vision` model reads images when an agent's own model can't (see Showing Phil an
+image below). It's a plain `provider:model` under `[models]`, and `phil setup` offers it:
+
+```toml
+[models]
+vision = "openrouter:openai/gpt-6-luna"
+```
+
 ### Providers
 
 A model is `provider:model`, e.g. `openrouter:openai/gpt-6-luna` or `ollama:qwen3:32b`. These
@@ -367,6 +375,32 @@ screen = "full"   # or "inline"
 uses the inline chat, and says so, when the terminal is smaller than 60×15 or on a Windows console
 other than Windows Terminal or VS Code. With piped input or output the chat uses plain lines.
 `phil attach` is unchanged.
+
+### Showing Phil an image
+
+Drag an image file (`.png`, `.jpg`, `.jpeg`, `.webp` or `.gif`) onto the input bar; the terminal
+pastes its path, and Phil accepts backslash-escaped, quoted and `file://` forms. In the
+full-screen chat the path becomes a chip, `[image 1: name]`, straight away. In the inline chat a
+muted line, `attached [image 1: name]`, prints under your message. A message takes up to 5 images
+of up to 10 MB each; anything skipped gets a notice that says why.
+
+Phil copies each image into the chat's folder (`~/.phil/projects/<slug>/chats/<id>/images/`).
+Images belong to the current goal and build up across its messages, and they survive
+`phil --resume`. A new goal starts with none.
+
+The intake conversation, designer, architect, critic and implementer see the pictures. The tester
+and reviewer get the file paths only.
+
+Set a vision model with `[models] vision = "provider:model"`. It's optional, `phil setup` offers
+it and `phil models check` checks it. When an agent's model can't read images, any agent run that
+carries an image runs on the vision model for the whole run, so the agent keeps seeing the
+picture; the feed shows `↪ image: <agent> runs on <model>`. Phil knows whether a model reads
+images from OpenRouter's model list; for other providers it's unknown, and if a provider refuses
+an image anyway, Phil retries that call once on the vision model.
+
+With no vision model set, Phil warns when you attach (`<model> can't read images. Set a vision
+model: [models] vision = "provider:model"`), and a run that hits an image stops with the same
+message.
 
 ## Routing
 
