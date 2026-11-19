@@ -226,6 +226,7 @@ class LiveLine(Widget):
         self.max_lines: int | None = None
         self._snapshot: tuple[ToolbarView, float] | None = None
         self._lines: tuple[int, list[Text]] | None = None  # (width, lines) for the snapshot
+        self._failing = False  # the last tick's view or render failed (logged once until it recovers)
 
     def set_max_lines(self, max_lines: int | None) -> None:
         self.max_lines = max_lines
@@ -233,8 +234,8 @@ class LiveLine(Widget):
 
     def tick(self) -> None:
         """Take a fresh view and redraw; a re-layout only when the row count (or showing) changes.
-        A view or render that fails is logged and the last good rows stay (it runs on a timer, where
-        an exception would end the app)."""
+        A view or render that fails is logged (the first failure, then not again until a tick
+        succeeds) and the last good rows stay (it runs on a timer, where an exception would end the app)."""
         before = (self._snapshot, self._lines)
         shown = len(self._lines[1]) if self.display and self._lines is not None else 0
         try:
@@ -245,9 +246,12 @@ class LiveLine(Widget):
             width = self.content_size.width or self.app.size.width - self.styles.gutter.width
             rows = len(self._rows(max(width, 1)))
         except Exception:
-            _log.exception("the live line's view failed")
+            if not self._failing:  # once, not every tick, until it recovers
+                _log.exception("the live line's view failed")
+            self._failing = True
             self._snapshot, self._lines = before
             return
+        self._failing = False
         self.display = rows > 0
         self.refresh(layout=rows != shown)
 

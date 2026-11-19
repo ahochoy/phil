@@ -470,7 +470,8 @@ def _fake_clipboard(monkeypatch, returncode=0):
         calls.append((args, kwargs))
         return subprocess.CompletedProcess(args, returncode)
 
-    monkeypatch.setattr(clipboard, "_which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(clipboard, "_which", lambda name, path=None: f"/bin/{name}")
+    monkeypatch.setattr(clipboard, "_isfile", lambda path: True)  # Windows' System32 clip.exe
     monkeypatch.setattr(clipboard, "_run", run)
     return calls
 
@@ -486,7 +487,7 @@ def test_copy_uses_the_system_clipboard_command(monkeypatch):
 
     pilot_run(io.app, script)
     [(args, kwargs)] = calls
-    assert args[0].startswith("/bin/") and kwargs["input"] == b"some text"
+    assert kwargs["input"] in (b"some text", "some text".encode("utf-16"))
     assert not kwargs.get("shell") and kwargs["timeout"] > 0
 
 
@@ -512,7 +513,7 @@ def test_ctrl_c_copy_uses_the_system_clipboard_command(monkeypatch):
         await until(pilot, lambda: io.asking)
         await pilot.press(*"abc", "shift+left", "ctrl+c")
         await until(pilot, lambda: calls)
-        assert calls[0][1]["input"] == b"c"
+        assert calls[0][1]["input"] in (b"c", "c".encode("utf-16"))
 
     pilot_run(io.app, script)
 

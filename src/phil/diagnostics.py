@@ -154,6 +154,22 @@ def reset() -> None:
 
 
 @contextmanager
+def quiet_stderr() -> Iterator[None]:
+    """Detach debug mode's stderr mirror while active (the full screen owns the terminal: a line
+    written to stderr would land over the frame); the log files keep everything."""
+    root = logging.getLogger()
+    mirrors = [h for h in _state["handlers"] if h is not _state["file"]]
+    for handler in mirrors:
+        root.removeHandler(handler)
+    try:
+        yield
+    finally:
+        for handler in mirrors:
+            if handler in _state["handlers"]:  # not if `reset` or `configure` replaced it meanwhile
+                root.addHandler(handler)
+
+
+@contextmanager
 def redirect(log_path: Path) -> Iterator[None]:
     """Send the file diagnostics to `log_path` (a chat's or a run's own log) while active."""
     root = logging.getLogger()

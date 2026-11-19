@@ -308,7 +308,12 @@ out at the next prompt:
 - The live line shows the chat's running cost (its own agent calls plus its runs'), e.g. `$0.42`
   reported by the provider or `~$0.42` estimated from a cached price list (see Observability).
   `/status` prints the repo, the model, the run and the cost.
-- `/chat` reopens another open chat of this repo; `/copy` copies Phil's last reply.
+- `/chat` reopens another open chat of this repo; `/copy` copies Phil's last reply. In the full
+  screen, Ctrl+C with text selected copies it (the next Ctrl+C interrupts). Copying uses the
+  system's clipboard command when there is one (`pbcopy`, `clip.exe`, `wl-copy` or `xclip`);
+  otherwise the text is sent to the terminal's clipboard (OSC 52), which some terminals ignore
+  (macOS Terminal.app; tmux unless `set-clipboard` is on): `/copy` says so, and selecting the text
+  with the terminal's own selection still works.
 - `/runs` lists runs, `/help` shows the commands, `/quit` (or Ctrl-D on an empty box) leaves the
   chat — a run left running keeps going in the background.
 
@@ -329,7 +334,8 @@ Start, reopen and leave a chat:
 
     phil                      # a new chat; the first screen shows the banner and, when other
                               # chats are open, `2 open chats · /chat`
-    phil chat                 # the picker: this repo's open chats; pick a number or Enter for a new one
+    phil chat                 # the picker: this repo's open chats; Enter (or a number) picks the
+                              # highlighted chat; its last option, "Stay in this chat", keeps the new one
     phil --continue           # reopen the most recently active open chat
     phil --resume <chat-id>   # reopen a specific chat directly
     phil --new                # start a new chat (the default)

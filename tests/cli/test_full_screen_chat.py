@@ -98,6 +98,41 @@ def full_screen(calc_repo, monkeypatch, phil_home):
     return play
 
 
+def _card(conversation: str) -> list[str]:
+    """The banner card's rows: from its top border to its bottom one."""
+    lines = conversation.splitlines()
+    top = next(i for i, line in enumerate(lines) if line.startswith("╭"))
+    bottom = next(i for i, line in enumerate(lines) if line.startswith("╰"))
+    return lines[top:bottom + 1]
+
+
+@pytest.mark.parametrize("columns", [60, 72])
+def test_the_banner_card_fits_a_narrow_pane(calc_repo, full_screen, columns):
+    seen: list[str] = []
+    full_screen([_snapshot(seen), _eof], size=(columns, 20))
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)])
+    assert result.exit_code == 0, f"{result.output}\n{result.exception}"
+    card = _card(seen[0])
+    assert len(card) > 2 and all(line.rstrip()[-1] in "╮│╯" for line in card), "\n".join(card)
+    assert all(line[0] in "╭│╰" for line in card)  # no row wrapped onto the next line
+    assert "Phil v" in seen[0]
+
+
+def test_the_banner_card_reflows_when_the_pane_resizes(calc_repo, full_screen):
+    seen: list[str] = []
+
+    async def narrow(io, pilot):
+        await pilot.resize_terminal(62, 20)
+        await pilot.pause(0.2)
+
+    full_screen([_snapshot(seen), narrow, _snapshot(seen), _eof], size=(100, 20))
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)])
+    assert result.exit_code == 0, f"{result.output}\n{result.exception}"
+    wide, narrowed = (_card(conversation) for conversation in seen)
+    assert all(line.rstrip()[-1] in "╮│╯" for line in narrowed), "\n".join(narrowed)
+    assert max(map(len, narrowed)) < 62 < max(map(len, wide))
+
+
 def test_a_goal_runs_on_the_frames_worker_thread(calc_repo, full_screen):
     """Regression: the controller's connection was opened on the main thread and used on
     `phil-chat`, so every goal failed with SQLite's ProgrammingError."""

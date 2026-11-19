@@ -102,7 +102,8 @@ def no_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
 def no_system_clipboard(monkeypatch: pytest.MonkeyPatch) -> None:
     # The full screen's copy runs the platform's clipboard command (pbcopy, wl-copy...): tests must
     # never overwrite the clipboard of the machine running them. Tests of it fake the lookup.
-    monkeypatch.setattr("phil.ui.screen.clipboard._which", lambda name: None)
+    monkeypatch.setattr("phil.ui.screen.clipboard._which", lambda name, path=None: None)
+    monkeypatch.setattr("phil.ui.screen.clipboard._isfile", lambda path: False)
 
 
 @pytest.fixture(autouse=True)

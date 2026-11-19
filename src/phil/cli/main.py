@@ -423,7 +423,9 @@ def _start_chat(ctx: typer.Context, info, conn, resume_id, new: bool, continue_c
         try:
             last = _run_full(
                 info, config, factory, base_sha, session, resume, overrides,
-                facts=facts, hint_count=0 if pick_chat else len(listed), notes=notes, pick_chat=pick_chat,
+                # the chats /chat's picker would list: not one open in another window
+                facts=facts, hint_count=0 if pick_chat else sum(not chat.open_elsewhere for chat in listed),
+                notes=notes, pick_chat=pick_chat,
             )
         finally:
             session.unlock()
@@ -592,17 +594,14 @@ def _run_full(
 ):
     """The full-screen chat: the banner card and the open-chats hint as its first items, then the
     driver on the frame's worker thread. Returns the last chat it ran, once the frame has closed."""
-    from phil.ui.banner import banner_plain, render_banner
+    from phil.ui.banner import FittedBanner
     from phil.ui.chats_view import open_chats_hint
+    from phil.ui.screen import clipboard
 
+    clipboard.distrust(info.root)  # copy never runs a clipboard program from the repository
     screen = _screen(lambda: None)
     try:
-        try:  # as inline: a card that can't be drawn falls back to the plain lines
-            card = render_banner(facts, screen.width())
-        except Exception:
-            card = None
-        for line in card if card is not None else [Text(line) for line in banner_plain(facts)]:
-            screen.app.post_item(line)
+        screen.app.post_item(FittedBanner(facts))  # drawn at the pane's width, as it resizes
         hint = open_chats_hint(hint_count)
         if hint is not None:
             screen.app.post_item(Text(hint, style="phil.muted"))
@@ -610,13 +609,14 @@ def _run_full(
             screen.app.post_item(Text(note))
         screen.app.set_header(*_header(info), session.id)
         try:
-            return screen.run(
-                lambda: _drive(
-                    screen, screen.console, info, config, factory, base_sha, session, resume, overrides,
-                    pick_chat=pick_chat, point=lambda controller: screen.set_view(controller.state.view),
-                    frame=screen,
+            with diagnostics.quiet_stderr():  # PHIL_DEBUG's stderr lines would land over the frame
+                return screen.run(
+                    lambda: _drive(
+                        screen, screen.console, info, config, factory, base_sha, session, resume, overrides,
+                        pick_chat=pick_chat, point=lambda controller: screen.set_view(controller.state.view),
+                        frame=screen,
+                    )
                 )
-            )
         except _StartFailed as exc:
             console.print(exc.markup)
             raise typer.Exit(1) from exc

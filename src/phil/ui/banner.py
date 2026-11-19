@@ -177,3 +177,18 @@ def render_banner(facts: BannerFacts, width: int, mascot=MASCOT) -> list[Text]:
 
 def banner_plain(facts: BannerFacts) -> list[str]:
     return [t.text.plain for t in [*_facts(facts, plain=True), *_below(facts)] if t.text.plain]
+
+
+class FittedBanner:
+    """The card as a renderable, drawn at the width it is rendered at (the full screen's pane, and
+    again whenever the pane resizes). A card that can't be drawn falls back to the plain lines."""
+
+    def __init__(self, facts: BannerFacts) -> None:
+        self.facts = facts
+
+    def __rich_console__(self, console, options):
+        try:  # the mascot is hand-edited
+            lines = render_banner(self.facts, options.max_width)
+        except Exception:
+            lines = [Text(line) for line in banner_plain(self.facts)]
+        yield from lines

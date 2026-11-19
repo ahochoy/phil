@@ -364,7 +364,15 @@ def test_exit_line():
 
 
 def _item_text(item) -> str:
-    return getattr(item, "plain", str(item))
+    if hasattr(item, "plain"):
+        return item.plain
+    from rich.console import Console
+
+    from phil.ui.theme import PHIL_THEME
+
+    console = Console(file=io.StringIO(), record=True, width=80, theme=PHIL_THEME)
+    console.print(item)  # a renderable, such as the banner drawn at the pane's width
+    return console.export_text()
 
 
 class _FakeScreen:
@@ -476,6 +484,21 @@ def test_full_start_posts_the_banner_and_the_open_chats_hint(calc_repo, monkeypa
     [new_chat] = _chat_ids(calc_repo) - {f"c-20261008-12000{n}" for n in (1, 2)}
     assert screen.headers[0] == ("calc", "main", new_chat)
     assert screen.closed
+
+
+def test_the_open_chats_hint_leaves_out_chats_open_elsewhere(calc_repo, monkeypatch, phil_home):
+    import os
+
+    paths = ProjectPaths(resolve_repo(calc_repo).slug)
+    _listed_chat(paths, 1)
+    held = _listed_chat(paths, 2)
+    (paths.project_dir / "chats" / held / "chat.lock").write_text(str(os.getppid()), encoding="utf-8")
+    _full(monkeypatch, phil_home)
+    result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="", env=FULL_ENV)
+    assert result.exit_code == 0, result.output
+    [screen] = screens
+    texts = [_item_text(item) for item in screen.items]
+    assert "1 open chat · /chat" in texts  # the picker wouldn't list the one held elsewhere
 
 
 def test_full_start_with_no_open_chats_posts_no_hint(calc_repo, monkeypatch, phil_home):

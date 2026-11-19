@@ -54,6 +54,22 @@ def test_debug_mirrors_to_stderr(tmp_path, capfd, monkeypatch):
     assert "library chatter" not in err
 
 
+def test_quiet_stderr_detaches_the_debug_mirror_while_active(tmp_path, capfd, monkeypatch):
+    monkeypatch.setenv("PHIL_DEBUG", "1")
+    diagnostics.configure(tmp_path / "phil.log")
+    with diagnostics.quiet_stderr():  # the full screen owns the terminal meanwhile
+        logging.getLogger("phil.x").warning("during the frame")
+    logging.getLogger("phil.x").warning("after the frame")
+    err = capfd.readouterr().err
+    assert "during the frame" not in err and "after the frame" in err
+    assert "during the frame" in (tmp_path / "phil.log").read_text(encoding="utf-8")  # still logged
+
+
+def test_quiet_stderr_without_configure_does_nothing():
+    with diagnostics.quiet_stderr():
+        pass
+
+
 def test_configure_twice_leaves_one_file_handler(tmp_path):
     before = list(logging.getLogger().handlers)
     diagnostics.configure(tmp_path / "a.log")

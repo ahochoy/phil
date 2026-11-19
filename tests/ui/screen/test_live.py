@@ -119,6 +119,37 @@ def test_a_view_that_raises_is_logged_and_the_next_tick_renders(caplog):
     assert not io.app.return_code
 
 
+def test_a_view_that_keeps_failing_is_logged_once_until_it_recovers(caplog):
+    io = ScreenIO()
+    state = {"fail": True}
+
+    def view():
+        if state["fail"]:
+            raise ValueError("bad view")
+        return _view()
+
+    io.set_view(view)
+
+    def logged() -> int:
+        return sum("bad view" in str(r.exc_info) for r in caplog.records)
+
+    async def script(pilot):
+        live = _live(io)
+        await pilot.pause()
+        for _ in range(5):
+            live.tick()
+        assert logged() == 1                       # the first failure, not one per tick
+        state["fail"] = False
+        live.tick()
+        state["fail"] = True
+        live.tick()
+        live.tick()
+        assert logged() == 2                       # it recovered, then failed again
+
+    with caplog.at_level(logging.ERROR):
+        pilot_run(io.app, script)
+
+
 def test_an_idle_tick_does_not_relayout():
     io = ScreenIO()
     io.set_view(_view)
