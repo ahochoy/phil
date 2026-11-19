@@ -100,7 +100,7 @@ def root(
         None, "--base", help="Chat only: start the chat's runs from this ref instead of HEAD."
     ),
     resume_chat: str | None = typer.Option(
-        None, "--resume", help="Reopen a chat by id (see the list shown by `phil`)."
+        None, "--resume", help="Reopen a chat by id (see `phil chat`)."
     ),
     new: bool = typer.Option(False, "--new", help="Start a new chat (the default)."),
     continue_chat: bool = typer.Option(

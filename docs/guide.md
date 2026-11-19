@@ -302,7 +302,7 @@ out at the next prompt:
   `/more <n>` expands one detail from the most recent listing (`/show`, a `/btw` answer, or the
   run's completion notice) — the full text of a log, packet, or agent output.
 - `/park <note>` sets an idea aside instead of acting on it now; `phil parked` lists the parking
-  lot, and its open count shows in the toolbar. `/unpark P-001` (or `/unpark all`) drops items;
+  lot, and `/status` shows its open count (the inline chat's toolbar does too). `/unpark P-001` (or `/unpark all`) drops items;
   outside the chat, `phil parked drop P-001 …` or `phil parked done P-001 …` close them, and
   `--all` closes every open one.
 - The live line shows the chat's running cost (its own agent calls plus its runs'), e.g. `$0.42`
@@ -314,13 +314,13 @@ out at the next prompt:
 
 **Following a run:** while a run works, the chat follows its live activity feed — a compact
 tool line per call (`run   pytest -q  → 7 passed  #14`) under highlighted milestone bands
-(`▸ CALC-001 Add subtract`, `✓ CALC-001 done · 1m12s`) — plus a live row on the toolbar for the
-step in progress. A tool line's trailing `#n` is a feed step: `/more #n` prints its detail (the
+(`▸ CALC-001 Add subtract`, `✓ CALC-001 done · 1m12s`) — plus the live line for the
+step in progress (in the inline chat, a live row on its toolbar). A tool line's trailing `#n` is a feed step: `/more #n` prints its detail (the
 full command output, diff, or agent text) in a panel, and it keeps working after the run ends.
 `phil show <run> --step N` prints the same detail outside the chat. `phil attach <run>` shows
 the same milestone bands and tool lines too, picking up from when you attach.
-The live row has one line per active agent: the main agent, each sub-agent it started (indented
-under it with `└ sub-agent`), and each `/btw` question still being answered. `/feed <agent>`
+Besides the main agent, the live line shows each sub-agent it started (indented under it with
+`└ sub-agent`) and each `/btw` question still being answered. `/feed <agent>`
 (`implementer`, `tester`, `reviewer`, `architect`, `sub-agent` or `engine`) shows only that
 agent's tool lines, with milestones still shown; `/feed` shows everything again and says how many
 steps were hidden. The filter is cleared when the run ends.
@@ -333,6 +333,9 @@ Start, reopen and leave a chat:
     phil --continue           # reopen the most recently active open chat
     phil --resume <chat-id>   # reopen a specific chat directly
     phil --new                # start a new chat (the default)
+
+In inline mode (`[chat] screen = "inline"`, or a fallback), `phil` still lists this repo's open
+chats and asks "Reopen one?" instead.
 
 When you leave a chat that is still open, Phil prints `To continue this chat:  phil --resume <id>`.
 
