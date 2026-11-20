@@ -1,6 +1,7 @@
 """The `load_skill` tool: lets an agent read an approved skill's SKILL.md, or a text file inside that
 skill's folder. It never reads outside the folder."""
 
+import hashlib
 import logging
 import os
 import stat
@@ -20,6 +21,7 @@ _NOT_A_FILE = "it is not a file"
 _NOT_TEXT = "it is not text"
 _UNREADABLE = "it can't be read"
 _HARD_LINK = "it is a hard link"
+SKILL_CHANGED = "it changed since Phil found it"
 
 
 class SkillReadError(Exception):
@@ -72,6 +74,8 @@ def read_skill_file(skill: Skill, file: str | None = None) -> str:
             if not chunk:
                 break
             data += chunk
+        if file is None and not _matches(fd, data, skill.content_hash):
+            raise SkillReadError(SKILL_CHANGED)
     except (OSError, ValueError, RuntimeError):
         raise SkillReadError(_UNREADABLE) from None
     finally:
@@ -88,6 +92,15 @@ def read_skill_file(skill: Skill, file: str | None = None) -> str:
     return data.decode("utf-8", errors="ignore") + f"\n[truncated: {max(1, -(-remaining // 1024))} KB more]"
 
 
+def _matches(fd: int, head: bytes, content_hash: str) -> bool:
+    """True when the whole open file (`head`, already read, then the rest of `fd`, streamed in
+    bounded chunks) hashes to `content_hash`: the SKILL.md Phil found and the user approved."""
+    digest = hashlib.sha256(head)
+    while chunk := os.read(fd, MAX_FILE_BYTES):
+        digest.update(chunk)
+    return digest.hexdigest() == content_hash
+
+
 def _only_tail_is_cut(data: bytes) -> bool:
     """True when `data` is valid UTF-8 apart from, at most, a character cut off at the end."""
     try:
@@ -97,7 +110,15 @@ def _only_tail_is_cut(data: bytes) -> bool:
         return error.start >= len(data) - 3 and error.reason == "unexpected end of data"
 
 
-def make_load_skill_tool(skills: list[Skill], *, role: str, notice: Callable[[str], None] | None) -> Callable[..., str]:
+def make_load_skill_tool(
+    skills: list[Skill],
+    *,
+    role: str,
+    notice: Callable[[str], None] | None,
+    still_approved: Callable[[Skill], bool] | None = None,
+) -> Callable[..., str]:
+    """`still_approved` is asked before every read (SkillRuntime.still_approved: a repo's skills must
+    still be the ones the user approved); a skill it refuses is not read."""
     by_name = {skill.name: skill for skill in skills}
     loads = 0
     announced: set[str] = set()
@@ -111,6 +132,8 @@ def make_load_skill_tool(skills: list[Skill], *, role: str, notice: Callable[[st
         if loads >= MAX_LOADS:
             return f"Skill limit reached ({MAX_LOADS} per task); continue without more skills."
         try:
+            if still_approved is not None and not still_approved(skill):
+                raise SkillReadError(SKILL_CHANGED)
             text = read_skill_file(skill, file)
         except SkillReadError as refusal:
             logger.info("load_skill refused %s/%s: %s", name, file, refusal)

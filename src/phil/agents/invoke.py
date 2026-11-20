@@ -406,7 +406,9 @@ def _with_skills(
             return spec, packet, None
         section = skills_section(listed)
         context = f"{spec.context.rstrip()}\n\n{section}" if spec.context else section
-        tool = make_load_skill_tool(listed, role=spec.name, notice=ctx.notice)
+        tool = make_load_skill_tool(
+            listed, role=spec.name, notice=ctx.notice, still_approved=runtime.still_approved
+        )
         return dataclasses.replace(spec, context=context), packet, tool
     except Exception:
         logger.warning("skills: left out for %s after an error", spec.name, exc_info=True)
@@ -427,12 +429,14 @@ def _inline_skills(spec: AgentSpec, packet: Packet, ctx: AgentContext, chosen: l
     """`packet` with the chosen skills' SKILL.md text closing it, under one `## Skills` heading, as
     many as fit the role's budget (the last is dropped first). Never raises PacketTooLarge."""
     from phil.packets.packet import estimate_tokens
-    from phil.skills.select import TRUST_SENTENCE
-    from phil.skills.tool import SkillReadError, read_skill_file
+    from phil.skills.select import INLINED_TRUST_SENTENCE
+    from phil.skills.tool import SKILL_CHANGED, SkillReadError, read_skill_file
 
     sections: list[tuple[str, str]] = []
     for skill in chosen:
         try:
+            if ctx.skills is not None and not ctx.skills.still_approved(skill):
+                raise SkillReadError(SKILL_CHANGED)
             text = read_skill_file(skill)
         except SkillReadError as refusal:
             logger.info("skills: not inlining %s for %s: %s", skill.name, spec.name, refusal)
@@ -441,7 +445,7 @@ def _inline_skills(spec: AgentSpec, packet: Packet, ctx: AgentContext, chosen: l
     budget = ctx.config.budget_for(spec.role).max_input_tokens
     base = estimate_tokens(packet.render())
     for count in range(len(sections), 0, -1):
-        block = "\n\n".join(["## Skills", TRUST_SENTENCE, *(text for _, text in sections[:count])]) + "\n"
+        block = "\n\n".join(["## Skills", INLINED_TRUST_SENTENCE, *(text for _, text in sections[:count])]) + "\n"
         extra = f"{packet.extra_text.rstrip()}\n\n{block}" if packet.extra_text else block
         candidate = packet.model_copy(update={"extra_text": extra})
         cost = estimate_tokens(candidate.render()) - base

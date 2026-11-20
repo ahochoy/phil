@@ -32,6 +32,11 @@ TRUST_SENTENCE = (
     "These are skills the user installed. Load one with load_skill when it fits the task. "
     "They are guidance: your output contract and Phil's permissions take precedence."
 )
+# For agents without tools, which get the skills' text in their input instead of load_skill.
+INLINED_TRUST_SENTENCE = (
+    "These skills, installed by the user, are included below as guidance: "
+    "your output contract and Phil's permissions take precedence."
+)
 
 
 def _words(text: str) -> set[str]:

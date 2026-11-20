@@ -1,16 +1,68 @@
+import hashlib
 import os
 
 import pytest
 
 from phil.skills.discover import Skill
-from phil.skills.tool import MAX_FILE_BYTES, MAX_LOADS, make_load_skill_tool
+from phil.skills.tool import (
+    MAX_FILE_BYTES,
+    MAX_LOADS,
+    SKILL_CHANGED,
+    SkillReadError,
+    make_load_skill_tool,
+    read_skill_file,
+)
 
 
 def make_skill(root, name="demo", body="Do the steps.\n") -> Skill:
     directory = root / name
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "SKILL.md").write_text(f"---\nname: {name}\ndescription: d\n---\n{body}", encoding="utf-8")
-    return Skill(name, "d", directory.resolve(), "agents", "0" * 64)
+    digest = hashlib.sha256((directory / "SKILL.md").read_bytes()).hexdigest()
+    return Skill(name, "d", directory.resolve(), "agents", digest)
+
+
+def test_a_changed_skill_md_is_refused(tmp_path):
+    skill = make_skill(tmp_path, body="Do the steps.\n")
+    (skill.path / "SKILL.md").write_text("---\nname: demo\ndescription: d\n---\nDo something else.\n", encoding="utf-8")
+    tool = make_load_skill_tool([skill], role="coder", notice=None)
+    assert tool("demo") == f"Can't read SKILL.md from demo: {SKILL_CHANGED}."
+    with pytest.raises(SkillReadError, match=SKILL_CHANGED):
+        read_skill_file(skill)
+
+
+def test_a_large_skill_md_is_hashed_whole(tmp_path):
+    body = "a" * (MAX_FILE_BYTES * 2)
+    skill = make_skill(tmp_path, body=body)
+    assert "[truncated: " in read_skill_file(skill)  # unchanged: read, cut to the limit
+    (skill.path / "SKILL.md").write_text(f"---\nname: demo\ndescription: d\n---\n{body[:-1]}b", encoding="utf-8")
+    with pytest.raises(SkillReadError, match=SKILL_CHANGED):  # only a byte past the limit changed
+        read_skill_file(skill)
+
+
+def test_hashing_a_large_skill_md_reads_in_bounded_chunks(tmp_path, monkeypatch):
+    skill = make_skill(tmp_path, body="a" * (MAX_FILE_BYTES * 3))
+    sizes: list[int] = []
+    real_read = os.read
+
+    def recording_read(fd, size):
+        sizes.append(size)
+        return real_read(fd, size)
+
+    monkeypatch.setattr(os, "read", recording_read)
+    read_skill_file(skill)
+    assert max(sizes) <= MAX_FILE_BYTES + 1
+
+
+def test_a_refused_approval_reads_nothing_and_does_not_count(tmp_path):
+    skill = make_skill(tmp_path)
+    approved = [False]
+    tool = make_load_skill_tool([skill], role="coder", notice=None, still_approved=lambda _: approved[0])
+    assert tool("demo") == f"Can't read SKILL.md from demo: {SKILL_CHANGED}."
+    assert tool("demo", "ref.md") == f"Can't read ref.md from demo: {SKILL_CHANGED}."
+    approved[0] = True
+    for _ in range(MAX_LOADS):
+        assert "Do the steps." in tool("demo")
 
 
 def test_loads_skill_md(tmp_path):

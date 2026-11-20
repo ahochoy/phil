@@ -2,6 +2,7 @@
 skills' SKILL.md text in its packet, never past its budget."""
 
 import dataclasses
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -18,8 +19,10 @@ from phil.packets import build_packet
 from phil.packets.packet import estimate_tokens
 from phil.skills.discover import Catalog, Skill
 from phil.skills.labels import LabelCache
-from phil.skills.runtime import MIN_CAP_FOR_SKILLS, SkillRuntime
-from phil.skills.select import INLINE_TOKEN_CAP, TRUST_SENTENCE
+from phil.skills.runtime import MIN_CAP_FOR_SKILLS, SkillRuntime, load_runtime
+from phil.skills.select import INLINE_TOKEN_CAP, INLINED_TRUST_SENTENCE, TRUST_SENTENCE
+from phil.skills.sources import repo_digest, set_repo_approved
+from phil.store.paths import ProjectPaths
 from tests.agents.conftest import critique
 from tests.agents.test_light_harness import ToolRecordingModel
 from tests.agents.test_model_retry import tool_call
@@ -30,7 +33,8 @@ def make_skill(root: Path, name: str, description: str, body: str = "Do the thin
     folder = root / "skills" / name
     folder.mkdir(parents=True)
     (folder / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {description}\n---\n{body}\n", encoding="utf-8")
-    return Skill(name, description, folder.resolve(), "agents", f"hash-{name}")
+    digest = hashlib.sha256((folder / "SKILL.md").read_bytes()).hexdigest()
+    return Skill(name, description, folder.resolve(), "agents", digest)
 
 
 def runtime(*labelled: tuple[Skill, list[str]]) -> SkillRuntime:
@@ -154,10 +158,11 @@ def test_lean_agent_gets_inlined_skill(conn, tmp_path, artifacts):
     helper = make_skill(tmp_path, "subtract-helper", "Add subtract functions", "Check both signs.")
     content = criticise(conn, tmp_path, runtime((helper, ["reviewing"])), artifacts=artifacts)
     assert content.endswith(
-        f"## Skills\n\n{TRUST_SENTENCE}\n\n## Skill: subtract-helper\n---\nname: subtract-helper\n"
+        f"## Skills\n\n{INLINED_TRUST_SENTENCE}\n\n## Skill: subtract-helper\n---\nname: subtract-helper\n"
         "description: Add subtract functions\n---\nCheck both signs.\n"
     )
     assert content.count("## Skills") == 1
+    assert "load_skill" not in content  # a lean agent has no tools
     saved = (artifacts.run_dir / "packets").glob("*.json")
     assert any("## Skill: subtract-helper" in path.read_text() for path in saved)
 
@@ -166,8 +171,40 @@ def test_lean_agent_trust_sentence_once_for_two_skills(conn, tmp_path):
     first = make_skill(tmp_path, "subtract-helper", "Add subtract functions")
     second = make_skill(tmp_path, "subtract-checks", "Check subtract plans")
     content = criticise(conn, tmp_path, runtime((first, ["reviewing"]), (second, ["planning"])))
-    assert content.count(TRUST_SENTENCE) == 1 and content.count("## Skills") == 1
+    assert content.count(INLINED_TRUST_SENTENCE) == 1 and content.count("## Skills") == 1
     assert "## Skill: subtract-helper" in content and "## Skill: subtract-checks" in content
+    assert "load_skill" not in content
+
+
+def approved_repo(tmp_path):
+    """A repo with one approved skill, its runtime (labelled for reviewing), and the skill's folder."""
+    root = tmp_path / "repo"
+    folder = root / ".agents" / "skills" / "subtract-helper"
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text(
+        "---\nname: subtract-helper\ndescription: Add subtract functions\n---\nCheck both signs.\n", encoding="utf-8"
+    )
+    paths = ProjectPaths("repo", home=tmp_path / "home")
+    set_repo_approved(paths, True, repo_digest(root))
+    loaded = load_runtime(PhilConfig(), root, paths)
+    assert loaded is not None
+    [skill] = loaded.catalog.skills
+    loaded.cache.put(skill.content_hash, ["reviewing"])
+    return loaded, folder
+
+
+def test_a_repo_skill_edited_mid_run_is_not_inlined(conn, tmp_path):
+    loaded, folder = approved_repo(tmp_path)
+    assert "## Skill: subtract-helper" in criticise(conn, tmp_path, loaded)
+    (folder / "notes.md").write_text("added by an agent", encoding="utf-8")  # SKILL.md itself is unchanged
+    assert "## Skills" not in criticise(conn, tmp_path, loaded)
+
+
+def test_a_changed_skill_md_is_not_inlined(conn, tmp_path):
+    helper = make_skill(tmp_path, "subtract-helper", "Add subtract functions", "Check both signs.")
+    (helper.path / "SKILL.md").write_text("---\nname: subtract-helper\ndescription: x\n---\nEdited.\n")
+    content = criticise(conn, tmp_path, runtime((helper, ["reviewing"])))
+    assert "Edited." not in content and "## Skills" not in content
 
 
 def test_an_unmatched_skill_is_not_inlined(conn, tmp_path):

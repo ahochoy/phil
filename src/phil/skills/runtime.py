@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from phil.config import PhilConfig
-from phil.skills.discover import Catalog, discover
+from phil.skills.discover import Catalog, Skill, discover
 from phil.skills.labels import LabelCache
-from phil.skills.sources import approved_sources
+from phil.skills.sources import REPO_KEY, approved_sources, repo_approved
 from phil.store.paths import ProjectPaths
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,22 @@ MIN_CAP_FOR_SKILLS = 5
 class SkillRuntime:
     catalog: Catalog
     cache: LabelCache
+    # Where the repo's approval is checked again before each read of one of its skills.
+    repo_root: Path | None = None
+    paths: ProjectPaths | None = None
+
+    def still_approved(self, skill: Skill) -> bool:
+        """True for a user's skill; for a repo's skill, only while the repo's skills are still the
+        ones the user approved (an agent that writes files could have edited them since)."""
+        if skill.source != REPO_KEY:
+            return True
+        if self.repo_root is None or self.paths is None:
+            return False
+        try:
+            return repo_approved(self.paths, self.repo_root)
+        except Exception:
+            logger.info("skills: repo approval not checked for %s", skill.name, exc_info=True)
+            return False
 
 
 def load_runtime(config: PhilConfig, repo_root: Path | None, paths: ProjectPaths | None) -> SkillRuntime | None:
@@ -33,7 +49,7 @@ def load_runtime(config: PhilConfig, repo_root: Path | None, paths: ProjectPaths
         catalog = discover(sources)
         if not catalog.skills:
             return None
-        return SkillRuntime(catalog=catalog, cache=LabelCache.load())
+        return SkillRuntime(catalog=catalog, cache=LabelCache.load(), repo_root=repo_root, paths=paths)
     except Exception as error:
         logger.warning("skills: loading failed, continuing without skills (%s)", error, exc_info=True)
         return None
