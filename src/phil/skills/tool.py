@@ -22,8 +22,8 @@ _UNREADABLE = "it can't be read"
 _HARD_LINK = "it is a hard link"
 
 
-class _Refused(Exception):
-    pass
+class SkillReadError(Exception):
+    """A skill file was not read; the message is a fixed reason, safe to show the model."""
 
 
 def _lexically_inside(file: str) -> bool:
@@ -38,33 +38,34 @@ def _lexically_inside(file: str) -> bool:
     return not file.startswith(("\\", "/"))
 
 
-def _read_confined(skill: Skill, file: str | None) -> str:
-    """The text of `file` (SKILL.md when None) inside the skill folder. Raises _Refused with a fixed reason."""
+def read_skill_file(skill: Skill, file: str | None = None) -> str:
+    """The text of `file` (SKILL.md when None) inside the skill folder, at most MAX_FILE_BYTES.
+    Raises SkillReadError with a fixed reason. Every read of skill text goes through here."""
     if file is not None and not _lexically_inside(file):
-        raise _Refused(_OUTSIDE)
+        raise SkillReadError(_OUTSIDE)
     root = skill.path.resolve()
     try:
         target = (root / (file if file is not None else "SKILL.md")).resolve(strict=True)  # follows symlinks
     except (OSError, ValueError, RuntimeError):
-        raise _Refused(_UNREADABLE) from None
+        raise SkillReadError(_UNREADABLE) from None
     if not target.is_relative_to(root):
-        raise _Refused(_OUTSIDE)
+        raise SkillReadError(_OUTSIDE)
     flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
     try:
         fd = os.open(target, flags)
     except (OSError, ValueError):
-        raise _Refused(_UNREADABLE) from None
+        raise SkillReadError(_UNREADABLE) from None
     try:
         # Check the file we actually opened, not the path: it may have been swapped since the check above.
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
-            raise _Refused(_NOT_A_FILE)
+            raise SkillReadError(_NOT_A_FILE)
         if info.st_nlink != 1:  # a hard link can point outside the folder
-            raise _Refused(_HARD_LINK)
+            raise SkillReadError(_HARD_LINK)
         if not os.path.samestat(info, os.stat(target)):
-            raise _Refused(_UNREADABLE)
+            raise SkillReadError(_UNREADABLE)
         if not target.resolve(strict=True).is_relative_to(root):
-            raise _Refused(_OUTSIDE)
+            raise SkillReadError(_OUTSIDE)
         data = b""
         while len(data) < MAX_FILE_BYTES + 1:  # never more than MAX_FILE_BYTES + 1 bytes
             chunk = os.read(fd, MAX_FILE_BYTES + 1 - len(data))
@@ -72,18 +73,18 @@ def _read_confined(skill: Skill, file: str | None) -> str:
                 break
             data += chunk
     except (OSError, ValueError, RuntimeError):
-        raise _Refused(_UNREADABLE) from None
+        raise SkillReadError(_UNREADABLE) from None
     finally:
         os.close(fd)
     if len(data) <= MAX_FILE_BYTES:
         try:
             return data.decode("utf-8")
         except UnicodeDecodeError:
-            raise _Refused(_NOT_TEXT) from None
+            raise SkillReadError(_NOT_TEXT) from None
     remaining = info.st_size - MAX_FILE_BYTES
     data = data[:MAX_FILE_BYTES]
     if not _only_tail_is_cut(data):
-        raise _Refused(_NOT_TEXT)
+        raise SkillReadError(_NOT_TEXT)
     return data.decode("utf-8", errors="ignore") + f"\n[truncated: {max(1, -(-remaining // 1024))} KB more]"
 
 
@@ -110,8 +111,8 @@ def make_load_skill_tool(skills: list[Skill], *, role: str, notice: Callable[[st
         if loads >= MAX_LOADS:
             return f"Skill limit reached ({MAX_LOADS} per task); continue without more skills."
         try:
-            text = _read_confined(skill, file)
-        except _Refused as refusal:
+            text = read_skill_file(skill, file)
+        except SkillReadError as refusal:
             logger.info("load_skill refused %s/%s: %s", name, file, refusal)
             return f"Can't read {file if file is not None else 'SKILL.md'} from {name}: {refusal}."
         loads += 1

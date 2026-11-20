@@ -22,6 +22,7 @@ from rich.text import Text
 
 from phil.agents.failures import VISION_ACTION, Failure, classify_failure, internal_failure
 from phil.agents.invoke import AgentContext, price_book_for
+from phil.skills.runtime import load_runtime
 from phil.agents.providers import provider_for_model
 from phil.agents.unpriced import PLANNING_ROLES, planning_notice, unpriced_models
 from phil.chat.answer import ask_answer
@@ -373,7 +374,8 @@ class ChatController:
         extra = {"sleep": sleep} if sleep is not None else {}
         self.ctx = AgentContext(
             config=config, conn=conn, layer="chat", artifacts=self.session.artifacts, factory=factory,
-            chat_id=self.session.id, repo_root=info.root, paths=ProjectPaths(info.slug), **extra
+            chat_id=self.session.id, repo_root=info.root, paths=ProjectPaths(info.slug),
+            skills=load_runtime(config, info.root, ProjectPaths(info.slug)), **extra
         )  # jobs copy this context (with their own connection), so their telemetry is tagged with the chat
         # repo_root and paths: the chat's read-only agents get the rules in effect, so deny rules block them too.
         self.overview = repo_overview(info.root)
