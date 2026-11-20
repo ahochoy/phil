@@ -1,6 +1,7 @@
 """What `phil skills` and the chat's `/skills` print, and the skill-folders section of `phil permissions`.
 Display text only: skill names come from files on disk, so each is cleaned before it is shown."""
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from phil.config import PhilConfig
@@ -18,10 +19,37 @@ FOLDERS_HEADER = "Skill folders Phil's agents can read:"
 REPO_LABEL = "this repo's skills"
 
 
+REPO_NOT_APPROVED_HEADER = "This repo's own skills (not approved):"
+REPO_APPROVED_HEADER = "Approved this repo's skills:"
+SHADOWED_NOTE = "(hidden: you have your own skill with this name)"
+
+
+def repo_skill_names(repo_root: Path) -> list[str]:
+    """The names of the readable skills the repo ships, sorted."""
+    source = repo_source(repo_root)
+    if source is None:
+        return []
+    return sorted(skill.name for skill in discover([source]).skills)
+
+
 def repo_has_skills(repo_root: Path) -> bool:
     """True when the repo ships at least one readable skill of its own."""
-    source = repo_source(repo_root)
-    return source is not None and bool(discover([source]).skills)
+    return bool(repo_skill_names(repo_root))
+
+
+def approved_repo_lines(config: PhilConfig, repo_root: Path) -> list[str]:
+    """What `phil skills repo on` approved: each of the repo's skills, marked when one of the user's own
+    skills has the same name and so is the one agents get."""
+    repo = repo_source(repo_root)
+    if repo is None:
+        return []
+    catalog = discover([*approved_sources(config, None, None), repo])
+    users = {skill.name for skill in catalog.skills if skill.source != repo.key}
+    entries = [(skill.name, "") for skill in catalog.skills if skill.source == repo.key]
+    entries += [(skill.name, f" {SHADOWED_NOTE}") for skill in catalog.hidden if skill.source == repo.key and skill.name in users]
+    if not entries:
+        return []
+    return [REPO_APPROVED_HEADER, *(f"  {printable(name)}{note}" for name, note in sorted(entries))]
 
 
 def _source_labels(config: PhilConfig, repo_is_approved: bool) -> list[str]:
@@ -31,12 +59,16 @@ def _source_labels(config: PhilConfig, repo_is_approved: bool) -> list[str]:
     return labels
 
 
-def skill_lines(runtime: SkillRuntime | None, config: PhilConfig, repo_has_skills: bool, repo_approved: bool) -> list[str]:
+def skill_lines(
+    runtime: SkillRuntime | None, config: PhilConfig, repo_names: Sequence[str], repo_approved: bool
+) -> list[str]:
     """The approved folders; each skill an agent can be offered with its stages and where they came
     from; then what is off, hidden, not yet labelled or unreadable; then, if the repo ships skills
-    that aren't approved, how to turn them on."""
+    (`repo_names`) that aren't approved, their names and how to turn them on."""
     labels = _source_labels(config, repo_approved)
-    hint = [REPO_HINT] if repo_has_skills and not repo_approved else []
+    hint: list[str] = []
+    if repo_names and not repo_approved:
+        hint = [REPO_NOT_APPROVED_HEADER, *(f"  {printable(name)}" for name in repo_names), REPO_HINT]
     if not labels:
         return [NOT_APPROVED, *hint]
     lines = [f"Skill folders: {', '.join(printable(label) for label in labels)}"]

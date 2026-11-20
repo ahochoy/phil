@@ -12,7 +12,7 @@ from rich.text import Text
 from phil.config import STAGES, PhilConfig, global_config_path
 from phil.repo import RepoError, RepoInfo, resolve_repo
 from phil.setup.write import _write_atomically
-from phil.skills.listing import repo_has_skills, skill_lines
+from phil.skills.listing import approved_repo_lines, repo_has_skills, repo_skill_names, skill_lines
 from phil.skills.runtime import load_runtime
 from phil.skills.sources import TOO_LARGE, repo_approved, repo_digest, set_repo_approved
 from phil.store.paths import ProjectPaths
@@ -57,10 +57,11 @@ def _optional_project(ctx: typer.Context) -> tuple[Path | None, ProjectPaths | N
     return info.root, ProjectPaths(info.slug), config
 
 
-def _repo_state(info: RepoInfo) -> tuple[bool, bool]:
+def _repo_state(info: RepoInfo) -> tuple[list[str], bool]:
+    """(the names of the repo's own skills, they are approved and unchanged)."""
     paths = ProjectPaths(info.slug)
-    has_skills = repo_has_skills(info.root)
-    return has_skills, has_skills and repo_approved(paths, info.root)
+    names = repo_skill_names(info.root)
+    return names, bool(names) and repo_approved(paths, info.root)
 
 
 @skills_app.callback(invoke_without_command=True)
@@ -71,8 +72,8 @@ def listing(ctx: typer.Context) -> None:
     info, config = _project(ctx)
     paths = ProjectPaths(info.slug)
     runtime = load_runtime(config, info.root, paths)
-    has_skills, approved = _repo_state(info)
-    for line in skill_lines(runtime, config, has_skills, approved):
+    names, approved = _repo_state(info)
+    for line in skill_lines(runtime, config, names, approved):
         _say(line)
 
 
@@ -181,7 +182,7 @@ def stages(
 @repo_app.command("on")
 def repo_on(ctx: typer.Context) -> None:
     """Let Phil use the skills this repo ships. Approval ends if they change."""
-    info, _ = _project(ctx)
+    info, config = _project(ctx)
     if not repo_has_skills(info.root):
         _say(NO_REPO_SKILLS)
         return
@@ -192,6 +193,8 @@ def repo_on(ctx: typer.Context) -> None:
         set_repo_approved(ProjectPaths(info.slug), True, digest)
     except OSError as exc:
         _fail(f"Can't save the approval: {printable(exc)}")
+    for line in approved_repo_lines(config, info.root):
+        _say(line)
     _say("Phil will use this repo's skills. If they change, you'll need to run this again.")
 
 

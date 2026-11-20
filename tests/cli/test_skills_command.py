@@ -168,6 +168,26 @@ def test_repo_on_approves_the_skills_by_digest(calc_repo):
     assert stored["digest"] == repo_digest(calc_repo)
 
 
+def test_repo_on_names_the_skills_it_approves(calc_repo, home):
+    write_skill(home / ".agents" / "skills" / "layout", "layout", "My own layout skill")
+    global_config_path().write_text('[skills]\nfolders = ["agents"]\n', encoding="utf-8")
+    write_skill(calc_repo / ".agents" / "skills" / "mine", "mine")
+    write_skill(calc_repo / ".agents" / "skills" / "layout", "layout", "The repo's layout skill")
+    result = phil(calc_repo, "repo", "on")
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    start = lines.index("Approved this repo's skills:")
+    assert lines[start + 1 : start + 3] == ["  layout (hidden: you have your own skill with this name)", "  mine"]
+
+
+def test_the_listing_names_unapproved_repo_skills(calc_repo):
+    write_skill(calc_repo / ".agents" / "skills" / "mine", "mine")
+    result = phil(calc_repo)
+    lines = result.output.splitlines()
+    start = lines.index("This repo's own skills (not approved):")
+    assert lines[start + 1] == "  mine"
+
+
 def test_repo_on_without_skills_approves_nothing(calc_repo):
     result = phil(calc_repo, "repo", "on")
     assert result.exit_code == 0, result.output

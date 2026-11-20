@@ -23,7 +23,7 @@ from rich.text import Text
 from phil.agents.failures import VISION_ACTION, Failure, classify_failure, internal_failure
 from phil.agents.invoke import AgentContext, price_book_for
 from phil.skills.labels import label_skills
-from phil.skills.listing import repo_has_skills, skill_lines
+from phil.skills.listing import repo_skill_names, skill_lines
 from phil.skills.runtime import load_runtime
 from phil.skills.sources import repo_approved, repo_digest, repo_mentioned, set_repo_mentioned
 from phil.agents.providers import provider_for_model
@@ -2946,16 +2946,16 @@ class ChatController:
 
     # --- /skills and the repo's own skills (spec 2026-11-19 §4.2, §4.7) ----------------------------
 
-    def _repo_skills_state(self) -> tuple[bool, bool]:
-        """(the repo ships skills, they are approved and unchanged)."""
-        has_skills = repo_has_skills(self.info.root)
-        return has_skills, has_skills and repo_approved(ProjectPaths(self.info.slug), self.info.root)
+    def _repo_skills_state(self) -> tuple[list[str], bool]:
+        """(the names of the skills the repo ships, they are approved and unchanged)."""
+        names = repo_skill_names(self.info.root)
+        return names, bool(names) and repo_approved(ProjectPaths(self.info.slug), self.info.root)
 
     def _skills_command(self) -> None:
         """What `phil skills` lists; changes are made with the CLI."""
         try:
-            has_skills, approved = self._repo_skills_state()
-            lines = skill_lines(self.ctx.skills, self.config, has_skills, approved)
+            names, approved = self._repo_skills_state()
+            lines = skill_lines(self.ctx.skills, self.config, names, approved)
         except Exception:
             logger.warning("couldn't list the skills", exc_info=True)
             self._say("Couldn't list the skills. phil skills tries again.")
