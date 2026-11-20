@@ -33,8 +33,9 @@ _DROP_WITH_CONTENTS = frozenset(
         "animate", "set", "animatemotion", "animatetransform",
     }
 )  # fmt: skip
-# Dropped as tags only; their children stay.
-_DROP_TAG_ONLY = frozenset({"meta", "base", "link", "embed", "form"})
+# Dropped as tags only; their children stay. `plaintext`, `xmp` and `listing` would make the
+# browser read the rest of the page as raw text.
+_DROP_TAG_ONLY = frozenset({"meta", "base", "link", "embed", "form", "plaintext", "xmp", "listing"})
 _VOID = frozenset(
     {
         "area", "base", "basefont", "br", "col", "embed", "frame", "hr", "img", "input",
@@ -245,15 +246,15 @@ def browser_available(env: Mapping[str, str], platform: str) -> bool:
     return True
 
 
-def write_page(folder: Path, chat_id: str, page: str) -> tuple[Path, bool]:
-    """Write `<chat_id>.html` and the next `<chat_id>-v<n>.html`; `first` means no copy existed."""
+def write_page(folder: Path, chat_id: str, page: str) -> Path:
+    """Write `<chat_id>.html` and the next `<chat_id>-v<n>.html`; returns the first's path."""
     folder.mkdir(parents=True, exist_ok=True)
     pattern = re.compile(rf"^{re.escape(chat_id)}-v(\d+)\.html$")
     seen = [int(m.group(1)) for p in folder.iterdir() if (m := pattern.match(p.name))]
     current = folder / f"{chat_id}.html"
     current.write_text(page, encoding="utf-8")
     (folder / f"{chat_id}-v{max(seen, default=0) + 1}.html").write_text(page, encoding="utf-8")
-    return current, not seen
+    return current
 
 
 CLIPPED = "\n…(mockup clipped)"
@@ -288,7 +289,9 @@ def approach_slug(name: str, index: int) -> str:
 
 
 def drawing_path(folder: Path, chat_id: str, slug: str, kind: str) -> Path:
-    return folder / f"{chat_id}-{slug}.{'html' if kind == 'html' else 'txt'}"
+    """A fragment is kept as `.frag`, not `.html`: opened on its own it has no CSP, so a browser
+    must not render it."""
+    return folder / f"{chat_id}-{slug}.{'frag' if kind == 'html' else 'txt'}"
 
 
 def write_drawing(folder: Path, chat_id: str, slug: str, kind: str, text: str) -> Path:

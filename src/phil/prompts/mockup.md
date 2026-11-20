@@ -25,6 +25,7 @@ The user is choosing between approaches to a change. Draw each approach as a rou
 
 ## The user's note
 - When `note` is set, the user is asking to redraw. Follow it, and keep what it doesn't mention.
+- When `previous` is set, it is that approach's last drawing. Start from it: change only what the note asks, and keep the rest as it is.
 
 ## The conversation
 - When `conversation` is set, it is what the user and Phil said before planning, oldest first. `goal` summarises it; where they differ, the user's own words win.

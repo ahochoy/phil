@@ -40,16 +40,19 @@ def draw_mockup(
     call: int,
     conversation: Sequence[ConverseTurn] | None = None,
     images: Sequence[Path] = (),
+    previous: str = "",
 ) -> Mockup:
     """One drawing per approach in `approaches`, from the read-only mockup agent, which reads `tree`
-    (the base commit's snapshot) and sees the goal's attached `images`. Without a designer model it
-    uses the architect's, as `propose_approaches` does."""
+    (the base commit's snapshot) and sees the goal's attached `images`. `previous`, for a redraw with
+    a note, is the approach's last drawing to change. Without a designer model it uses the
+    architect's, as `propose_approaches` does."""
     spec = get_spec("mockup")
     contract = MockupInput(
         goal=goal,
         approaches=list(approaches),
         repo_overview=overview,
         note=note,
+        previous=previous,
         format=fmt,
         conversation=list(conversation) if conversation else None,
     )

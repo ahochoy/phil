@@ -200,23 +200,31 @@ def test_browser_rule():
     assert browser_available({}, "win32") is True
 
 
-def test_write_page_versions_and_first_flag(tmp_path):
+def test_write_page_versions(tmp_path):
     folder = tmp_path / "mockups"
-    path, first = write_page(folder, "chat1", "<p>one</p>")
-    assert first is True
+    path = write_page(folder, "chat1", "<p>one</p>")
     assert path == folder / "chat1.html"
     assert (folder / "chat1-v1.html").read_text(encoding="utf-8") == "<p>one</p>"
 
-    path, first = write_page(folder, "chat1", "<p>two</p>")
-    assert first is False
+    path = write_page(folder, "chat1", "<p>two</p>")
     assert (folder / "chat1-v2.html").read_text(encoding="utf-8") == "<p>two</p>"
     assert path.read_text(encoding="utf-8") == "<p>two</p>"
 
 
 def test_write_page_does_not_collide_across_chats(tmp_path):
     write_page(tmp_path, "a", "A")
-    _, first = write_page(tmp_path, "b", "B")
-    assert first is True
+    write_page(tmp_path, "b", "B")
+    assert (tmp_path / "b-v1.html").read_text(encoding="utf-8") == "B"
+    assert not (tmp_path / "b-v2.html").exists()
+
+
+def test_plaintext_xmp_and_listing_keep_their_children_not_the_page():
+    for tag in ("plaintext", "xmp", "listing"):
+        out = clean_fragment(f"<{tag}><b>in</b></{tag}><p>after</p>")
+        assert tag not in out
+        assert "<b>in</b>" in out and "<p>after</p>" in out
+    unclosed = clean_fragment("<plaintext><b>in</b>")
+    assert "plaintext" not in unclosed and "<b>in</b>" in unclosed
 
 
 def test_approach_slug():
@@ -250,9 +258,9 @@ def test_clip_mockup():
 
 def test_write_drawing_beside_the_page(tmp_path):
     path = write_drawing(tmp_path / "mockups", "chat1", "footer-band", "html", "<p>band</p>")
-    assert path == tmp_path / "mockups" / "chat1-footer-band.html"
+    assert path == tmp_path / "mockups" / "chat1-footer-band.frag"  # not .html: opened alone it has no CSP
     assert path.read_text(encoding="utf-8") == "<p>band</p>"
     sketch = write_drawing(tmp_path / "mockups", "chat1", "footer-band", "sketch", "+--+")
     assert sketch.name == "chat1-footer-band.txt"
-    _, first = write_page(tmp_path / "mockups", "chat1", "page")
-    assert first is True  # a drawing's file is not a copy of the page
+    write_page(tmp_path / "mockups", "chat1", "page")
+    assert not (tmp_path / "mockups" / "chat1-v2.html").exists()  # a drawing's file is not a copy of the page

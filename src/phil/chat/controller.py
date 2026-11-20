@@ -513,6 +513,11 @@ class ChatController:
         self._mockup_seq = 0
         self._mockup_calls = 0
         self._drawing = False  # a mockup job with the current seq is in flight
+        # A browser tab showing the page was opened for this goal in this session (not saved: a
+        # reopened chat opens it again). Until then each page opens the browser, not "reload the tab".
+        self._page_opened = False
+        # Serialises snapshot exports: the mockup and planning jobs can export the same tree at once.
+        self._snapshot_lock = threading.Lock()
         # The goal's planning budget (chat.max_cost_usd) counts the chat's agent calls after this
         # telemetry row: the newest one when the goal began (or the chat was reopened).
         self._goal_mark = 0
@@ -1273,6 +1278,7 @@ class ChatController:
         self._describing, self._budget_warned = False, False
         self._approaches_visual, self._mockups = False, {}
         self._chosen_mockup, self._chosen_mockup_path = "", None
+        self._page_opened = False
         self._drop_mockup()
         self._trust = None
         self._turns, self._choices, self._user_replies, self._held_input = [], [], 0, []
@@ -1656,6 +1662,9 @@ class ChatController:
         call, generation, overview, note = self._mockup_calls, self._generation, self.overview, request.note
         conversation = list(self._turns) or None
         images = list(self._attachments)
+        # `show N <note>` redraws that approach's drawing, so the model starts from it.
+        earlier = self._mockups.get(wanted[0].name) if note and request.number is not None else None
+        previous = mockup_page.clip_mockup(earlier.text) if earlier is not None and earlier.kind == fmt else ""
 
         def fn(ctx: AgentContext) -> dict:
             self._mockup_step("snapshot", generation, seq)
@@ -1663,7 +1672,7 @@ class ChatController:
             self._mockup_step("drawing", generation, seq)
             mockup = draw_mockup(
                 ctx, goal, wanted, tree=tree, overview=overview, note=note, fmt=fmt, call=call,
-                conversation=conversation, images=images,
+                conversation=conversation, images=images, previous=previous,
             )
             return {"mockup": mockup, "fmt": fmt, "seq": seq}
 
@@ -1708,12 +1717,18 @@ class ChatController:
         self.session.contract("mockup", mockup)
         numbers = {approach.name: n for n, approach in enumerate(self._approach_order, 1)}
         drawn: dict[str, tuple[int, str, str]] = {}  # name -> (number, fragment or sketch, note)
+        empty = False  # a drawing for an approach came back with nothing in the requested field
         for drawing in mockup.drawings:
             if drawing.name in numbers and drawing.name not in drawn:  # an unknown name is ignored
                 text = mockup_page.clean_fragment(drawing.html) if fmt == "html" else drawing.sketch
+                if not text.strip():  # not drawn: neither shown nor kept
+                    empty = True
+                    continue
                 drawn[drawing.name] = (numbers[drawing.name], text, drawing.note)
         if not drawn:
-            self._mockup_failed_line("the drawings didn't match the approaches")
+            self._mockup_failed_line(
+                "the model returned no drawing" if empty else "the drawings didn't match the approaches"
+            )
             return
         ordered = sorted(drawn.items(), key=lambda item: item[1][0])
         if fmt == "html":
@@ -1755,24 +1770,26 @@ class ChatController:
             return None
 
     def _show_page(self, drawings: list[tuple[int, str, str]]) -> bool:
-        """Write the chat's mockup page and open it (the chat's first page) or ask for a reload;
-        the page's link prints every time. False when the page couldn't be written."""
+        """Write the chat's mockup page and open it, or ask for a reload once a tab was opened this
+        session for this goal; the page's link prints every time. False when the page couldn't be
+        written."""
         objective = self._goal.objective if self._goal is not None else ""
         page = mockup_page.build_page(objective, mockup_page.comparing_line(len(drawings), objective), drawings)
         try:
-            path, first = mockup_page.write_page(self._mockups_dir(), self.session.id, page)
+            path = mockup_page.write_page(self._mockups_dir(), self.session.id, page)
         except OSError as exc:
             self._mockup_failed_line(f"couldn't write the page ({exc})")
             return False
-        if first:
+        if self._page_opened:
+            self.console.print(f"[phil.muted]{MOCKUP_UPDATED}[/]")
+        else:
             try:
                 opened = webbrowser.open(path.as_uri(), new=2)  # a new tab, where the browser can
             except Exception:
                 opened = False
-            if not opened:
+            self._page_opened = opened is True
+            if not self._page_opened:
                 self.console.print(f"[phil.muted]{BROWSER_DIDNT_OPEN}[/]")
-        else:
-            self.console.print(f"[phil.muted]{MOCKUP_UPDATED}[/]")
         self.console.print(link(path.as_uri()))
         return True
 
@@ -2459,10 +2476,12 @@ class ChatController:
         """Export the base commit's tracked files for the architect (never the live working tree).
 
         Each goal generation gets its own directory, so a stale job re-exporting can't remove a tree
-        another job is reading. All of `tree/` is removed when the chat ends.
+        another job is reading. All of `tree/` is removed when the chat ends. One export runs at a
+        time: a second caller for the same tree waits, then reuses the finished export (its marker).
         """
         sha = self._explicit_base_sha or resolve_repo(self.info.root).head_sha
-        return export_tree(self.info.root, sha, self.session.dir / "tree" / f"{sha[:12]}-g{generation}")
+        with self._snapshot_lock:
+            return export_tree(self.info.root, sha, self.session.dir / "tree" / f"{sha[:12]}-g{generation}")
 
     def _remove_snapshots(self) -> None:
         try:
@@ -3633,7 +3652,7 @@ class ChatController:
         self._goal, self._draft = goal, draft
         self._approach, self._approach_note = approach, approach_note
         self._approach_order, self._approaches_visual = offered, saved.get("approaches_visual") is True
-        self._mockups = mockups
+        self._mockups, self._page_opened = mockups, False  # a reopened chat opens its page again
         self._chosen_mockup = mockup_page.clip_mockup(chosen.text) if chosen is not None else ""
         self._chosen_mockup_path = chosen.path if chosen is not None else None
         self._attachments = _saved_images(saved.get("attachments"), self.session.dir / IMAGES_DIR)
@@ -3665,6 +3684,8 @@ class ChatController:
                 self._set_stage("conversation")
         elif stage in ("approval", "planning", "edit") and self._draft is not None:
             self._turns = turns  # an `edit` revises with the conversation, like the first plan
+            if chosen is None:  # the mockup's file is gone: the plan still carries it, for an `edit`
+                self._chosen_mockup = self._draft.plan.mockup
             self._to_approval()
         elif stage == "choose_approach" and goal is not None and len(offered) >= 2:
             self._turns = turns  # the pick is planned with the conversation, like a fresh one
@@ -3708,7 +3729,7 @@ class ChatController:
             if path.resolve().parent != folder or not path.name.startswith(f"{self.session.id}-"):
                 return None
             kind: Literal["html", "sketch"]
-            if path.suffix == ".html":
+            if path.suffix in (".frag", ".html"):  # .html: kept before fragments were .frag
                 kind = "html"
             elif path.suffix == ".txt":
                 kind = "sketch"

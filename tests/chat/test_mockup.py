@@ -52,3 +52,29 @@ def test_draw_mockup_sends_the_requested_format_and_note(tmp_path):
     assert '"format": "sketch"' in packet or '"format":"sketch"' in packet
     assert "above the footer" in packet
     assert "Inline card" in packet and "Footer band" not in packet
+
+
+def test_draw_mockup_sends_the_previous_drawing(tmp_path):
+    seen: list[Turn] = []
+
+    def mockup(turn: Turn) -> Mockup:
+        seen.append(turn)
+        return Mockup(drawings=[MockupDrawing(name="Inline card", sketch="+--+")])
+
+    config = PhilConfig(models={"low": "openrouter:l", "high": "openrouter:h"})
+    ctx = AgentContext(
+        config=config, conn=connect(tmp_path / "t.db"), layer="chat", factory=ScriptedAgentFactory({"mockup": [mockup]})
+    )
+    draw_mockup(
+        ctx, GOAL, [INLINE], tree=tmp_path, overview="", note="sticky header", fmt="sketch", call=1,
+        previous="+--OLD-DRAWING--+",
+    )
+    assert "+--OLD-DRAWING--+" in seen[0].payload["messages"][0]["content"]
+
+
+def test_mockup_prompt_ties_the_note_to_previous():
+    from importlib.resources import files
+
+    prompt = files("phil.prompts").joinpath("mockup.md").read_text(encoding="utf-8")
+    assert "keep what it doesn't mention" in prompt
+    assert "`previous`" in prompt

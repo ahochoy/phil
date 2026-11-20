@@ -287,7 +287,7 @@ can ask to see them drawn. Phil never draws unless you ask. At the approach prom
   `-v<n>` copies of earlier versions. A page runs no script and loads nothing from the network.
 - The approach you pick carries its mockup into planning: the architect and the coding agents get
   it as a reference (clipped at 10,000 characters), and it survives reopening the chat.
-- Each `show` is one model call, on the designer's model.
+- Each `show` is one short agent run on the designer's model (the architect's, if no designer model is set).
 
 **The full-screen chat.** `phil` opens the chat full screen: a header, the conversation in its own
 scrolling pane, a live line above the input, and the boxed input at the bottom. Scroll the

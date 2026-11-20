@@ -267,7 +267,7 @@ def test_drawings_are_kept_per_approach(calc_repo, browser):
     assert seen["mockups"]["Footer band"].kind == "html" and "band one" in seen["mockups"]["Footer band"].text
     assert "card two" in seen["mockups"]["Inline card"].text
     kept = seen["mockups"]["Inline card"].path
-    assert kept == page_path(calc_repo).with_name(f"{session_dir(calc_repo).name}-inline-card.html")
+    assert kept == page_path(calc_repo).with_name(f"{session_dir(calc_repo).name}-inline-card.frag")
     assert kept.read_text(encoding="utf-8") == seen["mockups"]["Inline card"].text
 
 
@@ -319,7 +319,7 @@ def test_a_large_restored_mockup_is_clipped(calc_repo, browser, contracts):
     from tests.chat.test_reopen_state import reopen
 
     run_chat(calc_repo, ["add a CTA section", "show"], BOTH)
-    kept = page_path(calc_repo).with_name(f"{session_dir(calc_repo).name}-footer-band.html")
+    kept = page_path(calc_repo).with_name(f"{session_dir(calc_repo).name}-footer-band.frag")
     kept.write_text("<p>z</p>\n" * 4000, encoding="utf-8")  # grown on disk since
     reopen(calc_repo, ["1", "n"], PLANNING)
     [architect] = architect_contracts(contracts)
@@ -384,7 +384,7 @@ def test_a_deleted_mockup_file_means_no_mockup(calc_repo, browser, contracts):
     from tests.chat.test_reopen_state import reopen
 
     run_chat(calc_repo, ["add a CTA section", "show"], BOTH)
-    kept = page_path(calc_repo).with_name(f"{session_dir(calc_repo).name}-footer-band.html")
+    kept = page_path(calc_repo).with_name(f"{session_dir(calc_repo).name}-footer-band.frag")
     kept.unlink()
     text, *_ = reopen(calc_repo, ["1", "n"], PLANNING)
     [architect] = architect_contracts(contracts)
@@ -445,6 +445,164 @@ def test_mockup_call_numbers_continue_after_reopen(calc_repo, browser):
     run_chat(calc_repo, ["add a CTA section", "show"], BOTH)
     reopen(calc_repo, [count("show 2"), count(None)], {"mockup": [drawings(("Inline card", "card two"))]})
     assert seen == [1, 2]
+
+
+def test_a_redraw_with_a_note_carries_the_previous_drawing(calc_repo, browser, contracts):
+    run_chat(
+        calc_repo, ["add a CTA section", "show 1", "show 1 sticky header"],
+        {"intake": [OPEN], "design": [approaches(True)],
+         "mockup": [drawings(("Footer band", "band")), drawings(("Footer band", "band, sticky"))]},
+    )
+    first, second = mockup_contracts(contracts)
+    assert first.previous == ""
+    assert second.note == "sticky header" and second.previous == band_fragment()
+
+
+def test_a_redraw_without_a_note_or_drawing_carries_nothing(calc_repo, browser, contracts):
+    run_chat(
+        calc_repo, ["add a CTA section", "show 1", "show 1", "show 2 less copy"],
+        {"intake": [OPEN], "design": [approaches(True)],
+         "mockup": [drawings(("Footer band", "band")), drawings(("Footer band", "band")),
+                    drawings(("Inline card", "card"))]},
+    )
+    _, again, other = mockup_contracts(contracts)
+    assert again.previous == ""  # no note
+    assert other.previous == ""  # approach 2 had no drawing yet
+
+
+def test_a_browser_that_didnt_open_is_tried_again(calc_repo, browser):
+    browser["opens"] = False
+    text, *_ = run_chat(
+        calc_repo, ["add a CTA section", "show", "show 2 less copy"],
+        {"intake": [OPEN], "design": [approaches(True)],
+         "mockup": [drawings(("Footer band", "band"), ("Inline card", "card")), drawings(("Inline card", "card two"))]},
+    )
+    assert len(browser["opened"]) == 2
+    assert "Mockup updated: reload the tab" not in text
+
+
+def test_a_reopened_chat_opens_the_browser_again(calc_repo, browser):
+    from tests.chat.test_reopen_state import reopen
+
+    run_chat(calc_repo, ["add a CTA section", "show"], BOTH)
+    assert len(browser["opened"]) == 1
+    text, *_ = reopen(calc_repo, ["show 2", None], {"mockup": [drawings(("Inline card", "card two"))]})
+    assert len(browser["opened"]) == 2
+    assert "Mockup updated: reload the tab" not in text
+
+
+def test_a_new_goal_opens_the_browser_again(calc_repo, browser):
+    seen = []
+
+    def new_goal(controller):
+        seen.append(controller._page_opened)
+        controller._reset_goal()
+        seen.append(controller._page_opened)
+        return None
+
+    run_chat(calc_repo, ["add a CTA section", "show", new_goal], BOTH)
+    assert seen == [True, False]
+    assert len(browser["opened"]) == 1
+
+
+def test_snapshot_exports_one_at_a_time(calc_repo, monkeypatch):
+    import threading
+
+    from phil.chat import controller as controller_module
+
+    seen, calls = {}, []
+
+    def export(root, sha, dest):
+        seen["locked"] = seen["controller"]._snapshot_lock.locked()
+        calls.append(dest)
+        return dest
+
+    def check(controller):  # an exception here is swallowed by the REPL: record, assert after
+        seen["controller"] = controller
+        monkeypatch.setattr(controller_module, "export_tree", export)
+        controller._snapshot(controller._generation)
+        with controller._snapshot_lock:  # a second caller waits while an export is in progress
+            waiting = threading.Thread(target=controller._snapshot, args=(controller._generation,))
+            waiting.start()
+            waiting.join(timeout=0.2)
+            seen["waited"] = waiting.is_alive() and len(calls) == 1
+        waiting.join(timeout=5)
+        seen["finished"] = not waiting.is_alive() and len(calls) == 2
+        return None
+
+    run_chat(calc_repo, [check], {})
+    assert seen.get("locked") is True  # the export runs under the lock
+    assert seen.get("waited") is True and seen.get("finished") is True
+
+
+def test_an_empty_drawing_is_not_shown_or_kept(calc_repo, browser):
+    seen = {}
+
+    def look(controller):
+        seen["mockups"] = dict(controller._mockups)
+        return None
+
+    run_chat(
+        calc_repo, ["add a CTA section", "show", look],
+        {"intake": [OPEN], "design": [approaches(True)],
+         "mockup": [Mockup(drawings=[MockupDrawing(name="Footer band", html="  \n"),
+                                     MockupDrawing(name="Inline card", html="<p>card</p>")])]},
+    )
+    assert set(seen["mockups"]) == {"Inline card"}
+    page = page_path(calc_repo).read_text()
+    assert "Footer band" not in page and "card" in page
+
+
+def test_only_empty_drawings_fail(calc_repo, browser):
+    text, *_ = run_chat(
+        calc_repo, ["add a CTA section", "show 1"],
+        {"intake": [OPEN], "design": [approaches(True)],
+         "mockup": [Mockup(drawings=[MockupDrawing(name="Footer band", html="", sketch="+--+")])]},
+    )
+    assert "Couldn't draw the mockup: the model returned no drawing" in text
+    assert not page_path(calc_repo).exists()
+
+
+def test_drawings_are_kept_as_fragments_not_pages(calc_repo, browser):
+    seen = {}
+
+    def look(controller):
+        seen["mockups"] = dict(controller._mockups)
+        return None
+
+    run_chat(calc_repo, ["add a CTA section", "show", look], BOTH)
+    kept = seen["mockups"]["Footer band"].path
+    assert kept.suffix == ".frag"
+    assert not kept.with_suffix(".html").exists()
+
+
+def test_an_old_html_drawing_still_restores(calc_repo, browser, contracts):
+    import json
+
+    from tests.chat.test_reopen_state import reopen
+
+    run_chat(calc_repo, ["add a CTA section", "show"], BOTH)
+    kept = page_path(calc_repo).with_name(f"{session_dir(calc_repo).name}-footer-band.frag")
+    old = kept.with_suffix(".html")
+    kept.rename(old)
+    path = session_dir(calc_repo) / "state.json"
+    state = json.loads(path.read_text())
+    state["mockups"]["Footer band"] = str(old)
+    path.write_text(json.dumps(state))
+    reopen(calc_repo, ["1", "n"], PLANNING)
+    [architect] = architect_contracts(contracts)
+    assert architect.mockup == band_fragment()
+
+
+def test_a_reopen_at_approval_without_the_file_keeps_the_plans_mockup(calc_repo, browser, contracts):
+    from tests.chat.test_reopen_state import reopen
+
+    run_chat(calc_repo, ["add a CTA section", "show", "1"], {**BOTH, **PLANNING})  # EOF at approval
+    page_path(calc_repo).with_name(f"{session_dir(calc_repo).name}-footer-band.frag").unlink()
+    contracts.clear()
+    reopen(calc_repo, ["edit", "smaller", "n"], PLANNING)
+    [revised] = architect_contracts(contracts)
+    assert revised.mockup == band_fragment()
 
 
 def test_menu_offers_show_as_mockups_when_visual():

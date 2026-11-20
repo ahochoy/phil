@@ -79,6 +79,10 @@ class MockupInput(Contract):
     approaches: list[Approach] = Field(description="The approaches to draw, one drawing each.")
     repo_overview: str = Field(default="", description="A short overview of the repository's tracked files.")
     note: str = Field(default="", description="What the user asked to change or emphasise; follow it when set.")
+    previous: str = Field(
+        default="",
+        description="When set, the approach's previous drawing: change only what the note asks; keep the rest.",
+    )
     format: Literal["html", "sketch"] = Field(
         description="`html` fills each drawing's `html`; `sketch` fills its `sketch`. Never both."
     )
