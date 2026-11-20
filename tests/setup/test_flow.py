@@ -78,6 +78,16 @@ def setup(answers, tmp_path, *, check=None, ollama=None, config=None, catalog=No
     return wrote, io, check
 
 
+@pytest.fixture(autouse=True)
+def home(tmp_path, monkeypatch):
+    """An empty home directory: the machine's own skill folders never show up in setup."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    return home
+
+
 @pytest.fixture
 def no_keychain(monkeypatch):
     import keyring
@@ -982,6 +992,176 @@ def test_setup_without_skills_to_label_says_nothing(tmp_path, memory_keyring):
     wrote, io, _ = setup(["", SECRET, "", "", ""], tmp_path, label=lambda: (0, 0))
     assert wrote is True
     assert UNLABELLED not in io.lines
+
+
+# The skills step (after the vision step): which skill folders from other coding agents Phil may use.
+
+SKILLS_INTRO = "Skills from other coding agents can be used by Phil's agents. Found:"
+SKILLS_PROMPT = "use which? (numbers separated by spaces, Enter for none)"
+SKILLS_PROMPT_KEEP = "use which? (numbers separated by spaces, 0 for none, Enter to keep)"
+# Everything before the skills step: provider, key, high, low, classifier, vision.
+BEFORE_SKILLS = ["", SECRET, "", "", "Your low model", ""]
+
+
+def make_skills(home, folder, names):
+    for name in names:
+        directory = home / folder / name
+        directory.mkdir(parents=True)
+        (directory / "SKILL.md").write_text(f"---\nname: {name}\ndescription: Does {name}\n---\nSteps.\n")
+
+
+def skills_setup(answer, tmp_path, **kwargs):
+    return setup([*BEFORE_SKILLS, *([answer] if answer is not None else [])], tmp_path, skip_vision=False, **kwargs)
+
+
+def write_global(text):
+    global_config_path().parent.mkdir(parents=True, exist_ok=True)
+    global_config_path().write_text(text)
+
+
+def test_skills_step_lists_sources_with_counts(tmp_path, home, memory_keyring):
+    make_skills(home, ".agents/skills", ["a", "b"])
+    make_skills(home, ".claude/skills", ["c"])
+    wrote, io, _ = skills_setup("", tmp_path)
+    assert wrote is True
+    assert SKILLS_INTRO in io.lines
+    assert "  1. ~/.agents/skills (~/.agents/skills): 2 skills" in io.lines
+    assert "  2. ~/.claude/skills (~/.claude/skills): 1 skill" in io.lines
+    assert ("ask", SKILLS_PROMPT) in io.prompts
+    assert written(tmp_path).skills.folders == []  # Enter with no current value: nothing written
+    assert "folders" not in global_config_path().read_text()
+
+
+def test_skills_step_shows_the_plugins_folder(tmp_path, home, memory_keyring):
+    import json
+
+    install = home / ".claude" / "plugins" / "cache" / "p" / "1.0"
+    make_skills(install, "skills", ["x"])
+    (home / ".claude" / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {"p@m": [{"scope": "user", "installPath": str(install)}]}})
+    )
+    _, io, _ = skills_setup("", tmp_path)
+    assert "  1. Claude plugins (~/.claude/plugins): 1 skill" in io.lines
+
+
+def test_skills_step_writes_chosen_folders(tmp_path, home, memory_keyring):
+    make_skills(home, ".agents/skills", ["a"])
+    make_skills(home, ".claude/skills", ["b"])
+    make_skills(home, ".codex/skills", ["c"])
+    wrote, _, _ = skills_setup("1 3", tmp_path)
+    assert wrote is True
+    assert written(tmp_path).skills.folders == ["agents", "codex"]
+
+
+@pytest.mark.parametrize("answer", ["0", "none"])
+def test_skills_step_zero_or_none_approves_nothing_and_writes_an_empty_list(tmp_path, home, memory_keyring, answer):
+    make_skills(home, ".agents/skills", ["a"])
+    write_global('[skills]\nfolders = ["agents"]\n')
+    wrote, _, _ = skills_setup(answer, tmp_path)
+    assert wrote is True
+    assert written(tmp_path).skills.folders == []
+    assert "folders = []" in global_config_path().read_text()
+
+
+def test_enter_keeps_current_folders(tmp_path, home, memory_keyring):
+    make_skills(home, ".agents/skills", ["a"])
+    make_skills(home, ".claude/skills", ["b"])
+    write_global('[skills]\nfolders = ["claude"]\noff = ["x"]\n')
+    wrote, io, _ = skills_setup("", tmp_path)
+    assert wrote is True
+    assert ("ask", SKILLS_PROMPT_KEEP) in io.prompts
+    config = written(tmp_path)
+    assert config.skills.folders == ["claude"]
+    assert config.skills.off == ["x"]
+
+
+def test_a_rerun_can_change_the_current_folders(tmp_path, home, memory_keyring):
+    make_skills(home, ".agents/skills", ["a"])
+    make_skills(home, ".claude/skills", ["b"])
+    write_global('[skills]\nfolders = ["claude"]\noff = ["x"]\n')
+    skills_setup("1 2", tmp_path)
+    config = written(tmp_path)
+    assert config.skills.folders == ["agents", "claude"]
+    assert config.skills.off == ["x"]
+
+
+def test_a_current_folder_written_as_a_path_is_kept_on_enter(tmp_path, home, memory_keyring):
+    make_skills(home, ".agents/skills", ["a"])
+    write_global('[skills]\nfolders = ["~/.agents/skills", "~/.gone/skills"]\n')
+    _, io, _ = skills_setup("", tmp_path)
+    assert ("ask", SKILLS_PROMPT_KEEP) in io.prompts
+    assert written(tmp_path).skills.folders == ["~/.agents/skills", "~/.gone/skills"]  # nothing changed
+
+
+def test_a_repo_skills_table_is_not_the_current_value(tmp_path, home, memory_keyring):
+    make_skills(home, ".agents/skills", ["a"])
+    (tmp_path / "phil.toml").write_text('[skills]\nfolders = ["agents"]\n')
+    _, io, _ = skills_setup("", tmp_path)
+    assert ("ask", SKILLS_PROMPT) in io.prompts
+    assert written(tmp_path).skills.folders == []
+
+
+def test_an_answer_outside_the_list_is_asked_again_once_then_treated_as_enter(tmp_path, home, memory_keyring):
+    make_skills(home, ".agents/skills", ["a"])
+    io = ScriptedSetupIO([*BEFORE_SKILLS, "7", "x"])
+    wrote = run_setup(
+        io, config=load_config(tmp_path), check=FakeCheck(), catalog=lambda: CATALOG, ollama=FakeOllama(),
+        classifier_check=lambda model: None,
+    )
+    assert wrote is True
+    assert [p for p in io.prompts if p[1] == SKILLS_PROMPT] == [("ask", SKILLS_PROMPT)] * 2
+    assert written(tmp_path).skills.folders == []
+
+
+def test_a_bad_answer_then_a_good_one_is_used(tmp_path, home, memory_keyring):
+    make_skills(home, ".agents/skills", ["a"])
+    io = ScriptedSetupIO([*BEFORE_SKILLS, "7", "1"])
+    run_setup(
+        io, config=load_config(tmp_path), check=FakeCheck(), catalog=lambda: CATALOG, ollama=FakeOllama(),
+        classifier_check=lambda model: None,
+    )
+    assert written(tmp_path).skills.folders == ["agents"]
+
+
+def test_no_sources_no_step(tmp_path, memory_keyring):
+    wrote, io, _ = skills_setup(None, tmp_path)
+    assert wrote is True
+    assert SKILLS_INTRO not in io.lines
+    assert not any("use which?" in prompt for _, prompt in io.prompts)
+    assert "skills" not in global_config_path().read_text()
+
+
+def test_skills_step_is_skipped_when_not_interactive(tmp_path, home, memory_keyring):
+    make_skills(home, ".agents/skills", ["a"])
+    io = ScriptedSetupIO([*BEFORE_SKILLS])
+    io.interactive = False
+    wrote = run_setup(
+        io, config=load_config(tmp_path), check=FakeCheck(), catalog=lambda: CATALOG, ollama=FakeOllama(),
+        classifier_check=lambda model: None,
+    )
+    assert wrote is True
+    assert SKILLS_INTRO not in io.lines
+    assert written(tmp_path).skills.folders == []
+
+
+def test_a_cancel_at_the_skills_step_writes_nothing(tmp_path, home, memory_keyring):
+    make_skills(home, ".agents/skills", ["a"])
+    wrote, _, _ = setup(BEFORE_SKILLS, tmp_path, skip_vision=False)  # ends at the skills prompt
+    assert wrote is False
+    assert not global_config_path().exists()
+
+
+def test_labelling_sees_new_folders(tmp_path, home, memory_keyring):
+    make_skills(home, ".agents/skills", ["a"])
+    seen = []
+
+    def label():
+        seen.append(load_config(tmp_path).skills.folders)
+        return 1, 1
+
+    wrote, _, _ = skills_setup("1", tmp_path, label=label)
+    assert wrote is True
+    assert seen == [["agents"]]
 
 
 def test_a_cancelled_setup_labels_nothing(tmp_path):
