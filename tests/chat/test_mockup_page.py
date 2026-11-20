@@ -89,9 +89,64 @@ def test_data_and_fragment_urls_are_kept():
 
 def test_reassembly_is_blocked():
     out = clean_fragment("<scr<script>ipt>alert(1)</scr</script>ipt><im<meta>g onerror=x>")
-    assert "<script" not in out.lower()
-    assert "<meta" not in out.lower()
-    assert "onerror" not in out.lower()
+    low = out.lower()
+    # Leftover words are escaped text, not tags.
+    assert "<script" not in low
+    assert "<meta" not in low
+    assert "<img" not in low
+
+
+def test_attribute_glued_to_a_quoted_value_is_still_handled():
+    out = clean_fragment('<a title="x"href=//e>a</a><p title="x"onclick=y>b</p>')
+    assert "href" not in out.lower()
+    assert "onclick" not in out.lower()
+    assert 'title="x"' in out
+    assert "<a" in out and "<p" in out
+
+
+def test_more_url_attributes_are_dropped():
+    out = clean_fragment('<img srcset="a.png 1x"><video poster=//e></video><a ping=//e>p</a><td background=//e>')
+    low = out.lower()
+    for attr in ("srcset", "poster", "ping", "background", "//e"):
+        assert attr not in low
+
+
+def test_data_urls_are_only_allowed_as_images_in_src():
+    out = clean_fragment('<a href="data:text/html,x">a</a><img src="data:text/html,x"><a href="data:image/png,x">b</a>')
+    low = out.lower()
+    assert "data:" not in low
+    assert "href" not in low
+    assert "src" not in low
+
+
+def test_inline_svg_survives():
+    svg = '<svg viewBox="0 0 10 10" width="20"><path d="M0 0L10 10" fill="none" stroke="#000"></path></svg>'
+    out = clean_fragment(svg)
+    assert out == svg
+
+
+def test_style_element_and_attribute_survive():
+    out = clean_fragment('<style>.a > p { color: red }</style><p style="color: red">x</p>')
+    assert ".a > p { color: red }" in out
+    assert 'style="color: red"' in out
+
+
+def test_dropped_elements_lose_their_contents_but_unwrapped_ones_keep_them():
+    out = clean_fragment("<noscript><p>n</p></noscript><template>t</template><form><b>kept</b></form>")
+    assert "n</p>" not in out and "t</template>" not in out
+    assert "<b>kept</b>" in out
+
+
+def test_comments_are_removed_and_text_is_escaped():
+    out = clean_fragment("<!-- c --><p>a < b & c</p>")
+    assert "<!--" not in out
+    assert "a &lt; b &amp; c" in out
+
+
+def test_unclosed_elements_do_not_leak_into_the_page():
+    out = clean_fragment("<div><span>x")
+    assert out.count("<div>") == out.count("</div>") == 1
+    assert out.count("<span>") == out.count("</span>") == 1
 
 
 def test_slash_separated_handler_is_stripped():

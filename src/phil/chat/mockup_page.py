@@ -9,7 +9,9 @@ from __future__ import annotations
 import html
 import re
 from collections.abc import Mapping
+from html.parser import HTMLParser
 from pathlib import Path
+from typing import Any
 
 CSP = (
     "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; "
@@ -18,16 +20,42 @@ CSP = (
 
 CLOSING_LINE = "Pick in Phil: Enter or a number to choose, `show N <note>` to redraw."
 
-_FLAGS = re.IGNORECASE | re.DOTALL
-_SCRIPT_BLOCK = re.compile(r"<script\b[^>]*>.*?</script\s*>", _FLAGS)
-_SCRIPT_TAG = re.compile(r"</?script\b[^>]*>?", _FLAGS)
-_PAIRED_EMBED = re.compile(r"<(iframe|object)\b[^>]*>.*?</\1\s*>", _FLAGS)
-_STRAY_TAG = re.compile(r"</?(?:iframe|object|embed|form|meta|base|link)\b[^>]*>?", _FLAGS)
-_HANDLER = re.compile(r"""[\s/]+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)""", _FLAGS)
-_URL_ATTR = re.compile(
-    r"""(?<=[\s/])(href|src|action|formaction|xlink:href)\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)""", _FLAGS
-)
-_JS_URL = re.compile(r"javascript\s*:", _FLAGS)
+_TAG_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9:-]*$")
+_ATTR_NAME = re.compile(r"^[A-Za-z_:][A-Za-z0-9_:.-]*$")
+
+# Dropped with everything inside them (when they are closed).
+_DROP_WITH_CONTENTS = frozenset(
+    {
+        "script", "iframe", "object", "frameset", "frame", "noscript", "template", "applet",
+        # SVG animation can rewrite href to a script URL at run time.
+        "animate", "set", "animatemotion", "animatetransform",
+    }
+)  # fmt: skip
+# Dropped as tags only; their children stay.
+_DROP_TAG_ONLY = frozenset({"meta", "base", "link", "embed", "form"})
+_VOID = frozenset(
+    {
+        "area", "base", "basefont", "br", "col", "embed", "frame", "hr", "img", "input",
+        "keygen", "link", "meta", "param", "source", "track", "wbr",
+    }
+)  # fmt: skip
+# The parser lowercases names; SVG's camelCase ones are restored on output.
+_SVG_CASE = {
+    name.lower(): name
+    for name in (
+        "viewBox preserveAspectRatio gradientUnits gradientTransform patternUnits patternTransform "
+        "patternContentUnits clipPathUnits maskUnits maskContentUnits filterUnits primitiveUnits "
+        "markerWidth markerHeight markerUnits refX refY stdDeviation textLength lengthAdjust "
+        "startOffset baseFrequency numOctaves spreadMethod pathLength tableValues "
+        "linearGradient radialGradient clipPath textPath feGaussianBlur feOffset feBlend feColorMatrix "
+        "feComposite feFlood feMerge feMergeNode feMorphology feTurbulence feDropShadow"
+    ).split()
+}
+_ALWAYS_DROPPED_ATTRS = frozenset({"ping", "srcset"})
+# Only "#..." values are kept on these.
+_LINK_ATTRS = frozenset({"href", "xlink:href", "action", "formaction", "cite", "codebase", "manifest"})
+# Only "data:image/..." values are kept on these.
+_IMAGE_ATTRS = frozenset({"src", "poster", "background", "data"})
 
 _STYLE = """\
 *, *::before, *::after { box-sizing: border-box; }
@@ -53,31 +81,129 @@ h1 { font-size: 1.5rem; margin: 0 0 4px; }
 """
 
 
-def _safe_url_attr(match: re.Match[str]) -> str:
-    value = match.group(2).strip("\"'").strip().lower()
-    return match.group(0) if value.startswith(("#", "data:")) else ""
+class _Node:
+    __slots__ = ("name", "attrs", "closed")
+
+    def __init__(self, name: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.name = name
+        self.attrs = attrs
+        self.closed = False  # True only when an end tag named it explicitly
 
 
-def _clean_once(fragment: str) -> str:
-    out = _SCRIPT_BLOCK.sub("", fragment)
-    out = _SCRIPT_TAG.sub("", out)
-    out = _PAIRED_EMBED.sub("", out)
-    out = _STRAY_TAG.sub("", out)
-    out = _HANDLER.sub("", out)
-    out = _URL_ATTR.sub(_safe_url_attr, out)
-    return _JS_URL.sub("", out)
+def _keep_attr(name: str, value: str | None) -> bool:
+    if not _ATTR_NAME.match(name) or name.startswith("on") or name in _ALWAYS_DROPPED_ATTRS:
+        return False
+    if name in _LINK_ATTRS:
+        return (value or "").strip().startswith("#")
+    if name in _IMAGE_ATTRS:
+        return (value or "").strip().lower().startswith("data:image/")
+    return True
+
+
+class _Cleaner(HTMLParser):
+    """Rebuilds a fragment from its parsed structure, dropping what is unsafe.
+
+    Tokens are collected flat (open, close, text) and serialized afterwards, so deep
+    nesting can't overflow the stack. Every element still open is closed, so one
+    drawing can't swallow the next.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.tokens: list[tuple[str, object]] = []
+        self._stack: list[_Node] = []
+
+    def set_cdata_mode(self, elem: str, *args: Any, **kwargs: Any) -> None:
+        # Only <style> keeps raw-text handling. Everything else (script, iframe,
+        # textarea...) is parsed as markup, so an unclosed one can't swallow the rest.
+        if elem == "style":
+            super().set_cdata_mode(elem, *args, **kwargs)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if not _TAG_NAME.match(tag):
+            return
+        node = _Node(tag, [(n, v) for n, v in attrs if _keep_attr(n, v)])
+        self.tokens.append(("open", node))
+        if tag not in _VOID:
+            self._stack.append(node)
+
+    def handle_endtag(self, tag: str) -> None:
+        for index in range(len(self._stack) - 1, -1, -1):
+            if self._stack[index].name == tag:
+                while len(self._stack) > index + 1:
+                    self.tokens.append(("close", self._stack.pop()))
+                node = self._stack.pop()
+                node.closed = True
+                self.tokens.append(("close", node))
+                return
+
+    def handle_data(self, data: str) -> None:
+        if self._stack and self._stack[-1].name == "style":
+            # CSS needs `>` and quotes as written; `<` is escaped so it can't open a tag
+            # if a browser parses this style element as SVG content.
+            self.tokens.append(("raw", data.replace("<", "\\3c ")))
+        else:
+            self.tokens.append(("text", data))
+
+    def handle_entityref(self, name: str) -> None:
+        self.tokens.append(("raw", f"&{name};"))
+
+    def handle_charref(self, name: str) -> None:
+        self.tokens.append(("raw", f"&#{name};"))
+
+    def finish(self) -> str:
+        self.close()
+        while self._stack:
+            self.tokens.append(("close", self._stack.pop()))
+        out: list[str] = []
+        skipping: _Node | None = None
+        for kind, value in self.tokens:
+            if kind == "open":
+                node = value
+                assert isinstance(node, _Node)
+                if skipping is not None:
+                    continue
+                if node.name in _DROP_WITH_CONTENTS and (node.closed or node.name in _VOID):
+                    skipping = node
+                elif node.name not in _DROP_WITH_CONTENTS and node.name not in _DROP_TAG_ONLY:
+                    out.append(self._open_tag(node))
+            elif kind == "close":
+                node = value
+                assert isinstance(node, _Node)
+                if skipping is not None:
+                    if skipping is node:
+                        skipping = None
+                    continue
+                if node.name not in _DROP_WITH_CONTENTS and node.name not in _DROP_TAG_ONLY:
+                    out.append(f"</{_SVG_CASE.get(node.name, node.name)}>")
+            elif skipping is None:
+                text = str(value)
+                out.append(text if kind == "raw" else html.escape(text, quote=False))
+        return "".join(out)
+
+    @staticmethod
+    def _open_tag(node: _Node) -> str:
+        attrs = "".join(
+            f" {_SVG_CASE.get(name, name)}"
+            if value is None
+            else f' {_SVG_CASE.get(name, name)}="{html.escape(value, quote=True)}"'
+            for name, value in node.attrs
+        )
+        return f"<{_SVG_CASE.get(node.name, node.name)}{attrs}>"
 
 
 def clean_fragment(fragment: str) -> str:
-    """Remove scripts, navigation and embedding tags, handlers and unsafe URLs.
+    """Re-serialize a fragment from its parsed structure, keeping only safe parts.
 
-    Handles upper and mixed case, `\\r\\n` line endings and unclosed tags. Repeats
-    until the output is stable, so removing one piece can't assemble another.
+    Scripts, frames, objects and the like go with their contents; `meta`, `base`,
+    `link`, `embed` and `form` go as tags only. Event handlers are dropped, and URL
+    attributes keep only `#` links and `data:image/` sources. Comments are dropped,
+    text and attribute values are re-escaped, and unclosed elements are closed.
+    The CSP is still the real guard.
     """
-    out = fragment
-    while (cleaned := _clean_once(out)) != out:
-        out = cleaned
-    return out
+    cleaner = _Cleaner()
+    cleaner.feed(fragment)
+    return cleaner.finish()
 
 
 def comparing_line(count: int, objective: str) -> str:
