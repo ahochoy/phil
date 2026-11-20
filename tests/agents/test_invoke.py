@@ -231,7 +231,7 @@ def test_the_retry_payload_names_images_instead_of_holding_their_base64(config, 
     invoke_agent(get_spec("critic"), packet, context(config, conn, artifacts, factory), node="critic")
     saved = (artifacts.run_dir / "packets" / "critic-run-2.retry.json").read_text()
     assert base64.b64encode(data).decode() not in saved and '"base64"' not in saved
-    assert str(picture) in saved
+    assert json.dumps(str(picture))[1:-1] in saved  # JSON escapes a Windows path's backslashes
     sent = factory.agent.calls[1]["messages"][0]["content"]
     assert any(part.get("base64") == base64.b64encode(data).decode() for part in sent)  # what's sent is unchanged
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,7 @@ def test_constants():
 
 def test_bare_and_tilde_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # what expanduser reads on Windows
     bare = _png(tmp_path, "a.png")
     _png(tmp_path, "b.JPG")
     found = find_images(f"one {bare} two ~/b.JPG three")
@@ -168,6 +170,56 @@ def test_symlink_and_directory_rejected(tmp_path):
     assert find_images(f"{link} {folder}") == []
 
 
+@pytest.fixture
+def windows_paths(monkeypatch):
+    """Treat every candidate with an image extension as an existing image, so Windows path parsing
+    is testable on any OS."""
+
+    def existing(candidate):
+        return Path(candidate) if Path(candidate).suffix.lower() in IMAGE_EXTS else None
+
+    monkeypatch.setattr("phil.chat.attachments._existing", existing)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        r"C:\Users\me\Desktop\a.png",
+        "C:/Users/me/Desktop/a.png",
+        r"d:\shots\b.JPG",
+    ],
+)
+def test_a_windows_drive_path_is_found(windows_paths, path):
+    assert find_images(f"look at {path}.") == [Found(raw=path, path=Path(path))]
+
+
+def test_a_quoted_windows_path_with_spaces_is_found(windows_paths):
+    path = r"C:\Users\me\My Pictures\a b.png"
+    assert find_images(f'see "{path}" now') == [Found(raw=f'"{path}"', path=Path(path))]
+
+
+@pytest.mark.parametrize(
+    ("uri", "path"),
+    [
+        ("file:///C:/Users/me/a%20b.png", "C:/Users/me/a b.png"),
+        ("file://C:/Users/me/a.png", "C:/Users/me/a.png"),
+    ],
+)
+def test_a_windows_file_uri_is_found(windows_paths, uri, path):
+    assert find_images(f"x {uri} y") == [Found(raw=uri, path=Path(path))]
+
+
+def test_a_drive_letter_inside_a_word_is_not_a_path(windows_paths):
+    assert find_images(r"ratioC:\x.png and https://C:/x.png") == []
+
+
+def test_a_message_starting_with_a_windows_path_is_not_a_command(windows_paths):
+    from phil.chat.attachments import starts_with_image
+
+    assert starts_with_image(r"C:\Users\me\a.png does this match")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows refuses control characters in file names")
 def test_escapes_in_names_are_printable(tmp_path):
     src = tmp_path / "src"
     src.mkdir()

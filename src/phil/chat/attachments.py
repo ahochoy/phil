@@ -29,16 +29,22 @@ _MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".web
 # a path run must hold it (and the no-break space) as an ordinary character, never as a separator.
 _SPACES = "  "
 _RUN = rf"(?:\\[ {_SPACES}]|[{_SPACES}]|[^\s'\"])"
+# Windows pastes a dropped file as `C:\...` (quoted when it has spaces) and file URIs as
+# `file:///C:/...`, so a drive letter starts a path as `/` and `~/` do.
+_DRIVE = r"[A-Za-z]:[\\/]"
+_START = rf"(?:/|~/|file://|{_DRIVE})"
 _TOKEN = re.compile(
     rf"""(?<!\S)(?:
-        "(?P<dq>(?:/|~/|file://)[^"\n]*)"
-      | '(?P<sq>(?:/|~/|file://)[^'\n]*)'
+        "(?P<dq>{_START}[^"\n]*)"
+      | '(?P<sq>{_START}[^'\n]*)'
       | (?P<uri>file://{_RUN}+)
-      | (?P<bare>(?:/|~/){_RUN}*)
+      | (?P<bare>{_START}{_RUN}*)
     )""",
     re.VERBOSE,
 )
 _ESCAPED_SPACE = re.compile(rf"\\([ {_SPACES}])")
+_DRIVE_PATH = re.compile(_DRIVE)
+_URI_DRIVE_PATH = re.compile(rf"/{_DRIVE}")
 
 
 @dataclass(frozen=True)
@@ -77,15 +83,30 @@ def chip(index: int, name: str) -> str:
     return f"[{label}{name}]"
 
 
+def _normalise(candidate: str) -> str | None:
+    """`candidate` as a plain path string (URI decoded, escaped spaces undone), or None when it
+    doesn't start like an absolute, drive-letter or `~/` path."""
+    if candidate.startswith("file://"):
+        candidate = unquote(candidate.removeprefix("file://").removeprefix("localhost"))
+        if _URI_DRIVE_PATH.match(candidate):
+            candidate = candidate[1:]  # file:///C:/x names C:/x
+    else:
+        candidate = _ESCAPED_SPACE.sub(r"\1", candidate)
+    if not (candidate.startswith("/") or candidate.startswith("~/") or _DRIVE_PATH.match(candidate)):
+        return None
+    return candidate
+
+
 def _image_at(candidate: str) -> Path | None:
     """The absolute path of `candidate` when it names an existing, regular, non-symlink image."""
+    normalised = _normalise(candidate)
+    return None if normalised is None else _existing(normalised)
+
+
+def _existing(candidate: str) -> Path | None:
+    """The absolute path of the plain path `candidate` when it is an existing, regular,
+    non-symlink image file."""
     try:
-        if candidate.startswith("file://"):
-            candidate = unquote(candidate.removeprefix("file://").removeprefix("localhost"))
-        else:
-            candidate = _ESCAPED_SPACE.sub(r"\1", candidate)
-        if not (candidate.startswith("/") or candidate.startswith("~/")):
-            return None
         path = Path(candidate).expanduser()
         if not path.is_absolute() or path.suffix.lower() not in IMAGE_EXTS:
             return None
