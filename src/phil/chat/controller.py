@@ -22,6 +22,7 @@ from rich.text import Text
 
 from phil.agents.failures import VISION_ACTION, Failure, classify_failure, internal_failure
 from phil.agents.invoke import AgentContext, price_book_for
+from phil.skills.labels import label_skills
 from phil.skills.runtime import load_runtime
 from phil.agents.providers import provider_for_model
 from phil.agents.unpriced import PLANNING_ROLES, planning_notice, unpriced_models
@@ -491,8 +492,43 @@ class ChatController:
         self._attachments: list[Path] = []
         self._vision_warned = False  # the goal's "can't read images" warning has been shown
         self._replacement_images: Incoming | None = None  # a replacement goal's images (confirm_replace)
+        self._label_thread: threading.Thread | None = None  # the skill labelling at chat start (tests join it)
+        self._label_in_background()
 
     # --- events and jobs -------------------------------------------------------------------------
+
+    def _label_in_background(self) -> None:
+        """Label the approved skills that have no label yet, on a daemon thread with its own database
+        connection. It writes into the chat's own cache, so a label is offered as soon as it exists,
+        and it never touches the feed: a failure goes to the developer log."""
+        runtime = self.ctx.skills
+        if runtime is None:
+            return
+        overrides = self.config.skills.stages
+        pending = [
+            skill
+            for skill in runtime.catalog.skills
+            if skill.name not in overrides and runtime.cache.get(skill.content_hash) is None
+        ]
+        if not pending:
+            return
+
+        def work() -> None:
+            conn = None
+            try:
+                conn = connect(self._db_path)
+                label_skills(replace(self.ctx, conn=conn), pending, runtime.cache)
+            except Exception:
+                logger.info("skill labelling at chat start failed", exc_info=True)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        self._label_thread = threading.Thread(target=work, name="phil-skill-labels", daemon=True)
+        self._label_thread.start()
 
     def post(self, event: ChatEvent) -> None:
         """Thread-safe: queue an event for the main loop and wake a blocked prompt."""

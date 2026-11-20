@@ -6,6 +6,7 @@ and classifier checks can use it, but nothing is saved until the end. Cancelling
 (Ctrl-C or end of input) saves nothing and writes nothing. Keys are never said, written or
 logged."""
 
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -24,6 +25,8 @@ from phil.setup.guard import KEY_WARNING, looks_like_key
 from phil.setup.io import SetupCancelled, SetupIO
 from phil.setup.suggestions import SUGGESTIONS
 from phil.setup.write import write_global_config
+
+logger = logging.getLogger(__name__)
 
 SETUP_TIERS = ("high", "low")
 JEV_TYPESAFE = "typesafe:jev-latest"
@@ -48,6 +51,7 @@ PROVIDER_CHOICES: list[tuple[str, str]] = [
 OLLAMA_NO_TOOLS = "  — can't call tools, won't work with Phil"
 NAME_PATTERN = re.compile(r"[a-z][a-z0-9_-]*")
 VAR_PATTERN = re.compile(r"[A-Z][A-Z0-9_]*")
+SKILLS_UNLABELLED = "Couldn't label skills yet; Phil will try again when a chat starts."
 NEXT_STEPS = (
     "Next: `phil` starts a chat, `phil config` shows your settings, "
     "`phil keys list` shows where each key comes from."
@@ -104,6 +108,7 @@ def run_setup(
     write: Callable[..., None] = write_global_config,
     path: Path | None = None,
     classifier_check: Callable[[str], str | None] | None = None,
+    label: Callable[[], tuple[int, int]] | None = None,
 ) -> bool:
     """Walk through setup and write the global config. True if it wrote the file; False if the
     user cancelled (Ctrl-C or end of input, at a prompt or not) or the file couldn't be written.
@@ -151,7 +156,21 @@ def run_setup(
     # saved — so the user reads "wrote the config" before "saved the key", in that true order.
     _summarise(io, config, provider, models, target)
     _save_pending_keys(io, to_save, pending)
+    if label is not None:
+        _label_skills_step(io, label)
     return True
+
+
+def _label_skills_step(io: SetupIO, label: Callable[[], tuple[int, int]]) -> None:
+    """Label the user's skills now that the config and keys are in place. `label` returns (how many
+    needed a label, how many got one). Setup has succeeded either way: a shortfall is only said."""
+    try:
+        missing, labelled = label()
+    except Exception:
+        logger.info("skill labelling after setup failed", exc_info=True)
+        missing, labelled = 1, 0
+    if labelled < missing:
+        io.say(SKILLS_UNLABELLED)
 
 
 def _save_pending_keys(io: SetupIO, to_save: list[tuple[str, str]], pending: dict[str, str]) -> None:

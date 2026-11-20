@@ -945,3 +945,51 @@ def test_the_default_classifier_check_pings_the_chosen_provider(monkeypatch):
     monkeypatch.setattr(flow, "ping_jev", fake_ping)
     assert flow._default_classifier_check(PhilConfig(), JEV_OPENROUTER) is None
     assert seen["call"] == ("openrouter_decisions", "typesafe/jev-1.13")
+
+
+UNLABELLED = "Couldn't label skills yet; Phil will try again when a chat starts."
+
+
+def test_setup_labels_after_writing(tmp_path, memory_keyring):
+    order = []
+
+    def label():
+        order.append(("label", global_config_path().exists()))
+        return 2, 2
+
+    wrote, io, _ = setup(["", SECRET, "", "", ""], tmp_path, label=label)
+    assert wrote is True
+    assert order == [("label", True)]  # called once, after the config was written
+    assert UNLABELLED not in io.lines
+
+
+def test_setup_label_failure_warns_and_completes(tmp_path, memory_keyring):
+    wrote, io, _ = setup(["", SECRET, "", "", ""], tmp_path, label=lambda: (3, 1))
+    assert wrote is True
+    assert io.lines.count(UNLABELLED) == 1
+
+
+def test_setup_label_exception_warns_and_completes(tmp_path, memory_keyring):
+    def label():
+        raise RuntimeError("no model")
+
+    wrote, io, _ = setup(["", SECRET, "", "", ""], tmp_path, label=label)
+    assert wrote is True
+    assert io.lines.count(UNLABELLED) == 1
+
+
+def test_setup_without_skills_to_label_says_nothing(tmp_path, memory_keyring):
+    wrote, io, _ = setup(["", SECRET, "", "", ""], tmp_path, label=lambda: (0, 0))
+    assert wrote is True
+    assert UNLABELLED not in io.lines
+
+
+def test_a_cancelled_setup_labels_nothing(tmp_path):
+    called = []
+    io = ScriptedSetupIO([])  # ends at the first prompt
+    wrote = run_setup(
+        io, config=load_config(tmp_path), check=FakeCheck(), catalog=lambda: CATALOG, ollama=FakeOllama(),
+        label=lambda: called.append(1) or (0, 0),
+    )
+    assert wrote is False
+    assert called == []

@@ -898,6 +898,7 @@ def _run_setup(ctx: typer.Context, root: Path) -> bool:
     from phil.agents.check import check_models
     from phil.setup import catalog, write
     from phil.setup.flow import run_setup
+    from phil.setup.skill_labels import label_after_setup
 
     try:
         config = load_config(root, overrides=ctx.obj.get("overrides", []))
@@ -923,6 +924,7 @@ def _run_setup(ctx: typer.Context, root: Path) -> bool:
         catalog=lambda: catalog.openrouter_catalog(),
         ollama=lambda base_url: catalog.ollama_models(base_url),
         write=lambda path, **fields: write.write_global_config(path, **fields),
+        label=lambda: label_after_setup(root, ctx.obj.get("overrides", []), factory=factory),
     )
 
 

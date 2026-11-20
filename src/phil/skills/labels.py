@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 from pathlib import Path
 
 from phil.agents.invoke import AgentContext, invoke_agent
@@ -32,6 +33,8 @@ class LabelCache:
 
     def __init__(self, labels: dict[str, list[str]] | None = None) -> None:
         self._labels = labels or {}
+        # Background labelling puts labels while the agent threads read them (offered()).
+        self._lock = threading.Lock()
 
     @classmethod
     def load(cls) -> "LabelCache":
@@ -50,22 +53,25 @@ class LabelCache:
         )
 
     def get(self, content_hash: str) -> list[str] | None:
-        return self._labels.get(_key(content_hash))
+        with self._lock:
+            return self._labels.get(_key(content_hash))
 
     def put(self, content_hash: str, stages: list[str]) -> None:
-        self._labels[_key(content_hash)] = list(stages)
+        with self._lock:
+            self._labels[_key(content_hash)] = list(stages)
 
     def save(self) -> None:
-        path = labels_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp = tempfile.mkstemp(dir=path.parent, prefix=".skills-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(self._labels, handle, indent=2, sort_keys=True)
-            os.replace(temp, path)
-        except BaseException:
-            Path(temp).unlink(missing_ok=True)
-            raise
+        with self._lock:
+            path = labels_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp = tempfile.mkstemp(dir=path.parent, prefix=".skills-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(self._labels, handle, indent=2, sort_keys=True)
+                os.replace(temp, path)
+            except BaseException:
+                Path(temp).unlink(missing_ok=True)
+                raise
 
 
 def stages_for(skill: Skill, cache: LabelCache, config: PhilConfig) -> tuple[list[str] | None, str]:
