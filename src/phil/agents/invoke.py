@@ -16,10 +16,11 @@ from phil.agents.pricing import PriceBook, book_ids, default_price_book
 from phil.agents.providers import ProviderSpec, estimate_cost, provider_for_model, split_model
 from phil.agents.reminder import reminder_count
 from phil.agents.retry import MODEL_CALL_ATTEMPTS, call_with_retry
+from phil.agents.salvage import TEXT_LIMIT, salvage, summarise
 from phil.agents.spec import AgentSpec
 from phil.agents.tools import CommandLog, make_shell_tool
 from phil.agents.usage import extract_usage
-from phil.config import PhilConfig
+from phil.config import ConfigError, PhilConfig
 from phil.contracts import Contract, Ref
 from phil.memory.context import build_repo_context
 from phil.packets import Packet
@@ -38,7 +39,8 @@ logger = logging.getLogger(__name__)
 
 # `Callable[...]` can't express the keyword-only parameters; real factories (build_agent) and
 # scripted ones (ScriptedAgentFactory/FakeAgentFactory) all accept
-# `*, timeout_s: int = 180, provider: ProviderSpec | None = None` (the fakes ignore `provider`).
+# `*, timeout_s: int = 180, provider: ProviderSpec | None = None, vision=None, sees=None, notice=None`
+# (the fakes ignore all but `timeout_s`; see build_agent for the last three).
 AgentFactory = Callable[[AgentSpec, str, Path | None, list[Callable[..., str]]], Any]
 
 
@@ -65,6 +67,9 @@ class AgentContext:
     # The Repo context block (phil.memory.context) for repo-facing agents. None: build it fresh
     # from repo_root and paths at each call; "": no block.
     repo_context: str | None = None
+    # Where a one-line notice for the feed goes, e.g. `↪ image: implementer runs on <vision model>`
+    # (phil.agents.vision.VisionSwitch, at most once per agent run). None: nowhere.
+    notice: Callable[[str], None] | None = None
 
 
 class ContractViolation(Exception):
@@ -137,6 +142,20 @@ def _estimate(ctx: AgentContext, configured: str, provider: ProviderSpec | None,
     return price.cost(call.input_tokens, call.output_tokens, call.cache_read_tokens, call.cache_write_tokens)
 
 
+def _priced_as(
+    ctx: AgentContext, call: "ModelCall", configured: str, provider: ProviderSpec | None
+) -> tuple[str, ProviderSpec | None, "ModelCall"]:
+    """The configured model, provider and call to price `call` by: its own when another model served
+    it (`call.provider` is set: the `vision` model, `call.model` its `provider:model`), else the agent's."""
+    if call.provider is None or not call.model:
+        return configured, provider, call
+    try:
+        spec: ProviderSpec | None = provider_for_model(ctx.config, call.model, "vision")
+    except ConfigError:
+        spec = None
+    return call.model, spec, dataclasses.replace(call, model=split_model(call.model)[1])
+
+
 def _usage(
     ctx: AgentContext, collector: Any, messages: list, configured: str, provider: ProviderSpec | None = None
 ) -> _Usage:
@@ -152,7 +171,7 @@ def _usage(
         if model_call.reported_cost is not None:
             cost, source = model_call.reported_cost, "reported"
         else:
-            estimate = _estimate(ctx, configured, provider, model_call)
+            estimate = _estimate(ctx, *_priced_as(ctx, model_call, configured, provider))
             cost, source = (estimate, "estimated") if estimate is not None else (0.0, "unknown")
         rows.append(
             CallRow(
@@ -202,7 +221,7 @@ def _validate(spec: AgentSpec, raw: object) -> tuple[Contract | None, list[str]]
         return None, problems
 
 
-RAW_TEXT_LIMIT = 2000
+RAW_TEXT_LIMIT = TEXT_LIMIT
 
 
 def _last_ai_text(messages: list) -> str | None:
@@ -236,6 +255,26 @@ def _retry_message(problems: list[str]) -> dict[str, str]:
         "role": "user",
         "content": f"Your previous output was rejected. Fix these problems and return the full output again:\n{listed}",
     }
+
+
+def _images_as_paths(messages: list[dict[str, Any]], images: list[str]) -> list[dict[str, Any]]:
+    """`messages` as saved in a `.retry.json` artifact: each image part becomes
+    `{"type": "image", "path": <its file>}` (`images`, in the order they were sent), never base64.
+    The messages themselves are left as they are."""
+    paths = iter(images)
+    saved: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            content = [
+                {"type": "image", "path": next(paths, "(unknown)")}
+                if isinstance(part, dict) and part.get("type") == "image"
+                else part
+                for part in content
+            ]
+            message = {**message, "content": content}
+        saved.append(message)
+    return saved
 
 
 def _record_error(
@@ -307,6 +346,24 @@ def _shell_for(
     )
 
 
+def _vision_model(config: PhilConfig, model: str, timeout_s: int) -> tuple[str, Callable[[], Any]] | None:
+    """The `[models] vision` model as (`provider:model`, a function building its chat model the way
+    the agent's own model is built); None when it isn't set or is the agent's own model. Nothing is
+    resolved or built here: VisionSwitch builds it on the first call that needs it, so a vision model
+    whose provider or key is missing never fails a text-only run."""
+    vision = config.vision_model()
+    if not vision or vision == model:
+        return None
+
+    def build() -> Any:
+        from phil.agents.factory import chat_model  # lazy: loads the LLM stack
+
+        provider = provider_for_model(config, vision, "vision")
+        return chat_model(vision, timeout_s, provider=provider, used_by=("vision",))
+
+    return vision, build
+
+
 def invoke_agent(
     spec: AgentSpec,
     packet: Packet,
@@ -367,14 +424,26 @@ def invoke_agent(
                 repo_root=ctx.repo_root,
             )
         )
+    timeout_s = ctx.config.run.model_timeout_s
+    vision = _vision_model(ctx.config, model, timeout_s)
+    own_model, own_provider = model, provider
+
+    def sees() -> bool | None:  # asked by VisionSwitch only when a call carries an image
+        from phil.agents.vision import sees_images
+
+        return sees_images(own_model, own_provider, price_book_for(ctx))
+
     agent = _resolve_factory(ctx)(
-        spec, model, ctx.workdir, tools, timeout_s=ctx.config.run.model_timeout_s, provider=provider
+        spec, model, ctx.workdir, tools, timeout_s=timeout_s, provider=provider,
+        vision=vision, sees=sees, notice=ctx.notice if vision is not None else None,
     )
     # lazy: keeps langchain out of module import
     from phil.agents.collector import UsageCollector
     from phil.agents.model_retry import TRACKER_KEY, ModelRetryTracker, model_call_retried
 
-    messages: list[dict[str, str]] = [{"role": "user", "content": packet.render()}]
+    messages: list[dict[str, Any]] = [{"role": "user", "content": packet.render_content()}]
+    # The images render_content sent, in order (a missing one is left out of the content too).
+    sent_images = [image for image in packet.images if Path(image).is_file()]
     problems: list[str] = []
     last_rejected_path: str | None = None
     for attempt in range(1, max_attempts + 1):
@@ -383,7 +452,9 @@ def invoke_agent(
         if ctx.artifacts is not None:
             ctx.artifacts.write("packets", name, packet)
             if attempt > 1:
-                ctx.artifacts.write_json("packets", f"{name}.retry", {"messages": payload_messages})
+                ctx.artifacts.write_json(
+                    "packets", f"{name}.retry", {"messages": _images_as_paths(payload_messages, sent_images)}
+                )
         started = time.monotonic()
         parse_problems: list[str] | None = None
         collector = UsageCollector(ignore_tools={spec.out_contract.__name__}, tool_paths=log.tool_paths)
@@ -450,6 +521,20 @@ def invoke_agent(
         else:
             output, problems = _validate(spec, result.get("structured_response"))
         outcome = "ok" if not problems else "invalid"
+        if parse_problems is None and result.get("structured_response") is None:
+            # The agent ended with no structured answer: a nearly-right one may be in its messages.
+            salvaged, salvage_problems = salvage(
+                result.get("messages", []),
+                spec.out_contract.__name__,
+                lambda data: _validate(spec, data)[1],
+                frozenset(spec.out_contract.model_fields),
+            )
+            if salvaged is not None:
+                output, problems = _validate(spec, salvaged.data)
+                outcome = "salvaged"
+                logger.debug("salvaged %s's answer (route: %s)", spec.name, salvaged.route)
+            else:
+                problems = ["no structured output was returned", *salvage_problems]
         if output is not None:
             problems = check_evidence(
                 output, commands=log.commands, workdir=ctx.workdir, tools=collector.tool_calls.keys()
@@ -487,11 +572,20 @@ def invoke_agent(
         if problems and ctx.artifacts is not None:
             raw = result.get("structured_response")
             raw_data = raw.model_dump() if isinstance(raw, BaseModel) else raw
+            record_fields: dict[str, Any] = {}
             if raw is None and parse_problems is None:
-                # No structured output: keep what the model said instead, to diagnose it.
-                raw_data = _last_ai_text(result.get("messages", []))
+                # No structured output: keep what the model said instead, and how it ended, to diagnose it.
+                raw_messages = result.get("messages", [])
+                raw_data = _last_ai_text(raw_messages)
+                record_fields = {
+                    "last_messages": summarise(raw_messages),
+                    "model_calls": len(usage.calls),  # the count telemetry records
+                    "max_model_calls": spec.max_model_calls,
+                }
             last_rejected_path = str(
-                ctx.artifacts.write_json("outputs", f"{name}.rejected", {"raw": raw_data, "problems": problems})
+                ctx.artifacts.write_json(
+                    "outputs", f"{name}.rejected", {"raw": raw_data, "problems": problems, **record_fields}
+                )
             )
         if output is not None and not problems:
             output_path = ""

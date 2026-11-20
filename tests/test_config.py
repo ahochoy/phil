@@ -513,3 +513,10 @@ def test_chat_screen_accepts_inline():
 def test_chat_screen_rejects_other_values():
     with pytest.raises(ValidationError):
         PhilConfig(models=TEST_MODELS, chat={"screen": "half"})
+
+
+def test_vision_key_accepted_and_read():
+    config = PhilConfig(models={"high": "x:y", "vision": "openrouter:a/b"})
+    assert config.vision_model() == "openrouter:a/b"
+    assert PhilConfig(models={"high": "x:y"}).vision_model() is None
+    assert 'vision = "openrouter:a/b"' in effective_toml(config)

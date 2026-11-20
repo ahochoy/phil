@@ -11,7 +11,7 @@ class RecordingFactory:
     def __init__(self):
         self.contexts: list[str] = []
 
-    def __call__(self, spec, model, workdir, tools, *, timeout_s=180, provider=None):
+    def __call__(self, spec, model, workdir, tools, *, timeout_s=180, provider=None, **_):
         self.contexts.append(spec.context)
         return FakeAgent([critique()])
 

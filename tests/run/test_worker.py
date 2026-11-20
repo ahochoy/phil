@@ -90,9 +90,9 @@ def test_escalate_then_resume(calc_repo):
 def recording(inner, seen):
     """A factory that records each agent's `spec.context`, then delegates to `inner`."""
 
-    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None):
+    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None, **kwargs):
         seen.append((spec.name, spec.context))
-        return inner(spec, model, workdir, tools, timeout_s=timeout_s, provider=provider)
+        return inner(spec, model, workdir, tools, timeout_s=timeout_s, provider=provider, **kwargs)
 
     return factory
 

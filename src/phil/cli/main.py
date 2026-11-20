@@ -540,6 +540,7 @@ def _drive_chats(
     from phil.chat.session import LOG_FILE, ChatLocked, ChatSession
 
     paths = ProjectPaths(info.slug)
+    printed_above = True  # the banner (and any note) comes before the first chat
     while True:
         try:
             with diagnostics.redirect(session.dir / LOG_FILE):
@@ -553,6 +554,8 @@ def _drive_chats(
                     )
                 except GitError as exc:
                     raise _StartFailed(f"[phil.error]{escape(str(exc))}[/]") from exc
+                if printed_above:  # the chat's first block gets its one blank line below it
+                    controller.console.mark_line()
                 point(controller)
                 outcome = controller.run()
         finally:
@@ -564,13 +567,13 @@ def _drive_chats(
             target = ChatSession.open(paths, outcome.switch_to)
             target.lock()
         except (ValueError, FileNotFoundError) as exc:
-            out.print(f"[phil.error]cannot reopen: {escape(str(exc))}[/]")
+            controller.console.print(f"[phil.error]cannot reopen: {escape(str(exc))}[/]")
             target = None
         except ChatLocked as exc:
-            out.print(_locked_line(outcome.switch_to, exc.pid))
+            controller.console.print(_locked_line(outcome.switch_to, exc.pid))
             target = None
         if target is None:
-            out.print(f"[phil.muted]Staying in chat {escape(previous.id)}.[/]")
+            controller.console.print(f"[phil.muted]Staying in chat {escape(previous.id)}.[/]")
             try:
                 previous.lock()
             except ChatLocked as exc:  # another window took it meanwhile: said once the frame has closed
@@ -585,6 +588,8 @@ def _drive_chats(
             session = target
         if frame is not None:
             frame.discard_interrupt()  # a Ctrl+C the last chat didn't take is not the next chat's
+        # Only the frame's switch to another chat clears what is above; inline it stays in scrollback.
+        printed_above = frame is None or target is None
         resume, pick_chat = True, False
 
 

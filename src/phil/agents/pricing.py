@@ -167,6 +167,7 @@ class PriceBook:
         self._failed_at: float | None = None
         self._prices: dict[str, Price] = {}
         self._catalog: list[tuple[str, float | None, float | None]] = []
+        self._modalities: dict[str, frozenset[str]] = {}
 
     def _write_cache_atomically(self, data: dict) -> None:
         # Fetched-at time comes from our own (possibly injected) clock, not the file's mtime,
@@ -218,6 +219,20 @@ class PriceBook:
             prices[model_id] = replace(base, tiers=_tiers(pricing, base))
         return prices
 
+    def _parse_modalities(self, data: dict) -> dict[str, frozenset[str]]:
+        """What each model accepts as input (`architecture.input_modalities`), for every entry,
+        priced or not. An entry with no such list, or a malformed one, is left out: unknown."""
+        modalities: dict[str, frozenset[str]] = {}
+        for entry in data.get("data", []):
+            model_id = entry.get("id")
+            architecture = entry.get("architecture")
+            if not model_id or not isinstance(model_id, str) or not isinstance(architecture, dict):
+                continue
+            inputs = architecture.get("input_modalities")
+            if isinstance(inputs, list):
+                modalities[model_id] = frozenset(item for item in inputs if isinstance(item, str))
+        return modalities
+
     def _parse_catalog(self, data: dict) -> list[tuple[str, float | None, float | None]]:
         """Every model in the list, in its order: (id, input, output), prices in USD per million
         tokens, or None where the entry has no usable price (missing, malformed or a router's "-1")."""
@@ -260,8 +275,10 @@ class PriceBook:
             # instead of caching "no prices" for the rest of the process.
             self._failed_at = self._clock()
             self._prices = {}
+            self._modalities = {}
             return
         self._prices = self._parse(data)
+        self._modalities = self._parse_modalities(data)
         self._catalog = self._parse_catalog(data)
         self._loaded = True
 
@@ -277,6 +294,23 @@ class PriceBook:
                 price = self._prices.get(model_id)
                 if price is not None:
                     return price
+            return None
+        except Exception:
+            return None
+
+    def modalities(self, ids: Sequence[str]) -> frozenset[str] | None:
+        """The input modalities (`"text"`, `"image"`…) of the first of `ids` the list has; None when
+        it has none of them, says nothing about their inputs, or is unavailable. No ids: None,
+        without loading the list."""
+        if not ids:
+            return None
+        try:
+            with self._lock:
+                self._load()
+            for model_id in ids:
+                found = self._modalities.get(model_id)
+                if found is not None:
+                    return found
             return None
         except Exception:
             return None

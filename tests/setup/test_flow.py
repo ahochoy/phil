@@ -62,8 +62,9 @@ def no_provider_keys(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
-def setup(answers, tmp_path, *, check=None, ollama=None, config=None, catalog=None, **kwargs):
-    io = ScriptedSetupIO(answers)
+def setup(answers, tmp_path, *, check=None, ollama=None, config=None, catalog=None, skip_vision=True, **kwargs):
+    # The optional vision step comes last; Enter skips it, unless the test answers it itself.
+    io = ScriptedSetupIO([*answers, ""] if skip_vision else answers)
     check = check or FakeCheck()
     kwargs.setdefault("classifier_check", lambda model: None)  # never a real call
     wrote = run_setup(
@@ -431,7 +432,7 @@ CANCELLED = "Setup cancelled; nothing was saved."
 )
 def test_a_cancel_at_any_step_writes_nothing(tmp_path, memory_keyring, answers):
     check = FakeCheck(bad={SUGGESTED_HIGH})
-    wrote, io, _ = setup(answers, tmp_path, check=check, ollama=FakeOllama(None))
+    wrote, io, _ = setup(answers, tmp_path, check=check, ollama=FakeOllama(None), skip_vision=False)
     assert wrote is False
     assert not global_config_path().exists()
     assert CANCELLED in io.lines
@@ -448,7 +449,7 @@ def test_a_rerun_prefills_the_current_models_and_ignores_role_keys_in_the_check(
     (git_repo / "phil.toml").write_text('[models]\ncritic = "openrouter:openai/gpt-6-sol"\n')
     # The low model at the classifier step: this calls run_setup directly, so a Jev choice would
     # run the real classifier check.
-    io = ScriptedSetupIO(["", "", "", "", "Your low model"])
+    io = ScriptedSetupIO(["", "", "", "", "Your low model", ""])  # the last Enter skips the vision step
     check = FakeCheck()
     wrote = run_setup(
         io, config=load_config(git_repo), check=check, catalog=lambda: CATALOG, ollama=FakeOllama()
@@ -589,6 +590,43 @@ def test_a_key_when_choosing_a_model_after_a_failed_check_is_refused(tmp_path, m
     assert written(tmp_path).models["high"] == "openrouter:openai/gpt-6-sol"
 
 
+# The vision step (after the classifier step): an optional model that can read images.
+
+
+def test_setup_offers_an_optional_vision_model(tmp_path):
+    wrote, io, _ = setup(["", SECRET, "", "", "Your low model", ""], tmp_path, skip_vision=False)
+    assert wrote is True
+    assert ("ask", "vision model (optional, Enter to skip)") in io.prompts
+    assert "vision" not in written(tmp_path).models  # Enter skips it
+
+
+def test_an_entered_vision_model_is_written_under_models_vision(tmp_path):
+    wrote, io, _ = setup(
+        ["", SECRET, "", "", "Your low model", "openai/gpt-6-sol"], tmp_path, skip_vision=False
+    )
+    assert wrote is True
+    assert written(tmp_path).vision_model() == "openrouter:openai/gpt-6-sol"
+    assert "models.vision = openrouter:openai/gpt-6-sol" in " ".join(io.lines)
+
+
+def test_a_vision_model_with_its_provider_is_kept_as_typed(tmp_path):
+    setup(["", SECRET, "", "", "Your low model", "openrouter:google/gemini-3.8-flash"], tmp_path, skip_vision=False)
+    assert written(tmp_path).vision_model() == "openrouter:google/gemini-3.8-flash"
+
+
+def test_a_rerun_keeps_the_saved_vision_model_on_enter(tmp_path, memory_keyring):
+    memory_keyring.store[(SERVICE, "OPENROUTER_API_KEY")] = "sk-TESTOLD-1"
+    global_config_path().parent.mkdir(parents=True)
+    global_config_path().write_text(
+        '[models]\nhigh = "openrouter:openai/gpt-6-sol"\nlow = "openrouter:openai/gpt-6-luna"\n'
+        'vision = "openrouter:google/gemini-3.8-flash"\n'
+    )
+    wrote, io, _ = setup(["", "", "", "", "Your low model"], tmp_path)
+    assert wrote is True
+    assert ("ask", "vision model (optional, Enter to skip)") in io.prompts
+    assert written(tmp_path).vision_model() == "openrouter:google/gemini-3.8-flash"
+
+
 # The classifier step (after the models are checked): a decision model for routing.
 
 
@@ -665,7 +703,7 @@ def test_cancelling_after_the_classifier_key_is_entered_saves_nothing(tmp_path, 
     # a new TypeSafe key was entered (on top of the provider's own): neither key is saved, and the
     # config is never written (replaces the old M2b "the key was saved" message).
     answers = ["", SECRET, "", "", "Jev through TypeSafe", TYPESAFE_SECRET]
-    wrote, io, _ = setup(answers, tmp_path, classifier_check=lambda model: "http 401")
+    wrote, io, _ = setup(answers, tmp_path, classifier_check=lambda model: "http 401", skip_vision=False)
     assert wrote is False
     assert "Setup cancelled; nothing was saved." in io.lines
     assert not global_config_path().exists()
@@ -679,7 +717,7 @@ def test_cancelling_when_both_keys_come_from_the_environment(tmp_path, monkeypat
     monkeypatch.setenv("OPENROUTER_API_KEY", SECRET)
     monkeypatch.setenv("TYPESAFE_API_KEY", TYPESAFE_SECRET)
     answers = ["", "", "", "Jev through TypeSafe"]
-    wrote, io, _ = setup(answers, tmp_path, classifier_check=lambda model: "http 401")
+    wrote, io, _ = setup(answers, tmp_path, classifier_check=lambda model: "http 401", skip_vision=False)
     assert wrote is False
     assert "Setup cancelled; nothing was saved." in io.lines
     assert not global_config_path().exists()

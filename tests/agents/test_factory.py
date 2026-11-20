@@ -121,7 +121,9 @@ def test_lean_roles_use_plain_create_agent(tmp_path, monkeypatch):
     assert captured["tools"] == []
     assert captured["response_format"].schema is spec.out_contract
     assert captured["system_prompt"] == load_prompt(spec)
-    assert [type(m).__name__ for m in captured["middleware"]] == ["PhilModelRetryMiddleware", "AnswerReminder"]
+    assert [type(m).__name__ for m in captured["middleware"]] == [
+        "VisionSwitch", "PhilModelRetryMiddleware", "ToolCallRepair", "AnswerReminder"
+    ]
 
 
 def test_deep_roles_use_deepagents_with_permissions(tmp_path, monkeypatch):
@@ -141,14 +143,18 @@ def test_deep_roles_use_deepagents_with_permissions(tmp_path, monkeypatch):
     assert captured["model"] is sentinel
     assert captured["permissions"]
     assert captured["response_format"].schema is spec.out_contract
-    assert [type(m).__name__ for m in captured["middleware"]] == ["PhilModelRetryMiddleware", "ToolArgs", "AnswerReminder"]
+    assert [type(m).__name__ for m in captured["middleware"]] == [
+        "VisionSwitch", "PhilModelRetryMiddleware", "ToolCallRepair", "ToolArgs", "AnswerReminder"
+    ]
     # the general-purpose sub-agent doesn't inherit the parent's middleware: it is passed
     # explicitly, with deepagents' default description and prompt, plus the retry middleware
     from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
     [general] = captured["subagents"]
     assert {k: general[k] for k in GENERAL_PURPOSE_SUBAGENT} == GENERAL_PURPOSE_SUBAGENT
-    assert [type(m).__name__ for m in general["middleware"]] == ["PhilModelRetryMiddleware", "ToolArgs"]
+    assert [type(m).__name__ for m in general["middleware"]] == [
+        "VisionSwitch", "PhilModelRetryMiddleware", "ToolCallRepair", "ToolArgs"
+    ]
 
 
 def test_lean_harness_rejects_tools(tmp_path):
@@ -253,6 +259,41 @@ def test_a_built_in_anthropic_model_without_a_resolved_provider_caches(tmp_path,
 @pytest.mark.parametrize("model", ["openai:gpt-6-sol", "openrouter:anthropic/claude-sonnet-5.5", "ollama:qwen3:8b"])
 def test_other_light_agents_dont_get_anthropics_cache_middleware(tmp_path, monkeypatch, model):
     assert "AnthropicPromptCachingMiddleware" not in _light_middleware(tmp_path, monkeypatch, model)
+
+
+def _first_middleware(tmp_path, monkeypatch, name, **kwargs):
+    """The first middleware of every agent `name`'s harness builds: the agent's, then any sub-agent's."""
+    import deepagents
+    import langchain.agents
+
+    captured = {}
+    monkeypatch.setattr(langchain.agents, "create_agent", lambda model, tools=None, **kw: captured.update(kw) or "agent")
+    monkeypatch.setattr(deepagents, "create_deep_agent", lambda **kw: captured.update(kw) or "agent")
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda *a, **k: object())
+    build_agent(get_spec(name), "openrouter:inclusionai/ling-3.0-flash", tmp_path, [], **kwargs)
+    return [captured["middleware"][0], *(sub["middleware"][0] for sub in captured.get("subagents", []))]
+
+
+@pytest.mark.parametrize("name", ["critic", "architect", "implementer"])  # lean, light, deep
+def test_every_harness_runs_the_vision_switch_first(name, tmp_path, monkeypatch):
+    from phil.agents.vision import VisionSwitch
+
+    vision = ("openrouter:anthropic/claude-sonnet-5", lambda: object())
+    notices = []
+    first = _first_middleware(tmp_path, monkeypatch, name, vision=vision, sees=False, notice=notices.append)
+    assert all(isinstance(m, VisionSwitch) for m in first)
+    assert len({id(m) for m in first}) == 1  # a deep agent's sub-agent shares it: one notice per run
+    switch = first[0]
+    assert (switch.own_model, switch.vision, switch.agent) == (
+        "openrouter:inclusionai/ling-3.0-flash", vision, get_spec(name).role
+    )
+    assert switch.notice == notices.append
+
+
+def test_the_deep_harness_gives_its_sub_agent_the_vision_switch_too(tmp_path, monkeypatch):
+    first = _first_middleware(tmp_path, monkeypatch, "implementer")
+    assert len(first) == 2 and first[0] is first[1]
+    assert first[0].vision is None
 
 
 def test_a_lean_agent_on_anthropic_doesnt_cache(tmp_path, monkeypatch):

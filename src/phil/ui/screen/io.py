@@ -18,6 +18,7 @@ from typing import TypeVar
 
 from rich.text import Text
 
+from phil.chat.attachments import preview
 from phil.chat.controller import SENT_TO_TERMINAL, WAKE, ChatIO
 from phil.chat.decision import Decision
 from phil.chat.state import ToolbarView
@@ -94,7 +95,9 @@ class ScreenIO:
         self.app.set_prompt(prompt)
         line = self._next()
         if isinstance(line, str):
-            self.app.post_item(Text.assemble((prompt, "phil.user"), line))
+            # The box sends a dropped image as its path (the chat attaches from it) and showed its
+            # chip; the echo shows the chips again, numbered as the chat numbers them.
+            self.app.post_echo(Text.assemble((prompt, "phil.user"), preview(line)))
         return line
 
     def choose(self, prompt: str, decision: Decision) -> object:

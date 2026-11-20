@@ -248,16 +248,19 @@ def test_a_running_burst_prints_nothing_and_rolls_then_one_summary():
     batch = [end(1, "edit_file", "edit a.py", "+1 −0", ms=0), end(2, "run_shell", "run pytest -q", "→ ok", ms=0)]
     assert feed.activity(batch, 120) == []
     assert feed.rolling() == ("    edit   a.py  +1 −0", "    run    pytest -q  → ok")
-    (item,) = feed.end_burst(120)
-    assert item.line.plain == "    implementer ran 2 tools · edited a.py  (/more #2)"
-    assert [r["seq"] for r in item.records] == [1, 2]
+    item, header = feed.end_burst(120)
+    assert item.line.plain == "    implementer ran 2 tools · edited 1 file  (/more #2)"
+    assert header.line.plain == "        a.py  +1 −0"
+    assert [r["seq"] for r in item.records] == [1, 2] and header.records == item.records
     assert feed.rolling() == () and feed.end_burst(120) == []
 
 
 def test_another_agent_ends_the_burst():
     feed = FeedRenderer()
     items = feed.activity([end(1, "edit_file", "edit a.py"), end(2, "read_file", "read t.py", role="tester")], 120)
-    assert [i.line.plain for i in items] == ["    implementer ran 1 tool · edited a.py  (/more #1)"]
+    assert [i.line.plain for i in items] == [
+        "    implementer ran 1 tool · edited 1 file  (/more #1)", "        a.py  +0 −0",
+    ]
     assert feed.rolling() == ("    read   t.py",)
 
 
@@ -265,7 +268,9 @@ def test_a_start_record_of_another_agent_ends_the_burst():
     feed = FeedRenderer()
     feed.activity([end(1, "edit_file", "edit a.py")], 120)
     start = {"seq": 2, "phase": "start", "task": "CALC-001", "role": "engine", "tool": "gate", "summary": "gate x"}
-    assert [i.line.plain for i in feed.activity([start], 120)] == ["    implementer ran 1 tool · edited a.py  (/more #1)"]
+    assert [i.line.plain for i in feed.activity([start], 120)] == [
+        "    implementer ran 1 tool · edited 1 file  (/more #1)", "        a.py  +0 −0",
+    ]
 
 
 def test_a_failure_prints_at_once_in_the_error_style_and_still_counts():
@@ -274,7 +279,7 @@ def test_a_failure_prints_at_once_in_the_error_style_and_still_counts():
     (item,) = feed.activity([end(1, "edit_file", "edit a.py"), failed], 120)
     assert item.line.plain.startswith("    run   pytest -q  → 1 failed") and item.line.plain.endswith("#2")
     assert item.line.style == "phil.error"
-    assert feed.end_burst(120)[0].line.plain == "    implementer ran 2 tools · edited a.py  (/more #2)"
+    assert feed.end_burst(120)[0].line.plain == "    implementer ran 2 tools · edited 1 file  (/more #2)"
 
 
 def test_the_engines_gate_keeps_its_own_line_and_ends_the_burst():
@@ -282,7 +287,8 @@ def test_the_engines_gate_keeps_its_own_line_and_ends_the_burst():
     gate = end(2, "gate", "gate uv run pytest", "→ passed", role="engine", ms=0)
     items = feed.activity([end(1, "edit_file", "edit a.py"), gate], 120)
     assert [i.line.plain for i in items] == [
-        "    implementer ran 1 tool · edited a.py  (/more #1)", "    gate  uv run pytest  → passed",
+        "    implementer ran 1 tool · edited 1 file  (/more #1)", "        a.py  +0 −0",
+        "    gate  uv run pytest  → passed",
     ]
 
 
@@ -297,9 +303,9 @@ def test_closed_bursts_are_kept_for_more():
 def test_attach_leaves_out_the_more_hint_and_a_narrow_summary_keeps_it():
     quiet = FeedRenderer(more_hint=False)
     quiet.activity([end(1, "edit_file", "edit a.py")], 120)
-    assert quiet.end_burst(120)[0].line.plain == "    implementer ran 1 tool · edited a.py"
+    assert quiet.end_burst(120)[0].line.plain == "    implementer ran 1 tool · edited 1 file"
     narrow = FeedRenderer()
-    narrow.activity([end(i, "edit_file", f"edit src/components/f{i}.tsx") for i in range(1, 4)], 120)
+    narrow.activity([end(i, "run_shell", "run " + "x" * 80) for i in range(1, 4)], 120)
     line = narrow.end_burst(40)[0].line.plain
     assert line.endswith("…  (/more #3)") and cell_len(line) <= 39
 
@@ -307,3 +313,33 @@ def test_attach_leaves_out_the_more_hint_and_a_narrow_summary_keeps_it():
 def test_tool_lines_without_a_cap_list_every_call():
     records = [end(i, "edit_file", f"edit f{i}.py", "+1 −0", f"{i}.txt") for i in range(1, BURST_LINES + 8)]
     assert len(FeedRenderer().tool_lines(records, 120, cap=None)) == BURST_LINES + 7
+
+
+EDIT_DIFF = "--- before\n+++ after\n@@\n-old\n+new\n"
+
+
+def test_end_burst_puts_diffs_under_a_counted_summary():
+    feed = FeedRenderer(details=lambda seq: EDIT_DIFF)
+    feed.activity([end(1, "edit_file", "edit a.py", "+1 −1"), end(2, "edit_file", "edit b.py", "+1 −1")], 120)
+    items = feed.end_burst(120)
+    assert items[0].line.plain == "    implementer ran 2 tools · edited 2 files  (/more #2)"
+    assert items[0].starts_block is True
+    assert items[1].line.plain == "        a.py  +1 −1"
+    assert [i.line.plain for i in items[2:4]] == ["          − old", "          + new"]
+    assert all(i.records == tuple(feed.burst(2)) for i in items)
+    assert not any(i.starts_block for i in items[1:])
+
+
+def test_end_burst_without_edits_is_one_item():
+    feed = FeedRenderer(details=lambda seq: EDIT_DIFF)
+    feed.activity([end(1, "read_file", "read a.py")], 120)
+    (item,) = feed.end_burst(120)
+    assert item.line.plain == "    implementer ran 1 tool  (/more #1)"
+    assert item.starts_block is True
+
+
+def test_no_details_reader_shows_headers_only():
+    feed = FeedRenderer()
+    feed.activity([end(1, "edit_file", "edit a.py", "+1 −1"), end(2, "edit_file", "edit b.py", "+2 −0")], 120)
+    items = feed.end_burst(120)
+    assert [i.line.plain for i in items[1:]] == ["        a.py  +1 −1", "        b.py  +2 −0"]

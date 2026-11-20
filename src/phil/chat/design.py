@@ -16,13 +16,16 @@ def propose_approaches(
     overview: str,
     call: int = 1,
     conversation: Sequence[ConverseTurn] | None = None,
+    images: Sequence[Path] = (),
 ) -> Approaches:
     """2–3 approaches to `goal` from the read-only designer, which reads `tree` (the base commit's
-    snapshot, as the architect does). Without a designer model it uses the architect's."""
+    snapshot, as the architect does) and sees the goal's attached `images`. Without a designer
+    model it uses the architect's."""
     contract = DesignInput(
         goal=goal, repo_overview=overview, conversation=list(conversation) if conversation else None
     )
-    packet = build_packet("designer", contract, budget_tokens=ctx.config.budget_for("designer").max_input_tokens)
+    budget = ctx.config.budget_for("designer").max_input_tokens
+    packet = build_packet("designer", contract, budget_tokens=budget, images=images)
     # A legacy per-role config has no high tier: the designer then designs on the architect's model.
     model = ctx.config.model_for("architect") if ctx.config.missing_models(("designer",)) else None
     out = invoke_agent(get_spec("design"), packet, replace(ctx, workdir=tree), node="design", call=call, model=model)

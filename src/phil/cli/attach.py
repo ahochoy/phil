@@ -13,6 +13,7 @@ from phil.store.events import EventLog, MILESTONE_KINDS, test_cmd_changed_line
 from phil.text import printable
 from phil.store.runs import RunRecord, get_run
 from phil.store.telemetry import budget_warning_line
+from phil.ui.blocks import BlockConsole
 from phil.ui.bursts import FeedItem
 from phil.ui.feed_view import FeedRenderer, interleave
 
@@ -29,7 +30,18 @@ class AttachIO:
     starting: Callable[[EventLog], bool] = field(default=worker_starting)
 
 
+JOINED_KINDS = ("node", "state", "worker", "spawn", "outcome")  # small status lines: they join the block above
+
+
 def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRenderer | None = None) -> None:
+    if event["kind"] in JOINED_KINDS and isinstance(console, BlockConsole):
+        with console.continued():
+            _render_event(console, event, run_id, feed)
+    else:
+        _render_event(console, event, run_id, feed)
+
+
+def _render_event(console: Console, event: dict, run_id: str, feed: FeedRenderer | None) -> None:
     kind = event["kind"]
     if kind in MILESTONE_KINDS:
         console.print((feed or FeedRenderer()).milestone(event, console.width))
@@ -40,9 +52,8 @@ def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRend
         console.print(f"state: [phil.id]{escape(event['state'])}[/]{note}")
     elif kind == "escalation":
         escalation = event["escalation"]
-        console.print(f"[phil.warn]⏸ {escape(printable(escalation['summary']))}[/]")
-        if escalation.get("error"):
-            console.print(f"[phil.error]{escape(escalation['error'])}[/]")
+        error = f"\n[phil.error]{escape(printable(escalation['error']))}[/]" if escalation.get("error") else ""
+        console.print(f"[phil.warn]⏸ {escape(printable(escalation['summary']))}[/]{error}")  # one block
     elif kind == "worker":
         console.print(f"[phil.muted]worker {event.get('pid')} ({escape(str(event.get('mode')))})[/]")
     elif kind == "spawn":
@@ -58,9 +69,13 @@ def render_event(console: Console, event: dict, run_id: str = "", feed: FeedRend
         console.print(f"[phil.warn]{escape(printable(event.get('message', '')))}[/]")
 
 
-def _print_items(console: Console, items: list[FeedItem]) -> None:
+def _print_items(console: BlockConsole, items: list[FeedItem]) -> None:
+    """Feed items: a burst summary starts a block; its diff lines and gate lines join the one above."""
     for item in items:
-        console.print(item.line, soft_wrap=True)
+        if item.starts_block:
+            console.blank()
+        with console.continued():
+            console.print(item.line, soft_wrap=True)
 
 
 def _prompt(escalation: dict) -> str:
@@ -95,11 +110,13 @@ def attach(
     poll_s: float = 1.0,
     start_timeout_s: float = 30.0,
 ) -> str:
+    console = BlockConsole(console)  # each event is a block, one blank line before it
     offset = 0
     idle_since = time.monotonic()
     proc: object = None
-    feed = FeedRenderer(more_hint=False)
     activity = ActivityLog(events.path.parent)
+
+    feed = FeedRenderer(more_hint=False, details=activity.read_detail)
     activity_offset = activity.end_offset()
 
     def active(record: RunRecord) -> bool:

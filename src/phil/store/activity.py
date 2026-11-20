@@ -172,6 +172,14 @@ class ActivityLog:
                 found = record
         return found
 
+    def read_detail(self, seq: int) -> str | None:
+        """`seq`'s saved detail text, or None if there is none or it can't be read. Opens the file
+        directly: a burst's records already say which calls have a detail, so the log isn't parsed."""
+        try:
+            return self.detail_path(seq).read_text(encoding="utf-8")
+        except Exception:
+            return None
+
     def detail_for(self, seq: int) -> Path | None:
         """`seq`'s detail file: None unless a record exists, names a detail, and the file is there."""
         record = self.find(seq)

@@ -14,6 +14,7 @@ from phil.store.db import connect, utcnow
 from phil.store.events import run_events
 from phil.store.paths import ProjectPaths
 from phil.store.runs import get_run, update_run
+from phil.ui.blocks import BlockConsole
 from phil.ui.theme import make_console
 from tests.run.conftest import bad_green, calc_plan, review, tester_report, write_green, write_red
 
@@ -114,6 +115,26 @@ def test_render_event_handles_the_spawn_kind_without_raising():
     text = console.export_text()
     assert "4242" in text
     assert "resume" in text
+
+
+def test_render_event_shows_hidden_characters_in_an_escalation_error_as_question_marks():
+    console = make_console(record=True, width=120)
+    render_event(console, {"kind": "escalation", "escalation": {"summary": "paused", "error": "bad\x1b[2Jthing"}})
+    text = console.export_text()
+    assert "\x1b" not in text and "bad?[2Jthing" in text
+
+
+def test_node_state_and_worker_lines_join_the_block_above_them():
+    console = make_console(record=True, width=120)
+    blocks = BlockConsole(console)
+    blocks.print("▸ CALC-001 Add subtract")
+    render_event(blocks, {"kind": "node", "node": "tester"})
+    render_event(blocks, {"kind": "state", "state": "running"})
+    render_event(blocks, {"kind": "worker", "pid": 7, "mode": "start"})
+    render_event(blocks, {"kind": "spawn", "pid": 8, "mode": "resume"})
+    render_event(blocks, {"kind": "outcome", "status": "completed"})
+    lines = console.export_text().splitlines()
+    assert "" not in lines and len(lines) == 6, lines
 
 
 def test_render_event_prints_the_budget_warning_line():
@@ -278,7 +299,7 @@ def test_attach_prints_failures_at_once_and_a_summary_when_the_run_fails(calc_re
     console = make_console(record=True, width=120)
     assert attach(conn, record.run_id, events, console, io, poll_s=0) == "failed"
     text = console.export_text()
-    failure, summary = text.index("run   pytest -q  → 1 failed"), text.index("implementer ran 2 tools · edited calc.py")
+    failure, summary = text.index("run   pytest -q  → 1 failed"), text.index("implementer ran 2 tools · edited 1 file")
     assert failure < summary < text.index("Continue with `phil resume")
     assert text.count("implementer ran 2 tools") == 1
 
@@ -306,7 +327,7 @@ def test_attach_closes_an_open_burst_before_saying_no_worker_is_running(calc_rep
                    start_timeout_s=0.02)
     assert state == "running"
     text = console.export_text()
-    assert text.count("implementer ran 1 tool · edited calc.py") == 1
+    assert text.count("implementer ran 1 tool · edited 1 file") == 1
     assert text.index("implementer ran 1 tool") < text.index("No worker is running")
 
 
@@ -339,6 +360,38 @@ def test_attach_prints_a_gate_line_before_the_milestones_that_follow_it(calc_rep
     text = console.export_text()
     assert "gate  pytest -q  → passed" in text
     assert text.index("gate  pytest -q") < text.index("✓ CALC-001 green") < text.index("▸ CALC-002")
+
+
+def test_attach_spaces_its_blocks_and_keeps_gate_lines_under_their_band(calc_repo):
+    """One blank line before each block (a band, a burst summary, the summary path); none on top,
+    none between a band and the engine's gate line under it, and never two in a row."""
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha)
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    update_run(conn, record.run_id, state="running")
+    events = run_events(paths, record.run_id)
+    activity = ActivityLog(paths.run_dir(record.run_id))
+
+    def sleep(_):
+        events.append("task_started", task="CALC-001", title="Add subtract", seq=1)
+        activity.end(2, task="CALC-001", role="engine", tool="gate", summary="gate pytest -q",
+                     result="→ failed", ok=False, detail=None, duration_ms=1500)
+        activity.end(3, task="CALC-001", role="implementer", tool="run_shell", summary="run make",
+                     result="→ ok", ok=True, detail=None, duration_ms=10)
+        events.append("gate", task="CALC-001", name="green", seq=4)
+        update_run(conn, record.run_id, state="completed")
+
+    io = AttachIO(choose=lambda p, o: "abort", ask_hint=lambda: None, spawn=lambda m, d: None, sleep=sleep)
+    console = make_console(record=True, width=120)
+    assert attach(conn, record.run_id, events, console, io, poll_s=0) == "completed"
+    lines = console.export_text().splitlines()
+    assert len(lines) == 8, lines
+    assert lines[0].startswith("▸ CALC-001")  # nothing above the first block
+    assert "gate  pytest -q" in lines[1]  # the gate line sits right under its band
+    assert lines[2] == "" and "implementer ran 1 tool · ran make" in lines[3]
+    assert lines[4] == "" and lines[5].startswith("✓ CALC-001 green")
+    assert lines[6] == "" and lines[7].startswith("Summary: ")
 
 
 def test_attach_waits_instead_of_prompting_while_a_spawned_worker_is_starting(calc_repo):
@@ -418,3 +471,28 @@ def test_attach_renders_a_test_cmd_change_from_the_run(calc_repo):
         poll_s=0, start_timeout_s=0,
     )
     assert "Using the updated test command: make test." in console.export_text()
+
+
+def test_attach_prints_a_bursts_diff(calc_repo):
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha)
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
+    update_run(conn, record.run_id, state="running")
+    events = run_events(paths, record.run_id)
+    activity = ActivityLog(paths.run_dir(record.run_id))
+
+    def sleep(_):
+        activity.end(
+            1, task="CALC-001", role="implementer", tool="edit_file", summary="edit a.py",
+            result="+1 −1", ok=True, detail="--- before\n+++ after\n@@\n-old\n+new\n", duration_ms=5,
+        )
+        update_run(conn, record.run_id, state="completed")
+
+    io = AttachIO(choose=lambda p, o: "abort", ask_hint=lambda: None, spawn=lambda m, d: None, sleep=sleep)
+    console = make_console(record=True, width=120)
+    assert attach(conn, record.run_id, events, console, io, poll_s=0) == "completed"
+    text = console.export_text()
+    assert "a.py  +1 −1" in text
+    assert "− old" in text
+    assert "/more" not in text

@@ -14,7 +14,7 @@ from phil.agents.pricing import PriceBook
 from phil.agents.unpriced import price_label
 from phil.agents.providers import SYSTEMONE, ProviderSpec, missing_key_message, provider_for_model, split_model
 from phil.agents.spec import AgentSpec
-from phil.config import ROLES, TIERS, ConfigError, PhilConfig
+from phil.config import ROLES, TIERS, VISION_KEY, ConfigError, PhilConfig
 from phil.contracts import Contract
 from phil.key_store import key_lookup
 from phil.packets import build_packet
@@ -87,6 +87,9 @@ def check_targets(config: PhilConfig) -> list[tuple[str, list[str]]]:
     for label in (*TIERS, *(f"role:{role}" for role in ROLES)):
         if label in used:
             labels.setdefault(used[label], []).append(label)
+    vision = config.vision_model()
+    if vision:
+        labels.setdefault(vision, []).append(VISION_KEY)
     return list(labels.items())
 
 

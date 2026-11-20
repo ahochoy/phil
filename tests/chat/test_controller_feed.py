@@ -1,11 +1,13 @@
 """The chat follows its run's activity feed: tool lines, milestone bands and the live row."""
 
 import pytest
+from rich.cells import cell_len
 
 from phil.agents.fake import ScriptedAgentFactory, Turn, fire_tool
 from phil.chat.controller import WAKE, _short_event
 from phil.chat.events import ChatEvent
 from phil.chat.state import LiveStep, SubAgent
+from phil.contracts import Approach, Approaches
 from phil.run.worker import run_worker
 from phil.store.activity import ActivityLog
 from phil.store.paths import ProjectPaths
@@ -478,8 +480,10 @@ def test_feed_goes_to_task_output_when_given(controller_with_run):
     controller = controller_with_run
     out = _with_output(controller)
     _task_events(controller)
-    assert [call[0] for call in out.calls] == ["task_started", "task_line", "task_done"]
+    assert [call[0] for call in out.calls] == ["task_started", "task_line", "task_line", "task_done"]
     assert out.calls[0][2].plain == "▸ Task 1 Theme setting"
+    assert out.calls[1][2].plain == ""  # the burst summary starts a block: one empty line before it
+    assert "implementer ran 1 tool" in out.calls[2][2].plain
     assert out.calls[-1][2].plain.startswith("✓ Task 1 · Theme setting · done")
     assert controller.console.export_text() == ""  # nothing printed for the task
 
@@ -559,3 +563,102 @@ def test_a_scripted_run_shows_its_feed_in_the_chat(calc_repo):
     assert "▸ CALC-001" in text
     assert "implementer ran " in text and "(/more #" in text
     assert "✓ CALC-001 done" in text
+
+
+def test_feed_blocks_are_spaced_and_gate_lines_are_not(controller_with_run):
+    controller = controller_with_run
+    _task_started(controller, "CALC-001", "Add multiply")
+    for record in (_end(3, "engine", "pytest -q"), _end(4, "implementer", "make")):  # engine: its gate run
+        controller._handle(ChatEvent("activity", {"records": [record]}))
+    controller._handle(ChatEvent("milestone", {
+        "kind": "task_done", "task": "CALC-001", "ts": "2026-10-07T10:00:38Z", "seq": 9}))
+    lines = controller.console.export_text().splitlines()
+    assert len(lines) == 7, lines
+    assert lines[0] == "" and lines[1].startswith("▸ CALC-001 Add multiply")
+    assert "pytest -q" in lines[2]  # no blank between the band and its gate line
+    assert lines[3] == "" and "implementer ran 1 tool · ran make" in lines[4]
+    assert lines[5] == "" and lines[6].startswith("✓ CALC-001 done")
+
+
+def test_a_commands_lines_are_one_block_spaced_from_the_typed_line(calc_repo):
+    text, *_ = run_chat(calc_repo, ["/status", "/status"], {})
+    status = "calc @ main\nmodel: not set\nrun: no run\n0 parked\n"
+    # Each typed /status is above its block (on the terminal, not in this console): one blank line
+    # after it, none inside the block, and never two in a row.
+    assert text == f"\n{status}\n\n{status}\n"  # each prompt (not in this console) has a blank above it
+
+
+def test_one_blank_line_between_a_block_and_the_inline_prompt_below_it(calc_repo):
+    status = "calc @ main\nmodel: not set\nrun: no run\n0 parked\n"
+    seen = []
+    run_chat(calc_repo, ["/status", lambda controller: seen.append(controller.console.export_text())], {})
+    assert seen == [f"\n{status}\n"]  # the block, then one blank line, then the prompt
+
+
+def test_no_blank_line_before_the_prompt_in_the_frame(calc_repo):
+    """The frame's echo has its own top margin: a blank line before the prompt would double it."""
+    seen = []
+
+    def prompt_with_frame(controller):
+        controller.io.task_output = object()  # what marks the full-screen frame
+        return "/status"
+
+    run_chat(calc_repo, [prompt_with_frame, lambda controller: seen.append(controller.console.export_text())], {})
+    assert seen == ["\ncalc @ main\nmodel: not set\nrun: no run\n0 parked\n"]
+
+
+def test_a_hidden_burst_hides_its_blank_line_too(controller_with_run):
+    controller = controller_with_run
+    run_dir = ProjectPaths(controller.info.slug).run_dir(controller._run_id)
+    ActivityLog(run_dir).end(5, task="CALC-001", role="implementer", tool="edit_file", summary="edit a.py",
+                             result="+1 −1", ok=True, detail="--- before\n+++ after\n@@\n-old\n+new\n",
+                             duration_ms=10)
+    controller._command("/feed tester")
+    controller.console.export_text()
+    edit = {**_end(5, "implementer", "x"), "tool": "edit_file", "summary": "edit a.py", "result": "+1 −1",
+            "detail": "5.txt"}
+    _activity(controller, edit)
+    controller._end_burst()
+    assert controller.console.export_text() == ""  # not even its blank line
+    controller._handle(ChatEvent("milestone", {"kind": "task_done", "task": "CALC-001", "seq": 9}))
+    text = controller.console.export_text()
+    assert text.startswith("\n✓ CALC-001 done")  # one blank before the next block, not two
+
+
+def test_a_burst_summary_prints_its_diff_from_the_runs_detail(controller_with_run):
+    controller = controller_with_run
+    run_dir = ProjectPaths(controller.info.slug).run_dir(controller._run_id)
+    ActivityLog(run_dir).end(5, task="CALC-001", role="implementer", tool="edit_file", summary="edit a.py",
+                             result="+1 −1", ok=True, detail="--- before\n+++ after\n@@\n-old\n+new\n",
+                             duration_ms=10)
+    edit = {**_end(5, "implementer", "x"), "tool": "edit_file", "summary": "edit a.py", "result": "+1 −1",
+            "detail": "5.txt"}
+    _activity(controller, edit)
+    text = _flush(controller)
+    assert "implementer ran 1 tool · edited 1 file  (/more #5)" in text
+    assert text.index("a.py  +1 −1") < text.index("− old") < text.index("+ new")
+
+
+def test_design_options_wrap_instead_of_cutting(controller_with_run):
+    controller = controller_with_run
+    controller.console._console.width = 60
+    tradeoff = " ".join(f"word{n}" for n in range(1, 26))  # 25 words, over 150 characters
+    assert len(tradeoff) >= 150
+    approaches = Approaches(
+        options=[
+            Approach(name="Footer band", summary="A full-width band above the footer.", tradeoffs=[tradeoff]),
+            Approach(name="Inline card", summary="A card after the hero.", tradeoffs=["Only on the home page"]),
+        ],
+        recommended=0,
+        reason="The home page is where visitors decide, so the band belongs above the fold where they land.",
+    )
+    controller._on_design_ready({"approaches": approaches})
+    text = controller.console.export_text()
+    lines = text.splitlines()
+    assert not any(line.endswith("…") for line in lines)
+    assert all(cell_len(line) <= 59 for line in lines)
+    assert tradeoff in " ".join(text.split())  # the whole trade-off, across wrapped lines
+    [first] = [i for i, line in enumerate(lines) if line.startswith("    – word1 ")]
+    assert lines[first + 1].startswith("      word")  # continuation lines up under its text
+    assert lines[lines.index("2. Inline card") - 1] == ""  # a blank line separates the options
+    assert "visitors decide" in text and "where they land." in " ".join(text.split())
