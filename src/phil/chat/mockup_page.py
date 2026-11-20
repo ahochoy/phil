@@ -13,6 +13,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
+from phil.contracts.design import MOCKUP_MAX_CHARS
+
 CSP = (
     "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; "
     "form-action 'none'; base-uri 'none'"
@@ -252,6 +254,21 @@ def write_page(folder: Path, chat_id: str, page: str) -> tuple[Path, bool]:
     current.write_text(page, encoding="utf-8")
     (folder / f"{chat_id}-v{max(seen, default=0) + 1}.html").write_text(page, encoding="utf-8")
     return current, not seen
+
+
+CLIPPED = "\n…(mockup clipped)"
+
+
+def clip_mockup(text: str) -> str:
+    """The picked mockup as carried into planning and the run: at most MOCKUP_MAX_CHARS, cut at
+    the last line break when one is in the second half, then marked as clipped."""
+    if len(text) <= MOCKUP_MAX_CHARS:
+        return text
+    cut = text[:MOCKUP_MAX_CHARS]
+    newline = cut.rfind("\n")
+    if newline >= MOCKUP_MAX_CHARS // 2:
+        cut = cut[:newline]
+    return cut + CLIPPED
 
 
 SLUG_MAX = 40

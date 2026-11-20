@@ -1734,11 +1734,15 @@ class ChatController:
         return ProjectPaths(self.info.slug).project_dir / MOCKUPS_DIR
 
     def _drawing_slugs(self) -> dict[str, str]:
-        """Each approach's file slug; a slug an earlier approach already has falls back to its number."""
+        """Each approach's file slug, unique in the chat: a slug an earlier approach already has
+        gains `-2`, `-3`, … until it is unused."""
         slugs: dict[str, str] = {}
         for n, approach in enumerate(self._approach_order, 1):
-            slug = mockup_page.approach_slug(approach.name, n)
-            slugs[approach.name] = slug if slug not in slugs.values() else f"approach-{n}"
+            base = slug = mockup_page.approach_slug(approach.name, n)
+            k = 2
+            while slug in slugs.values():
+                slug, k = f"{base}-{k}", k + 1
+            slugs[approach.name] = slug
         return slugs
 
     def _keep_drawing(self, slug: str, fmt: Literal["html", "sketch"], text: str) -> Path | None:
@@ -1831,7 +1835,7 @@ class ChatController:
         self._approach, self._approach_note = approach, note
         # Picking an approach accepts its latest mockup; a described approach carries none.
         drawn = self._mockups.get(approach.name) if approach is not None else None
-        self._chosen_mockup = drawn.text if drawn is not None else ""
+        self._chosen_mockup = mockup_page.clip_mockup(drawn.text) if drawn is not None else ""
         self._chosen_mockup_path = drawn.path if drawn is not None else None
         self._safe_note("approach_chosen", name=approach.name if approach else None, note=note)
         self._recent.append(f"you: {(approach.name if approach else note)[:TURN_CHARS]}")
@@ -3630,7 +3634,7 @@ class ChatController:
         self._approach, self._approach_note = approach, approach_note
         self._approach_order, self._approaches_visual = offered, saved.get("approaches_visual") is True
         self._mockups = mockups
-        self._chosen_mockup = chosen.text if chosen is not None else ""
+        self._chosen_mockup = mockup_page.clip_mockup(chosen.text) if chosen is not None else ""
         self._chosen_mockup_path = chosen.path if chosen is not None else None
         self._attachments = _saved_images(saved.get("attachments"), self.session.dir / IMAGES_DIR)
         self._vision_warned = saved.get("vision_warned") is True

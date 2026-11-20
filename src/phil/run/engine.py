@@ -904,10 +904,17 @@ class RunEngine:
         try:
             return build(contract)
         except PacketTooLarge:
-            if not contract.diff:
+            if not contract.diff and not contract.mockup:
                 raise
-            # Even the capped diff doesn't fit a small budget: send the rest without it.
-            return build(contract.model_copy(update={"diff": DIFF_OMITTED}))
+        # It doesn't fit a small budget: drop the capped diff first, then the mockup.
+        if contract.diff:
+            contract = contract.model_copy(update={"diff": DIFF_OMITTED})
+            try:
+                return build(contract)
+            except PacketTooLarge:
+                if not contract.mockup:
+                    raise
+        return build(contract.model_copy(update={"mockup": ""}))
 
     def _fallback_worklog(self, state: RunState, log: CommandLog, problems: list[str]) -> AttemptWorklog:
         """A worklog for an attempt that returned no usable output, built from what the tools saw."""
@@ -1193,7 +1200,7 @@ class RunEngine:
         issues: list[Issue] = []
         log = CommandLog()
         contract = TesterInput(
-            plan=plan, diff=self.worktrees.diff(worktree, diff_base), final_report=before, test_cmd=state["test_cmd"]
+            plan=plan.model_copy(update={"mockup": ""}), diff=self.worktrees.diff(worktree, diff_base), final_report=before, test_cmd=state["test_cmd"]
         )
         try:
             packet = build_packet(
@@ -1282,7 +1289,7 @@ class RunEngine:
         final = self._test(state, artifact_name("review", None, seq))
         assumptions = [e["assumption"] for e in self.deps.artifacts.read_assumptions() if e.get("status") == "open"]
         contract = ReviewInput(
-            plan=plan, diff=self.worktrees.diff(worktree, state["base_sha"]), final_report=final,
+            plan=plan.model_copy(update={"mockup": ""}), diff=self.worktrees.diff(worktree, state["base_sha"]), final_report=final,
             open_assumptions=assumptions,
         )
         carried = list(state.get("open_issues", []))

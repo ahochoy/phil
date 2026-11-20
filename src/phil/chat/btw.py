@@ -21,7 +21,8 @@ def ask_btw(
     call: int = 1,
 ) -> Brief:
     contract = BtwInput(
-        question=question, goal=goal, plan=plan, run=run,
+        question=question, goal=goal, run=run,
+        plan=plan.model_copy(update={"mockup": ""}) if plan is not None else None,  # the drawing isn't needed here
         recent_events=list(recent_events), pending_question=pending_question,
     )
     packet = build_packet("orchestrator", contract, budget_tokens=ctx.config.budget_for("orchestrator").max_input_tokens)

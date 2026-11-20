@@ -298,6 +298,53 @@ def test_picked_approach_mockup_reaches_the_architect(calc_repo, browser, contra
     assert architect.chosen_approach.name == "Inline card" and architect.mockup == ""
 
 
+def test_a_large_mockup_is_clipped_before_the_architect(calc_repo, browser, contracts):
+    from phil.chat.mockup_page import CLIPPED
+    from phil.contracts.design import MOCKUP_MAX_CHARS
+
+    big = "\n".join(["<p>" + "w" * 96 + "</p>"] * 300)  # about 30,000 characters
+    run_chat(
+        calc_repo, ["add a CTA section", "show 1", "1", "n"],
+        {"intake": [OPEN], "design": [approaches(True)],
+         "mockup": [Mockup(drawings=[MockupDrawing(name="Footer band", html=big)])], **PLANNING},
+    )
+    [architect] = architect_contracts(contracts)
+    assert architect.mockup.endswith(CLIPPED)
+    assert len(architect.mockup) <= MOCKUP_MAX_CHARS + len(CLIPPED)
+
+
+def test_a_large_restored_mockup_is_clipped(calc_repo, browser, contracts):
+    from phil.chat.mockup_page import CLIPPED
+    from phil.contracts.design import MOCKUP_MAX_CHARS
+    from tests.chat.test_reopen_state import reopen
+
+    run_chat(calc_repo, ["add a CTA section", "show"], BOTH)
+    kept = page_path(calc_repo).with_name(f"{session_dir(calc_repo).name}-footer-band.html")
+    kept.write_text("<p>z</p>\n" * 4000, encoding="utf-8")  # grown on disk since
+    reopen(calc_repo, ["1", "n"], PLANNING)
+    [architect] = architect_contracts(contracts)
+    assert architect.mockup.endswith(CLIPPED) and len(architect.mockup) <= MOCKUP_MAX_CHARS + len(CLIPPED)
+
+
+def test_slug_fallbacks_never_share_a_file(calc_repo, browser):
+    seen = {}
+
+    def look(controller):
+        seen["mockups"] = dict(controller._mockups)
+        return None
+
+    pair = Approaches(
+        options=[Approach(name="Approach 2", summary="One."), Approach(name="???", summary="Two.")], visual=True
+    )
+    run_chat(
+        calc_repo, ["add a CTA section", "show", look],
+        {"intake": [OPEN], "design": [pair], "mockup": [drawings(("Approach 2", "first"), ("???", "second"))]},
+    )
+    first, second = seen["mockups"]["Approach 2"].path, seen["mockups"]["???"].path
+    assert first != second
+    assert "first" in first.read_text() and "second" in second.read_text()
+
+
 def test_a_described_approach_carries_no_mockup(calc_repo, browser, contracts):
     run_chat(calc_repo, ["add a CTA section", "show", "3", "a banner at the top", "n"], {**BOTH, **PLANNING})
     [architect] = architect_contracts(contracts)

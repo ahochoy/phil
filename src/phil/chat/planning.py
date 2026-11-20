@@ -193,7 +193,8 @@ class Planner:
         self, ctx: AgentContext, goal: Goal, plan: Plan, call: int, images: Sequence[Path] = ()
     ) -> PlanCritique:
         packet = build_packet(
-            "critic", CriticInput(goal=goal, plan=plan), budget_tokens=_budget(ctx, "critic"), images=images
+            # The mockup is for the architect and the implementers only.
+            "critic", CriticInput(goal=goal, plan=plan.model_copy(update={"mockup": ""})), budget_tokens=_budget(ctx, "critic"), images=images
         )
         return invoke_agent(get_spec("critic"), packet, ctx, node="critic", call=call)
 

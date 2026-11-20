@@ -232,6 +232,22 @@ def test_approach_slug():
     assert approach_slug("2 columns", 1) == "approach-1"
 
 
+def test_clip_mockup():
+    from phil.chat.mockup_page import CLIPPED, clip_mockup
+    from phil.contracts.design import MOCKUP_MAX_CHARS
+
+    assert CLIPPED == "\n…(mockup clipped)"
+    assert clip_mockup("<p>short</p>") == "<p>short</p>"
+    exact = "x" * MOCKUP_MAX_CHARS
+    assert clip_mockup(exact) == exact
+    lines = "\n".join(f"<p>line {i:05d}</p>" for i in range(3000))  # about 50,000 characters
+    clipped = clip_mockup(lines)
+    assert clipped.endswith(CLIPPED) and len(clipped) <= MOCKUP_MAX_CHARS + len(CLIPPED)
+    assert clipped[: -len(CLIPPED)].endswith("</p>")  # cut at a line boundary
+    one_line = clip_mockup("y" * 30_000)  # no line to cut at: a hard cut
+    assert one_line == "y" * MOCKUP_MAX_CHARS + CLIPPED
+
+
 def test_write_drawing_beside_the_page(tmp_path):
     path = write_drawing(tmp_path / "mockups", "chat1", "footer-band", "html", "<p>band</p>")
     assert path == tmp_path / "mockups" / "chat1-footer-band.html"

@@ -49,6 +49,7 @@ class DesignInput(Contract):
 
 SKETCH_MAX_LINES = 40
 SKETCH_MAX_COLUMNS = 100
+MOCKUP_MAX_CHARS = 10_000  # the picked mockup as sent on to the architect and implementers
 
 
 class MockupDrawing(Part):
