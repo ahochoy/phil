@@ -41,6 +41,11 @@ class ProjectPaths:
         return self.project_dir / "agents-md-suggestions.md"
 
     @property
+    def skills_approval_path(self) -> Path:
+        """Whether this repo's own skills are approved (and other skills notes): `skills.toml` next to its database."""
+        return self.project_dir / "skills.toml"
+
+    @property
     def runs_dir(self) -> Path:
         return self.project_dir / "runs"
 
