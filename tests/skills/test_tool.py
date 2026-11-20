@@ -49,6 +49,64 @@ def test_file_outside_the_skill_is_refused(tmp_path):
         assert "TOP SECRET" not in result
 
 
+def test_a_hard_link_is_refused(tmp_path):
+    skill = make_skill(tmp_path)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP SECRET", encoding="utf-8")
+    os.link(secret, skill.path / "hard.md")
+    tool = make_load_skill_tool([skill], role="coder", notice=None)
+    result = tool("demo", "hard.md")
+    assert result.startswith("Can't read hard.md from demo: ")
+    assert "TOP SECRET" not in result
+
+
+@pytest.mark.parametrize("requested", ["\\\\host\\share\\x", "//host/share/x", "C:foo", "C:\\x", "/etc/passwd", "..", ""])
+def test_an_anchored_or_unc_path_is_refused(tmp_path, monkeypatch, requested):
+    skill = make_skill(tmp_path)
+    tool = make_load_skill_tool([skill], role="coder", notice=None)
+
+    def forbidden(self, *args, **kwargs):
+        raise AssertionError("the filesystem was touched before the path was checked")
+
+    monkeypatch.setattr("pathlib.Path.resolve", forbidden)
+    assert tool("demo", requested) == f"Can't read {requested} from demo: it is outside the skill's folder."
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this platform")
+def test_a_fifo_is_refused(tmp_path):
+    skill = make_skill(tmp_path)
+    os.mkfifo(skill.path / "pipe")
+    tool = make_load_skill_tool([skill], role="coder", notice=None)
+    assert tool("demo", "pipe").startswith("Can't read pipe from demo: ")
+
+
+def test_outside_paths_get_one_message(tmp_path):
+    skill = make_skill(tmp_path)
+    (tmp_path / "exists.txt").write_text("x", encoding="utf-8")
+    tool = make_load_skill_tool([skill], role="coder", notice=None)
+    existing = tool("demo", "../exists.txt").replace("../exists.txt", "F")
+    missing = tool("demo", "../missing.txt").replace("../missing.txt", "F")
+    assert existing == missing
+    assert tool("demo", str(tmp_path / "exists.txt")).endswith("it is outside the skill's folder.")
+    assert tool("demo", str(tmp_path / "missing.txt")).endswith("it is outside the skill's folder.")
+
+
+def test_at_most_the_limit_plus_one_byte_is_read(tmp_path, monkeypatch):
+    skill = make_skill(tmp_path)
+    (skill.path / "big.txt").write_text("a" * (MAX_FILE_BYTES * 3), encoding="utf-8")
+    sizes: list[int] = []
+    real_read = os.read
+
+    def recording_read(fd, size):
+        sizes.append(size)
+        return real_read(fd, size)
+
+    monkeypatch.setattr(os, "read", recording_read)
+    tool = make_load_skill_tool([skill], role="coder", notice=None)
+    assert "[truncated: " in tool("demo", "big.txt")
+    assert sizes and sum(sizes) <= MAX_FILE_BYTES + 1 and max(sizes) <= MAX_FILE_BYTES + 1
+
+
 def test_skill_md_symlinked_outside_is_refused(tmp_path):
     skill = make_skill(tmp_path)
     secret = tmp_path / "secret.txt"
