@@ -31,6 +31,28 @@ def test_a_skill_needs_name_and_description(tmp_path):
     assert catalog.unreadable == 1
 
 
+def test_a_crlf_skill_file_is_read(tmp_path):
+    root = tmp_path / "skills"
+    (root / "x").mkdir(parents=True)
+    (root / "x" / "SKILL.md").write_bytes(b"---\r\nname: x\r\ndescription: Does a thing\r\n---\r\nSteps.\r\n")
+
+    catalog = discover([source("agents", root)])
+
+    assert [(skill.name, skill.description) for skill in catalog.skills] == [("x", "Does a thing")]
+    assert catalog.unreadable == 0
+
+
+def test_a_skill_file_with_a_byte_order_mark_is_read(tmp_path):
+    root = tmp_path / "skills"
+    (root / "x").mkdir(parents=True)
+    (root / "x" / "SKILL.md").write_bytes(b"\xef\xbb\xbf---\nname: x\ndescription: Does a thing\n---\nSteps.\n")
+
+    catalog = discover([source("agents", root)])
+
+    assert [skill.name for skill in catalog.skills] == ["x"]
+    assert catalog.unreadable == 0
+
+
 def test_unreadable_skills_are_counted_not_raised(tmp_path):
     root = tmp_path / "skills"
     root.mkdir()

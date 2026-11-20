@@ -30,7 +30,7 @@ class Catalog:
 
 def _parse(raw: bytes) -> tuple[str, str]:
     """The (name, description) of a SKILL.md, or ValueError when it has none."""
-    text = raw.decode("utf-8")
+    text = raw.decode("utf-8-sig").replace("\r\n", "\n")
     if not text.startswith("---\n"):
         raise ValueError("no frontmatter")
     end = text.find("\n---", 4)
