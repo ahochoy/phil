@@ -12,14 +12,21 @@ from phil.chat.mockup_page import (
 CLOSING = "Pick in Phil: Enter or a number to choose, `show N <note>` to redraw."
 
 
+def test_csp_is_exact():
+    assert CSP == (
+        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; "
+        "form-action 'none'; base-uri 'none'"
+    )
+
+
 def test_scripts_handlers_and_js_urls_are_removed():
-    html = (
+    fragment = (
         "<div><SCRIPT>x</script>"
         "<script src=a>"
         '<img onload="x" onerror=y>'
         '<a href="javascript:alert(1)">go</a></div>'
     )
-    out = clean_fragment(html).lower()
+    out = clean_fragment(fragment).lower()
     for banned in ("script", "onload", "onerror", "javascript:"):
         assert banned not in out
     assert "<img" in out
@@ -27,11 +34,71 @@ def test_scripts_handlers_and_js_urls_are_removed():
 
 
 def test_clean_fragment_handles_crlf_line_endings():
-    html = '<div>\r\n<script>\r\nalert(1)\r\n</script>\r\n<p onclick="x()">hi</p>\r\n</div>'
-    out = clean_fragment(html)
+    fragment = '<div>\r\n<script>\r\nalert(1)\r\n</script>\r\n<p onclick="x()">hi</p>\r\n</div>'
+    out = clean_fragment(fragment)
     assert "script" not in out.lower()
     assert "onclick" not in out.lower()
     assert "<p" in out and "hi" in out
+
+
+def test_meta_refresh_is_stripped():
+    out = clean_fragment('<div><META http-equiv=refresh content="0;url=https://e"><p>x</p></div>')
+    assert "<meta" not in out.lower()
+    assert "refresh" not in out.lower()
+    assert "<p>x</p>" in out
+
+
+def test_form_is_stripped():
+    out = clean_fragment("<FORM action=https://e><input></form>")
+    assert "form" not in out.lower()
+    assert "https://e" not in out
+    assert "<input" in out
+
+
+def test_base_and_link_are_stripped():
+    out = clean_fragment('<base href="https://e"><link rel=stylesheet href=https://e/x.css><p>x</p>')
+    assert "<base" not in out.lower()
+    assert "<link" not in out.lower()
+    assert "https://e" not in out
+
+
+def test_iframe_object_embed_are_stripped():
+    out = clean_fragment(
+        "<iframe src=https://e>inner</iframe><OBJECT data=x>o</object><embed src=y><iframe src=z><p>k</p>"
+    )
+    low = out.lower()
+    for tag in ("<iframe", "<object", "<embed"):
+        assert tag not in low
+    assert "<p>k</p>" in out
+
+
+def test_external_urls_lose_their_attribute():
+    out = clean_fragment('<a href="https://e">a</a><a href=//e/x>b</a><img src= "http://e/i.png">')
+    assert "href" not in out.lower()
+    assert "src" not in out.lower()
+    assert "https://e" not in out
+    assert "<a" in out and "<img" in out
+
+
+def test_data_and_fragment_urls_are_kept():
+    out = clean_fragment('<img src="data:image/png;base64,AA"><a href="#top">t</a><img SRC=" DATA:image/png,x">')
+    assert 'src="data:image/png;base64,AA"' in out
+    assert 'href="#top"' in out
+    assert out.lower().count("data:") == 2
+
+
+def test_reassembly_is_blocked():
+    out = clean_fragment("<scr<script>ipt>alert(1)</scr</script>ipt><im<meta>g onerror=x>")
+    assert "<script" not in out.lower()
+    assert "<meta" not in out.lower()
+    assert "onerror" not in out.lower()
+
+
+def test_slash_separated_handler_is_stripped():
+    out = clean_fragment("<img/onerror=x><svg/onload=y>")
+    assert "onerror" not in out.lower()
+    assert "onload" not in out.lower()
+    assert "<img" in out
 
 
 def test_page_carries_the_csp_first():

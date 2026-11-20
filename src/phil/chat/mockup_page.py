@@ -11,14 +11,22 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 
-CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:"
+CSP = (
+    "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; "
+    "form-action 'none'; base-uri 'none'"
+)
 
 CLOSING_LINE = "Pick in Phil: Enter or a number to choose, `show N <note>` to redraw."
 
 _FLAGS = re.IGNORECASE | re.DOTALL
 _SCRIPT_BLOCK = re.compile(r"<script\b[^>]*>.*?</script\s*>", _FLAGS)
 _SCRIPT_TAG = re.compile(r"</?script\b[^>]*>?", _FLAGS)
-_HANDLER = re.compile(r"""\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)""", _FLAGS)
+_PAIRED_EMBED = re.compile(r"<(iframe|object)\b[^>]*>.*?</\1\s*>", _FLAGS)
+_STRAY_TAG = re.compile(r"</?(?:iframe|object|embed|form|meta|base|link)\b[^>]*>?", _FLAGS)
+_HANDLER = re.compile(r"""[\s/]+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)""", _FLAGS)
+_URL_ATTR = re.compile(
+    r"""(?<=[\s/])(href|src|action|formaction|xlink:href)\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)""", _FLAGS
+)
 _JS_URL = re.compile(r"javascript\s*:", _FLAGS)
 
 _STYLE = """\
@@ -45,15 +53,31 @@ h1 { font-size: 1.5rem; margin: 0 0 4px; }
 """
 
 
-def clean_fragment(html: str) -> str:
-    """Remove scripts, inline event handlers and `javascript:` URLs.
+def _safe_url_attr(match: re.Match[str]) -> str:
+    value = match.group(2).strip("\"'").strip().lower()
+    return match.group(0) if value.startswith(("#", "data:")) else ""
 
-    Handles upper and mixed case, `\\r\\n` line endings and unclosed `<script>` tags.
-    """
-    out = _SCRIPT_BLOCK.sub("", html)
+
+def _clean_once(fragment: str) -> str:
+    out = _SCRIPT_BLOCK.sub("", fragment)
     out = _SCRIPT_TAG.sub("", out)
+    out = _PAIRED_EMBED.sub("", out)
+    out = _STRAY_TAG.sub("", out)
     out = _HANDLER.sub("", out)
+    out = _URL_ATTR.sub(_safe_url_attr, out)
     return _JS_URL.sub("", out)
+
+
+def clean_fragment(fragment: str) -> str:
+    """Remove scripts, navigation and embedding tags, handlers and unsafe URLs.
+
+    Handles upper and mixed case, `\\r\\n` line endings and unclosed tags. Repeats
+    until the output is stable, so removing one piece can't assemble another.
+    """
+    out = fragment
+    while (cleaned := _clean_once(out)) != out:
+        out = cleaned
+    return out
 
 
 def comparing_line(count: int, objective: str) -> str:
