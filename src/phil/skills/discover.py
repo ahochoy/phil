@@ -1,13 +1,12 @@
 import hashlib
 import logging
-import os
 import unicodedata
 from dataclasses import dataclass, field
-from pathlib import Path, PurePath, PureWindowsPath
+from pathlib import Path, PurePath
 
 import yaml
 
-from phil.skills.sources import REPO_DIRS, REPO_KEY, Source
+from phil.skills.sources import REPO_DIRS, REPO_KEY, Source, is_link, links_on_the_way
 
 logger = logging.getLogger(__name__)
 
@@ -77,17 +76,6 @@ def _load(directory: Path, source_key: str) -> Skill:
     return Skill(name, description, resolved, source_key, hashlib.sha256(raw).hexdigest())
 
 
-def _leaves_repo(link: Path, repo_root: Path) -> bool:
-    """True when a repo skill folder is a link whose text is absolute or climbs out of the repo. Decided
-    on the link text alone, before anything is resolved (a UNC path would reach the network)."""
-    text = os.readlink(link)
-    if PurePath(text).is_absolute() or PurePath(text).anchor or PureWindowsPath(text).anchor:
-        return True
-    target = os.path.normpath(os.path.join(link.parent, text))
-    root = os.path.normpath(repo_root)
-    return os.path.commonpath([target, root]) != root
-
-
 def _repo_root(skills_dir: Path) -> Path:
     """The repo a repo skills folder (one of REPO_DIRS) sits in."""
     for folder in REPO_DIRS:
@@ -106,16 +94,20 @@ def discover(sources: list[Source]) -> Catalog:
     by_name: dict[str, Skill] = {}
     for source in sources:
         for root in source.dirs:
+            if source.key == REPO_KEY and links_on_the_way(_repo_root(root), root):
+                logger.info("skills: skipping %s (reached through a link)", root)
+                continue
             try:
                 children = sorted(root.iterdir())
             except OSError as error:
                 logger.info("skills: cannot list %s (%s)", root, error)
                 continue
-            repo_root = _repo_root(root) if source.key == REPO_KEY else None
+            is_repo = source.key == REPO_KEY
             for child in children:
                 try:
-                    if repo_root is not None and child.is_symlink() and _leaves_repo(child, repo_root):
-                        logger.info("skills: skipping %s (a link out of the repo)", child)
+                    # A repo could point a link anywhere: its skills must be real folders and files.
+                    if is_repo and (is_link(child) or is_link(child / "SKILL.md")):
+                        logger.info("skills: skipping %s (a link in the repo's skills)", child)
                         continue
                     if child.is_symlink() and not child.exists():
                         raise OSError(f"{child} is a dangling link")

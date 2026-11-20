@@ -184,12 +184,51 @@ def repo_with_links(tmp_path: Path) -> tuple[Path, Path]:
     return repo, skills
 
 
-def test_repo_skill_links_that_leave_the_repo_are_skipped(tmp_path):
-    repo, skills = repo_with_links(tmp_path)
+def repo_source_for(skills: Path) -> Source:
+    return Source(key="repo", label="this repo's skills", dirs=(skills,))
 
-    catalog = discover([Source(key="repo", label="this repo's skills", dirs=(skills,))])
 
-    assert [skill.name for skill in catalog.skills] == ["inside"]
+def test_a_symlinked_repo_skill_is_skipped(tmp_path):
+    repo, skills = repo_with_links(tmp_path)  # links to inside and outside the repo
+    write_skill(skills, "real", "real")
+
+    catalog = discover([repo_source_for(skills)])
+
+    assert [skill.name for skill in catalog.skills] == ["real"]
+
+
+def test_a_symlinked_repo_skills_folder_has_no_skills(tmp_path):
+    import pytest
+
+    elsewhere = tmp_path / "elsewhere"
+    write_skill(elsewhere / "skills", "away", "away")
+    repo = tmp_path / "repo"
+    (repo / ".agents").mkdir(parents=True)
+    try:
+        (repo / ".agents" / "skills").symlink_to(elsewhere / "skills", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks can't be created here")
+    (repo / ".claude").symlink_to(elsewhere, target_is_directory=True)  # .claude/skills through a linked parent
+
+    assert discover([repo_source_for(repo / ".agents" / "skills")]).skills == []
+    assert discover([repo_source_for(repo / ".claude" / "skills")]).skills == []
+
+
+def test_a_repo_skill_md_symlink_is_skipped(tmp_path):
+    import os
+
+    import pytest
+
+    repo = tmp_path / "repo"
+    skills = repo / ".agents" / "skills"
+    write_skill(repo / "docs", "inside", "inside")
+    (skills / "linked").mkdir(parents=True)
+    try:
+        os.symlink(repo / "docs" / "inside" / "SKILL.md", skills / "linked" / "SKILL.md")
+    except OSError:
+        pytest.skip("symlinks can't be created here")
+
+    assert discover([repo_source_for(skills)]).skills == []
 
 
 def test_user_skill_links_may_point_anywhere(tmp_path):

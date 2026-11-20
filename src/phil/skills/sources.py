@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,7 +72,42 @@ def user_sources() -> list[Source]:
     return sources
 
 
+def is_link(path: Path) -> bool:
+    """True when `path` itself is a symlink (or a Windows junction). Never follows it."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    junction = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None)
+    return stat.S_ISLNK(info.st_mode) or (junction is not None and getattr(info, "st_reparse_tag", 0) == junction)
+
+
+def links_on_the_way(repo_root: Path, skills_dir: Path) -> bool:
+    """True when any folder from the repo root down to `skills_dir` (`.agents`, then `.agents/skills`)
+    is a link. Checked with lstat only, so nothing is resolved (a link could name a network path)."""
+    try:
+        parts = skills_dir.relative_to(repo_root).parts
+    except ValueError:
+        return True
+    path = repo_root
+    for part in parts:
+        path = path / part
+        if is_link(path):
+            return True
+    return False
+
+
+def repo_has_links(repo_root: Path) -> bool:
+    """True when a folder on the way to one of the repo's skill folders is a link."""
+    return any(links_on_the_way(repo_root, repo_root / folder) for folder in REPO_DIRS)
+
+
 def repo_source(repo_root: Path) -> Source | None:
+    """The repo's own skill folders, or None when it has none or one is reached through a link (a repo
+    could point a link anywhere, so its skill folders must be real folders inside it)."""
+    if repo_has_links(repo_root):
+        logger.info("skills: %s's skill folders are reached through a link; leaving them out", repo_root)
+        return None
     dirs = tuple(repo_root / folder for folder in REPO_DIRS if (repo_root / folder).is_dir())
     if not dirs:
         return None
@@ -140,6 +176,9 @@ def repo_digest(repo_root: Path) -> str:
     under its folder (path, type, and file content or link target). TOO_LARGE when there is too much to check."""
     from phil.skills.discover import discover  # discover imports Source from here
 
+    if repo_has_links(repo_root):
+        logger.info("skills: repo skills not checked for approval (a skill folder is a link)")
+        return TOO_LARGE
     source = repo_source(repo_root)
     root = repo_root.resolve()
     blocks: list[str] = []

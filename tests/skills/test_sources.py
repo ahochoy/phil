@@ -6,6 +6,7 @@ import pytest
 from phil.config import PhilConfig, SkillsConfig
 from phil.skills.discover import discover
 from phil.skills.sources import (
+    TOO_LARGE,
     approved_sources,
     repo_approved,
     repo_digest,
@@ -197,6 +198,23 @@ def test_a_repo_skill_cannot_replace_a_user_skill(home, tmp_path):
 
     assert [(s.name, s.source, s.description) for s in catalog.skills] == [("x", "agents", "From the user")]
     assert [(s.name, s.source) for s in catalog.hidden] == [("x", "repo")]
+
+
+def test_a_symlinked_repo_skills_folder_never_approves(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    write_skill(elsewhere / "skills", "x", "x")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    try:
+        (repo / ".agents").symlink_to(elsewhere, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks cannot be created here")
+    paths = ProjectPaths(slug="p", home=tmp_path / "phil_home")
+
+    assert repo_digest(repo) == TOO_LARGE
+    assert repo_source(repo) is None
+    set_repo_approved(paths, True, repo_digest(repo))
+    assert not repo_approved(paths, repo)
 
 
 def test_repo_source_is_none_without_skill_folders(tmp_path):
