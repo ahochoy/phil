@@ -43,6 +43,12 @@ The first public release, published to PyPI as `phil-agent`.
   repo's own skills (`phil skills repo on`, void if those skills change). `/skills` shows the
   list in the chat, and `phil permissions` lists the skill folders agents can read. Scripts in a
   skill never run.
+- Mockups at the approach stage: `show` draws every design approach, `show N` one and
+  `show N <note>` redraws it, or pick "Show as mockups" in the menu. The first one opens in the
+  browser, later ones rewrite the same page (reload the tab), and with no browser (SSH, or Linux
+  with no display) Phil prints a terminal sketch. Pages sit in the project's folder under
+  `~/.phil`, run no script and load nothing from the network. The picked mockup goes to the
+  planner and the coding agents as a reference. Nothing is drawn unless you ask.
 
 ### Fixed
 
