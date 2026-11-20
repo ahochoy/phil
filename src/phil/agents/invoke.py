@@ -16,6 +16,7 @@ from phil.agents.pricing import PriceBook, book_ids, default_price_book
 from phil.agents.providers import ProviderSpec, estimate_cost, provider_for_model, split_model
 from phil.agents.reminder import reminder_count
 from phil.agents.retry import MODEL_CALL_ATTEMPTS, call_with_retry
+from phil.agents.salvage import TEXT_LIMIT, salvage, summarise
 from phil.agents.spec import AgentSpec
 from phil.agents.tools import CommandLog, make_shell_tool
 from phil.agents.usage import extract_usage
@@ -220,7 +221,7 @@ def _validate(spec: AgentSpec, raw: object) -> tuple[Contract | None, list[str]]
         return None, problems
 
 
-RAW_TEXT_LIMIT = 2000
+RAW_TEXT_LIMIT = TEXT_LIMIT
 
 
 def _last_ai_text(messages: list) -> str | None:
@@ -520,6 +521,20 @@ def invoke_agent(
         else:
             output, problems = _validate(spec, result.get("structured_response"))
         outcome = "ok" if not problems else "invalid"
+        if parse_problems is None and result.get("structured_response") is None:
+            # The agent ended with no structured answer: a nearly-right one may be in its messages.
+            salvaged, salvage_problems = salvage(
+                result.get("messages", []),
+                spec.out_contract.__name__,
+                lambda data: _validate(spec, data)[1],
+                frozenset(spec.out_contract.model_fields),
+            )
+            if salvaged is not None:
+                output, problems = _validate(spec, salvaged.data)
+                outcome = "salvaged"
+                logger.debug("salvaged %s's answer (route: %s)", spec.name, salvaged.route)
+            else:
+                problems = ["no structured output was returned", *salvage_problems]
         if output is not None:
             problems = check_evidence(
                 output, commands=log.commands, workdir=ctx.workdir, tools=collector.tool_calls.keys()
@@ -557,11 +572,20 @@ def invoke_agent(
         if problems and ctx.artifacts is not None:
             raw = result.get("structured_response")
             raw_data = raw.model_dump() if isinstance(raw, BaseModel) else raw
+            record_fields: dict[str, Any] = {}
             if raw is None and parse_problems is None:
-                # No structured output: keep what the model said instead, to diagnose it.
-                raw_data = _last_ai_text(result.get("messages", []))
+                # No structured output: keep what the model said instead, and how it ended, to diagnose it.
+                raw_messages = result.get("messages", [])
+                raw_data = _last_ai_text(raw_messages)
+                record_fields = {
+                    "last_messages": summarise(raw_messages),
+                    "model_calls": len(usage.calls),  # the count telemetry records
+                    "max_model_calls": spec.max_model_calls,
+                }
             last_rejected_path = str(
-                ctx.artifacts.write_json("outputs", f"{name}.rejected", {"raw": raw_data, "problems": problems})
+                ctx.artifacts.write_json(
+                    "outputs", f"{name}.rejected", {"raw": raw_data, "problems": problems, **record_fields}
+                )
             )
         if output is not None and not problems:
             output_path = ""
