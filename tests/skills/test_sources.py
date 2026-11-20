@@ -19,12 +19,14 @@ from phil.store.paths import ProjectPaths
 
 
 def test_tilde_path_writes_a_home_folder_with_forward_slashes_on_every_os():
-    from pathlib import PureWindowsPath
+    from pathlib import PurePosixPath, PureWindowsPath
 
     home = PureWindowsPath(r"C:\Users\me")
     assert tilde_path(PureWindowsPath(r"C:\Users\me\.agents\skills"), home=home) == "~/.agents/skills"
     assert tilde_path(PureWindowsPath(r"D:\skills"), home=home) == r"D:\skills"
-    assert tilde_path(Path("/opt/skills"), home=Path("/Users/me")) == "/opt/skills"
+    posix_home = PurePosixPath("/Users/me")
+    assert tilde_path(PurePosixPath("/Users/me/.claude/skills"), home=posix_home) == "~/.claude/skills"
+    assert tilde_path(PurePosixPath("/opt/skills"), home=posix_home) == "/opt/skills"
 
 
 @pytest.fixture
