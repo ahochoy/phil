@@ -19,6 +19,7 @@ _OUTSIDE = "it is outside the skill's folder"
 _NOT_A_FILE = "it is not a file"
 _NOT_TEXT = "it is not text"
 _UNREADABLE = "it can't be read"
+_HARD_LINK = "it is a hard link"
 
 
 class _Refused(Exception):
@@ -28,7 +29,7 @@ class _Refused(Exception):
 def _lexically_inside(file: str) -> bool:
     """True when `file` is a plain relative path with no `..`. Decided on the text alone, before the
     filesystem is touched (a UNC path would make a network connection)."""
-    if not file:
+    if not file or "\x00" in file:
         return False
     for kind in (PurePath, PureWindowsPath):
         path = kind(file)
@@ -44,20 +45,22 @@ def _read_confined(skill: Skill, file: str | None) -> str:
     root = skill.path.resolve()
     try:
         target = (root / (file if file is not None else "SKILL.md")).resolve(strict=True)  # follows symlinks
-    except (OSError, RuntimeError):
+    except (OSError, ValueError, RuntimeError):
         raise _Refused(_UNREADABLE) from None
     if not target.is_relative_to(root):
         raise _Refused(_OUTSIDE)
     flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
     try:
         fd = os.open(target, flags)
-    except OSError:
+    except (OSError, ValueError):
         raise _Refused(_UNREADABLE) from None
     try:
         # Check the file we actually opened, not the path: it may have been swapped since the check above.
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:  # a hard link can point outside the folder
+        if not stat.S_ISREG(info.st_mode):
             raise _Refused(_NOT_A_FILE)
+        if info.st_nlink != 1:  # a hard link can point outside the folder
+            raise _Refused(_HARD_LINK)
         if not os.path.samestat(info, os.stat(target)):
             raise _Refused(_UNREADABLE)
         if not target.resolve(strict=True).is_relative_to(root):
@@ -68,7 +71,7 @@ def _read_confined(skill: Skill, file: str | None) -> str:
             if not chunk:
                 break
             data += chunk
-    except OSError:
+    except (OSError, ValueError, RuntimeError):
         raise _Refused(_UNREADABLE) from None
     finally:
         os.close(fd)

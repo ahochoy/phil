@@ -56,8 +56,14 @@ def test_a_hard_link_is_refused(tmp_path):
     os.link(secret, skill.path / "hard.md")
     tool = make_load_skill_tool([skill], role="coder", notice=None)
     result = tool("demo", "hard.md")
-    assert result.startswith("Can't read hard.md from demo: ")
+    assert result == "Can't read hard.md from demo: it is a hard link."
     assert "TOP SECRET" not in result
+
+
+def test_a_nul_byte_is_refused(tmp_path):
+    tool = make_load_skill_tool([make_skill(tmp_path)], role="coder", notice=None)
+    assert tool("demo", "a\x00b").startswith("Can't read ")
+    assert tool("demo", "SKILL.md\x00") .startswith("Can't read ")
 
 
 @pytest.mark.parametrize("requested", ["\\\\host\\share\\x", "//host/share/x", "C:foo", "C:\\x", "/etc/passwd", "..", ""])
