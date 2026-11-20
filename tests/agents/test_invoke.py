@@ -145,9 +145,18 @@ def test_a_rejected_answer_records_last_messages(config, conn, artifacts, critic
     rejected = json.loads((artifacts.run_dir / "outputs" / "critic-run-1.rejected.json").read_text())
     assert rejected["last_messages"][-1]["role"] == "ai"
     assert rejected["last_messages"][-1]["finish_reason"] == "length"
-    assert rejected["model_calls"] == 2
     assert rejected["max_model_calls"] == spec.max_model_calls
     assert rejected["problems"] == ["no structured output was returned"]
+
+
+def test_rejected_record_counts_model_calls_as_telemetry_does(config, conn, artifacts, critic_packet, tmp_path):
+    agent = CallbackAgent([("llm", 10, 1), ("tool", "read_file"), ("llm", 10, 1)], None)
+    ctx = accounting_context(config, conn, artifacts, agent, prices=no_fetch_price_book(tmp_path))
+    with pytest.raises(ContractViolation):
+        invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic", max_attempts=1)
+    rejected = json.loads((artifacts.run_dir / "outputs" / "critic-run-1.rejected.json").read_text())
+    [row] = telemetry(conn)
+    assert rejected["model_calls"] == row["model_calls"] == 2
 
 
 def test_failed_salvage_adds_its_problem_to_the_retry(config, conn, artifacts, critic_packet):

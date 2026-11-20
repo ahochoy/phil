@@ -14,7 +14,8 @@ from typing import Any
 LAST_MESSAGES = 6
 TEXT_LIMIT = 2000
 _IMAGE_PLACEHOLDER = "[image]"
-_FENCE = re.compile(r"```(?:json)?[ \t]*\r?\n(.*?)```", re.DOTALL | re.IGNORECASE)
+MAX_CALLS_PER_MESSAGE = 10
+_FENCE_OPEN = re.compile(r"^[ \t]*```(?:json)?[ \t]*$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -50,16 +51,20 @@ def summarise(messages: list, limit: int = TEXT_LIMIT) -> list[dict]:
         row: dict[str, Any] = {"role": getattr(message, "type", "unknown"), "text": _text(message, images=True)[:limit]}
         if row["role"] == "ai":
             calls = getattr(message, "tool_calls", None) or []
+            invalid = getattr(message, "invalid_tool_calls", None) or []
             if calls:
                 row["tool_calls"] = [
-                    {"name": call.get("name", ""), "args": json.dumps(call.get("args", {}), default=str)[:limit]} for call in calls
+                    {"name": call.get("name", ""), "args": json.dumps(call.get("args", {}), default=str)[:limit]}
+                    for call in calls[:MAX_CALLS_PER_MESSAGE]
                 ]
-            invalid = getattr(message, "invalid_tool_calls", None) or []
             if invalid:
                 row["invalid_tool_calls"] = [
                     {"name": call.get("name") or "", "args": (call.get("args") or "")[:limit], "error": call.get("error")}
-                    for call in invalid
+                    for call in invalid[:MAX_CALLS_PER_MESSAGE]
                 ]
+            omitted = max(len(calls) - MAX_CALLS_PER_MESSAGE, 0) + max(len(invalid) - MAX_CALLS_PER_MESSAGE, 0)
+            if omitted:
+                row["tool_calls_omitted"] = omitted
             metadata = getattr(message, "response_metadata", None) or {}
             reason = metadata.get("finish_reason") or metadata.get("stop_reason")
             if reason:
@@ -92,19 +97,50 @@ def _balanced_end(text: str, start: int) -> int | None:
     return None
 
 
+def _fenced_blocks(text: str) -> list[str]:
+    """The bodies of the ```` ``` ```` and ```` ```json ```` fences in `text`. A fence with any other
+    info string (```` ```bash ````) is skipped whole, and a fence closes only on a line that is exactly
+    ```` ``` ````, so a closing fence is never mistaken for an opening one."""
+    blocks: list[str] = []
+    body: list[str] | None = None
+    skipping = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if body is not None:
+            if stripped == "```":
+                blocks.append("\n".join(body).strip())
+                body = None
+            else:
+                body.append(line)
+        elif skipping:
+            skipping = stripped != "```"
+        elif _FENCE_OPEN.match(line):
+            body = []
+        elif stripped.startswith("```"):
+            skipping = True
+    return [block for block in blocks if block]
+
+
+def json_candidates(text: str) -> list[str]:
+    """Every piece of `text` that might be a JSON answer: each fenced block, then each top-level
+    `{...}` span (the last one runs to the end of the text when it never closes, for the repair to
+    finish), in order."""
+    candidates = _fenced_blocks(text)
+    position = text.find("{")
+    while position >= 0:
+        end = _balanced_end(text, position)
+        if end is None:
+            candidates.append(text[position:])
+            break
+        candidates.append(text[position:end])
+        position = text.find("{", end)
+    return candidates
+
+
 def extract_json(text: str) -> str | None:
-    """The JSON a model put in `text`: the first fenced block, else the span from the first `{` to
-    its matching `}` (to the end of the text when it never closes, for the repair to finish)."""
-    fenced = _FENCE.search(text)
-    if fenced:
-        body = fenced.group(1).strip()
-        if body:
-            return body
-    start = text.find("{")
-    if start < 0:
-        return None
-    end = _balanced_end(text, start)
-    return text[start:end] if end is not None else text[start:]
+    """The first JSON candidate in `text` (see `json_candidates`), or None."""
+    candidates = json_candidates(text)
+    return candidates[0] if candidates else None
 
 
 def _object_from(raw: str) -> dict | None:
@@ -120,34 +156,56 @@ def _object_from(raw: str) -> dict | None:
     return repair_arguments(raw) or None
 
 
-def salvage(messages: list, tool_name: str, validate: Callable[[dict], list[str]]) -> tuple[Salvaged | None, list[str]]:
-    """The first answer in the last `LAST_MESSAGES` AI messages (newest first) that `validate`
-    accepts (no problems), and the problems of the last candidate tried, each prefixed `salvage: `."""
+def _candidates(message: Any, tool_name: str) -> list[tuple[dict | None, str]]:
+    """The answers `message` offers, in the order to try them: its invalid answer calls, its answer
+    calls, then the JSON in its text. A `None` object is an answer call that could not be read."""
     from phil.agents.tool_args import repair_arguments  # imports langchain: kept out of import time
 
-    problems: list[str] = []
+    found: list[tuple[dict | None, str]] = []
+    for call in getattr(message, "invalid_tool_calls", None) or []:
+        if call.get("name") == tool_name and call.get("args"):
+            found.append((repair_arguments(call["args"]) or None, "invalid_call"))
+    for call in getattr(message, "tool_calls", None) or []:
+        if call.get("name") == tool_name and isinstance(call.get("args"), dict):
+            found.append((call["args"], "answer_call"))
+    for raw in json_candidates(_text(message)):
+        data = _object_from(raw)
+        if data is not None:
+            found.append((data, "text"))
+    return found
 
-    def accepted(data: dict | None, route: str) -> Salvaged | None:
-        nonlocal problems
-        if data is None:
-            return None
-        found = validate(data)
-        if not found:
-            return Salvaged(data=data, route=route)
-        problems = [f"salvage: {problem}" for problem in found]
-        return None
 
+def salvage(
+    messages: list,
+    tool_name: str,
+    validate: Callable[[dict], list[str]],
+    fields: frozenset[str] = frozenset(),
+) -> tuple[Salvaged | None, list[str]]:
+    """The answer in the newest AI message that offers one, if `validate` accepts it.
+
+    Only the newest attempt counts: the walk goes back through the last `LAST_MESSAGES` AI messages
+    to the first with any candidate (an answer call, an invalid answer call, or JSON in its text),
+    tries each of that message's candidates, and stops there. When none validates it returns
+    `(None, problems)` for the last candidate tried, each problem prefixed `salvage: `; an older
+    message's draft is never used. An empty answer is never accepted, and a text candidate must set
+    at least one of `fields` (the contract's field names) when they are given."""
     ai_messages = [m for m in messages if getattr(m, "type", None) == "ai"]
     for message in reversed(ai_messages[-LAST_MESSAGES:]):
-        for call in getattr(message, "invalid_tool_calls", None) or []:
-            if call.get("name") == tool_name and call.get("args"):
-                if result := accepted(repair_arguments(call["args"]) or None, "invalid_call"):
-                    return result, []
-        for call in getattr(message, "tool_calls", None) or []:
-            if call.get("name") == tool_name and isinstance(call.get("args"), dict):
-                if result := accepted(call["args"], "answer_call"):
-                    return result, []
-        raw = extract_json(_text(message))
-        if raw and (result := accepted(_object_from(raw), "text")):
-            return result, []
-    return None, problems
+        candidates = _candidates(message, tool_name)
+        if not candidates:
+            continue
+        problems: list[str] = []
+        for data, route in candidates:
+            if data is None:
+                found = ["the answer call could not be read"]
+            elif not data:
+                found = ["the answer is empty"]
+            elif route == "text" and fields and not fields & data.keys():
+                found = [f"the answer sets none of the contract's fields ({', '.join(sorted(fields))})"]
+            else:
+                found = validate(data)
+                if not found:
+                    return Salvaged(data=data, route=route), []
+            problems = [f"salvage: {problem}" for problem in found]
+        return None, problems
+    return None, []

@@ -527,6 +527,7 @@ def invoke_agent(
                 result.get("messages", []),
                 spec.out_contract.__name__,
                 lambda data: _validate(spec, data)[1],
+                frozenset(spec.out_contract.model_fields),
             )
             if salvaged is not None:
                 output, problems = _validate(spec, salvaged.data)
@@ -578,7 +579,7 @@ def invoke_agent(
                 raw_data = _last_ai_text(raw_messages)
                 record_fields = {
                     "last_messages": summarise(raw_messages),
-                    "model_calls": sum(1 for m in raw_messages if getattr(m, "type", None) == "ai"),
+                    "model_calls": len(usage.calls),  # the count telemetry records
                     "max_model_calls": spec.max_model_calls,
                 }
             last_rejected_path = str(

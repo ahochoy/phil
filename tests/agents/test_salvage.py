@@ -124,6 +124,69 @@ def test_salvage_reports_the_last_problems_when_nothing_validates():
     assert problems == ["salvage: tasks: Field required"]
 
 
+def test_salvage_only_the_newest_attempt_counts():
+    older = AIMessage(content='{"summary": "s", "tasks": []}')
+    newest = AIMessage(content="", tool_calls=[{"name": "Plan", "args": {"summary": "broken"}, "id": "c"}])
+    salvaged, problems = salvage([older, newest], "Plan", _accepts_empty_plan)
+    assert salvaged is None
+    assert problems == ["salvage: tasks: Field required"]
+
+
+def test_salvage_skips_newer_messages_without_candidates_to_reach_the_newest_attempt():
+    older = AIMessage(content='{"summary": "s", "tasks": []}')
+    salvaged, _ = salvage([older, AIMessage(content="thinking")], "Plan", _accepts_empty_plan)
+    assert salvaged is not None
+
+
+def test_salvage_rejects_an_empty_answer_call():
+    message = AIMessage(content="", tool_calls=[{"name": "Plan", "args": {}, "id": "c"}])
+    salvaged, problems = salvage([message], "Plan", lambda data: [])
+    assert salvaged is None
+    assert problems and problems[0].startswith("salvage: ")
+
+
+def test_salvage_rejects_an_empty_text_object_for_a_contract_with_only_defaults():
+    message = AIMessage(content="Nothing to record: {}")
+    salvaged, problems = salvage([message], "Memory", lambda data: [], fields=frozenset({"notes"}))
+    assert salvaged is None
+    assert problems and problems[0].startswith("salvage: ")
+
+
+def test_salvage_rejects_a_text_object_that_sets_none_of_the_contracts_fields():
+    message = AIMessage(content='{"unrelated": 1}')
+    salvaged, _ = salvage([message], "Memory", lambda data: [], fields=frozenset({"notes"}))
+    assert salvaged is None
+    accepted, _ = salvage([AIMessage(content='{"notes": []}')], "Memory", lambda data: [], fields=frozenset({"notes"}))
+    assert accepted == Salvaged(data={"notes": []}, route="text")
+
+
+def test_salvage_ignores_a_non_json_fence_before_the_json_fence():
+    message = AIMessage(content='Run:\n```bash\nls\n```\nAnswer:\n```json\n{"summary": "s", "tasks": []}\n```')
+    salvaged, _ = salvage([message], "Plan", _accepts_empty_plan)
+    assert salvaged == Salvaged(data={"summary": "s", "tasks": []}, route="text")
+
+
+def test_salvage_tries_every_fence_then_every_brace_span():
+    message = AIMessage(content='```json\n{"summary": "x"}\n```\n```json\n{"summary": "s", "tasks": []}\n```')
+    assert salvage([message], "Plan", _accepts_empty_plan)[0] is not None
+    spans = AIMessage(content='First {"summary": "x"} then {"summary": "s", "tasks": []} end')
+    assert salvage([spans], "Plan", _accepts_empty_plan)[0] is not None
+
+
+def test_summarise_caps_tool_calls_per_message_and_counts_the_rest():
+    message = AIMessage(
+        content="",
+        tool_calls=[{"name": "t", "args": {"i": i}, "id": f"c{i}"} for i in range(40)],
+        invalid_tool_calls=[{"name": "t", "args": "x", "id": f"d{i}", "error": "e"} for i in range(12)],
+    )
+    (row,) = summarise([message])
+    assert len(row["tool_calls"]) == 10
+    assert len(row["invalid_tool_calls"]) == 10
+    assert row["tool_calls_omitted"] == 30 + 2
+    quiet = summarise([AIMessage(content="", tool_calls=[{"name": "t", "args": {}, "id": "c"}])])[0]
+    assert "tool_calls_omitted" not in quiet
+
+
 def test_salvage_returns_nothing_without_candidates():
     messages = [HumanMessage(content="hi"), AIMessage(content="just prose"), ToolMessage(content="x", tool_call_id="c")]
     assert salvage(messages, "Plan", _accepts_empty_plan) == (None, [])

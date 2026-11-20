@@ -54,7 +54,9 @@ whether they're needed:
   - `invalid_tool_calls`: `[{name, args, error}]`, with the raw args string cut to 2,000
     characters
   - `finish_reason`: from `response_metadata["finish_reason"]` (or `stop_reason`), when present
-- **`model_calls`:** the number of AI messages in the run.
+  - at most 10 tool calls and 10 invalid calls are kept per message; `tool_calls_omitted` holds the
+    number cut, when any are
+- **`model_calls`:** the number of model calls telemetry records for the attempt (`len(usage.calls)`).
 - **`max_model_calls`:** the agent's cap, or `null`.
 
 Image parts are written as `[image]`, never as base64. The file is local, and nothing is sent
@@ -63,17 +65,26 @@ anywhere.
 ### Salvage (goal 2)
 
 When `result` has no `structured_response` and no parse problem was raised, Phil walks the AI
-messages from newest to oldest, at most the last 6. For each message, it tries these in order:
+messages from newest to oldest, at most the last 6, to the first message that has any candidate: an
+answer call, an invalid answer call, or extractable JSON in its text. **Only that newest message
+counts.** If none of its candidates validates, salvage stops with the problems of the last candidate it
+tried. It never falls back to an older message's draft. The 6-message window only bounds how far back
+Phil looks for the newest message with a candidate. That message's candidates are tried in this order:
 
 1. **Broken answer call.** An `invalid_tool_calls` entry named after the out contract
    (`spec.out_contract.__name__`, ToolStrategy's tool name). Phil repairs its args string with
    `tool_args.repair_arguments`, then validates the result against the out contract.
 2. **Rejected answer call.** A `tool_calls` entry with that name. Phil validates its args again,
    directly.
-3. **JSON in the text.** The message's text. Phil takes the contents of the first fenced
-   ` ```json ` (or plain ` ``` `) block. If there is none, it takes the span from the first `{` to its
-   matching `}`, counting braces outside strings. Phil tries `json.loads`, then
-   `repair_arguments`, then validates.
+3. **JSON in the text.** The message's text. Phil tries every fenced ` ```json ` (or plain ` ``` `)
+   block in order (a fence with another language, such as ` ```bash `, is skipped whole), then every
+   top-level span from a `{` to its matching `}`, counting braces outside strings. For each, Phil tries
+   `json.loads`, then `repair_arguments`, then validates.
+
+**No empty answers.** An empty object is rejected on every route. On the text route, a candidate that
+sets none of the out contract's fields is also rejected (`invoke` passes `spec.out_contract.model_fields`
+to `salvage`), so `{}` or an unrelated object never passes for a contract whose fields all have
+defaults.
 
 The first candidate that validates is the output. The same evidence checks then run (`check_evidence`),
 exactly as for a normal answer. A salvaged output is recorded with telemetry outcome `salvaged`, which
