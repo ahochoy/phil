@@ -1680,6 +1680,13 @@ class ChatController:
     def _on_mockup_ready(self, data: dict) -> None:
         if not self._mockup_current(data):
             return
+        try:
+            self._show_mockup(data)
+        except Exception as exc:  # a mockup that can't be shown leaves the approach stage as it is
+            logger.warning("couldn't show the mockup", exc_info=True)
+            self._mockup_failed_line(f"{type(exc).__name__}: {exc}")
+
+    def _show_mockup(self, data: dict) -> None:
         mockup: Mockup = data["mockup"]
         fmt: Literal["html", "sketch"] = data["fmt"]
         self.session.contract("mockup", mockup)

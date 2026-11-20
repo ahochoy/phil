@@ -129,12 +129,18 @@ def test_without_a_browser_the_sketch_prints(calc_repo, browser, contracts):
 def test_a_wide_sketch_is_clipped_not_wrapped(calc_repo, browser):
     browser["available"] = False
     wide = "x" * 100
+
+    def narrow(controller):
+        controller.console._console.width = 60  # a terminal narrower than the sketch
+        return "show 1"
+
     text, *_ = run_chat(
-        calc_repo, ["add a CTA section", "show 1"],
+        calc_repo, ["add a CTA section", narrow],
         {"intake": [OPEN], "design": [approaches(True)], "mockup": [drawings(("Footer band", wide), sketch=True)]},
     )
-    lines = [line for line in text.splitlines() if "x" * 20 in line]
-    assert len(lines) == 1 and len(lines[0].rstrip()) <= 120
+    lines = [line for line in text.splitlines() if "x" in line and set(line.strip()) == {"x"}]
+    assert len(lines) == 1  # cut, not wrapped onto a second line
+    assert 50 <= len(lines[0].rstrip()) < 60
 
 
 def test_browser_that_wont_open_still_prints_the_link(calc_repo, browser):
@@ -225,6 +231,21 @@ def test_mockup_failure_stays_at_the_approach_stage(calc_repo, browser, contract
         {"intake": [OPEN], "design": [approaches(True)], "mockup": [RuntimeError("down")] * 3, **PLANNING},
     )
     assert "Couldn't draw the mockup:" in text and "down" in text
+    [architect] = [contract for role, contract in contracts if role == "architect"]
+    assert architect.chosen_approach is not None and architect.chosen_approach.name == "Footer band"
+
+
+def test_a_page_that_cant_be_built_stays_at_the_approach_stage(calc_repo, browser, contracts, monkeypatch):
+    def broken(*args, **kw):
+        raise ValueError("bad page")
+
+    monkeypatch.setattr("phil.chat.mockup_page.build_page", broken)
+    text, *_ = run_chat(
+        calc_repo, ["add a CTA section", "show", "1", "n"],
+        {"intake": [OPEN], "design": [approaches(True)],
+         "mockup": [drawings(("Footer band", "band"), ("Inline card", "card"))], **PLANNING},
+    )
+    assert "Couldn't draw the mockup:" in text
     [architect] = [contract for role, contract in contracts if role == "architect"]
     assert architect.chosen_approach is not None and architect.chosen_approach.name == "Footer band"
 
