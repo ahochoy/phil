@@ -252,9 +252,11 @@ def test_tty_enter_starts_a_new_chat_and_new_skips_the_list(calc_repo, monkeypat
 
 def test_root_help_documents_resume_and_new():
     result = runner.invoke(cli.app, ["--help"], env={"COLUMNS": "200"})
-    assert "Reopen a chat by id" in result.output
-    assert "Start a new chat (the default)." in result.output
-    assert "--continue" in result.output
+    # CI forces colour (GitHub Actions): Rich styles the option's dashes apart, so compare plain text.
+    output = _plain(result.output)
+    assert "Reopen a chat by id" in output
+    assert "Start a new chat (the default)." in output
+    assert "--continue" in output
 
 
 def test_eof_at_the_reopen_prompt_exits_cleanly(calc_repo, monkeypatch):
