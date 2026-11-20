@@ -1,4 +1,8 @@
+import json
 import re
+from collections.abc import Set as AbstractSet
+from functools import lru_cache
+from typing import Any
 
 from phil.config import PhilConfig
 from phil.skills.discover import Catalog, Skill
@@ -39,23 +43,93 @@ INLINED_TRUST_SENTENCE = (
 )
 
 
+QUERY_CAP = 4000  # characters of goal text a skill is matched against
+# The input fields that carry the goal, the task or the user's message (spec §4.8). Strings under any
+# other key are not matched; the keys below are not looked into at all (code, chat, or repo-wide text).
+QUERY_KEYS = frozenset(
+    {"objective", "goal", "title", "summary", "description", "message", "question", "request", "text",
+     "acceptance", "acceptance_criteria"}
+)
+_SKIPPED_KEYS = frozenset(
+    {"diff", "repo_overview", "files", "files_hint", "chat", "history", "conversation", "context", "worklog",
+     "prior_attempt", "previous_plan", "last_report", "final_report", "recent_events", "feedback", "memory",
+     "agent_file", "evidence", "code"}
+)
+
+Query = str | AbstractSet[str]
+
+
 def _words(text: str) -> set[str]:
     return set(_WORD.findall(text.lower())) - _STOP_WORDS
 
 
-def score(query: str, skill: Skill) -> float:
-    """The share of the skill's words (name plus description) that appear in the query."""
-    skill_words = _words(re.sub(r"[-_]", " ", skill.name) + " " + skill.description)
+def query_words(query: Query) -> AbstractSet[str]:
+    """The query's words, worked out once so scoring many skills doesn't redo it."""
+    return _words(query) if isinstance(query, str) else query
+
+
+@lru_cache(maxsize=4096)
+def _skill_words(name: str, description: str) -> frozenset[str]:
+    return frozenset(_words(re.sub(r"[-_]", " ", name) + " " + description))
+
+
+def _collect(value: Any, parts: list[str], size: list[int]) -> None:
+    if size[0] >= QUERY_CAP:
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect(item, parts, size)
+        return
+    if not isinstance(value, dict):
+        return
+    for key, item in value.items():
+        if key in _SKIPPED_KEYS:
+            continue
+        if key == "turns" and isinstance(item, list):  # a chat so far: what the user said, newest first
+            texts = [turn.get("text") for turn in reversed(item) if isinstance(turn, dict) and turn.get("speaker") == "user"]
+            _add([text for text in texts if isinstance(text, str)], parts, size)
+        elif key in QUERY_KEYS and isinstance(item, str):
+            _add([item], parts, size)
+        elif key in QUERY_KEYS and isinstance(item, list) and all(isinstance(entry, str) for entry in item):
+            _add(item, parts, size)
+        else:
+            _collect(item, parts, size)
+
+
+def _add(texts: list[str], parts: list[str], size: list[int]) -> None:
+    for text in texts:
+        if text.strip() and size[0] < QUERY_CAP:
+            parts.append(text.strip())
+            size[0] += len(text) + 1
+
+
+def skill_query(packet: Any) -> str:
+    """The text a skill is matched against: the goal, task and user message fields of the packet's input,
+    never its diff, repo overview, file lists or chat history. At most QUERY_CAP characters."""
+    try:
+        data = json.loads(packet.contract_json)
+    except (ValueError, TypeError, AttributeError):
+        return ""
+    parts: list[str] = []
+    _collect(data, parts, [0])
+    return " ".join(parts)[:QUERY_CAP]
+
+
+def score(query: Query, skill: Skill) -> float:
+    """The share of the skill's words (name plus description) that appear in the query, which is text or
+    the word set `query_words` made from it."""
+    skill_words = _skill_words(skill.name, skill.description)
     if not skill_words:
         return 0.0
-    return len(_words(query) & skill_words) / len(skill_words)
+    return len(query_words(query) & skill_words) / len(skill_words)
 
 
-def offered(catalog: Catalog, cache: LabelCache, config: PhilConfig, agent: str, query: str) -> list[Skill]:
+def offered(catalog: Catalog, cache: LabelCache, config: PhilConfig, agent: str, query: Query) -> list[Skill]:
     """The skills this agent is told about: on, labelled for its stages, best match first, at most MAX_LISTED."""
     wanted = AGENT_STAGES.get(agent)
     if not wanted:
         return []
+    words = query_words(query)
     matching = []
     for skill in catalog.skills:
         if skill.name in config.skills.off:
@@ -63,13 +137,14 @@ def offered(catalog: Catalog, cache: LabelCache, config: PhilConfig, agent: str,
         stages, _ = stages_for(skill, cache, config)
         if stages and set(stages) & set(wanted):
             matching.append(skill)
-    matching.sort(key=lambda skill: (-score(query, skill), skill.name))
+    matching.sort(key=lambda skill: (-score(words, skill), skill.name))
     return matching[:MAX_LISTED]
 
 
-def to_inline(offered: list[Skill], query: str) -> list[Skill]:
+def to_inline(offered: list[Skill], query: Query) -> list[Skill]:
     """The first MAX_INLINED offered skills that really match the query (for agents without tools)."""
-    return [skill for skill in offered if score(query, skill) >= MIN_SCORE][:MAX_INLINED]
+    words = query_words(query)
+    return [skill for skill in offered if score(words, skill) >= MIN_SCORE][:MAX_INLINED]
 
 
 def skills_section(skills: list[Skill]) -> str:

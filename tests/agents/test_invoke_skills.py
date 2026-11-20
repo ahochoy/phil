@@ -260,6 +260,28 @@ def test_inlined_skills_never_overflow_the_budget(conn, tmp_path):
     assert "## Skills" not in none
 
 
+def test_a_big_diff_does_not_inline_an_unrelated_skill(conn, tmp_path):
+    from phil.contracts import Plan, Task
+    from phil.contracts.inputs import ReviewInput
+    from phil.contracts.results import TestReport
+    from tests.run.conftest import review
+
+    helm = make_skill(tmp_path, "helm-charts", "Write kubernetes helm charts and terraform modules")
+    task = Task(id="CALC-001", description="Add subtract", acceptance_criteria=["subtract(3, 1) == 2"])
+    plan = Plan(keyword="CALC", description="Add subtract", tasks=[task])
+    diff = "+ # kubernetes helm charts terraform modules write\n" * 2000
+    report = TestReport(command="pytest", passed=True, failures=[], log_path="log.txt")
+    packet = build_packet("reviewer", ReviewInput(plan=plan, diff=diff, final_report=report), budget_tokens=200_000)
+    config = PhilConfig(models=TEST_MODELS, budget={"reviewer": RoleBudget(max_input_tokens=200_000)})
+    factory = RecordingFactory([review()])
+    ctx = AgentContext(config=config, conn=conn, layer="run", factory=factory, skills=runtime((helm, ["reviewing"])))
+
+    invoke_agent(get_spec("reviewer"), packet, ctx, node="reviewer")
+
+    assert factory.agent is not None
+    assert "## Skill: helm-charts" not in factory.agent.calls[0]["messages"][0]["content"]
+
+
 def test_feed_notice_for_inlined_skill(conn, tmp_path):
     helper = make_skill(tmp_path, "subtract-helper", "Add subtract functions")
     notices: list[str] = []

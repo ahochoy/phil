@@ -385,17 +385,17 @@ def _with_skills(
 ) -> tuple[AgentSpec, Packet, Callable[..., str] | None]:
     """`spec`, `packet` and a `load_skill` tool (or None) with the skills for this agent's stages. A
     tool agent gets the list in its context and the tool; a lean agent gets up to two skills' text in
-    its packet. The query is the packet's contract, which carries the goal, task or message.
+    its packet. The query is the goal, task or message in the packet's input (`skill_query`).
     Skills are optional: a failure here is logged and the agent runs without them."""
     from phil.skills.runtime import MIN_CAP_FOR_SKILLS
-    from phil.skills.select import AGENT_STAGES, offered, skills_section, to_inline
+    from phil.skills.select import AGENT_STAGES, offered, query_words, skill_query, skills_section, to_inline
     from phil.skills.tool import make_load_skill_tool
 
     runtime = ctx.skills
     if runtime is None or spec.name not in AGENT_STAGES:
         return spec, packet, None
-    query = packet.contract_json
     try:
+        query = query_words(skill_query(packet))
         if spec.harness == "lean":
             chosen = to_inline(offered(runtime.catalog, runtime.cache, ctx.config, spec.name, query), query)
             return spec, _inline_skills(spec, packet, ctx, chosen), None

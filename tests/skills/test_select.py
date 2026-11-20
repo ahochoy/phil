@@ -10,8 +10,11 @@ from phil.skills.select import (
     MAX_INLINED,
     MAX_LISTED,
     MIN_SCORE,
+    QUERY_CAP,
     offered,
+    query_words,
     score,
+    skill_query,
     skills_section,
     to_inline,
 )
@@ -136,3 +139,98 @@ def test_skills_section_lists_name_and_description():
 
 def test_skills_section_empty_is_empty():
     assert skills_section([]) == ""
+
+
+# --- the query: the goal, not the whole input ---------------------------------
+
+
+def review_packet(diff: str, objective: str = "Add subtract"):
+    from phil.contracts import Plan, Task
+    from phil.contracts.inputs import ReviewInput
+    from phil.contracts.results import TestReport
+    from phil.packets import build_packet
+
+    task = Task(id="CALC-001", description=objective, acceptance_criteria=["subtract(3, 1) == 2"])
+    plan = Plan(keyword="CALC", description=objective, tasks=[task])
+    report = TestReport(command="pytest", passed=True, failures=[], log_path="log.txt")
+    contract = ReviewInput(plan=plan, diff=diff, final_report=report)
+    return build_packet("reviewer", contract, budget_tokens=10_000_000)
+
+
+def test_the_query_is_the_goal_not_the_repo_overview():
+    from phil.contracts import Goal
+    from phil.contracts.inputs import IntakeInput
+    from phil.packets import build_packet
+
+    contract = IntakeInput(
+        message="Add a subtract command",
+        previous_goal=Goal(objective="Build the calculator", constraints=["keep it small"]),
+        repo_overview="kubernetes helm charts terraform modules",
+    )
+    query = skill_query(build_packet("intake", contract, budget_tokens=100_000))
+
+    assert "Add a subtract command" in query
+    assert "Build the calculator" in query
+    assert "kubernetes" not in query and "terraform" not in query
+
+
+def test_the_query_leaves_out_the_diff_and_keeps_the_plans_words():
+    query = skill_query(review_packet("+ kubernetes helm charts\n" * 50))
+
+    assert "Add subtract" in query and "subtract(3, 1) == 2" in query
+    assert "kubernetes" not in query and "pytest" not in query and "CALC" not in query
+
+
+def test_the_query_takes_the_users_turns_newest_first():
+    from phil.contracts.converse import ConverseInput, ConverseTurn
+    from phil.packets import build_packet
+
+    turns = [
+        ConverseTurn(speaker="user", text="first ask"),
+        ConverseTurn(speaker="phil", text="phil reply words"),
+        ConverseTurn(speaker="user", text="second ask"),
+    ]
+    query = skill_query(build_packet("converse", ConverseInput(turns=turns), budget_tokens=100_000))
+
+    assert query.index("second ask") < query.index("first ask")
+    assert "phil reply words" not in query
+
+
+def test_the_query_is_capped():
+    from phil.contracts.routing import AnswerInput
+    from phil.packets import build_packet
+
+    query = skill_query(build_packet("answerer", AnswerInput(question="word " * 5000), budget_tokens=1_000_000))
+
+    assert len(query) <= QUERY_CAP == 4000
+
+
+def test_a_big_diff_does_not_pass_every_skill():
+    words = [f"{chr(97 + i % 26)}{chr(97 + i // 26 % 26)}{chr(97 + i // 676)}word" for i in range(400)]
+    unrelated = skill("cluster-tools", " ".join(words[:5]))
+    query = skill_query(review_packet(" ".join(words) * 20))
+
+    assert to_inline([unrelated], query) == []
+
+
+def test_selection_is_fast_for_many_skills_and_a_big_diff():
+    import time
+
+    items = [skill(f"skill-{i:03d}", f"Helps with topic{i} and area{i} work") for i in range(200)]
+    cache = cache_for(*[(item, ["reviewing"]) for item in items])
+    packet = review_packet("+ " + "x = topic1 area2 work\n" * 20_000)
+    assert len(packet.contract_json) > 400_000
+
+    started = time.perf_counter()
+    query = skill_query(packet)
+    chosen = to_inline(offered(Catalog(skills=items), cache, PhilConfig(), "reviewer", query), query)
+    elapsed = time.perf_counter() - started
+
+    assert chosen == []
+    assert elapsed < 0.2
+
+
+def test_score_takes_a_precomputed_word_set():
+    item = skill("better-layout", "Lay out pages")
+
+    assert score(query_words("better layout"), item) == score("better layout", item) > 0
