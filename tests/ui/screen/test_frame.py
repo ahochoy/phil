@@ -268,6 +268,57 @@ def test_drag_selects_a_text_item():
     pilot_run(app, script)
 
 
+def test_a_click_on_a_printed_link_opens_it(monkeypatch):
+    """A link Phil prints (an OSC 8 `link` style, e.g. the opened PR) opens in the browser on click."""
+    from phil.ui.links import opened_pr_line
+
+    app = PhilApp()
+    opened = []
+    monkeypatch.setattr(app, "open_url", lambda url, **_: opened.append(url))
+
+    async def script(pilot):
+        app.post_item(opened_pr_line(15, "https://github.com/o/r/pull/15"))
+        await until(pilot, lambda: len(_items(app)) == 1)
+        await pilot.pause()
+        await pilot.click(_items(app)[0], offset=(20, 0))
+        await until(pilot, lambda: opened)
+        assert opened == ["https://github.com/o/r/pull/15"]
+
+    pilot_run(app, script)
+
+
+def test_a_click_beside_a_link_opens_nothing(monkeypatch):
+    from phil.ui.links import opened_pr_line
+
+    app = PhilApp()
+    opened = []
+    monkeypatch.setattr(app, "open_url", lambda url, **_: opened.append(url))
+
+    async def script(pilot):
+        app.post_item(opened_pr_line(15, "https://github.com/o/r/pull/15"))
+        await until(pilot, lambda: len(_items(app)) == 1)
+        await pilot.pause()
+        await pilot.click(_items(app)[0], offset=(2, 0))
+        await pilot.pause()
+        assert opened == []
+
+    pilot_run(app, script)
+
+
+def test_a_blank_row_separates_the_conversation_from_the_input_box():
+    app = PhilApp()
+
+    async def script(pilot):
+        for n in range(80):  # enough to fill the pane, so the last line sits at its bottom
+            app.post_item(Text(f"line {n}"))
+        await until(pilot, lambda: len(_items(app)) == 80)
+        await pilot.pause()
+        prompt, last = app.query_one(PromptBox), _items(app)[-1]
+        assert prompt.region.y - (last.region.y + last.region.height) == 1
+
+    pilot_run(app, script)
+
+
 def test_drag_selects_a_callout_item():
     app = PhilApp()
 

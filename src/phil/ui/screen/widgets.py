@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 
 from rich.console import RenderableType
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 from textual import events
@@ -51,6 +52,14 @@ class HeaderBar(Static):
         return Themed(grid)
 
 
+def _clickable(style: Style | None) -> Style | None:
+    """`style`, plus a click that opens its link when it has one: Textual draws a printed link
+    (`phil.ui.links`) as plain text, so the click is what makes it a link in the frame."""
+    if style is None or not style.link:
+        return style
+    return style + Style(meta={"@click": ("app.open_link", (style.link,))})
+
+
 class Item(Widget):
     """One printed renderable in the conversation, shown as selectable text.
 
@@ -91,7 +100,7 @@ class Item(Widget):
                     text.append("\n")
                 for segment in line:
                     if not segment.control:
-                        text.append(segment.text, segment.style)
+                        text.append(segment.text, _clickable(segment.style))
             self._styled = (width, text, max(len(lines), 1))
         return self._styled
 
