@@ -36,6 +36,13 @@ The first public release, published to PyPI as `phil-agent`.
   reviewer are told its path). An optional
   `[models] vision` model, offered by `phil setup` and checked by `phil models check`, reads
   images when an agent's own model can't.
+- Skills: Phil's agents can use the `SKILL.md` skills you have installed for other coding tools
+  (`~/.agents/skills`, Claude Code and its plugins, Codex, Cursor, Gemini). `phil setup` asks which
+  folders to use, Phil labels each skill with the stages it helps, and `phil skills` lists them,
+  turns one on or off, sets its stages (`phil skills stages <name> design,testing`) and approves a
+  repo's own skills (`phil skills repo on`, void if those skills change). `/skills` shows the
+  list in the chat, and `phil permissions` lists the skill folders agents can read. Scripts in a
+  skill never run.
 
 ### Fixed
 

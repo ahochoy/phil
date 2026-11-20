@@ -799,3 +799,118 @@ progress, and Phil writes `AGENTS.md` in no other way.
 Memory is background text, not policy. It never grants a permission: a command named in a note
 still goes through the checks under Permissions. Apart from the `AGENTS.md` apply you confirm,
 memory never writes to your repo.
+
+## Skills
+
+Phil's agents can use the skills you already have installed for other coding tools: folders
+that each hold a `SKILL.md` with a `name` and a `description` (the Agent Skills format). Phil
+never copies, changes or runs anything in them. It only reads.
+
+### Where Phil looks
+
+Phil checks these folders and uses only the ones you approve:
+
+| Source | Folder |
+|---|---|
+| Shared (`npx skills`) | `~/.agents/skills` |
+| Claude Code | `~/.claude/skills` |
+| Claude Code plugins | the `skills` folder of each installed plugin (from `~/.claude/plugins/installed_plugins.json`) |
+| Codex | `~/.codex/skills` |
+| Cursor | `~/.cursor/skills` |
+| Gemini | `~/.gemini/skills` |
+
+A skill reached by a symbolic link counts once, and so does a skill with the same content in
+two places. If two different skills share a name, the first one wins, in the order above, so a
+repo can't replace a skill you installed. `phil skills` lists the one that was hidden. A skill
+without a name and a description is skipped, and `phil skills` counts it.
+
+`phil setup` has a step that lists each folder it found with its number of skills and asks
+which to approve (none is chosen for you). Run `phil setup` again to change them. The choice is
+saved in `~/.phil/config.toml`:
+
+```toml
+[skills]
+folders = ["agents", "claude", "claude-plugins"]
+```
+
+A `[skills]` table in a repo's `phil.toml` is ignored: a cloned repo can't approve its own
+skills.
+
+### Stages
+
+Agents see only the skills that fit their part of the work. The stages are `planning`,
+`design`, `implementing`, `testing` and `reviewing`:
+
+| Agent | Stages it sees |
+|---|---|
+| intake, chat replies, architect | planning, design |
+| critic | planning, reviewing |
+| designer | design |
+| implementer, quick implementer | implementing, design |
+| tester | testing |
+| reviewer | reviewing, implementing |
+| answers to questions | implementing, reviewing |
+
+Phil labels each skill with its stages, once, with the low model, from its name and description
+only. It labels new or changed skills at the end of setup and, in the background, when a chat
+starts. The labels are kept in `~/.phil/skills.json`. A skill with no label yet isn't offered
+until it has one, and a skill labelled with no stage (a blog-writing skill, say) goes to no
+agent. If labelling fails, the skills stay unlabelled and nothing else is affected.
+
+### Changing what Phil uses
+
+To turn a skill off, or to give it stages of your own in place of its label, use `phil skills`.
+The commands edit `~/.phil/config.toml` and keep the rest of the file as it is:
+
+```bash
+phil skills                                  # approved folders, each skill and its stages, what is off
+phil skills off blog-write                   # never offer this skill
+phil skills on blog-write
+phil skills stages better-layout design,implementing   # use these stages, not the label
+phil skills stages better-layout -           # go back to the label
+phil skills repo on                          # use this repo's own skills (see below)
+phil skills repo off
+```
+
+A skill's name can be saved before Phil has found it, in case you install it later; the command
+tells you it hasn't found it. An unknown stage is refused, with the valid ones listed. In the
+chat, `/skills` prints the same list. It changes nothing: it points you to `phil skills`.
+
+The same settings can be written by hand:
+
+```toml
+[skills]
+off = ["blog-write"]
+
+[skills.stages]
+better-layout = ["design", "implementing"]
+```
+
+### A repo's own skills
+
+A repo can ship skills in `.agents/skills` or `.claude/skills`. Because a cloned repo isn't
+trusted, Phil doesn't use them until you say so. The first time you open a chat in a repo that
+has them, Phil mentions it once. Run `phil skills repo on` to approve them. The approval is tied
+to the content of the repo's skills: Phil records a digest of every file in them, so if a skill
+changes (after a `git pull`, or because an agent edited it), the approval no longer holds, the
+repo's skills are off, and Phil mentions it again. Run `phil skills repo on` again to approve
+the new version. A repo whose skill folders hold more than 2,000 files or 50 MB can't be
+approved. The approval is kept in `~/.phil/projects/<repo>/skills.toml`, never in the repo.
+
+### What agents get, and the limits
+
+- An agent with tools sees a short list of the skills for its stages (name and description, at
+  most 30; if more fit, the 30 that best match the goal). It can load a skill's `SKILL.md`, or
+  a text file inside that skill's folder, with `load_skill`. It can load at most 3 times a run,
+  and a file of more than 64 KB is cut. A load that would take an agent's last model call is
+  never offered, so a skill can't stop an agent from answering.
+- An agent without tools (intake, critic, reviewer) gets the text of up to 2 skills that match
+  the goal, each cut at 4,000 tokens, added to the end of what it reads.
+- The feed shows `Using skill <name> (<agent>)` when an agent loads or is given a skill.
+- Skills are guidance. The prompt tells agents that their output format and Phil's permissions
+  come first, so a skill can't grant a permission.
+- Scripts in a skill never run. `load_skill` reads text files and nothing else: a file outside
+  the skill's folder, a binary file, a symbolic link out of the folder and a file with other
+  hard links are all refused.
+- `phil permissions` and `/permissions` list the skill folders agents can read, under
+  `Skill folders Phil's agents can read:`.
