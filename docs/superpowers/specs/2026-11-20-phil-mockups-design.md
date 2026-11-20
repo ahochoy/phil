@@ -60,7 +60,7 @@ After a mockup is shown, the stage stays `choose_approach`, and the same menu an
 
 ### 4.2 The hint
 
-The designer's `Approaches` contract gains `visual: bool`: true when the goal changes something people see (UI, pages, layout, styling, visual copy placement). When true, Phil prints one muted line under the approaches: `Say "show" to see these as mockups.` *(My call, with the wording left to the builder.)* The "Show as mockups" menu item appears only when `visual` is true; the typed `show` command always works.
+The designer's `Approaches` contract gains `visual: bool`. It is true only when the approaches differ in how something **looks**: layout, placement, styling, or what's on screen. Touching UI code isn't enough. A change to a form's validation logic is not visual, for example; three layouts for a pricing section are. When true, Phil prints one muted line under the approaches: `Say "show" to see these as mockups.` *(My call, with the wording left to the builder.)* The "Show as mockups" menu item appears only when `visual` is true; the typed `show` command always works.
 
 ### 4.3 Making the mockup
 
@@ -68,15 +68,27 @@ A new read-only agent, `mockup`, on the designer's model tier and harness (`tool
 
 Input (`MockupInput`): the goal, the approaches to draw (name, summary, trade-offs), the repo overview, the user's note if any, the conversation so far, the goal's images, and the format: `html` or `sketch`.
 
-Output (`Mockup`): one entry per requested approach, each with the approach's name and either an HTML fragment (`html`) or a plain-text sketch of at most 40 lines × 100 columns (`sketch`), plus one optional sentence of notes. The agent is told to use the repo's own styles, colours, fonts and copy where it finds them, and to keep each fragment self-contained (inline CSS only, no scripts, no external URLs; images only as inline SVG or `data:` URIs).
+Output (`Mockup`): one entry per requested approach, each with the approach's name and either an HTML fragment (`html`) or a plain-text sketch of at most 40 lines × 100 columns (`sketch`), plus one optional sentence of notes. The agent is told to use the repo's own styles, colours, fonts and copy where it finds them. Where the repo has nothing to borrow, it builds from the template's wireframe classes, so it writes content, not CSS. Each fragment stays self-contained: inline CSS only, no scripts, no external URLs, and images only as inline SVG or `data:` URIs. Placeholders stand in for photos; nothing is fetched from stock-image sites. Fidelity matches the question: wireframes for layout and placement, more polish only when the approaches differ in look and feel.
 
-Phil assembles the page: a fixed template with the goal as heading, the approaches side by side (stacked on narrow windows), each labelled with its number and name. The template carries a Content-Security-Policy meta tag: `default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:`. Phil also strips any `<script>` elements and `on*=` attributes from fragments before writing. The CSP is the guard; stripping is belt and braces.
+**Wireframe classes.** The template defines a small, fixed set of classes, documented in the agent's prompt:
+- `mock-nav`, a navigation bar
+- `mock-sidebar` and `mock-content`, a sidebar and the main area
+- `mock-button` and `mock-input`, a button and an input
+- `placeholder`, a grey block for images or content not drawn
+- `split`, side-by-side regions
 
-The page is written to the project's folder under `~/.phil`, at `mockups/<chat id>-<n>.html`. *(Builder's call on the exact name; it must not collide across chats or redraws.)*
+The set follows Superpowers' visual companion; the builder settles the exact names and styles.
+
+Phil assembles the page from a fixed template:
+- The heading is the goal, followed by one line saying what's being compared, e.g. "3 approaches to the pricing CTA: compare placement and content."
+- The approaches are side by side (stacked on narrow windows), each labelled with its number and name.
+- It ends with how to respond: "Pick in Phil: Enter or a number to choose, `show N <note>` to redraw." The template carries a Content-Security-Policy meta tag: `default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:`. Phil also strips any `<script>` elements and `on*=` attributes from fragments before writing. The CSP is the guard; stripping is belt and braces.
+
+Each chat has one page in the project's folder under `~/.phil`: `mockups/<chat id>.html`. Every `show` rewrites it. A versioned copy (`mockups/<chat id>-v<n>.html`) is kept beside it, so earlier drawings can still be opened. *(Builder's call on exact names; they must not collide across chats.)*
 
 ### 4.4 Showing it
 
-- **Browser available:** Phil opens the page with Python's `webbrowser` and prints one line with the file path as a clickable link, so it can be reopened.
+- **Browser available:** the first `show` in a chat opens the page with Python's `webbrowser`. Later `show`s rewrite the same page and don't open another tab; Phil prints "Mockup updated: reload the tab" instead. Every time, Phil prints the page's path as a clickable link, so a closed tab can be reopened. A live-reloading local server, with clicking to pick in the browser, was considered and rejected. It needs a running process, a session key and page script, and the terminal is where you respond anyway.
 - **No browser:** the request asks for `sketch`, and Phil prints each approach's sketch in the feed under its number and name.
 - "No browser" means: an SSH session (`SSH_CONNECTION` or `SSH_TTY` set), or Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY`. This is decided **before** the call, so only one format is generated. If `webbrowser.open` then returns false, Phil prints the link and says the browser didn't open.
 - While it is drawing, the status shows it the way other agent work shows.
