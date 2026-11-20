@@ -229,3 +229,28 @@ def test_folders_match_by_tilde_path_too(home):
     sources = approved_sources(config("~/.agents/skills"), None, None)
 
     assert [s.key for s in sources] == ["agents"]
+
+
+def test_the_repo_mention_is_remembered_by_digest_and_keeps_approval(tmp_path):
+    from phil.skills.sources import repo_mentioned, set_repo_mentioned
+
+    paths = ProjectPaths(slug="p", home=tmp_path / "phil_home")
+    assert repo_mentioned(paths) is None
+    set_repo_approved(paths, False)
+
+    set_repo_mentioned(paths, "abc")
+
+    assert repo_mentioned(paths) == "abc"
+    assert "approved = false" in paths.skills_approval_path.read_text(encoding="utf-8")
+    set_repo_approved(paths, True, "abc")
+    assert repo_mentioned(paths) == "abc"
+
+
+def test_an_old_boolean_mention_counts_as_not_mentioned(tmp_path):
+    from phil.skills.sources import repo_mentioned
+
+    paths = ProjectPaths(slug="p", home=tmp_path / "phil_home")
+    paths.project_dir.mkdir(parents=True)
+    paths.skills_approval_path.write_text("mentioned = true\n", encoding="utf-8")
+
+    assert repo_mentioned(paths) is None

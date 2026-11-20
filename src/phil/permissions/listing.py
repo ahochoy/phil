@@ -2,6 +2,7 @@
 first, then the rules by where they come from. Display text only: every rule and value is shown
 with hidden characters as `?`."""
 
+import logging
 import os
 import tomllib
 from pathlib import Path
@@ -11,6 +12,8 @@ from phil.permissions.load import policy_or_fallback, rule_label
 from phil.permissions.store import KINDS, PolicyProblem, PolicySet, file_problems
 from phil.store.paths import ProjectPaths, global_policy_path
 from phil.text import printable
+
+logger = logging.getLogger(__name__)
 
 BUILT_IN_LINE = "Built-in: read-only commands (ls, grep, git log, gh pr view, npm ls, …) run without asking."
 BUILT_IN_DEFAULTS = "built-in defaults (no config entry)"
@@ -114,4 +117,15 @@ def listing_lines(repo_root: Path, paths: ProjectPaths, config: PhilConfig) -> l
     if patterns:
         lines.append(_config_header(repo_root, config))
         lines += _rows([("allow", pattern, "") for pattern in patterns])
+    lines += _skill_folders(repo_root, paths, config)
     return lines
+
+
+def _skill_folders(repo_root: Path, paths: ProjectPaths, config: PhilConfig) -> list[str]:
+    from phil.skills.listing import skill_folder_lines  # it uses shown_path from here
+
+    try:
+        return skill_folder_lines(config, repo_root, paths)
+    except Exception:
+        logger.warning("couldn't list the skill folders", exc_info=True)
+        return []

@@ -23,6 +23,7 @@ from phil.chat.decision import approval_lines
 from phil.cli.memory import memory_app
 from phil.cli.parked import parked_app
 from phil.cli.permissions import permissions_app
+from phil.cli.skills import skills_app
 from phil.config import (
     CHAT_ROLES,
     ROLES,
@@ -62,6 +63,7 @@ keys_app = typer.Typer(help="Store, list and remove provider API keys.")
 app.add_typer(keys_app, name="keys")
 app.add_typer(permissions_app, name="permissions")
 app.add_typer(memory_app, name="memory")
+app.add_typer(skills_app, name="skills")
 app.add_typer(parked_app, name="parked")
 console = make_console()
 

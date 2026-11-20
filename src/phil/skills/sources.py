@@ -187,6 +187,18 @@ def set_repo_approved(paths: ProjectPaths, approved: bool, digest: str | None = 
     _write_atomically(paths.skills_approval_path, tomlkit.dumps(document))
 
 
+def repo_mentioned(paths: ProjectPaths) -> str | None:
+    """The digest of the repo skills the user was last told about, or None (never told)."""
+    mentioned = _read_approval(paths).get("mentioned")
+    return mentioned if isinstance(mentioned, str) else None
+
+
+def set_repo_mentioned(paths: ProjectPaths, digest: str) -> None:
+    document = _read_approval(paths)
+    document["mentioned"] = digest
+    _write_atomically(paths.skills_approval_path, tomlkit.dumps(document))
+
+
 def approved_sources(config: PhilConfig, repo_root: Path | None, paths: ProjectPaths | None) -> list[Source]:
     """Each approved user source first, then the repo's skills (when approved and unchanged), so a repo
     cannot replace a skill the user installed."""
