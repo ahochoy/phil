@@ -21,6 +21,7 @@ from phil.contracts import (
 )
 from phil.contracts.memory import MemoryInput, MemoryUpdate
 from phil.contracts.routing import Answer, AnswerInput, RouteInput, RouteJudgement
+from phil.contracts.skills import SkillLabelInput, SkillLabels
 
 # The answerer's model-call budget: its last allowed call must answer (see phil.agents.factory).
 ANSWER_MAX_MODEL_CALLS = 12
@@ -69,6 +70,9 @@ SPECS: dict[str, AgentSpec] = {
     "btw": AgentSpec("btw", "orchestrator", BtwInput, Brief, writes_files=False, repo_context=True),
     "route": AgentSpec(
         "route", "classifier", RouteInput, RouteJudgement, harness="lean", shared_prompt=False
+    ),
+    "skill_labels": AgentSpec(
+        "skill_labels", "classifier", SkillLabelInput, SkillLabels, harness="lean", shared_prompt=False
     ),
     "answer": AgentSpec(
         "answer", "answerer", AnswerInput, Answer, tools=("shell",), harness="light", shared_prompt=False,

@@ -16,6 +16,7 @@ from phil.contracts.memory import MemoryAdd, MemoryInput, MemoryUpdate
 from phil.contracts.planning import Plan, PlanCritique, QuickTask, Task
 from phil.contracts.results import AttemptWorklog, Review, TaskResult, TesterReport, TestReport, Worklog
 from phil.contracts.routing import Answer, AnswerInput, RouteInput, RouteJudgement
+from phil.contracts.skills import SkillLabel, SkillLabelInput, SkillLabels, SkillToLabel
 
 ALL_CONTRACTS: list[type[Contract]] = [
     Plan,
@@ -45,6 +46,8 @@ ALL_CONTRACTS: list[type[Contract]] = [
     MemoryUpdate,
     ConverseInput,
     IntakeTurn,
+    SkillLabelInput,
+    SkillLabels,
 ]
 
 __all__ = [
@@ -85,6 +88,10 @@ __all__ = [
     "RouteJudgement",
     "RunStatus",
     "SelfCheck",
+    "SkillLabel",
+    "SkillLabelInput",
+    "SkillLabels",
+    "SkillToLabel",
     "Task",
     "TaskResult",
     "TesterInput",
