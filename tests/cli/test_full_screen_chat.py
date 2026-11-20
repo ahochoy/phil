@@ -88,6 +88,8 @@ def full_screen(calc_repo, monkeypatch, phil_home):
     monkeypatch.setenv("PHIL_TEST_SCENARIO", "approve")
     monkeypatch.setattr(cli, "spawn_worker", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_is_tty", lambda: True)
+    # On Windows the legacy console falls back to inline; these tests stand in Windows Terminal.
+    monkeypatch.setenv("WT_SESSION", "phil-tests")
     classic_repo(calc_repo)
 
     def play(actions, size=(100, 30)):
