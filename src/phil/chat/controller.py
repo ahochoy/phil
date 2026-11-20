@@ -23,7 +23,9 @@ from rich.text import Text
 from phil.agents.failures import VISION_ACTION, Failure, classify_failure, internal_failure
 from phil.agents.invoke import AgentContext, price_book_for
 from phil.skills.labels import label_skills
+from phil.skills.listing import repo_has_skills, skill_lines
 from phil.skills.runtime import load_runtime
+from phil.skills.sources import repo_approved, repo_digest, repo_mentioned, set_repo_mentioned
 from phil.agents.providers import provider_for_model
 from phil.agents.unpriced import PLANNING_ROLES, planning_notice, unpriced_models
 from phil.chat.answer import ask_answer
@@ -172,6 +174,7 @@ HELP_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/park <note>", "set an idea aside"),
     ("/unpark <id…> | all", "drop parked ideas"),
     ("/permissions", "the rules for agents' commands"),
+    ("/skills", "the skills Phil can use"),
     ("/memory", "what Phil remembers about this repo"),
     ("/remember <fact>", "add a fact to Phil's memory"),
     ("/forget <n>", "remove line n of Phil's memory"),
@@ -207,7 +210,9 @@ PROMPTS = {
     "confirm_agents_md": "[y / n] › ",
     "pick_chat": "Reopen which chat? [number / Enter to stay] › ",
 }
-MEMORY_TRY = "Try /memory, /memory edit, /memory suggestions, /memory apply or /memory dismiss."
+SKILLS_CHANGE_HINT = "Change these with phil skills."
+REPO_SKILLS_MENTION = "This repo ships its own skills; Phil won't use them until you run phil skills repo on."
+MEMORY_TRY ="Try /memory, /memory edit, /memory suggestions, /memory apply or /memory dismiss."
 LEFT_AGENTS_MD = "Left AGENTS.md as it is."
 PR_ANYWAY_PROMPT = "Open a PR anyway? [y / n] › "  # confirm_pr, for a run finished with blocking issues
 QUICK_FALLBACK = "Couldn't plan this as a quick change; planning it fully."
@@ -894,6 +899,7 @@ class ChatController:
     def run(self) -> ChatOutcome:
         try:
             self._report_policy_problems()
+            self._mention_repo_skills()
             if self._resume:
                 self._reopen()
             self._refresh_cost()
@@ -1145,6 +1151,8 @@ class ChatController:
             self._unpark_command(text[len(command):].split())
         elif command == "/permissions":
             self._permissions_command()
+        elif command == "/skills":
+            self._skills_command()
         elif command == "/memory":
             self._memory_command(text[len(command):].strip())
         elif command == "/remember":
@@ -2935,6 +2943,41 @@ class ChatController:
     def _permissions_command(self) -> None:
         """What `phil permissions` lists; changes are made with the CLI (spec 2026-10-13 §3.7)."""
         self._say(*listing_lines(self.info.root, ProjectPaths(self.info.slug), self.config), CHANGE_HINT)
+
+    # --- /skills and the repo's own skills (spec 2026-11-19 §4.2, §4.7) ----------------------------
+
+    def _repo_skills_state(self) -> tuple[bool, bool]:
+        """(the repo ships skills, they are approved and unchanged)."""
+        has_skills = repo_has_skills(self.info.root)
+        return has_skills, has_skills and repo_approved(ProjectPaths(self.info.slug), self.info.root)
+
+    def _skills_command(self) -> None:
+        """What `phil skills` lists; changes are made with the CLI."""
+        try:
+            has_skills, approved = self._repo_skills_state()
+            lines = skill_lines(self.ctx.skills, self.config, has_skills, approved)
+        except Exception:
+            logger.warning("couldn't list the skills", exc_info=True)
+            self._say("Couldn't list the skills. phil skills tries again.")
+            return
+        self._say(*lines, SKILLS_CHANGE_HINT)
+
+    def _mention_repo_skills(self) -> None:
+        """At chat start: say once that the repo ships skills Phil isn't using. The digest of the skills
+        told about is remembered, so a change to them is mentioned again."""
+        try:
+            paths = ProjectPaths(self.info.slug)
+            has_skills, approved = self._repo_skills_state()
+            if not has_skills or approved:
+                return
+            digest = repo_digest(self.info.root)
+            if repo_mentioned(paths) == digest:
+                return
+            set_repo_mentioned(paths, digest)
+        except Exception:
+            logger.warning("couldn't check the repo's skills", exc_info=True)
+            return
+        self._say(REPO_SKILLS_MENTION)
 
     # --- /memory, /remember, /forget (spec 2026-10-15 §2.4) ----------------------------------------
 
