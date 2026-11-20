@@ -68,6 +68,7 @@ from phil.run.state import (
     run_depth,
     with_task_status,
 )
+from phil.skills.runtime import SkillRuntime, load_runtime
 from phil.store.activity import MAX_DETAIL_CHARS, ActivityLog
 from phil.store.artifacts import ArtifactStore, artifact_name
 from phil.store.events import EventLog, partly_saved_line, saved_rules_line, unsaved_rules_line
@@ -184,6 +185,8 @@ class RunEngine:
         self._milestone_warned = False
         self._repo_context: str | None = None
         self._images: list[str] | None = None
+        self._skills_loaded = False
+        self._skills: SkillRuntime | None = None
 
     def _attachments(self) -> list[str]:
         """The goal's image paths, read once from the run's attachments.json ([] when it has none)."""
@@ -201,6 +204,13 @@ class RunEngine:
         if self._repo_context is None:
             self._repo_context = read_run_context(self.deps.artifacts.run_dir)
         return self._repo_context
+
+    def _skill_runtime(self) -> SkillRuntime | None:
+        """The run's skills, found once (None, also remembered, when there are none)."""
+        if not self._skills_loaded:
+            self._skills = load_runtime(self.deps.config, self.deps.repo_root, self.deps.paths)
+            self._skills_loaded = True
+        return self._skills
 
     # --- graph -------------------------------------------------------------
 
@@ -404,6 +414,7 @@ class RunEngine:
             paths=self.deps.paths,
             repo_context=self._run_context(),
             notice=self._notice,
+            skills=self._skill_runtime(),
         )
 
     def _policy(self) -> PolicySet | None:

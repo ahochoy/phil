@@ -33,6 +33,8 @@ from phil.store.telemetry import CallRow, CostSource, TelemetryRow, record, reco
 
 if TYPE_CHECKING:
     from phil.agents.collector import ModelCall  # imports langchain_core: kept out of import time
+    from phil.skills.discover import Skill
+    from phil.skills.runtime import SkillRuntime  # phil.skills.labels imports this module
     from phil.store.activity import ActivityLog
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,8 @@ class AgentContext:
     # Where a one-line notice for the feed goes, e.g. `↪ image: implementer runs on <vision model>`
     # (phil.agents.vision.VisionSwitch, at most once per agent run). None: nowhere.
     notice: Callable[[str], None] | None = None
+    # The approved skills, found once per chat or run (phil.skills.runtime.load_runtime). None: no skills.
+    skills: "SkillRuntime | None" = None
 
 
 class ContractViolation(Exception):
@@ -364,6 +368,104 @@ def _vision_model(config: PhilConfig, model: str, timeout_s: int) -> tuple[str, 
     return vision, build
 
 
+SKILL_CUT_NOTE = "[skill text cut to fit]"
+
+
+def _send_notice(ctx: AgentContext, line: str) -> None:
+    if ctx.notice is None:
+        return
+    try:
+        ctx.notice(line)
+    except Exception:
+        logger.debug("skill notice failed", exc_info=True)
+
+
+def _with_skills(
+    spec: AgentSpec, packet: Packet, ctx: AgentContext
+) -> tuple[AgentSpec, Packet, Callable[..., str] | None]:
+    """`spec`, `packet` and a `load_skill` tool (or None) with the skills for this agent's stages. A
+    tool agent gets the list in its context and the tool; a lean agent gets up to two skills' text in
+    its packet. The query is the goal, task or message in the packet's input (`skill_query`).
+    Skills are optional: a failure here is logged and the agent runs without them."""
+    runtime = ctx.skills
+    if runtime is None:
+        return spec, packet, None
+    from phil.skills.runtime import MIN_CAP_FOR_SKILLS
+    from phil.skills.select import AGENT_STAGES, offered, query_words, skill_query, skills_section, to_inline
+    from phil.skills.tool import make_load_skill_tool
+
+    if spec.name not in AGENT_STAGES:
+        return spec, packet, None
+    try:
+        query = query_words(skill_query(packet))
+        if spec.harness == "lean":
+            chosen = to_inline(offered(runtime.catalog, runtime.cache, ctx.config, spec.name, query), query)
+            return spec, _inline_skills(spec, packet, ctx, chosen), None
+        if spec.max_model_calls is not None and spec.max_model_calls < MIN_CAP_FOR_SKILLS:
+            return spec, packet, None
+        listed = offered(runtime.catalog, runtime.cache, ctx.config, spec.name, query)
+        if not listed:
+            return spec, packet, None
+        section = skills_section(listed)
+        context = f"{spec.context.rstrip()}\n\n{section}" if spec.context else section
+        tool = make_load_skill_tool(
+            listed, role=spec.name, notice=ctx.notice, still_approved=runtime.still_approved
+        )
+        return dataclasses.replace(spec, context=context), packet, tool
+    except Exception:
+        logger.warning("skills: left out for %s after an error", spec.name, exc_info=True)
+        return spec, packet, None
+
+
+def _cut_skill_text(text: str) -> str:
+    from phil.packets.packet import estimate_tokens
+    from phil.skills.select import INLINE_TOKEN_CAP
+
+    text = text.rstrip()
+    if estimate_tokens(text) <= INLINE_TOKEN_CAP:
+        return text
+    return f"{text[: INLINE_TOKEN_CAP * 4].rstrip()}\n{SKILL_CUT_NOTE}"
+
+
+def _inline_skills(spec: AgentSpec, packet: Packet, ctx: AgentContext, chosen: list["Skill"]) -> Packet:
+    """`packet` with the chosen skills' SKILL.md text closing it, under one `## Skills` heading, as
+    many as fit the role's budget (the last is dropped first). Never raises PacketTooLarge."""
+    from phil.packets.packet import estimate_tokens
+    from phil.skills.select import INLINED_TRUST_SENTENCE
+    from phil.skills.tool import SKILL_CHANGED, SkillReadError, read_skill_file
+
+    sections: list[tuple[str, str]] = []
+    for skill in chosen:
+        try:
+            if ctx.skills is not None and not ctx.skills.still_approved(skill):
+                raise SkillReadError(SKILL_CHANGED)
+            text = read_skill_file(skill)
+            if ctx.skills is not None and not ctx.skills.still_approved(skill):  # changed while it was read
+                raise SkillReadError(SKILL_CHANGED)
+        except SkillReadError as refusal:
+            logger.info("skills: not inlining %s for %s: %s", skill.name, spec.name, refusal)
+            continue
+        sections.append((skill.name, f"## Skill: {skill.name}\n{_cut_skill_text(text)}"))
+    budget = ctx.config.budget_for(spec.role).max_input_tokens
+    base = estimate_tokens(packet.render())
+    for count in range(len(sections), 0, -1):
+        block = "\n\n".join(["## Skills", INLINED_TRUST_SENTENCE, *(text for _, text in sections[:count])]) + "\n"
+        extra = f"{packet.extra_text.rstrip()}\n\n{block}" if packet.extra_text else block
+        candidate = packet.model_copy(update={"extra_text": extra})
+        cost = estimate_tokens(candidate.render()) - base
+        if packet.tokens + cost > budget:
+            continue
+        for name, _ in sections[count:]:
+            logger.info("skills: %s left out of %s's packet: no room in its budget", name, spec.name)
+        candidate.tokens = packet.tokens + cost
+        for name, _ in sections[:count]:
+            _send_notice(ctx, f"Using skill {name} ({spec.name})")
+        return candidate
+    for name, _ in sections:
+        logger.info("skills: %s left out of %s's packet: no room in its budget", name, spec.name)
+    return packet
+
+
 def invoke_agent(
     spec: AgentSpec,
     packet: Packet,
@@ -399,6 +501,8 @@ def invoke_agent(
             text = built.text
         if text:
             spec = dataclasses.replace(spec, context=text)
+    # Before the packet is first written to the artifacts, so the saved packet is what the model saw.
+    spec, packet, skill_tool = _with_skills(spec, packet, ctx)
     retry_attempts = MODEL_CALL_ATTEMPTS if transient_retries else 1
     log = ctx.command_log if ctx.command_log is not None else CommandLog()
     effective_node = node if call == 1 else f"{node}-c{call}"
@@ -424,6 +528,8 @@ def invoke_agent(
                 repo_root=ctx.repo_root,
             )
         )
+    if skill_tool is not None:
+        tools.append(skill_tool)
     timeout_s = ctx.config.run.model_timeout_s
     vision = _vision_model(ctx.config, model, timeout_s)
     own_model, own_provider = model, provider

@@ -6,6 +6,7 @@ and classifier checks can use it, but nothing is saved until the end. Cancelling
 (Ctrl-C or end of input) saves nothing and writes nothing. Keys are never said, written or
 logged."""
 
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -23,7 +24,11 @@ from phil.setup.catalog import CatalogModel, OllamaModel, ollama_models, openrou
 from phil.setup.guard import KEY_WARNING, looks_like_key
 from phil.setup.io import SetupCancelled, SetupIO
 from phil.setup.suggestions import SUGGESTIONS
+from phil.skills.discover import discover
+from phil.skills.sources import USER_FOLDERS, Source, tilde_path, user_sources
 from phil.setup.write import write_global_config
+
+logger = logging.getLogger(__name__)
 
 SETUP_TIERS = ("high", "low")
 JEV_TYPESAFE = "typesafe:jev-latest"
@@ -48,6 +53,7 @@ PROVIDER_CHOICES: list[tuple[str, str]] = [
 OLLAMA_NO_TOOLS = "  — can't call tools, won't work with Phil"
 NAME_PATTERN = re.compile(r"[a-z][a-z0-9_-]*")
 VAR_PATTERN = re.compile(r"[A-Z][A-Z0-9_]*")
+SKILLS_UNLABELLED = "Couldn't label skills yet; Phil will try again when a chat starts."
 NEXT_STEPS = (
     "Next: `phil` starts a chat, `phil config` shows your settings, "
     "`phil keys list` shows where each key comes from."
@@ -104,6 +110,7 @@ def run_setup(
     write: Callable[..., None] = write_global_config,
     path: Path | None = None,
     classifier_check: Callable[[str], str | None] | None = None,
+    label: Callable[[], tuple[int, int]] | None = None,
 ) -> bool:
     """Walk through setup and write the global config. True if it wrote the file; False if the
     user cancelled (Ctrl-C or end of input, at a prompt or not) or the file couldn't be written.
@@ -134,15 +141,19 @@ def run_setup(
             models = _check_step(io, config, saved, provider, models, check, models_catalog)
         models = models | _classifier_step(io, config, target, provider, run_classifier_check, pending, to_save)
         models = models | _vision_step(io, config, target, provider)
+        skill_folders = _skills_step(io, config, target)
     except (SetupCancelled, KeyboardInterrupt):
         io.say("Setup cancelled; nothing was saved.")
         return False
+    # Only a chosen list is passed on, so a `write` that doesn't know about skills still works.
+    extra = {} if skill_folders is None else {"skill_folders": skill_folders}
     try:
         write(
             target,
             models=models,
             provider_name=provider.name if provider.custom else None,
             provider_fields=provider.fields if provider.custom else {},
+            **extra,
         )
     except (OSError, TOMLKitError) as exc:
         io.say(f"Couldn't write {target}: {_error_text(exc)}. Nothing was saved.")
@@ -151,7 +162,21 @@ def run_setup(
     # saved — so the user reads "wrote the config" before "saved the key", in that true order.
     _summarise(io, config, provider, models, target)
     _save_pending_keys(io, to_save, pending)
+    if label is not None:
+        _label_skills_step(io, label)
     return True
+
+
+def _label_skills_step(io: SetupIO, label: Callable[[], tuple[int, int]]) -> None:
+    """Label the user's skills now that the config and keys are in place. `label` returns (how many
+    needed a label, how many got one). Setup has succeeded either way: a shortfall is only said."""
+    try:
+        missing, labelled = label()
+    except Exception:
+        logger.info("skill labelling after setup failed", exc_info=True)
+        missing, labelled = 1, 0
+    if labelled < missing:
+        io.say(SKILLS_UNLABELLED)
 
 
 def _save_pending_keys(io: SetupIO, to_save: list[tuple[str, str]], pending: dict[str, str]) -> None:
@@ -547,6 +572,71 @@ def _vision_step(io: SetupIO, config: PhilConfig, target: Path, provider: _Provi
     if not answer or answer == current:
         return {}
     return {VISION_KEY: answer if answer.startswith(prefix) else prefix + answer}
+
+
+def _source_line(number: int, source: Source) -> str:
+    where = "~/.claude/plugins" if source.key == "claude-plugins" else tilde_path(source.dirs[0])
+    count = len(discover([source]).skills)
+    return f"  {number}. {source.label} ({where}): {count} {'skill' if count == 1 else 'skills'}"
+
+
+def _skills_step(io: SetupIO, config: PhilConfig, target: Path) -> list[str] | None:
+    """Offer the skill folders found on this machine (from other coding agents) for Phil to use
+    (spec 2026-11-19 skills §4.2). Returns the source keys to write under `[skills] folders`, or None
+    to leave the file as it is: nothing found, a non-interactive run, or nothing would change.
+    Enter keeps the global file's current folders, or approves none when it has none; `0` or `none`
+    approves none. A bad answer is asked again once, then treated as Enter."""
+    if not getattr(io, "interactive", True):
+        return None
+    sources = user_sources()
+    if not sources:
+        return None
+    current = list(config.skills.folders) if config.sources.get("skills.folders") == str(target) else []
+    # The sources the current entries name, by key or by folder (the way `approved_sources` reads them).
+    approved = {Path(entry).expanduser() if "/" in entry or "~" in entry else entry for entry in current}
+    folders = USER_FOLDERS
+    current_keys = [
+        source.key
+        for source in sources
+        if source.key in approved
+        or (folders.get(source.key) is not None and Path(folders[source.key]).expanduser() in approved)
+    ]
+    io.say("Skills from other coding agents can be used by Phil's agents. Found:")
+    for number, source in enumerate(sources, 1):
+        io.say(_source_line(number, source))
+    default = " ".join(str(i) for i, source in enumerate(sources, 1) if source.key in current_keys)
+    if current:
+        prompt = "use which? (numbers separated by spaces, 0 for none, Enter to keep)"
+    else:
+        prompt = "use which? (numbers separated by spaces, Enter for none)"
+    for attempt in range(2):
+        # Enter gives the default: the numbers already approved, or nothing.
+        answer = _ask(io, prompt, default=default or None).strip()
+        picked = _pick_sources(answer, sources)
+        if picked is None:
+            if attempt == 0:
+                io.say(f"Enter numbers from 1 to {len(sources)} separated by spaces, 0 for none, or Enter.")
+            continue
+        if not answer:
+            return None  # Enter with nothing approved: nothing to write
+        if picked == current_keys and picked:
+            # Same as what is approved: the file stays as it is (entries for folders not found today too).
+            return None
+        return picked
+    return None  # still not an answer: treated as Enter
+
+
+def _pick_sources(answer: str, sources: list[Source]) -> list[str] | None:
+    """The keys of the sources `answer` numbers (in list order); [] for 0 or none; None if invalid."""
+    words = answer.replace(",", " ").split()
+    if not words:
+        return []
+    if len(words) == 1 and words[0].lower() in ("0", "none"):
+        return []
+    if not all(word.isdigit() and 1 <= int(word) <= len(sources) for word in words):
+        return None
+    chosen = {int(word) for word in words}
+    return [source.key for number, source in enumerate(sources, 1) if number in chosen]
 
 
 # 5. Summary

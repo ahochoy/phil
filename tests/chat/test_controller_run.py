@@ -905,7 +905,7 @@ def test_help_puts_each_command_on_its_own_line(calc_repo):
     commands = [line for line in lines[lines.index("Commands:") + 1:] if line.startswith("/")]
     assert [line.split("  ")[0] for line in commands] == [
         "/runs", "/btw <question>", "/answer", "/go", "/resume", "/show", "/more <n>", "/more #<step>",
-        "/feed <agent>", "/park <note>", "/unpark <id…> | all", "/permissions", "/memory",
+        "/feed <agent>", "/park <note>", "/unpark <id…> | all", "/permissions", "/skills", "/memory",
         "/remember <fact>", "/forget <n>", "/chat", "/status", "/copy", "/help", "/quit",
     ]
     assert any(line.startswith("/btw <question>") and line.endswith("ask while work continues") for line in commands)

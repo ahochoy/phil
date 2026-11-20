@@ -23,6 +23,7 @@ from phil.chat.decision import approval_lines
 from phil.cli.memory import memory_app
 from phil.cli.parked import parked_app
 from phil.cli.permissions import permissions_app
+from phil.cli.skills import skills_app
 from phil.config import (
     CHAT_ROLES,
     ROLES,
@@ -62,6 +63,7 @@ keys_app = typer.Typer(help="Store, list and remove provider API keys.")
 app.add_typer(keys_app, name="keys")
 app.add_typer(permissions_app, name="permissions")
 app.add_typer(memory_app, name="memory")
+app.add_typer(skills_app, name="skills")
 app.add_typer(parked_app, name="parked")
 console = make_console()
 
@@ -828,7 +830,13 @@ def config_command(
             state = "exists" if file.is_file() else "missing"
             console.print(f"{label}: {escape(str(file))} ({state})", soft_wrap=True, highlight=False)
         return
-    typer.echo(effective_toml(_load_config(info.root, ctx.obj.get("overrides", []))), nl=False)
+    config = _load_config(info.root, ctx.obj.get("overrides", []))
+    if config.repo_skills_ignored:  # on stderr, so stdout stays valid TOML
+        typer.echo(
+            "phil.toml has a [skills] table; skills are set in ~/.phil/config.toml only, so it is ignored.",
+            err=True,
+        )
+    typer.echo(effective_toml(config), nl=False)
 
 
 @models_app.command("check")
@@ -890,6 +898,7 @@ def _run_setup(ctx: typer.Context, root: Path) -> bool:
     from phil.agents.check import check_models
     from phil.setup import catalog, write
     from phil.setup.flow import run_setup
+    from phil.setup.skill_labels import label_after_setup
 
     try:
         config = load_config(root, overrides=ctx.obj.get("overrides", []))
@@ -915,6 +924,7 @@ def _run_setup(ctx: typer.Context, root: Path) -> bool:
         catalog=lambda: catalog.openrouter_catalog(),
         ollama=lambda base_url: catalog.ollama_models(base_url),
         write=lambda path, **fields: write.write_global_config(path, **fields),
+        label=lambda: label_after_setup(root, ctx.obj.get("overrides", []), factory=factory),
     )
 
 

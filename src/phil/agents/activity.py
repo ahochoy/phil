@@ -44,6 +44,9 @@ def summarize_call(tool: str, args: dict | None) -> str:
         return f"write {path}"
     if tool == "run_shell":
         return f"run {args.get('command', '')}".rstrip()
+    if tool == "load_skill":
+        name, file = args.get("name", ""), args.get("file")
+        return f"skill {name}/{file}" if file else f"skill {name}"
     if tool == "task":
         return f"sub-agent: {_first_line(args.get('description', ''))}".rstrip()
     return tool

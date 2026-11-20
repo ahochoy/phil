@@ -520,3 +520,40 @@ def test_vision_key_accepted_and_read():
     assert config.vision_model() == "openrouter:a/b"
     assert PhilConfig(models={"high": "x:y"}).vision_model() is None
     assert 'vision = "openrouter:a/b"' in effective_toml(config)
+
+
+def test_skills_section_reads_from_the_global_file(phil_home, tmp_path):
+    phil_home.mkdir(parents=True, exist_ok=True)
+    (phil_home / "config.toml").write_text(
+        '[skills]\nfolders = ["~/.agents/skills"]\noff = ["blog"]\n[skills.stages]\nbetter-layout = ["design"]\n',
+        encoding="utf-8",
+    )
+    config = load_config(tmp_path)
+    assert config.skills.folders == ["~/.agents/skills"]
+    assert config.skills.off == ["blog"]
+    assert config.skills.stages == {"better-layout": ["design"]}
+
+
+def test_a_repo_cannot_set_skills(phil_home, tmp_path):
+    (tmp_path / "phil.toml").write_text('[skills]\nfolders = ["repo-skills"]\n', encoding="utf-8")
+    config = load_config(tmp_path)
+    assert config.skills.folders == []
+    assert config.repo_skills_ignored is True
+
+
+def test_a_repo_without_skills_is_not_flagged(phil_home, tmp_path):
+    (tmp_path / "phil.toml").write_text("[run]\nmax_cost_usd = 3.0\n", encoding="utf-8")
+    assert load_config(tmp_path).repo_skills_ignored is False
+
+
+def test_set_cannot_set_skills(phil_home, tmp_path):
+    config = load_config(tmp_path, overrides=["skills.folders=['x']"])
+    assert config.skills.folders == []
+    assert config.repo_skills_ignored is False
+
+
+def test_a_stage_override_must_name_known_stages(phil_home, tmp_path):
+    phil_home.mkdir(parents=True, exist_ok=True)
+    (phil_home / "config.toml").write_text('[skills.stages]\nx = ["deploying"]\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="deploying"):
+        load_config(tmp_path)

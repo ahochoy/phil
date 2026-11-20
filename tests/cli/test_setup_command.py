@@ -17,6 +17,10 @@ SECRET = "sk-TESTSECRET-123"
 
 
 def use(monkeypatch, answers):
+    # An empty home: the machine's own skill folders must not add a step to setup.
+    home = tempfile.mkdtemp()
+    monkeypatch.setenv("HOME", home)
+    monkeypatch.setenv("USERPROFILE", home)
     io = ScriptedSetupIO(answers)
     monkeypatch.setattr(cli, "console", make_console(width=300))
     monkeypatch.setattr(cli, "_setup_io", lambda: io)

@@ -22,6 +22,10 @@ from rich.text import Text
 
 from phil.agents.failures import VISION_ACTION, Failure, classify_failure, internal_failure
 from phil.agents.invoke import AgentContext, price_book_for
+from phil.skills.labels import label_skills
+from phil.skills.listing import repo_skill_names, skill_lines
+from phil.skills.runtime import load_runtime
+from phil.skills.sources import repo_approved, repo_digest, repo_mentioned, set_repo_mentioned
 from phil.agents.providers import provider_for_model
 from phil.agents.unpriced import PLANNING_ROLES, planning_notice, unpriced_models
 from phil.chat.answer import ask_answer
@@ -170,6 +174,7 @@ HELP_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/park <note>", "set an idea aside"),
     ("/unpark <id…> | all", "drop parked ideas"),
     ("/permissions", "the rules for agents' commands"),
+    ("/skills", "the skills Phil can use"),
     ("/memory", "what Phil remembers about this repo"),
     ("/remember <fact>", "add a fact to Phil's memory"),
     ("/forget <n>", "remove line n of Phil's memory"),
@@ -205,6 +210,8 @@ PROMPTS = {
     "confirm_agents_md": "[y / n] › ",
     "pick_chat": "Reopen which chat? [number / Enter to stay] › ",
 }
+SKILLS_CHANGE_HINT = "Change these with phil skills."
+REPO_SKILLS_MENTION = "This repo ships its own skills; Phil won't use them until you run phil skills repo on."
 MEMORY_TRY = "Try /memory, /memory edit, /memory suggestions, /memory apply or /memory dismiss."
 LEFT_AGENTS_MD = "Left AGENTS.md as it is."
 PR_ANYWAY_PROMPT = "Open a PR anyway? [y / n] › "  # confirm_pr, for a run finished with blocking issues
@@ -373,7 +380,8 @@ class ChatController:
         extra = {"sleep": sleep} if sleep is not None else {}
         self.ctx = AgentContext(
             config=config, conn=conn, layer="chat", artifacts=self.session.artifacts, factory=factory,
-            chat_id=self.session.id, repo_root=info.root, paths=ProjectPaths(info.slug), **extra
+            chat_id=self.session.id, repo_root=info.root, paths=ProjectPaths(info.slug),
+            skills=load_runtime(config, info.root, ProjectPaths(info.slug)), **extra
         )  # jobs copy this context (with their own connection), so their telemetry is tagged with the chat
         # repo_root and paths: the chat's read-only agents get the rules in effect, so deny rules block them too.
         self.overview = repo_overview(info.root)
@@ -489,8 +497,43 @@ class ChatController:
         self._attachments: list[Path] = []
         self._vision_warned = False  # the goal's "can't read images" warning has been shown
         self._replacement_images: Incoming | None = None  # a replacement goal's images (confirm_replace)
+        self._label_thread: threading.Thread | None = None  # the skill labelling at chat start (tests join it)
+        self._label_in_background()
 
     # --- events and jobs -------------------------------------------------------------------------
+
+    def _label_in_background(self) -> None:
+        """Label the approved skills that have no label yet, on a daemon thread with its own database
+        connection. It writes into the chat's own cache, so a label is offered as soon as it exists,
+        and it never touches the feed: a failure goes to the developer log."""
+        runtime = self.ctx.skills
+        if runtime is None:
+            return
+        overrides = self.config.skills.stages
+        pending = [
+            skill
+            for skill in runtime.catalog.skills
+            if skill.name not in overrides and runtime.cache.get(skill.content_hash) is None
+        ]
+        if not pending:
+            return
+
+        def work() -> None:
+            conn = None
+            try:
+                conn = connect(self._db_path)
+                label_skills(replace(self.ctx, conn=conn), pending, runtime.cache)
+            except Exception:
+                logger.info("skill labelling at chat start failed", exc_info=True)
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        self._label_thread = threading.Thread(target=work, name="phil-skill-labels", daemon=True)
+        self._label_thread.start()
 
     def post(self, event: ChatEvent) -> None:
         """Thread-safe: queue an event for the main loop and wake a blocked prompt."""
@@ -856,6 +899,7 @@ class ChatController:
     def run(self) -> ChatOutcome:
         try:
             self._report_policy_problems()
+            self._mention_repo_skills()
             if self._resume:
                 self._reopen()
             self._refresh_cost()
@@ -1107,6 +1151,8 @@ class ChatController:
             self._unpark_command(text[len(command):].split())
         elif command == "/permissions":
             self._permissions_command()
+        elif command == "/skills":
+            self._skills_command()
         elif command == "/memory":
             self._memory_command(text[len(command):].strip())
         elif command == "/remember":
@@ -2897,6 +2943,41 @@ class ChatController:
     def _permissions_command(self) -> None:
         """What `phil permissions` lists; changes are made with the CLI (spec 2026-10-13 §3.7)."""
         self._say(*listing_lines(self.info.root, ProjectPaths(self.info.slug), self.config), CHANGE_HINT)
+
+    # --- /skills and the repo's own skills (spec 2026-11-19 §4.2, §4.7) ----------------------------
+
+    def _repo_skills_state(self) -> tuple[list[str], bool]:
+        """(the names of the skills the repo ships, they are approved and unchanged)."""
+        names = repo_skill_names(self.info.root)
+        return names, bool(names) and repo_approved(ProjectPaths(self.info.slug), self.info.root)
+
+    def _skills_command(self) -> None:
+        """What `phil skills` lists; changes are made with the CLI."""
+        try:
+            names, approved = self._repo_skills_state()
+            lines = skill_lines(self.ctx.skills, self.config, names, approved)
+        except Exception:
+            logger.warning("couldn't list the skills", exc_info=True)
+            self._say("Couldn't list the skills. phil skills tries again.")
+            return
+        self._say(*lines, SKILLS_CHANGE_HINT)
+
+    def _mention_repo_skills(self) -> None:
+        """At chat start: say once that the repo ships skills Phil isn't using. The digest of the skills
+        told about is remembered, so a change to them is mentioned again."""
+        try:
+            paths = ProjectPaths(self.info.slug)
+            has_skills, approved = self._repo_skills_state()
+            if not has_skills or approved:
+                return
+            digest = repo_digest(self.info.root)
+            if repo_mentioned(paths) == digest:
+                return
+            set_repo_mentioned(paths, digest)
+        except Exception:
+            logger.warning("couldn't check the repo's skills", exc_info=True)
+            return
+        self._say(REPO_SKILLS_MENTION)
 
     # --- /memory, /remember, /forget (spec 2026-10-15 §2.4) ----------------------------------------
 

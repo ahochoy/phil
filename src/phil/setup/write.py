@@ -30,9 +30,11 @@ def write_global_config(
     models: dict[str, str],
     provider_name: str | None,
     provider_fields: dict[str, object],
+    skill_folders: list[str] | None = None,
 ) -> None:
     """Set `models.<tier>` for each of `models`, and `providers.<provider_name>.<field>` for each
     of `provider_fields` (a None value removes that field), leaving the rest of the file as it is.
+    `skill_folders` sets `[skills] folders` (other keys of `[skills]` stay); None leaves `[skills]` alone.
 
     The file and its directory are created when missing; the write is atomic (a temp file in the
     same directory, then `os.replace`). Raises ValueError for a field outside `PROVIDER_FIELDS`."""
@@ -55,6 +57,8 @@ def write_global_config(
                 entry.pop(field, None)
             else:
                 entry[field] = value
+    if skill_folders is not None:
+        _table(document, "skills")["folders"] = skill_folders
     _write_atomically(path, tomlkit.dumps(document))
 
 

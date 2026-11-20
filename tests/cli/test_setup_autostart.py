@@ -7,7 +7,7 @@ from tests.run.conftest import calc_plan
 runner = CliRunner()
 
 
-def _fake_run_setup_writes_models(io, *, config, check, catalog, ollama, write, path=None):
+def _fake_run_setup_writes_models(io, *, config, check, catalog, ollama, write, path=None, label=None):
     from phil.config import global_config_path
 
     target = path or global_config_path()

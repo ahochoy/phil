@@ -81,6 +81,36 @@ def test_an_existing_file_keeps_its_comments_and_other_settings(tmp_path, phil_h
     assert entry.api_key_env is None  # a None field is removed
 
 
+def test_write_preserves_other_tables(tmp_path, phil_home):
+    path = phil_home / "config.toml"
+    phil_home.mkdir()
+    path.write_text(
+        '[skills]\nfolders = ["agents"]\noff = ["noisy"]  # keep\n\n[skills.stages]\ntdd = ["planning"]\n\n'
+        '[run]\nmax_cost_usd = 5.0\n'
+    )
+    write_global_config(
+        path, models={"high": "a:b", "low": "a:c"}, provider_name=None, provider_fields={},
+        skill_folders=["claude", "claude-plugins"],
+    )
+    config = load_config(tmp_path)
+    assert config.skills.folders == ["claude", "claude-plugins"]
+    assert config.skills.off == ["noisy"]
+    assert config.skills.stages == {"tdd": ["planning"]}
+    assert config.run.max_cost_usd == 5.0
+    assert "# keep" in path.read_text()
+
+
+def test_none_leaves_skills_untouched_and_an_empty_list_clears_folders(tmp_path, phil_home):
+    path = phil_home / "config.toml"
+    phil_home.mkdir()
+    path.write_text('[skills]\nfolders = ["agents"]\n')
+    write_global_config(path, models={"high": "a:b"}, provider_name=None, provider_fields={})
+    assert load_config(tmp_path).skills.folders == ["agents"]
+    write_global_config(path, models={"high": "a:b"}, provider_name=None, provider_fields={}, skill_folders=[])
+    assert load_config(tmp_path).skills.folders == []
+    assert "folders = []" in path.read_text()
+
+
 def test_only_known_provider_fields_are_written_never_a_key(phil_home):
     path = phil_home / "config.toml"
     for field in ("api_key", "key", "token", "password"):
