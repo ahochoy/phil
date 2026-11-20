@@ -440,6 +440,8 @@ def _no_terminal(*args, **kwargs):
 def _full(monkeypatch, phil_home) -> None:
     _screen_setting(phil_home, "full")
     monkeypatch.setattr(cli, "_is_tty", lambda: True)
+    # On Windows the legacy console falls back to inline; these tests stand in Windows Terminal.
+    monkeypatch.setenv("WT_SESSION", "phil-tests")
     monkeypatch.setattr(cli, "_screen", _FakeScreen)
     monkeypatch.setattr(cli, "_terminal", _no_terminal)
     screens.clear()
