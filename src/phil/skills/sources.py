@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,24 +88,83 @@ def _read_approval(paths: ProjectPaths) -> tomlkit.TOMLDocument:
         return tomlkit.document()
 
 
+MAX_DIGEST_ENTRIES = 2000
+MAX_DIGEST_BYTES = 50 * 1024 * 1024
+# The digest of a repo whose skills are too big to check. Approval never matches it.
+TOO_LARGE = "too-large"
+
+
+class _TooLarge(Exception):
+    pass
+
+
+def _file_hash(path: Path, budget: list[int]) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            budget[0] -= len(chunk)
+            if budget[0] < 0:
+                raise _TooLarge(f"more than {MAX_DIGEST_BYTES} bytes of skill content")
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _tree_lines(directory: Path, budget: list[int], counter: list[int]) -> list[str]:
+    """One line per entry under `directory`, in sorted order: relative path, type, and content hash or link target."""
+    lines: list[str] = []
+    pending = [directory]
+    while pending:
+        current = pending.pop()
+        entries = sorted(current.iterdir(), key=lambda entry: entry.name)
+        subdirs: list[Path] = []
+        for entry in entries:
+            counter[0] += 1
+            if counter[0] > MAX_DIGEST_ENTRIES:
+                raise _TooLarge(f"more than {MAX_DIGEST_ENTRIES} entries in skill folders")
+            relative = entry.relative_to(directory).as_posix()
+            if entry.is_symlink():
+                lines.append(f"{relative}\0symlink\0{os.readlink(entry)}")
+            elif entry.is_dir():
+                lines.append(f"{relative}\0dir")
+                subdirs.append(entry)
+            elif entry.is_file():
+                lines.append(f"{relative}\0file\0{_file_hash(entry, budget)}")
+            else:
+                lines.append(f"{relative}\0other")
+        pending.extend(reversed(subdirs))
+    return sorted(lines)
+
+
 def repo_digest(repo_root: Path) -> str:
-    """A digest of the repo's skills: the sha256 of their sorted (SKILL.md path from the repo root, content hash) pairs."""
+    """A digest of the repo's skills: for each skill, its SKILL.md path from the repo root and every entry
+    under its folder (path, type, and file content or link target). TOO_LARGE when there is too much to check."""
     from phil.skills.discover import discover  # discover imports Source from here
 
     source = repo_source(repo_root)
     root = repo_root.resolve()
-    pairs: list[tuple[str, str]] = []
+    blocks: list[str] = []
     if source is not None:
-        for skill in discover([source]).skills:
-            skill_file = skill.path / "SKILL.md"
-            try:
-                relative = skill_file.relative_to(root).as_posix()
-            except ValueError:  # a link out of the repo: use where it really is
-                relative = skill_file.as_posix()
-            pairs.append((relative, skill.content_hash))
+        budget = [MAX_DIGEST_BYTES]
+        counter = [0]
+        try:
+            for skill in discover([source]).skills:
+                skill_file = skill.path / "SKILL.md"
+                try:
+                    relative = skill_file.relative_to(root).as_posix()
+                except ValueError:  # a link out of the repo: use where it really is
+                    relative = skill_file.as_posix()
+                tree = _tree_lines(skill.path, budget, counter)
+                blocks.append(f"{relative}\0{skill.content_hash}\n" + "\n".join(tree))
+        except _TooLarge as reason:
+            logger.info("skills: repo skills not checked for approval (%s)", reason)
+            return TOO_LARGE
+        except OSError as error:
+            logger.info("skills: repo skills not checked for approval (%s)", error)
+            return TOO_LARGE
     digest = hashlib.sha256()
-    for relative, content_hash in sorted(pairs):
-        digest.update(f"{relative}\0{content_hash}\n".encode())
+    for block in sorted(blocks):
+        digest.update(block.encode("utf-8", "surrogateescape"))
+        digest.update(b"\n\n")
     return digest.hexdigest()
 
 
@@ -112,7 +172,9 @@ def repo_approved(paths: ProjectPaths, repo_root: Path) -> bool:
     """True when the repo's skills are approved and are still the ones that were approved."""
     document = _read_approval(paths)
     stored = document.get("digest")
-    return document.get("approved") is True and isinstance(stored, str) and stored == repo_digest(repo_root)
+    if document.get("approved") is not True or not isinstance(stored, str) or stored == TOO_LARGE:
+        return False
+    return stored == repo_digest(repo_root)
 
 
 def set_repo_approved(paths: ProjectPaths, approved: bool, digest: str | None = None) -> None:

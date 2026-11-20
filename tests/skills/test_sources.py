@@ -124,6 +124,68 @@ def test_repo_approval_is_void_after_a_skill_changes(tmp_path):
     assert not repo_approved(paths, repo)
 
 
+def approved_repo_with_reference(tmp_path):
+    repo = tmp_path / "repo"
+    skills = repo / ".agents" / "skills"
+    write_skill(skills, "r", "r")
+    (skills / "r" / "references").mkdir()
+    (skills / "r" / "references" / "guide.md").write_text("original", encoding="utf-8")
+    paths = ProjectPaths(slug="p", home=tmp_path / "phil_home")
+    set_repo_approved(paths, True, repo_digest(repo))
+    assert repo_approved(paths, repo)
+    return repo, skills / "r", paths
+
+
+def test_repo_approval_is_void_after_a_reference_file_changes(tmp_path):
+    repo, skill, paths = approved_repo_with_reference(tmp_path)
+
+    (skill / "references" / "guide.md").write_text("changed", encoding="utf-8")
+
+    assert not repo_approved(paths, repo)
+
+
+def test_repo_approval_is_void_after_a_file_is_added_to_a_skill(tmp_path):
+    repo, skill, paths = approved_repo_with_reference(tmp_path)
+
+    (skill / "references" / "extra.md").write_text("new", encoding="utf-8")
+
+    assert not repo_approved(paths, repo)
+
+
+def test_repo_approval_is_void_after_a_symlink_target_changes(tmp_path):
+    repo, skill, paths = approved_repo_with_reference(tmp_path)
+    link = skill / "references" / "link.md"
+    try:
+        link.symlink_to("guide.md")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks cannot be created here")
+    set_repo_approved(paths, True, repo_digest(repo))
+    assert repo_approved(paths, repo)
+
+    link.unlink()
+    link.symlink_to("elsewhere.md")
+
+    assert not repo_approved(paths, repo)
+
+
+def test_an_oversized_skill_folder_never_approves(tmp_path, monkeypatch):
+    repo, skill, paths = approved_repo_with_reference(tmp_path)
+    monkeypatch.setattr("phil.skills.sources.MAX_DIGEST_ENTRIES", 2)
+
+    set_repo_approved(paths, True, repo_digest(repo))
+
+    assert not repo_approved(paths, repo)
+
+
+def test_a_skill_folder_over_the_size_limit_never_approves(tmp_path, monkeypatch):
+    repo, skill, paths = approved_repo_with_reference(tmp_path)
+    monkeypatch.setattr("phil.skills.sources.MAX_DIGEST_BYTES", 5)
+
+    set_repo_approved(paths, True, repo_digest(repo))
+
+    assert not repo_approved(paths, repo)
+
+
 def test_a_repo_skill_cannot_replace_a_user_skill(home, tmp_path):
     repo = tmp_path / "repo"
     write_skill(repo / ".agents" / "skills", "x", "x", description="From the repo")
