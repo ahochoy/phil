@@ -66,6 +66,7 @@ class Plan(Contract):
     test_cmd: str | None = Field(default=None, description="Command that runs the project's tests, e.g. 'uv run pytest'.")
     story_ref: str | None = Field(default=None, description="Roadmap story reference, if given in the goal.")
     critic_notes: list[str] = Field(default=[], description="Leave empty; filled from the plan critique.")
+    mockup: str = Field(default="", description="Leave empty; filled by Phil.")
 
     @model_validator(mode="after")
     def _check_task_ids(self) -> "Plan":

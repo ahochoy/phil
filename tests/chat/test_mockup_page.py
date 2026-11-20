@@ -5,7 +5,9 @@ from phil.chat.mockup_page import (
     browser_available,
     build_page,
     clean_fragment,
+    approach_slug,
     comparing_line,
+    write_drawing,
     write_page,
 )
 
@@ -215,3 +217,26 @@ def test_write_page_does_not_collide_across_chats(tmp_path):
     write_page(tmp_path, "a", "A")
     _, first = write_page(tmp_path, "b", "B")
     assert first is True
+
+
+def test_approach_slug():
+    assert approach_slug("Footer band", 1) == "footer-band"
+    assert approach_slug("  CTA: in the *hero*!  ", 2) == "cta-in-the-hero"
+    assert approach_slug("Ünïcode café", 1) == "n-code-caf"
+    assert approach_slug("x" * 39 + " yz", 1) == "x" * 39  # capped at 40, no trailing hyphen
+    assert len(approach_slug("a" * 80, 1)) == 40
+    assert approach_slug("???", 3) == "approach-3"
+    # A slug that could be read as a page copy or another chat's file falls back too.
+    assert approach_slug("V2", 1) == "approach-1"
+    assert approach_slug("Layout v3", 2) == "approach-2"
+    assert approach_slug("2 columns", 1) == "approach-1"
+
+
+def test_write_drawing_beside_the_page(tmp_path):
+    path = write_drawing(tmp_path / "mockups", "chat1", "footer-band", "html", "<p>band</p>")
+    assert path == tmp_path / "mockups" / "chat1-footer-band.html"
+    assert path.read_text(encoding="utf-8") == "<p>band</p>"
+    sketch = write_drawing(tmp_path / "mockups", "chat1", "footer-band", "sketch", "+--+")
+    assert sketch.name == "chat1-footer-band.txt"
+    _, first = write_page(tmp_path / "mockups", "chat1", "page")
+    assert first is True  # a drawing's file is not a copy of the page

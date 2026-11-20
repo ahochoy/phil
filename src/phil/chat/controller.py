@@ -504,6 +504,10 @@ class ChatController:
         self._describing = False  # "Describe your own" was picked: the next input is the description
         self._approaches_visual = False  # the approaches differ in how something looks: offer mockups
         self._mockups: dict[str, Drawn] = {}  # approach name -> its latest mockup
+        # The picked approach's mockup, sent to the architect and stamped on the plan ("" for none),
+        # and the file it was read from (saved, so a reopened chat's revisions carry it too).
+        self._chosen_mockup = ""
+        self._chosen_mockup_path: Path | None = None
         # Each mockup job takes the next seq; a result whose seq is no longer current is dropped. A pick
         # doesn't start a new goal generation, so this, not the generation, drops a late drawing.
         self._mockup_seq = 0
@@ -889,6 +893,12 @@ class ChatController:
                     "goal": self._goal.model_dump(mode="json") if self._goal else None,
                     "approach": self._approach.model_dump(mode="json") if self._approach else None,
                     "approach_note": self._approach_note,
+                    # The approaches on offer (recommended first), so a chat reopened at the approach
+                    # stage asks again; their drawings are kept as files, and only the paths saved.
+                    "approaches": [a.model_dump(mode="json") for a in self._approach_order],
+                    "approaches_visual": self._approaches_visual,
+                    "mockups": {name: str(d.path) for name, d in self._mockups.items() if d.path is not None},
+                    "chosen_mockup_path": str(self._chosen_mockup_path) if self._chosen_mockup_path else None,
                     "plan": draft.plan.model_dump(mode="json") if draft else None,
                     "critique": draft.critique.model_dump(mode="json") if draft else None,
                     "version": draft.version if draft else None,
@@ -914,6 +924,7 @@ class ChatController:
                         "answer": self._answer_calls,
                         "design": self._design_calls,
                         "converse": self._converse_calls,
+                        "mockup": self._mockup_calls,
                     },
                 }
             )
@@ -1261,6 +1272,7 @@ class ChatController:
         self._skip_design, self._approach_order, self._approach, self._approach_note = False, [], None, ""
         self._describing, self._budget_warned = False, False
         self._approaches_visual, self._mockups = False, {}
+        self._chosen_mockup, self._chosen_mockup_path = "", None
         self._drop_mockup()
         self._trust = None
         self._turns, self._choices, self._user_replies, self._held_input = [], [], 0, []
@@ -1591,6 +1603,11 @@ class ChatController:
         self.session.contract("approaches", approaches)
         rec = approaches.recommended
         self._approach_order = [approaches.options[rec], *(a for i, a in enumerate(approaches.options) if i != rec)]
+        self._approaches_visual = approaches.visual
+        self._present_approaches(approaches.reason)
+
+    def _present_approaches(self, reason: str = "") -> None:
+        """List `_approach_order` (the recommended one first), the hint when they're visual, and ask."""
         self.console.print("[phil.brand]Approaches:[/]")
         menu = self.io.choose is not None  # the callout numbers them and offers "Describe your own"
         for n, approach in enumerate(self._approach_order, 1):
@@ -1604,14 +1621,13 @@ class ChatController:
                 for tradeoff in approach.tradeoffs:
                     for line in hanging(tradeoff, width, indent=INDENT, lead="– ", style="phil.muted"):
                         self.console.print(line)
-        if approaches.reason:
+        if reason:
             with self.console.group():
-                for line in hanging(approaches.reason, self.console.width, indent="", style="phil.muted"):
+                for line in hanging(reason, self.console.width, indent="", style="phil.muted"):
                     self.console.print(line)
         if not menu:
             self.console.print(f"{len(self._approach_order) + 1}. {DESCRIBE_OWN}")
-        self._approaches_visual = approaches.visual
-        if approaches.visual:
+        if self._approaches_visual:
             self.console.print(f"[phil.muted]{escape(MOCKUP_HINT)}[/]")
         self._set_stage("choose_approach")
 
@@ -1708,9 +1724,31 @@ class ChatController:
         for name, (n, _, note) in ordered:
             if note:
                 self.console.print(f"[phil.muted]{n}. {escape(one_line(name))}: {escape(one_line(note))}[/]")
+        slugs = self._drawing_slugs()
         for name, (_, text, _) in ordered:
-            self._mockups[name] = Drawn(fmt, text)
+            self._mockups[name] = Drawn(fmt, text, self._keep_drawing(slugs[name], fmt, text))
         self._safe_note("mockup_shown", format=fmt, names=[name for name, _ in ordered])
+        self._save()  # the stage stays choose_approach: save the drawings' paths now
+
+    def _mockups_dir(self) -> Path:
+        return ProjectPaths(self.info.slug).project_dir / MOCKUPS_DIR
+
+    def _drawing_slugs(self) -> dict[str, str]:
+        """Each approach's file slug; a slug an earlier approach already has falls back to its number."""
+        slugs: dict[str, str] = {}
+        for n, approach in enumerate(self._approach_order, 1):
+            slug = mockup_page.approach_slug(approach.name, n)
+            slugs[approach.name] = slug if slug not in slugs.values() else f"approach-{n}"
+        return slugs
+
+    def _keep_drawing(self, slug: str, fmt: Literal["html", "sketch"], text: str) -> Path | None:
+        """Write a drawing next to the page so a reopened chat still has it; None when it can't be
+        written (the drawing still counts for this session)."""
+        try:
+            return mockup_page.write_drawing(self._mockups_dir(), self.session.id, slug, fmt, text)
+        except (OSError, ValueError):  # ValueError: text UTF-8 can't encode (a lone surrogate)
+            logger.warning("couldn't keep the mockup's drawing", exc_info=True)
+            return None
 
     def _show_page(self, drawings: list[tuple[int, str, str]]) -> bool:
         """Write the chat's mockup page and open it (the chat's first page) or ask for a reload;
@@ -1718,9 +1756,7 @@ class ChatController:
         objective = self._goal.objective if self._goal is not None else ""
         page = mockup_page.build_page(objective, mockup_page.comparing_line(len(drawings), objective), drawings)
         try:
-            path, first = mockup_page.write_page(
-                ProjectPaths(self.info.slug).project_dir / MOCKUPS_DIR, self.session.id, page
-            )
+            path, first = mockup_page.write_page(self._mockups_dir(), self.session.id, page)
         except OSError as exc:
             self._mockup_failed_line(f"couldn't write the page ({exc})")
             return False
@@ -1793,6 +1829,10 @@ class ChatController:
     def _chose(self, approach: Approach | None, note: str) -> None:
         self._drop_mockup()  # a drawing still in flight is dropped: planning goes ahead without it
         self._approach, self._approach_note = approach, note
+        # Picking an approach accepts its latest mockup; a described approach carries none.
+        drawn = self._mockups.get(approach.name) if approach is not None else None
+        self._chosen_mockup = drawn.text if drawn is not None else ""
+        self._chosen_mockup_path = drawn.path if drawn is not None else None
         self._safe_note("approach_chosen", name=approach.name if approach else None, note=note)
         self._recent.append(f"you: {(approach.name if approach else note)[:TURN_CHARS]}")
         self._plan(self._goal, show_goal=False)
@@ -2044,7 +2084,7 @@ class ChatController:
         self._revising = False
         self._set_stage("planning")
         generation = self._generation
-        approach, note = self._approach, self._approach_note
+        approach, note, mockup = self._approach, self._approach_note, self._chosen_mockup
         conversation = list(self._turns) or None
         images = list(self._attachments)
         budget = self._budget_check()
@@ -2057,6 +2097,7 @@ class ChatController:
                 draft = self.planner.draft(
                     goal, tree, on_step=on_step, ctx=ctx, prior_attempt=prior_attempt, approach=approach,
                     approach_note=note, over_budget=budget(ctx.conn), conversation=conversation, images=images,
+                    mockup=mockup,
                 )
             except PlanningBudgetExceeded:
                 return {"over_budget": True}
@@ -2332,7 +2373,7 @@ class ChatController:
             self._set_stage("approval")
             return
         goal, draft, prior_attempt = self._goal, self._draft, self._prior_attempt
-        approach, note = self._approach, self._approach_note
+        approach, note, mockup = self._approach, self._approach_note, self._chosen_mockup
         conversation = list(self._turns) or None
         images = list(self._attachments)  # the feedback's own images included
         self.console.print("[phil.muted]Revising…[/]")
@@ -2348,7 +2389,7 @@ class ChatController:
                 revised = self.planner.revise(
                     goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation), ctx=ctx,
                     prior_attempt=prior_attempt, approach=approach, approach_note=note, over_budget=budget(ctx.conn),
-                    conversation=conversation, images=images,
+                    conversation=conversation, images=images, mockup=mockup,
                 )
             except PlanningBudgetExceeded:
                 return {"over_budget": True}
@@ -3537,6 +3578,12 @@ class ChatController:
         approach_note = saved.get("approach_note")
         approach_note = approach_note if isinstance(approach_note, str) else ""
         try:
+            offered = [Approach.model_validate(a) for a in saved.get("approaches") or []]
+        except Exception:
+            offered = []  # bad approaches fall back alone: the chat can't ask again, so it starts idle
+        mockups = self._saved_mockups(saved.get("mockups"))
+        chosen = self._saved_drawing(saved.get("chosen_mockup_path"))
+        try:
             if saved.get("plan") and saved.get("critique"):
                 draft = PlanDraft(
                     plan=Plan.model_validate(saved["plan"]),
@@ -3553,7 +3600,9 @@ class ChatController:
             bad, counters = True, {}
         values = {
             key: _count(counters.get(key, 0))
-            for key in ("intake", "btw", "route", "answer", "design", "converse", "planner_calls", "planner_version")
+            for key in (
+                "intake", "btw", "route", "answer", "design", "converse", "mockup", "planner_calls", "planner_version"
+            )
         }
         bad = bad or None in values.values()
         values = {key: value or 0 for key, value in values.items()}
@@ -3564,6 +3613,7 @@ class ChatController:
         self._answer_calls = max(self._answer_calls, values["answer"])
         self._design_calls = max(self._design_calls, values["design"])
         self._converse_calls = max(self._converse_calls, values["converse"])
+        self._mockup_calls = max(self._mockup_calls, values["mockup"])
         version = max(values["planner_version"], draft.version if draft and not bad else 0)
         self.planner.restore(values["planner_calls"], version)
         self._safe_note("reopened")
@@ -3578,6 +3628,10 @@ class ChatController:
             return
         self._goal, self._draft = goal, draft
         self._approach, self._approach_note = approach, approach_note
+        self._approach_order, self._approaches_visual = offered, saved.get("approaches_visual") is True
+        self._mockups = mockups
+        self._chosen_mockup = chosen.text if chosen is not None else ""
+        self._chosen_mockup_path = chosen.path if chosen is not None else None
         self._attachments = _saved_images(saved.get("attachments"), self.session.dir / IMAGES_DIR)
         self._vision_warned = saved.get("vision_warned") is True
         self._goal_mark = last_telemetry_id(self.conn)  # a reopened goal's budget starts afresh
@@ -3608,6 +3662,9 @@ class ChatController:
         elif stage in ("approval", "planning", "edit") and self._draft is not None:
             self._turns = turns  # an `edit` revises with the conversation, like the first plan
             self._to_approval()
+        elif stage == "choose_approach" and goal is not None and len(offered) >= 2:
+            self._turns = turns  # the pick is planned with the conversation, like a fresh one
+            self._present_approaches()
         else:
             self._reset_goal()
             self._set_stage("idle")
@@ -3624,6 +3681,40 @@ class ChatController:
                 self.console.print(
                     "The chat was closed before a plan was ready; send the goal again or type a new one."
                 )
+
+    def _saved_mockups(self, value: object) -> dict[str, Drawn]:
+        """The saved `mockups` (approach name -> drawing path), each re-read; a bad entry drops alone."""
+        if not isinstance(value, dict):
+            return {}
+        mockups: dict[str, Drawn] = {}
+        for name, raw in value.items():
+            kept = self._saved_drawing(raw) if isinstance(name, str) else None
+            if kept is not None:
+                mockups[name] = kept
+        return mockups
+
+    def _saved_drawing(self, value: object) -> Drawn | None:
+        """A saved drawing path re-read, or None: not a string, not this chat's drawing in the mockups
+        folder (a hand-edited path elsewhere on disk), missing or unreadable. Never raises."""
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            path = Path(value)
+            folder = self._mockups_dir().resolve()
+            if path.resolve().parent != folder or not path.name.startswith(f"{self.session.id}-"):
+                return None
+            kind: Literal["html", "sketch"]
+            if path.suffix == ".html":
+                kind = "html"
+            elif path.suffix == ".txt":
+                kind = "sketch"
+            else:
+                return None
+            with path.open(encoding="utf-8", newline="") as file:  # newline="": the text exactly as kept
+                text = file.read()
+        except (OSError, ValueError, RuntimeError):  # ValueError: not UTF-8, or a NUL in the path
+            return None
+        return Drawn(kind, text, path)
 
     def _restore_base(self, saved: dict) -> None:
         """The chat keeps the base it was opened with; a different --base on reopen is ignored."""

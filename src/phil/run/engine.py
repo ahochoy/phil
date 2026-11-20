@@ -765,6 +765,7 @@ class RunEngine:
             worklog=AttemptWorklog.model_validate(previous) if previous else None,
             diff=diff,
             continuing=continuing,
+            mockup=plan.mockup,  # the picture the user accepted at the approach stage, if any
         )
         ledger = [e["assumption"] for e in self.deps.artifacts.read_assumptions() if e.get("task_id") == task.id]
         packet = self._implement_packet(contract, task.files_hint, ledger)

@@ -266,7 +266,138 @@ def test_drawings_are_kept_per_approach(calc_repo, browser):
     assert set(seen["mockups"]) == {"Footer band", "Inline card"}
     assert seen["mockups"]["Footer band"].kind == "html" and "band one" in seen["mockups"]["Footer band"].text
     assert "card two" in seen["mockups"]["Inline card"].text
-    assert seen["mockups"]["Inline card"].path is None
+    kept = seen["mockups"]["Inline card"].path
+    assert kept == page_path(calc_repo).with_name(f"{session_dir(calc_repo).name}-inline-card.html")
+    assert kept.read_text(encoding="utf-8") == seen["mockups"]["Inline card"].text
+
+
+def architect_contracts(seen):
+    return [contract for role, contract in seen if role == "architect"]
+
+
+def band_fragment():
+    from phil.chat.mockup_page import clean_fragment
+
+    return clean_fragment("<p>band</p>")
+
+
+BOTH = {"intake": [OPEN], "design": [approaches(True)],
+        "mockup": [drawings(("Footer band", "band"), ("Inline card", "card"))]}
+
+
+def test_picked_approach_mockup_reaches_the_architect(calc_repo, browser, contracts):
+    run_chat(calc_repo, ["add a CTA section", "show", "1", "n"], {**BOTH, **PLANNING})
+    [architect] = architect_contracts(contracts)
+    assert architect.mockup == band_fragment() and "band" in architect.mockup
+    contracts.clear()
+    run_chat(
+        calc_repo, ["add a CTA section", "show 1", "2", "n"],
+        {"intake": [OPEN], "design": [approaches(True)], "mockup": [drawings(("Footer band", "band"))], **PLANNING},
+    )
+    [architect] = architect_contracts(contracts)
+    assert architect.chosen_approach.name == "Inline card" and architect.mockup == ""
+
+
+def test_a_described_approach_carries_no_mockup(calc_repo, browser, contracts):
+    run_chat(calc_repo, ["add a CTA section", "show", "3", "a banner at the top", "n"], {**BOTH, **PLANNING})
+    [architect] = architect_contracts(contracts)
+    assert architect.approach_note == "a banner at the top" and architect.mockup == ""
+
+
+def test_a_revision_keeps_the_mockup(calc_repo, browser, contracts):
+    planning = {"architect": [plan(), plan()], "critic": [critique(), critique()]}
+    run_chat(calc_repo, ["add a CTA section", "show", "1", "edit", "smaller", "n"], {**BOTH, **planning})
+    first, revised = architect_contracts(contracts)
+    assert first.mockup == revised.mockup == band_fragment()
+
+
+def test_mockups_survive_reopen(calc_repo, browser, contracts):
+    from tests.chat.test_reopen_state import reopen
+
+    run_chat(calc_repo, ["add a CTA section", "show"], BOTH)  # EOF at the approach stage
+    text, _, _, _, prompts = reopen(calc_repo, ["1", "n"], PLANNING)
+    assert "Footer band" in text and "Inline card" in text
+    assert prompts[0] == "Pick an approach [Enter = 1 / number / show / describe your own] › "
+    [architect] = architect_contracts(contracts)
+    assert architect.chosen_approach.name == "Footer band"
+    assert architect.mockup == band_fragment()
+
+
+def test_the_picked_mockup_survives_a_reopen_at_approval(calc_repo, browser, contracts):
+    from tests.chat.test_reopen_state import reopen
+
+    run_chat(calc_repo, ["add a CTA section", "show", "1"], {**BOTH, **PLANNING})  # EOF at approval
+    contracts.clear()
+    reopen(calc_repo, ["edit", "smaller", "n"], PLANNING)
+    [revised] = architect_contracts(contracts)
+    assert revised.mockup == band_fragment()
+
+
+def test_a_deleted_mockup_file_means_no_mockup(calc_repo, browser, contracts):
+    from tests.chat.test_reopen_state import reopen
+
+    run_chat(calc_repo, ["add a CTA section", "show"], BOTH)
+    kept = page_path(calc_repo).with_name(f"{session_dir(calc_repo).name}-footer-band.html")
+    kept.unlink()
+    text, *_ = reopen(calc_repo, ["1", "n"], PLANNING)
+    [architect] = architect_contracts(contracts)
+    assert architect.chosen_approach.name == "Footer band" and architect.mockup == ""
+
+
+def test_a_saved_mockup_path_outside_the_folder_is_ignored(calc_repo, browser, contracts, tmp_path):
+    import json
+
+    from tests.chat.test_reopen_state import reopen
+
+    run_chat(calc_repo, ["add a CTA section", "show"], BOTH)
+    elsewhere = tmp_path / "secret.html"
+    elsewhere.write_text("<p>secret</p>", encoding="utf-8")
+    path = session_dir(calc_repo) / "state.json"
+    state = json.loads(path.read_text())
+    state["mockups"]["Footer band"] = str(elsewhere)
+    path.write_text(json.dumps(state))
+    reopen(calc_repo, ["1", "n"], PLANNING)
+    [architect] = architect_contracts(contracts)
+    assert architect.mockup == ""
+
+
+def test_a_reopened_visual_choice_still_offers_mockups(calc_repo, browser):
+    from tests.chat.test_reopen_state import reopen
+
+    run_chat(calc_repo, ["add a CTA section"], {"intake": [OPEN], "design": [approaches(True)]})
+    calls = []
+    text, *_ = reopen(calc_repo, [None], choose=True, calls=calls)
+    assert HINT in text
+    [decision] = [call[2] for call in calls if call[0] == "choose"]
+    assert "show" in [option.answer for option in decision.options]
+
+
+def test_a_reopened_plain_choice_offers_no_mockups(calc_repo, browser):
+    from tests.chat.test_reopen_state import reopen
+
+    run_chat(calc_repo, ["add a CTA section"], {"intake": [OPEN], "design": [approaches(False)]})
+    calls = []
+    text, *_ = reopen(calc_repo, [None], choose=True, calls=calls)
+    assert HINT not in text
+    [decision] = [call[2] for call in calls if call[0] == "choose"]
+    assert "show" not in [option.answer for option in decision.options]
+
+
+def test_mockup_call_numbers_continue_after_reopen(calc_repo, browser):
+    from tests.chat.test_reopen_state import reopen
+
+    seen = []
+
+    def count(then):
+        def look(controller):
+            seen.append(controller._mockup_calls)
+            return then
+
+        return look
+
+    run_chat(calc_repo, ["add a CTA section", "show"], BOTH)
+    reopen(calc_repo, [count("show 2"), count(None)], {"mockup": [drawings(("Inline card", "card two"))]})
+    assert seen == [1, 2]
 
 
 def test_menu_offers_show_as_mockups_when_visual():

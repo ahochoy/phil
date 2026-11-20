@@ -9,6 +9,10 @@ from phil.contracts.interface import Goal, RunStatus
 from phil.contracts.planning import Plan, PlanCritique, Task
 from phil.contracts.results import AttemptWorklog, TestReport
 
+MOCKUP_DESCRIPTION = (
+    "When set, a rough picture the user saw and accepted: match its layout, placement and content, not its exact pixels."
+)
+
 
 class ArchitectInput(Contract):
     goal: Goal
@@ -25,6 +29,7 @@ class ArchitectInput(Contract):
     approach_note: str = Field(
         default="", description="When set, the user's own description of how to build it: plan that."
     )
+    mockup: str = Field(default="", description=MOCKUP_DESCRIPTION)
     conversation: list[ConverseTurn] | None = Field(
         default=None,
         description="When set, the user's conversation with Phil before planning. The goal summarises it; "
@@ -55,6 +60,7 @@ class ImplementInput(Contract):
     worklog: AttemptWorklog | None = None
     diff: str = ""
     continuing: bool = False  # True: the previous attempt's changes are still in the worktree
+    mockup: str = Field(default="", description=MOCKUP_DESCRIPTION)
 
 
 class TesterInput(Contract):

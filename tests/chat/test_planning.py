@@ -235,6 +235,19 @@ def test_intake_and_converse_send_the_images(chat_ctx, tmp_path):
     assert [len(_image_parts(payload)) for _, payload in factory.calls] == [1, 1]
 
 
+def test_planner_stamps_the_mockup_over_the_architects_value(chat_ctx, tmp_path):
+    junk = plan().model_copy(update={"mockup": "junk"})
+    factory = ScriptedAgentFactory({
+        "architect": [junk, junk, junk], "critic": [critique(), critique(), critique()],
+    })
+    planner = Planner(chat_ctx(factory), "overview")
+    drawn = planner.draft(goal(), tmp_path, mockup="M")
+    assert drawn.plan.mockup == "M"
+    assert '"mockup": "M"' in str(factory.calls[0][1])  # the architect is shown it too
+    assert planner.draft(goal(), tmp_path, mockup="").plan.mockup == ""
+    assert planner.revise(goal(), drawn, "smaller", tmp_path, mockup="M").plan.mockup == "M"
+
+
 def test_without_images_the_packet_is_text(chat_ctx, tmp_path):
     factory = ScriptedAgentFactory({"architect": [plan()], "critic": [critique()]})
     Planner(chat_ctx(factory), "overview").draft(goal(), tmp_path)

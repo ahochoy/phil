@@ -252,3 +252,31 @@ def write_page(folder: Path, chat_id: str, page: str) -> tuple[Path, bool]:
     current.write_text(page, encoding="utf-8")
     (folder / f"{chat_id}-v{max(seen, default=0) + 1}.html").write_text(page, encoding="utf-8")
     return current, not seen
+
+
+SLUG_MAX = 40
+_NOT_SLUG = re.compile(r"[^a-z0-9]+")
+# A slug that would make `<chat id>-<slug>` read as a page copy (`-v<n>`) or as a file of another
+# chat (chat ids end in `-<n>` when two open in the same second) is not used.
+_AMBIGUOUS_SLUG = re.compile(r"^(?:\d.*|(?:.*-)?v\d+)$")
+
+
+def approach_slug(name: str, index: int) -> str:
+    """An approach's name for its drawing's file: lowercase alphanumerics and hyphens, at most 40
+    characters; `approach-<index>` when nothing usable is left."""
+    slug = _NOT_SLUG.sub("-", name.lower()).strip("-")[:SLUG_MAX].rstrip("-")
+    if not slug or _AMBIGUOUS_SLUG.match(slug):
+        return f"approach-{index}"
+    return slug
+
+
+def drawing_path(folder: Path, chat_id: str, slug: str, kind: str) -> Path:
+    return folder / f"{chat_id}-{slug}.{'html' if kind == 'html' else 'txt'}"
+
+
+def write_drawing(folder: Path, chat_id: str, slug: str, kind: str, text: str) -> Path:
+    """Keep an approach's latest drawing (a cleaned fragment or a sketch) next to the chat's page."""
+    folder.mkdir(parents=True, exist_ok=True)
+    path = drawing_path(folder, chat_id, slug, kind)
+    path.write_text(text, encoding="utf-8", newline="\n")
+    return path
