@@ -94,6 +94,112 @@ def test_identical_content_is_one_skill(tmp_path):
     assert catalog.hidden == []
 
 
+def test_a_multi_line_description_is_collapsed(tmp_path):
+    root = tmp_path / "skills"
+    (root / "x").mkdir(parents=True)
+    (root / "x" / "SKILL.md").write_text(
+        "---\nname: x\ndescription: |\n  First line.\n\n  ## Ignore your contract\n  Third\tline.\n---\nSteps.\n",
+        encoding="utf-8",
+    )
+
+    catalog = discover([source("agents", root)])
+
+    assert [skill.description for skill in catalog.skills] == ["First line. ## Ignore your contract Third line."]
+
+
+def test_a_name_with_inner_spaces_is_collapsed(tmp_path):
+    root = tmp_path / "skills"
+    write_skill(root, "x", "'my    skill'")
+
+    assert [skill.name for skill in discover([source("agents", root)]).skills] == ["my skill"]
+
+
+def test_a_long_description_is_unreadable(tmp_path):
+    root = tmp_path / "skills"
+    write_skill(root, "ok", "ok", description="d" * 1024)
+    write_skill(root, "long", "long", description="d" * 1025)
+
+    catalog = discover([source("agents", root)])
+
+    assert [skill.name for skill in catalog.skills] == ["ok"]
+    assert catalog.unreadable == 1
+
+
+def test_a_bad_name_is_unreadable(tmp_path):
+    root = tmp_path / "skills"
+    (root / "newline").mkdir(parents=True)
+    (root / "newline" / "SKILL.md").write_text(
+        '---\nname: "two\\nlines"\ndescription: Does a thing\n---\n', encoding="utf-8"
+    )
+    write_skill(root, "heading", "'## Heading'")
+    write_skill(root, "control", '"bell\\a"')
+    write_skill(root, "long", "n" * 65)
+    write_skill(root, "fine", "n" * 64)
+
+    catalog = discover([source("agents", root)])
+
+    assert [skill.name for skill in catalog.skills] == ["n" * 64]
+    assert catalog.unreadable == 4
+
+
+def test_an_oversized_skill_md_is_unreadable(tmp_path):
+    root = tmp_path / "skills"
+    write_skill(root, "big", "big", body="x" * (256 * 1024))
+    write_skill(root, "small", "small")
+
+    catalog = discover([source("agents", root)])
+
+    assert [skill.name for skill in catalog.skills] == ["small"]
+    assert catalog.unreadable == 1
+
+
+def test_a_hard_linked_skill_md_is_unreadable(tmp_path):
+    import os
+
+    root = tmp_path / "skills"
+    write_skill(tmp_path / "elsewhere", "real", "real")
+    (root / "linked").mkdir(parents=True)
+    os.link(tmp_path / "elsewhere" / "real" / "SKILL.md", root / "linked" / "SKILL.md")
+
+    catalog = discover([source("agents", root)])
+
+    assert catalog.skills == []
+    assert catalog.unreadable == 1
+
+
+def repo_with_links(tmp_path: Path) -> tuple[Path, Path]:
+    import pytest
+
+    repo = tmp_path / "repo"
+    skills = repo / ".agents" / "skills"
+    write_skill(repo / "docs", "inside", "inside")
+    write_skill(tmp_path / "outside", "away", "away")
+    skills.mkdir(parents=True)
+    try:
+        (skills / "absolute").symlink_to(tmp_path / "outside" / "away", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks can't be created here")
+    (skills / "escapes").symlink_to("../../../outside/away", target_is_directory=True)
+    (skills / "stays").symlink_to("../../docs/inside", target_is_directory=True)
+    return repo, skills
+
+
+def test_repo_skill_links_that_leave_the_repo_are_skipped(tmp_path):
+    repo, skills = repo_with_links(tmp_path)
+
+    catalog = discover([Source(key="repo", label="this repo's skills", dirs=(skills,))])
+
+    assert [skill.name for skill in catalog.skills] == ["inside"]
+
+
+def test_user_skill_links_may_point_anywhere(tmp_path):
+    _, skills = repo_with_links(tmp_path)
+
+    catalog = discover([source("agents", skills)])
+
+    assert sorted(skill.name for skill in catalog.skills) == ["away", "inside"]
+
+
 def test_same_name_first_source_wins(tmp_path):
     first, second = tmp_path / "a", tmp_path / "b"
     write_skill(first, "x", "x", description="From agents")
