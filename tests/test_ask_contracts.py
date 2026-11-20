@@ -1,7 +1,18 @@
 import pytest
 from pydantic import ValidationError
 
-from phil.contracts import ALL_CONTRACTS, Approach, Approaches, ArchitectInput, DesignInput, Goal, Question
+from phil.contracts import (
+    ALL_CONTRACTS,
+    Approach,
+    Approaches,
+    ArchitectInput,
+    DesignInput,
+    Goal,
+    Mockup,
+    MockupDrawing,
+    MockupInput,
+    Question,
+)
 from tests.test_contract_descriptions import missing_descriptions
 
 APPROACH = Approach(name="Footer band", summary="A full-width band above the footer.", tradeoffs=["On every page"])
@@ -48,3 +59,30 @@ def test_new_parts_describe_every_field():
 def test_design_contracts_are_registered():
     assert Approaches in ALL_CONTRACTS and DesignInput in ALL_CONTRACTS
     assert DesignInput(goal=Goal(objective="Add a CTA section")).repo_overview == ""
+
+
+def test_approaches_visual_defaults_false():
+    assert Approaches(options=[APPROACH] * 2).visual is False
+    loaded = Approaches.model_validate({"options": [APPROACH.model_dump()] * 2})
+    assert loaded.visual is False
+    assert Approaches(options=[APPROACH] * 2, visual=True).visual is True
+
+
+def test_mockup_sketch_is_clipped_to_40_by_100():
+    sketch = "\n".join("x" * 150 for _ in range(60))
+    drawing = MockupDrawing(name="Footer band", sketch=sketch)
+    lines = drawing.sketch.split("\n")
+    assert len(lines) == 40 and all(len(line) == 100 for line in lines)
+    assert MockupDrawing(name="a", sketch="short\nlines").sketch == "short\nlines"
+
+
+def test_mockup_contracts_are_registered_and_described():
+    assert Mockup in ALL_CONTRACTS and MockupInput in ALL_CONTRACTS
+    assert missing_descriptions(Mockup) == []
+    with pytest.raises(ValidationError):
+        Mockup(drawings=[])
+    goal = Goal(objective="Add a CTA section")
+    packet = MockupInput(goal=goal, approaches=[APPROACH], format="sketch")
+    assert (packet.repo_overview, packet.note, packet.conversation) == ("", "", None)
+    with pytest.raises(ValidationError):
+        MockupInput(goal=goal, approaches=[APPROACH], format="png")

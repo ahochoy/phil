@@ -1,7 +1,7 @@
 from phil.contracts.base import Contract, Part
 from phil.contracts.common import Claim, Issue, SelfCheck
 from phil.contracts.converse import ConverseInput, ConverseTurn, IntakeTurn
-from phil.contracts.design import Approach, Approaches, DesignInput
+from phil.contracts.design import Approach, Approaches, DesignInput, Mockup, MockupDrawing, MockupInput
 from phil.contracts.inputs import (
     ArchitectInput,
     BtwInput,
@@ -42,6 +42,8 @@ ALL_CONTRACTS: list[type[Contract]] = [
     Answer,
     Approaches,
     DesignInput,
+    MockupInput,
+    Mockup,
     MemoryInput,
     MemoryUpdate,
     ConverseInput,
@@ -75,6 +77,9 @@ __all__ = [
     "MemoryAdd",
     "MemoryInput",
     "MemoryUpdate",
+    "Mockup",
+    "MockupDrawing",
+    "MockupInput",
     "ParkedItem",
     "Part",
     "Plan",

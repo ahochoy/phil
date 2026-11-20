@@ -11,6 +11,7 @@ The user wants a change whose approach is still open. Before anyone plans it, pr
 ## Approaches
 - `options`: 2 or 3 approaches that differ in a way the user would care about (layout, structure, library, scope), not minor variations. Each has a short `name`, a `summary` of what gets built and where (in the repo's own terms), and 1–3 `tradeoffs`.
 - `recommended`: the index (from 0) of the approach you'd pick for this repo. `reason`: one sentence on why.
+- `visual`: set it to true only when the approaches differ in how something looks: layout, placement, styling, what is on screen. Touching UI code is not enough. Example of true: a footer band against an inline card after the hero. Example of false: two ways to fetch the data a page shows, or two state libraries, even though both edit components.
 - Respect the goal's `constraints` and `non_goals`.
 - The goal's `constraints` include choices the user already made; build on them and don't re-propose alternatives to them.
 - Don't write a plan or tasks; the architect does that once the user picks.

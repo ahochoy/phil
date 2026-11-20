@@ -234,3 +234,7 @@ def test_score_takes_a_precomputed_word_set():
     item = skill("better-layout", "Lay out pages")
 
     assert score(query_words("better layout"), item) == score("better layout", item) > 0
+
+
+def test_mockup_agent_sees_design_skills():
+    assert AGENT_STAGES["mockup"] == ("design",)
