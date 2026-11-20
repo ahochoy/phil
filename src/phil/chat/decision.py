@@ -5,8 +5,15 @@ handlers already accept, so picking from the menu and typing are the same thing 
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from phil.text import printable
+from rich.cells import cell_len, set_cell_size
+from rich.text import Text
 
+from phil.text import printable
+from phil.ui.bursts import one_line
+
+QUESTION_STYLE = "phil.callout.title.question"
+QUESTION_FLOOR = 20  # a record line's question is cut no shorter than this before its answer is
+ANSWER_FLOOR = 10  # ...and the answer is cut no shorter than this before the question gives way further
 BODY_LINES = 8
 SEE_MORE = "… see /more 1"  # a capped body's last line: the full body is detail 1
 DETAILS = "Details: /more 1"  # a body's pointer at detail 1 when nothing was cut (an attempts pause)
@@ -54,6 +61,7 @@ class Decision:
     default: int = 0
     settled_prefix: str = "✓"
     note: str = ""  # appended to the settled line (an approval's commands)
+    asked: str = ""  # a question's short text for its settled line: `? <asked>  <answer>`
 
 
 def _capped(lines: list[str]) -> tuple[str, ...]:
@@ -63,9 +71,37 @@ def _capped(lines: list[str]) -> tuple[str, ...]:
     return (*rendered[: BODY_LINES - 1], SEE_MORE)
 
 
-def settled_line(decision: Decision, option: Option) -> str:
+def _cut(text: str, cells: int) -> str:
+    """`text` cut to at most `cells` cells, ending in `…` when anything was dropped."""
+    if cell_len(text) <= cells:
+        return text
+    return set_cell_size(text, max(cells - 1, 0)).rstrip() + "…" if cells > 0 else ""
+
+
+def question_line(asked: str, answer: str, width: int | None = None) -> Text:
+    """`? <asked>  <answer>`: the one look of a settled question, and of a clarifying question's
+    record line. Both parts are one printable line. Given a `width`, the line fits in `width - 1`
+    cells: the question gives way first (down to QUESTION_FLOOR cells, then, to keep ANSWER_FLOOR
+    cells of the answer, down to `…`), and only then the answer."""
+    asked, answer = one_line(asked), one_line(answer)
+    if width is not None:
+        avail = max(width - 1 - 4, 0)  # "? " and the two spaces take 4
+        room = avail - cell_len(answer)
+        if room < cell_len(asked):
+            wanted = max(room, min(cell_len(asked), QUESTION_FLOOR))
+            most = min(max(avail - min(cell_len(answer), ANSWER_FLOOR), 1), avail)  # leaves the answer its floor
+            asked = _cut(asked, min(wanted, most))
+        answer = _cut(answer, max(avail - cell_len(asked), 0))
+    return Text.assemble(("? ", QUESTION_STYLE), (asked, QUESTION_STYLE), "  ", (answer, "phil.user"))
+
+
+def settled_line(decision: Decision, option: Option) -> Text:
+    """What a settled decision leaves in the feed. A question reads `? <asked>  <answer>`."""
     if decision.kind == "question":
-        return f"Answer: {option.label}"
+        label = option.label.removesuffix(" (recommended)")
+        if decision.asked:
+            return question_line(decision.asked, label)
+        return Text(f"Answer: {label}", style="phil.muted")
     if option.answer == "abort":
         prefix = "✗"
     elif option.answer == "n":
@@ -73,7 +109,7 @@ def settled_line(decision: Decision, option: Option) -> str:
     else:
         prefix = decision.settled_prefix
     text = f"{prefix} {option.label}"
-    return f"{text} · {decision.note}" if decision.note else text
+    return Text(f"{text} · {decision.note}" if decision.note else text, style="phil.muted")
 
 
 def answered_elsewhere(run_id: str) -> str:
@@ -165,7 +201,8 @@ def question_decision(index: int, total: int, text: str, why: str, options: list
     opts = [Option(o, str(n)) for n, o in enumerate(options, 1)]
     opts.append(Option("Something else (type it)", str(len(options) + 1), typed=True))
     opts.append(Option("Plan with what you know", "go"))
-    return Decision("question", f"Question {index} of {total}: {text}", _capped([why] if why else []), tuple(opts))
+    return Decision("question", f"Question {index} of {total}: {text}", _capped([why] if why else []), tuple(opts),
+                    asked=one_line(text))
 
 
 def conversation_decision(choices: list[str]) -> Decision:
@@ -174,14 +211,14 @@ def conversation_decision(choices: list[str]) -> Decision:
     opts = [Option(choice, str(n)) for n, choice in enumerate(choices, 1)]
     opts.append(Option("Something else (type it)", str(len(choices) + 1), typed=True))
     opts.append(Option("Plan with what you know", "go"))
-    return Decision("question", "Pick one, or type your answer", (), tuple(opts))
+    return Decision("question", "Pick one, or type your answer", (), tuple(opts), asked="Your answer")
 
 
 def approach_decision(approaches: list[tuple[str, str]]) -> Decision:
     opts = [Option(f"{name} (recommended)" if n == 1 else name, str(n), detail=summary)
             for n, (name, summary) in enumerate(approaches, 1)]
     opts.append(Option("Describe your own", str(len(approaches) + 1), typed=True))
-    return Decision("question", "Pick an approach", (), tuple(opts))
+    return Decision("question", "Pick an approach", (), tuple(opts), asked="Which approach?")
 
 
 def repo_shell_title(repo: str, rules: Sequence[str]) -> str:
@@ -224,7 +261,8 @@ def approval_decision() -> Decision:
 def chat_picker_decision(chats: Sequence[tuple[str, str]]) -> Decision:
     """`/chat`: the other open chats as `(label, chat_id)` pairs, then staying here."""
     options = tuple(Option(label, chat_id) for label, chat_id in chats)
-    return Decision("question", "Reopen which chat?", (), (*options, Option("Stay in this chat", "stay")))
+    return Decision("question", "Reopen which chat?", (), (*options, Option("Stay in this chat", "stay")),
+                    asked="Reopen which chat?")
 
 
 def pr_decision(run_id: str, force: bool) -> Decision:

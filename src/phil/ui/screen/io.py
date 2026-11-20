@@ -94,7 +94,7 @@ class ScreenIO:
         self.app.set_prompt(prompt)
         line = self._next()
         if isinstance(line, str):
-            self.app.post_item(Text.assemble((prompt, "phil.user"), line))
+            self.app.post_echo(Text.assemble((prompt, "phil.user"), line))
         return line
 
     def choose(self, prompt: str, decision: Decision) -> object:

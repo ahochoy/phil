@@ -27,3 +27,7 @@ The first public release, published to PyPI as `phil-agent`.
   `/status` and `/copy`; `phil chat` and `phil --continue` reopen chats; `[chat] screen = "inline"`
   keeps the previous chat, and small terminals, some Windows consoles and piped output fall back
   to it automatically.
+- A calmer activity feed: a blank line before each block, design options that wrap instead of
+  being cut off, picked answers and answers to Phil's clarifying questions kept as
+  `? question  answer`, and a burst that edited files
+  shows each file's changed lines (`+`/`−`, up to 8 lines and 3 files, `/more #n` for the rest).

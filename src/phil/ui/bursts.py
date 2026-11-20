@@ -27,6 +27,7 @@ class FeedItem:
 
     line: Text
     records: tuple[dict, ...]
+    starts_block: bool = False  # the first line of a burst's block (a summary): the chat spaces it
 
 
 @dataclass
@@ -49,6 +50,20 @@ class Burst:
 def one_line(text: object) -> str:
     """`text` as one printable line: whitespace (newlines too) collapsed, hidden characters shown as `?`."""
     return printable(" ".join(str(text).split()))
+
+
+def _cut(text: str, cells: int) -> str:
+    """`text` cut to at most `cells` terminal cells, ending in `…` when anything was dropped."""
+    if cells <= 1:
+        return "…" if cells == 1 else ""
+    if cell_len(text) <= cells:
+        return text
+    out = ""
+    for char in text:
+        if cell_len(out + char) > cells - 1:
+            break
+        out += char
+    return out + "…"
 
 
 def key_of(record: dict) -> tuple[str | None, str]:
@@ -134,11 +149,14 @@ def last_command(calls: list[dict]) -> str | None:
     return None
 
 
-def burst_text(burst: Burst) -> str:
-    """`implementer ran 9 tools · edited a, b, c +2`, `… · ran <command>`, or the count alone."""
+def burst_text(burst: Burst, *, counted: bool = False) -> str:
+    """`implementer ran 9 tools · edited a, b, c +2`, `… · ran <command>`, or the count alone.
+    With `counted` the edit part is `edited N files` (the diffs below name them)."""
     count = len(burst.calls)
     text = f"{one_line(burst.role)} ran {count} tool{'' if count == 1 else 's'}"
     files = edited_files(burst.calls)
+    if files and counted:
+        return f"{text} · edited {len(files)} file{'' if len(files) == 1 else 's'}"
     if files:
         more = f" +{len(files) - NAMED_EDITS}" if len(files) > NAMED_EDITS else ""
         return f"{text} · edited {', '.join(files[:NAMED_EDITS])}{more}"

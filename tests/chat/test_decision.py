@@ -1,9 +1,11 @@
 import pytest
 
 from phil.chat.decision import (
-    BODY_LINES, approach_decision, approval_decision, fix_decision, pause_decision, pr_decision,
-    question_decision, replace_decision, settled_line,
+    BODY_LINES, Decision, Option, approach_decision, approval_decision, chat_picker_decision,
+    conversation_decision, fix_decision, pause_decision, pr_decision, question_decision, replace_decision,
+    question_line, settled_line,
 )
+from rich.cells import cell_len
 
 
 def labels(decision):
@@ -25,7 +27,7 @@ def test_approval_pause():
     assert labels(d) == ["Allow for this run", "Always allow in calc", "Deny", "Stop the run"]
     assert answers(d) == ["approve", "always_repo", "deny", "abort"]
     assert d.default == 0
-    assert settled_line(d, d.options[0]) == "✓ Allow for this run · node build.mjs"
+    assert settled_line(d, d.options[0]).plain == "✓ Allow for this run · node build.mjs"
 
 
 TWO = {
@@ -77,7 +79,7 @@ def test_approval_pause_shows_control_characters_as_question_marks():
                                "options": ["approve", "always_repo", "deny", "abort"], "summary": "x"})
     assert d.body[1] == "  make test ?red?  (may change things)  → can't be saved"
     assert labels(d)[1] == "Always allow in ca?c"
-    assert settled_line(d, d.options[0]) == "✓ Allow for this run · make test ?red?"
+    assert settled_line(d, d.options[0]).plain == "✓ Allow for this run · make test ?red?"
     assert not any("\x1b" in line for line in (*d.body, *labels(d), d.note))
 
 
@@ -161,7 +163,72 @@ def test_a_multi_line_problem_is_capped_by_rendered_lines():
 
 def test_settled_line_for_a_decline_uses_a_dot_not_a_check():
     d = pr_decision("r-1", force=False)
-    assert settled_line(d, d.options[1]) == "· Not now"
+    assert settled_line(d, d.options[1]).plain == "· Not now"
+    assert settled_line(d, d.options[1]).style == "phil.muted"
+
+
+def test_settled_question_shows_asked_and_answer():
+    d = approach_decision([("Astro endpoints", "s"), ("Script", "t")])
+    assert d.asked == "Which approach?"
+    line = settled_line(d, d.options[0])
+    assert line.plain == "? Which approach?  Astro endpoints"  # "(recommended)" dropped
+    assert settled_line(d, d.options[1]).plain == "? Which approach?  Script"
+
+
+def test_intake_question_asked_drops_the_counter():
+    d = question_decision(2, 3, "Which pages?", "", ["All", "Devlog"])
+    assert d.asked == "Which pages?"
+    assert settled_line(d, d.options[1]).plain == "? Which pages?  Devlog"
+    assert settled_line(d, d.options[-1]).plain == "? Which pages?  Plan with what you know"
+
+
+def test_intake_question_asked_is_one_printable_line():
+    d = question_decision(1, 1, "Which\npages\x1b?", "", ["All"])
+    assert d.asked == "Which pages??"
+
+
+def test_question_line_styles_the_question_and_the_answer():
+    line = question_line("Which pages?", "Devlog")
+    assert line.plain == "? Which pages?  Devlog"
+    spans = {line.plain[s.start:s.end]: str(s.style) for s in line.spans}
+    assert spans["? "] == spans["Which pages?"] == "phil.callout.title.question"
+    assert spans["Devlog"] == "phil.user"
+    assert settled_line(question_decision(1, 1, "Which pages?", "", ["Devlog"]), Option("Devlog", "1")) == line
+
+
+def test_question_line_is_one_printable_line():
+    assert question_line("Which\npages?", "a\nb\x1b").plain == "? Which pages?  a b?"
+
+
+def test_question_line_cuts_the_question_before_the_answer():
+    line = question_line("Which of all these many different pages should it go on?", "Devlog", width=40)
+    assert line.plain.endswith("  Devlog") and "…" in line.plain and cell_len(line.plain) <= 39
+    long = question_line("Which pages?", "x" * 80, width=40)
+    assert long.plain.startswith("? Which pages?  ") and long.plain.endswith("…") and cell_len(long.plain) <= 39
+
+
+def test_question_line_keeps_the_answer_visible_at_a_very_narrow_width():
+    line = question_line("Which of all these many different pages should it go on?", "Devlog pages", width=20)
+    assert cell_len(line.plain) <= 19 and "Devlog" in line.plain
+    tight = question_line("Which pages?", "x" * 30, width=20)
+    assert cell_len(tight.plain) <= 19 and "xxxxx" in tight.plain
+
+
+def test_conversation_and_picker_asked():
+    assert conversation_decision(["a"]).asked == "Your answer"
+    assert chat_picker_decision([("one", "c1")]).asked == "Reopen which chat?"
+
+
+def test_non_question_settled_lines_keep_their_prefix():
+    d = approval_decision()
+    assert d.asked == ""
+    assert settled_line(d, d.options[0]).plain == "✓ Approve and run"
+    assert settled_line(d, d.options[2]).plain == "· Cancel"
+
+
+def test_a_question_without_asked_falls_back_to_answer_text():
+    d = Decision("question", "t", (), (Option("Yes", "1"),))
+    assert settled_line(d, d.options[0]).plain == "Answer: Yes"
 
 
 def test_question_decision():
@@ -172,7 +239,7 @@ def test_question_decision():
     assert labels(d) == ["Postgres", "SQLite", "Something else (type it)", "Plan with what you know"]
     assert answers(d) == ["1", "2", "3", "go"]
     assert d.options[2].typed
-    assert settled_line(d, d.options[0]) == "Answer: Postgres"
+    assert settled_line(d, d.options[0]).plain == "? Which database?  Postgres"
 
 
 def test_a_question_without_options_is_free_text():

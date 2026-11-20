@@ -92,6 +92,21 @@ def test_detail_for_returns_the_path_only_when_a_detail_file_exists(tmp_path):
     assert log.detail_for(seq) is None
 
 
+def test_read_detail_opens_the_file_without_parsing_the_log(tmp_path, monkeypatch):
+    log = ActivityLog(tmp_path)
+    seq = log.record(task="T1", role="implementer", tool="run_shell", summary="run pytest -q",
+                     result="→ 7 passed", ok=True, detail="7 passed in 0.1s", duration_ms=1200)
+
+    def no_find(_seq):
+        raise AssertionError("read_detail must not re-parse the activity log")
+
+    monkeypatch.setattr(log, "find", no_find)
+    assert log.read_detail(seq) == "7 passed in 0.1s"
+    assert log.read_detail(seq + 100) is None  # no such file
+    log.detail_path(seq).write_bytes(b"\xff\xfe")
+    assert log.read_detail(seq) is None  # unreadable text: swallowed
+
+
 def test_a_corrupted_seq_does_not_raise(tmp_path):
     log = ActivityLog(tmp_path)
     log.path.parent.mkdir(parents=True, exist_ok=True)

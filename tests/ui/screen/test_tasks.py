@@ -3,8 +3,11 @@ one line when the task is done."""
 
 from rich.text import Text
 
+from phil.chat.events import ChatEvent
 from phil.ui.screen.io import ScreenIO
 from phil.ui.screen.widgets import Conversation, Item, NewMarker, TaskBlock
+from tests.chat.conftest import critique, goal, plan
+from tests.chat.test_controller import run_chat
 from tests.ui.screen.pilot import pilot_run, render, until
 
 BAND = Text("▶ Task 1 · Theme setting")
@@ -165,6 +168,86 @@ def test_a_line_after_clear_conversation_shows_in_a_new_block():
         await until(pilot, lambda: len(_blocks(io)) == 1 and _blocks(io)[0].header.renderable.plain == "Task 1")
         await pilot.pause()
         assert [item.renderable.plain for item in _blocks(io)[0].lines] == ["  after"]
+
+    pilot_run(io.app, script)
+
+
+def test_a_task_block_spaces_its_burst_and_folds_to_one_line(calc_repo):
+    """Through the controller's task output: the burst summary starts a block, so one empty item
+    comes before it inside the task block (and before the gate band after it), none before the
+    engine's gate line; the fold leaves only the folded line."""
+    box = {}
+
+    def grab(controller):
+        box["controller"] = controller
+        return None
+
+    run_chat(calc_repo, ["add subtract", "y", grab], {"intake": [goal()], "architect": [plan()], "critic": [critique()]})
+    controller = box["controller"]
+    io = ScreenIO()
+    controller.io.task_output = io
+    end = {"ts": "2026-10-07T10:00:05Z", "phase": "end", "task": "CALC-001", "tool": "run_shell", "result": "→ ok",
+           "ok": True}
+
+    async def script(pilot):
+        controller._handle(ChatEvent("milestone", {
+            "kind": "task_started", "task": "CALC-001", "title": "Add", "ts": "2026-10-07T10:00:00Z", "seq": 2}))
+        controller._handle(ChatEvent("activity", {"records": [
+            {**end, "seq": 3, "role": "engine", "summary": "run pytest -q"},
+            {**end, "seq": 4, "role": "implementer", "summary": "run make"},
+        ]}))
+        controller._handle(ChatEvent("milestone", {"kind": "gate", "task": "CALC-001", "name": "green", "seq": 5}))
+        await until(pilot, lambda: _blocks(io) and len(_blocks(io)[0].lines) == 5)
+        await pilot.pause()
+        lines = [item.renderable.plain for item in _blocks(io)[0].lines]
+        assert "pytest -q" in lines[0]
+        assert lines[1] == "" and "implementer ran 1 tool · ran make" in lines[2]
+        assert lines[3] == "" and lines[4].startswith("✓ CALC-001 green")
+        assert all(item.outer_size.height == 1 for item in _blocks(io)[0].lines)  # an empty item is one row
+        controller._handle(ChatEvent("milestone", {
+            "kind": "task_done", "task": "CALC-001", "ts": "2026-10-07T10:00:38Z", "seq": 9}))
+        await until(pilot, lambda: _blocks(io)[0].folded)
+        await pilot.pause()
+        block = _blocks(io)[0]
+        assert block.lines == [] and block.outer_size.height == 1
+        assert render(block).strip().startswith("✓ CALC-001")
+
+    pilot_run(io.app, script)
+
+
+def test_a_task_block_has_one_blank_row_above_it_unless_it_comes_first():
+    io = ScreenIO()
+
+    async def script(pilot):
+        io.task_started("t1", Text("▶ Task 1"))
+        io.app.post_item(Text("between"))
+        io.task_started("t2", Text("▶ Task 2"))
+        await until(pilot, lambda: len(_blocks(io)) == 2)
+        await pilot.pause()
+        conversation = io.app.query_one(Conversation)
+        first, second = _blocks(io)
+        [between] = [item for item in conversation.query(Item) if item.parent is conversation]
+        assert first.region.y == conversation.content_region.y  # none at the very top
+        assert between.region.y == first.region.y + 1  # a plain item has no margin of its own
+        assert second.region.y == between.region.y + 2  # one blank row above a later task block
+
+    pilot_run(io.app, script)
+
+
+def test_an_echoed_line_has_one_blank_row_above_it_unless_it_comes_first():
+    io = ScreenIO()
+
+    async def script(pilot):
+        io.app.post_echo(Text("you › first"))
+        io.app.post_item(Text("reply"))
+        io.app.post_echo(Text("you › second"))
+        conversation = io.app.query_one(Conversation)
+        await until(pilot, lambda: len(list(conversation.query(Item))) == 3)
+        await pilot.pause()
+        first, reply, second = conversation.query(Item)
+        assert first.region.y == conversation.content_region.y
+        assert reply.region.y == first.region.y + 1
+        assert second.region.y == reply.region.y + 2
 
     pilot_run(io.app, script)
 

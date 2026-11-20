@@ -60,10 +60,16 @@ class Item(Widget):
     Item {
         height: auto;
     }
+    Item.echo {
+        margin-top: 1;
+    }
+    Item.echo:first-child {
+        margin-top: 0;
+    }
     """
 
-    def __init__(self, renderable: RenderableType) -> None:
-        super().__init__()
+    def __init__(self, renderable: RenderableType, *, classes: str | None = None) -> None:
+        super().__init__(classes=classes)
         self.renderable = renderable
         self._styled: tuple[int, Text, int] | None = None  # (width, styled text, its height)
 
@@ -103,11 +109,16 @@ class Item(Widget):
 class TaskBlock(Vertical):
     """A task's band (`header`) and its feed lines below it, each an `Item`. `fold` removes the
     lines and shows the folded band instead; a line added to a folded block opens it again, under
-    the original band. Lines are added through `Conversation.add`, so they follow like any item."""
+    the original band. Lines are added through `Conversation.add`, so they follow like any item.
+    A block starts with one blank row above it (its top margin), unless it is the first item."""
 
     DEFAULT_CSS = """
     TaskBlock {
         height: auto;
+        margin-top: 1;
+    }
+    TaskBlock:first-child {
+        margin-top: 0;
     }
     """
 
