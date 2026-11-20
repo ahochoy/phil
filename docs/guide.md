@@ -822,7 +822,9 @@ Phil checks these folders and uses only the ones you approve:
 A skill reached by a symbolic link counts once, and so does a skill with the same content in
 two places. If two different skills share a name, the first one wins, in the order above, so a
 repo can't replace a skill you installed. `phil skills` lists the one that was hidden. A skill
-without a name and a description is skipped, and `phil skills` counts it.
+is skipped, and `phil skills` counts it, when it has no name or description, its name is over
+64 characters or has a `#`, its description is over 1,024 characters, or its `SKILL.md` is over
+256 KB or has other hard links.
 
 `phil setup` has a step that lists each folder it found with its number of skills and asks
 which to approve (none is chosen for you). Run `phil setup` again to change them. The choice is
@@ -851,11 +853,11 @@ Agents see only the skills that fit their part of the work. The stages are `plan
 | reviewer | reviewing, implementing |
 | answers to questions | implementing, reviewing |
 
-An agent capped below 5 model calls gets no skills at all. Today that is only the architect
+A tool agent capped below 5 model calls gets no skills at all. Today that is only the architect
 when it revises a plan.
 
-Phil labels each skill with its stages, once, with the low model, from its name and description
-only. It labels new or changed skills at the end of setup and, in the background, when a chat
+Phil labels each skill with its stages, once, with the classifier model (or the low model, when
+the classifier is a routing-only provider or none is set), from its name and description only. It labels new or changed skills at the end of setup and, in the background, when a chat
 starts. The labels are kept in `~/.phil/skills.json`. A skill with no label yet isn't offered
 until it has one, and a skill labelled with no stage (a blog-writing skill, say) goes to no
 agent. If labelling fails, the skills stay unlabelled and nothing else is affected.
@@ -878,6 +880,8 @@ phil skills repo off
 A skill's name can be saved before Phil has found it, in case you install it later; the command
 tells you it hasn't found it. An unknown stage is refused, with the valid ones listed. In the
 chat, `/skills` prints the same list. It changes nothing: it points you to `phil skills`.
+Settings changed with `phil skills` or `phil setup` apply to new chats; an open chat keeps the
+skills it started with.
 
 The same settings can be written by hand:
 
@@ -893,7 +897,10 @@ better-layout = ["design", "implementing"]
 
 A repo can ship skills in `.agents/skills` or `.claude/skills`. Because a cloned repo isn't
 trusted, Phil doesn't use them until you say so. The first time you open a chat in a repo that
-has them, Phil mentions it once. Run `phil skills repo on` to approve them. The approval is tied
+has them, Phil mentions it once; `phil skills` and `/skills` name them. Run `phil skills repo on`
+to approve them: it lists each skill it approved. A repo's skills must be real folders and
+files: a skill folder or `SKILL.md` that is a symbolic link is skipped, and if `.agents`,
+`.claude` or their `skills` folder is a link, the repo has no skills Phil will use. The approval is tied
 to the content of the repo's skills: Phil records a digest of every file in them, so if a skill
 changes (after a `git pull`, or because an agent edited it), the approval no longer holds, the
 repo's skills are off, and Phil mentions it again. Run `phil skills repo on` again to approve
@@ -904,7 +911,7 @@ approved. The approval is kept in `~/.phil/projects/<repo>/skills.toml`, never i
 
 - An agent with tools sees a short list of the skills for its stages (name and description, at
   most 30; if more fit, the 30 that best match the goal). It can load a skill's `SKILL.md`, or
-  a text file inside that skill's folder, with `load_skill`. It can load at most 3 times a run,
+  a text file inside that skill's folder, with `load_skill`. It can load at most 3 times per agent run,
   and a file of more than 64 KB is cut. On an agent's last allowed model call, Phil removes
   all its tools, `load_skill` included, so loading a skill can never stop an agent from
   answering.
