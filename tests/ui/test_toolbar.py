@@ -3,7 +3,7 @@ from dataclasses import replace
 from rich.cells import cell_len
 
 from phil.chat.state import LiveStep, RunView, SideJob, SubAgent, ToolbarView
-from phil.ui.toolbar import budget_style, render_live_rows, render_toolbar, short_model, toolbar_text
+from phil.ui.toolbar import FrameLive, budget_style, render_frame_live, render_live_rows, render_toolbar, short_model, toolbar_text
 
 RUN = RunView(run_id="r-4f2a", keyword="calc", node="implement", tasks_done=1, tasks_total=3, started=0.0,
               name="calc-subtract", title="Add a subtract function")
@@ -323,3 +323,64 @@ def test_a_cut_row_keeps_each_fragments_style():
     assert ("class:phil.muted", "   [feed: tester]") in frags
     body = [f for f in frags if "implementer" in f[1]]
     assert len(body) == 1 and body[0][0] == "" and body[0][1].endswith("…")
+
+
+FRAME_RUN = RunView(run_id="r1", keyword="", node="implement", tasks_done=1, tasks_total=3, started=28.0,
+                    name="dark-mode", title="Toggle")
+FRAME_VIEW = ToolbarView(run=FRAME_RUN,
+                         live=LiveStep(task=None, role="implementer", summary="edit settings.tsx", started=99.0),
+                         run_cost=(0.06, "reported"))
+
+
+def test_frame_live_idle_is_empty():
+    assert render_frame_live(ToolbarView(), now=100.0, width=80) == FrameLive([], [])
+
+
+def test_frame_live_run_has_task_count_left_and_time_cost_right():
+    live = render_frame_live(FRAME_VIEW, now=100.0, width=80)
+    assert toolbar_text(live.left[0]).endswith("· task 2/3")
+    assert toolbar_text(live.right) == "1m 12s · $0.06"
+
+
+def test_frame_live_sub_agents_add_rows():
+    view = replace(FRAME_VIEW, subs=(SubAgent(1, "find theme", "grep x", 95.0), SubAgent(2, "check tests", None, 97.0)))
+    assert len(render_frame_live(view, now=100.0, width=80).left) == 3
+
+
+def test_frame_live_paused_shows_needs_you():
+    live = render_frame_live(replace(FRAME_VIEW, paused=True), 100.0, 80)
+    assert toolbar_text(live.left[0]).startswith("⏸ dark-mode needs you")
+    assert live.left[0][0] == ("class:phil.warn", "⏸ dark-mode needs you")
+    assert toolbar_text(live.right) == "1m 12s · $0.06"
+
+
+def test_frame_live_fits_width():
+    view = replace(FRAME_VIEW, live=LiveStep(task=None, role="implementer", summary="edit " + "x" * 200, started=99.0))
+    live = render_frame_live(view, 100.0, 60)
+    assert all(cell_len(toolbar_text(row)) + cell_len(toolbar_text(live.right)) + 2 <= 60 for row in live.left[:1])
+
+
+def test_frame_live_budget_and_chat_cost():
+    live = render_frame_live(replace(FRAME_VIEW, budget_usd=1.0), 100.0, 80)
+    assert toolbar_text(live.right) == "1m 12s · $0.06 / $1.00"
+    step = ToolbarView(step="designing", step_started=90.0, cost=(0.02, "reported"))
+    assert toolbar_text(render_frame_live(step, 100.0, 80).right) == "$0.02"
+
+
+def _first_row_cells(live: FrameLive) -> int:
+    return cell_len(toolbar_text(live.left[0])) + 2 + cell_len(toolbar_text(live.right))
+
+
+def test_frame_live_narrow_width_fits_every_row():
+    subs = (SubAgent(1, "find theme", "grep x", 95.0),)
+    for width in (12, 16, 20, 24):
+        for view in (FRAME_VIEW, replace(FRAME_VIEW, subs=subs), replace(FRAME_VIEW, budget_usd=1.0)):
+            live = render_frame_live(view, 100.0, width)
+            assert live.left and _first_row_cells(live) <= width, (width, live)
+            assert all(cell_len(toolbar_text(row)) <= width for row in live.left)
+
+
+def test_frame_live_narrow_paused_row_is_fitted():
+    live = render_frame_live(replace(FRAME_VIEW, paused=True, budget_usd=1.0), 100.0, 30)
+    assert _first_row_cells(live) <= 30 and toolbar_text(live.left[0]).endswith("…")
+    assert live.left[0][0][0] == "class:phil.warn" and toolbar_text(live.left[0]).startswith("⏸")

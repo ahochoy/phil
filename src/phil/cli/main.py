@@ -4,6 +4,7 @@ import importlib
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import sys
 import time
@@ -44,6 +45,7 @@ from phil.text import printable
 from phil.store.paths import ProjectPaths
 from phil.store.runs import RunRecord, get_run, list_runs, update_run
 from phil.tomlw import toml_value
+from phil.ui.chats_view import open_chat_line
 from phil.ui.links import opened_pr_line
 from phil.ui.runs_view import render_runs
 from phil.ui.theme import make_console
@@ -98,9 +100,12 @@ def root(
         None, "--base", help="Chat only: start the chat's runs from this ref instead of HEAD."
     ),
     resume_chat: str | None = typer.Option(
-        None, "--resume", help="Reopen a chat by id (see the list shown by `phil`)."
+        None, "--resume", help="Reopen a chat by id (see `phil chat`)."
     ),
-    new: bool = typer.Option(False, "--new", help="Start a new chat without listing open ones."),
+    new: bool = typer.Option(False, "--new", help="Start a new chat (the default)."),
+    continue_chat: bool = typer.Option(
+        False, "--continue", help="Reopen the most recently active open chat."
+    ),
     overrides: list[str] | None = typer.Option(None, "--set", help=SET_HELP),
 ) -> None:
     if platform.IS_WINDOWS:
@@ -108,7 +113,10 @@ def root(
             sys.stdout.reconfigure(encoding="utf-8")
         if hasattr(sys.stderr, "reconfigure"):
             sys.stderr.reconfigure(encoding="utf-8")
-    ctx.obj = {"repo": repo, "base": base, "resume": resume_chat, "new": new, "overrides": list(overrides or [])}
+    ctx.obj = {
+        "repo": repo, "base": base, "resume": resume_chat, "new": new, "continue": continue_chat,
+        "overrides": list(overrides or []),
+    }
     if ctx.invoked_subcommand is None:
         _chat(ctx)
 
@@ -185,40 +193,26 @@ def _terminal(toolbar, live_row=None):
     return TerminalIO(toolbar, live_row=live_row)
 
 
-def _open_chat_line(n: int, chat, width: int, *, now: datetime | None = None) -> Text:
-    """`n. what it waits on · how long ago · goal`, cut to the width with … (spec 2026-10-16 §6.2).
-    What it waits on: its run (`label · run failed`), a goal an error stopped (`planning failed`), or
-    a plan (`plan to approve`). `open elsewhere` sits before the goal so a cut can't hide it (R23)."""
-    from phil.ui.runs import label_for
-    from phil.ui.when import ago
+def _screen(view):
+    """The full-screen chat's IO (patched in tests, like `_terminal`)."""
+    from phil.ui.screen.io import ScreenIO
 
-    line = Text(f"{n}. ")
-    if chat.failed:
-        line.append(f"{chat.failed} failed", "phil.warn")
-        line.append(" · ")
-    elif chat.run_id:
-        line.append(label_for(chat.run_id, chat.run_name, first=False), "phil.id")
-        line.append(f" · run {chat.run_state or 'unknown'} · ")
-    elif chat.stage == "approval":
-        line.append("plan to approve · ")
-    if chat.active_at is not None:
-        line.append(f"{ago(chat.active_at, now or datetime.now(UTC))} · ", "phil.muted")
-    if chat.open_elsewhere:
-        line.append("open elsewhere", "phil.warn")
-        line.append(" · ")
-    if chat.objective:
-        line.append(printable(chat.objective))
-    else:
-        line.append("(no goal)", "phil.muted")
-    line.truncate(max(width - 1, 1), overflow="ellipsis")
-    return line
+    return ScreenIO(view)
+
+
+def _exit_line(chat_id: str, saved_stage: str, open_ids: set[str]) -> str | None:
+    """What the full-screen chat leaves on the restored terminal: how to come back to a chat that
+    still has something open (a run, a plan, a question), else nothing."""
+    if chat_id in open_ids or saved_stage != "idle":
+        return f"To continue this chat:  phil --resume {chat_id}"
+    return None
 
 
 def _choose_open_chat(out, chats, ask) -> str | None:
     """List open chats and ask which to reopen; None starts a new chat."""
     out.print("Open chats:")
     for n, chat in enumerate(chats, 1):
-        out.print(_open_chat_line(n, chat, out.width), soft_wrap=True)
+        out.print(open_chat_line(n, chat, out.width), soft_wrap=True)
     while True:
         try:
             answer = ask("Reopen one? [number / Enter for a new chat] › ")
@@ -338,15 +332,31 @@ def _banner_facts(info, config, conn, paths, base_label, header_sha, base, sessi
     )
 
 
-def _chat(ctx: typer.Context) -> None:
-    from phil.chat.session import LOG_FILE, ChatLocked, ChatSession, list_open_chats
-    from phil.ui.banner import banner_plain, render_banner
-
+def _chat(ctx: typer.Context, *, pick_chat: bool = False) -> None:
+    """Start the chat: bare `phil`, and `phil chat` (`pick_chat`: it opens in the /chat picker).
+    Everything that can stop it happens here, before the full screen opens."""
     resume_id, new = ctx.obj.get("resume"), ctx.obj.get("new", False)
+    continue_chat = ctx.obj.get("continue", False)
     if resume_id is not None and new:
         console.print("[phil.error]choose --resume or --new, not both[/]")
         raise typer.Exit(1)
+    if continue_chat and (resume_id is not None or new):
+        other = "--new" if new else "--resume"
+        console.print(f"[phil.error]choose --continue or {other}, not both[/]")
+        raise typer.Exit(1)
     info, conn = _open_project(ctx)
+    try:  # this thread's connection: the start's lookups; the driver opens its own (`_drive`)
+        _start_chat(ctx, info, conn, resume_id, new, continue_chat, pick_chat=pick_chat)
+    finally:
+        conn.close()
+
+
+def _start_chat(ctx: typer.Context, info, conn, resume_id, new: bool, continue_chat: bool, *, pick_chat: bool) -> None:
+    """`_chat` once the project is open; `conn` is for the lookups made on this thread."""
+    from phil.chat.session import ChatSession, list_open_chats
+    from phil.ui.banner import banner_plain, render_banner
+    from phil.ui.screen.mode import choose_mode, windows_console_ok
+
     overrides = ctx.obj.get("overrides", [])
     config = _load_config(info.root, overrides)
     _require_bash(config, info)
@@ -368,6 +378,19 @@ def _chat(ctx: typer.Context) -> None:
     # designer's keys are checked when they have models of their own.
     _require_api_keys(config, CHAT_ROLES + ("answerer", "designer") + RUN_ROLES)
     paths = ProjectPaths(info.slug)
+    notes: list[str] = []
+    if continue_chat:
+        try:
+            chats = list_open_chats(paths, conn)
+        except Exception:
+            logger.debug("couldn't list the open chats", exc_info=True)
+            chats = []
+        latest = next((chat for chat in chats if not chat.open_elsewhere), None)
+        if latest is None:
+            notes.append("No open chat to continue; starting a new one.")
+            new = True  # nothing to reopen: no list either
+        else:
+            resume_id = latest.id
     session = _reopen_chat(ChatSession, paths, resume_id) if resume_id is not None else None
     base = ctx.obj.get("base")
     base_sha: str | None
@@ -383,8 +406,8 @@ def _chat(ctx: typer.Context) -> None:
         base_sha, base_label = None, info.branch or "detached"
         header_sha = info.head_sha
     tty = _is_tty()
-    # Under patch_stdout, stdout is a proxy; force colour so Rich keeps emitting it.
-    out = make_console(force_terminal=True) if tty else console
+    columns, rows = shutil.get_terminal_size()
+    mode, mode_note = choose_mode(config.chat.screen, tty, columns, rows, windows_console_ok(platform.IS_WINDOWS))
     listed = []
     if session is None and not new and tty:
         try:  # like the banner's other lookups: a failure here must not stop the chat from starting
@@ -392,6 +415,38 @@ def _chat(ctx: typer.Context) -> None:
         except Exception:
             logger.debug("couldn't list the open chats", exc_info=True)
     facts = _banner_facts(info, config, conn, paths, base_label, header_sha, base, session, listed=listed or None)
+    if mode == "full":
+        factory = _load_factory(console)
+        resume = session is not None
+        session = session or ChatSession.create(paths)
+        _lock_chat(session, console)
+        try:
+            last = _run_full(
+                info, config, factory, base_sha, session, resume, overrides,
+                # the chats /chat's picker would list: not one open in another window
+                facts=facts, hint_count=0 if pick_chat else sum(not chat.open_elsewhere for chat in listed),
+                notes=notes, pick_chat=pick_chat,
+            )
+        finally:
+            session.unlock()
+        try:
+            stage = last.load_state().get("stage", "idle")
+        except Exception:
+            stage = "idle"
+        try:
+            open_ids = {chat.id for chat in list_open_chats(paths, conn)}
+        except Exception:
+            open_ids = set()
+        line = _exit_line(last.id, stage, open_ids)
+        if line is not None:  # the frame has closed: this lands on the restored terminal
+            console.print(line, soft_wrap=True, markup=False, highlight=False)
+        return
+    # Under patch_stdout, stdout is a proxy; force colour so Rich keeps emitting it.
+    out = make_console(force_terminal=True) if tty else console
+    if mode_note is not None:
+        out.print(f"[phil.muted]{escape(mode_note)}[/]", soft_wrap=True)
+    for note in notes:
+        out.print(escape(note), soft_wrap=True)
     try:  # the mascot is hand-edited; a card that can't be drawn falls back to the plain lines
         card = render_banner(facts, out.width) if tty else None
     except Exception:
@@ -402,67 +457,220 @@ def _chat(ctx: typer.Context) -> None:
     else:
         for line in banner_plain(facts):
             out.print(line, soft_wrap=True, markup=False, highlight=False)
-    if listed:
+    if listed and not pick_chat:  # `phil chat` opens in the controller's own picker instead
         chosen = _choose_open_chat(out, listed, lambda prompt: out.input(f"[phil.user]{escape(prompt)}[/]"))
         if chosen is not None:
             session = _reopen_chat(ChatSession, paths, chosen)
+    factory = _load_factory(out)
+
+    resume = session is not None
+    session = session or ChatSession.create(paths)
+    _lock_chat(session, out)
     try:
-        factory = _factory_from_env()
+        _run_chat(info, config, out, tty, factory, base_sha, session, resume, overrides, pick_chat=pick_chat)
+    finally:
+        session.unlock()
+
+
+def _load_factory(out):
+    try:
+        return _factory_from_env()
     except Exception as exc:
         out.print(
             f"[phil.error]cannot load PHIL_AGENT_FACTORY: {escape(type(exc).__name__)}: {escape(str(exc))}[/]"
         )
         raise typer.Exit(1) from exc
 
-    resume = session is not None
-    session = session or ChatSession.create(paths)
+
+def _locked_line(chat_id: str, pid: int) -> str:
+    return f"[phil.error]Chat {escape(chat_id)} is already open in another window (pid {pid}).[/]"
+
+
+def _lock_chat(session, out) -> None:
+    from phil.chat.session import ChatLocked
+
     try:
         session.lock()  # one window per chat: two writers would overwrite each other's state
     except ChatLocked as exc:
-        out.print(f"[phil.error]Chat {escape(session.id)} is already open in another window (pid {exc.pid}).[/]")
+        out.print(_locked_line(session.id, exc.pid))
         raise typer.Exit(1) from exc
+
+
+class _StartFailed(Exception):
+    """A chat's controller couldn't be built (a git failure); `markup` says why."""
+
+    def __init__(self, markup: str) -> None:
+        super().__init__(markup)
+        self.markup = markup
+
+
+def _header(info: RepoInfo) -> tuple[str, str]:
+    return info.root.name, info.branch or "detached"
+
+
+def _drive(
+    io_adapter, out, info, config, factory, base_sha, session, resume: bool,
+    overrides: Sequence[str] = (), *, pick_chat: bool = False, point=lambda controller: None, frame=None,
+):
+    """Run chats until one ends without a `/chat` switch, and return the last one: the loop every
+    mode uses. `session` comes locked; each chat is unlocked as it is left. A switch reopens the
+    picked chat (a chat another window took meanwhile is refused, and the current one goes on). In
+    the full screen (`frame`) a switch clears the conversation, shows the new chat's id and drops a
+    held Ctrl+C; inline, the chat being left says how to come back to its run, as quitting would.
+
+    The controllers' database connection is opened here, on the thread that runs them (the full
+    screen's `phil-chat` worker), and closed on the way out: a SQLite connection can't cross threads."""
+    paths = ProjectPaths(info.slug)
+    conn = connect(paths.db_path)
     try:
-        with diagnostics.redirect(session.dir / LOG_FILE):
-            _run_chat(info, config, conn, out, tty, factory, base_sha, session, resume, overrides)
+        return _drive_chats(
+            io_adapter, out, info, config, conn, factory, base_sha, session, resume, overrides,
+            pick_chat=pick_chat, point=point, frame=frame,
+        )
     finally:
-        session.unlock()
+        conn.close()
+
+
+def _drive_chats(
+    io_adapter, out, info, config, conn, factory, base_sha, session, resume: bool, overrides: Sequence[str],
+    *, pick_chat: bool, point, frame,
+):
+    """`_drive`'s loop, on the connection it opened."""
+    from phil.chat.controller import ChatController
+    from phil.chat.session import LOG_FILE, ChatLocked, ChatSession
+
+    paths = ProjectPaths(info.slug)
+    while True:
+        try:
+            with diagnostics.redirect(session.dir / LOG_FILE):
+                io = io_adapter.chat_io(
+                    lambda root, run_id, mode, decision=None: spawn_worker(root, run_id, mode, decision)
+                )
+                try:
+                    controller = ChatController(
+                        info, config, conn, out, io, factory=factory, base_sha=base_sha, session=session,
+                        resume=resume, config_overrides=overrides, pick_chat=pick_chat,
+                    )
+                except GitError as exc:
+                    raise _StartFailed(f"[phil.error]{escape(str(exc))}[/]") from exc
+                point(controller)
+                outcome = controller.run()
+        finally:
+            session.unlock()
+        if outcome.switch_to is None:
+            return session
+        previous, target = session, None
+        try:
+            target = ChatSession.open(paths, outcome.switch_to)
+            target.lock()
+        except (ValueError, FileNotFoundError) as exc:
+            out.print(f"[phil.error]cannot reopen: {escape(str(exc))}[/]")
+            target = None
+        except ChatLocked as exc:
+            out.print(_locked_line(outcome.switch_to, exc.pid))
+            target = None
+        if target is None:
+            out.print(f"[phil.muted]Staying in chat {escape(previous.id)}.[/]")
+            try:
+                previous.lock()
+            except ChatLocked as exc:  # another window took it meanwhile: said once the frame has closed
+                raise _StartFailed(_locked_line(previous.id, exc.pid)) from exc
+            session = previous
+        else:
+            if frame is None:
+                controller._closing()  # what quitting it would have said; the frame's header says it instead
+            else:
+                frame.app.clear_conversation()
+                frame.app.set_header(*_header(info), target.id)
+            session = target
+        if frame is not None:
+            frame.discard_interrupt()  # a Ctrl+C the last chat didn't take is not the next chat's
+        resume, pick_chat = True, False
+
+
+def _run_full(
+    info, config, factory, base_sha, session, resume: bool, overrides: Sequence[str], *,
+    facts, hint_count: int, notes: Sequence[str], pick_chat: bool,
+):
+    """The full-screen chat: the banner card and the open-chats hint as its first items, then the
+    driver on the frame's worker thread. Returns the last chat it ran, once the frame has closed."""
+    from phil.ui.banner import FittedBanner
+    from phil.ui.chats_view import open_chats_hint
+    from phil.ui.screen import clipboard
+
+    clipboard.distrust(info.root)  # copy never runs a clipboard program from the repository
+    screen = _screen(lambda: None)
+    try:
+        screen.app.post_item(FittedBanner(facts))  # drawn at the pane's width, as it resizes
+        hint = open_chats_hint(hint_count)
+        if hint is not None:
+            screen.app.post_item(Text(hint, style="phil.muted"))
+        for note in notes:
+            screen.app.post_item(Text(note))
+        screen.app.set_header(*_header(info), session.id)
+        try:
+            with diagnostics.quiet_stderr():  # PHIL_DEBUG's stderr lines would land over the frame
+                return screen.run(
+                    lambda: _drive(
+                        screen, screen.console, info, config, factory, base_sha, session, resume, overrides,
+                        pick_chat=pick_chat, point=lambda controller: screen.set_view(controller.state.view),
+                        frame=screen,
+                    )
+                )
+        except _StartFailed as exc:
+            console.print(exc.markup)
+            raise typer.Exit(1) from exc
+    finally:
+        screen.close()
 
 
 def _run_chat(
-    info, config, conn, out, tty, factory, base_sha, session, resume: bool, overrides: Sequence[str] = ()
+    info, config, out, tty, factory, base_sha, session, resume: bool, overrides: Sequence[str] = (),
+    *, pick_chat: bool = False,
 ) -> None:
-    from phil.chat.controller import ChatController
+    """The inline chat (a terminal) or plain lines (piped)."""
     from phil.chat.terminal import LineIO
     from phil.ui.toolbar import render_live_rows, render_toolbar
 
-    controller = None
+    current = None  # the controller the toolbar and the live row show
 
     def toolbar() -> list[tuple[str, str]]:
-        if controller is None:
+        if current is None:
             return []
-        return render_toolbar(controller.state.view(), time.time(), width=terminal.width())
+        return render_toolbar(current.state.view(), time.time(), width=terminal.width())
 
     def live_row(max_lines: int | None = None) -> list[tuple[str, str]]:
-        if controller is None:
+        if current is None:
             return []
         return render_live_rows(
-            controller.state.view(), time.time(), width=terminal.width(), max_lines=max_lines
+            current.state.view(), time.time(), width=terminal.width(), max_lines=max_lines
         )
+
+    def point(controller) -> None:
+        nonlocal current
+        current = controller
+
+    def drive() -> None:
+        try:
+            _drive(
+                terminal, out, info, config, factory, base_sha, session, resume, overrides,
+                pick_chat=pick_chat, point=point,
+            )
+        except _StartFailed as exc:
+            out.print(exc.markup)
+            raise typer.Exit(1) from exc
 
     terminal = _terminal(toolbar, live_row) if tty else LineIO(out)
     try:
-        io = terminal.chat_io(lambda root, run_id, mode, decision=None: spawn_worker(root, run_id, mode, decision))
-        try:
-            controller = ChatController(
-                info, config, conn, out, io, factory=factory, base_sha=base_sha, session=session, resume=resume,
-                config_overrides=overrides,
-            )
-        except GitError as exc:
-            out.print(f"[phil.error]{escape(str(exc))}[/]")
-            raise typer.Exit(1) from exc
-        terminal.run(controller.run)
+        terminal.run(drive)
     finally:
         terminal.close()
+
+
+@app.command("chat")
+def chat_command(ctx: typer.Context) -> None:
+    """Open the chat with the open chats listed, to switch to one (as /chat does)."""
+    _chat(ctx, pick_chat=True)
 
 
 def _print_pr_changes(changes) -> None:

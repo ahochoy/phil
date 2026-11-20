@@ -99,6 +99,14 @@ def no_real_gh(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def no_system_clipboard(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The full screen's copy runs the platform's clipboard command (pbcopy, wl-copy...): tests must
+    # never overwrite the clipboard of the machine running them. Tests of it fake the lookup.
+    monkeypatch.setattr("phil.ui.screen.clipboard._which", lambda name, path=None: None)
+    monkeypatch.setattr("phil.ui.screen.clipboard._isfile", lambda path: False)
+
+
+@pytest.fixture(autouse=True)
 def program_on_path(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Offline tests must not depend on which programs happen to be installed on the machine
     running them. `phil.chat.approval.program_problems` preflights the setup, test and check

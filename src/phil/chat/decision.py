@@ -221,6 +221,12 @@ def approval_decision() -> Decision:
         Option("Approve and run", "y"), Option("Edit the plan", "edit", typed=True), Option("Cancel", "n")))
 
 
+def chat_picker_decision(chats: Sequence[tuple[str, str]]) -> Decision:
+    """`/chat`: the other open chats as `(label, chat_id)` pairs, then staying here."""
+    options = tuple(Option(label, chat_id) for label, chat_id in chats)
+    return Decision("question", "Reopen which chat?", (), (*options, Option("Stay in this chat", "stay")))
+
+
 def pr_decision(run_id: str, force: bool) -> Decision:
     first = "Open the PR anyway" if force else "Open the PR"
     return Decision("confirm", f"Open a PR for {run_id}?", (), (Option(first, "y"), Option("Not now", "n")))

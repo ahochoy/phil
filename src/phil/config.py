@@ -88,6 +88,9 @@ class ChatConfig(_Section):
     # How a goal's intake works: "conversation" talks with the user turn by turn (spec 2026-11-10);
     # "classic" is the one-call intake with question menus.
     intake: Literal["conversation", "classic"] = "conversation"
+    # The chat's display: "full" is the full-screen chat on Textual (spec 2026-11-18, full-screen
+    # mode); "inline" keeps the scrolling terminal chat.
+    screen: Literal["full", "inline"] = "full"
 
     @field_validator("max_cost_usd")
     @classmethod

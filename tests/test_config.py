@@ -500,3 +500,16 @@ def test_chat_intake_can_be_classic():
 def test_chat_intake_rejects_other_values():
     with pytest.raises(ValidationError):
         PhilConfig(models=TEST_MODELS, chat={"intake": "chatty"})
+
+
+def test_chat_screen_defaults_to_full():
+    assert PhilConfig(models=TEST_MODELS).chat.screen == "full"
+
+
+def test_chat_screen_accepts_inline():
+    assert PhilConfig(models=TEST_MODELS, chat={"screen": "inline"}).chat.screen == "inline"
+
+
+def test_chat_screen_rejects_other_values():
+    with pytest.raises(ValidationError):
+        PhilConfig(models=TEST_MODELS, chat={"screen": "half"})

@@ -22,3 +22,8 @@ The first public release, published to PyPI as `phil-agent`.
 - Rules for the shell commands agents may run (`phil permissions`).
 - Repo memory that Phil keeps between runs (`phil memory`).
 - Native Windows support through Git Bash.
+- A full-screen chat: `phil` opens a header, a scrolling conversation, a live line (agent, step,
+  tasks, run time and cost, one line per sub-agent) and a boxed input. New commands `/chat`,
+  `/status` and `/copy`; `phil chat` and `phil --continue` reopen chats; `[chat] screen = "inline"`
+  keeps the previous chat, and small terminals, some Windows consoles and piped output fall back
+  to it automatically.

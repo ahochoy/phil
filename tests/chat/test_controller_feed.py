@@ -436,6 +436,106 @@ def test_help_lists_feed(controller_with_run):
     assert "Ctrl+Enter or Option/Alt+Enter starts a new line" in shown
 
 
+class RecordingOutput:
+    """A task output that records each call as a tuple."""
+
+    def __init__(self):
+        self.calls = []
+
+    def task_started(self, task, band):
+        self.calls.append(("task_started", task, band))
+
+    def task_line(self, task, line):
+        self.calls.append(("task_line", task, line))
+
+    def sub_agent(self, task, seq, description):
+        self.calls.append(("sub_agent", task, seq, description))
+
+    def task_done(self, task, folded):
+        self.calls.append(("task_done", task, folded))
+
+
+def _with_output(controller):
+    out = RecordingOutput()
+    controller.io.task_output = out
+    return out
+
+
+def _task_started(controller, task="Task 1", title="Theme setting"):
+    controller._handle(ChatEvent("milestone", {
+        "kind": "task_started", "task": task, "title": title, "ts": "2026-10-07T10:00:00Z", "seq": 2}))
+
+
+def _task_events(controller):
+    _task_started(controller)
+    controller._handle(ChatEvent("activity", {"records": [
+        {**_end(3, "implementer", "pytest -q"), "task": "Task 1"}]}))  # one call: its summary prints at the done
+    controller._handle(ChatEvent("milestone", {
+        "kind": "task_done", "task": "Task 1", "files": 2, "ts": "2026-10-07T10:00:38Z", "seq": 4}))
+
+
+def test_feed_goes_to_task_output_when_given(controller_with_run):
+    controller = controller_with_run
+    out = _with_output(controller)
+    _task_events(controller)
+    assert [call[0] for call in out.calls] == ["task_started", "task_line", "task_done"]
+    assert out.calls[0][2].plain == "▸ Task 1 Theme setting"
+    assert out.calls[-1][2].plain.startswith("✓ Task 1 · Theme setting · done")
+    assert controller.console.export_text() == ""  # nothing printed for the task
+
+
+def test_without_task_output_the_feed_prints_as_today(controller_with_run):
+    controller = controller_with_run
+    _task_events(controller)
+    text = controller.console.export_text()
+    assert "▸ Task 1 Theme setting" in text
+    assert "implementer ran 1 tool" in text
+    assert "✓ Task 1 done · 2 files · 38s" in text
+
+
+def test_sub_agent_lines_are_announced_once_and_their_tool_lines_dropped(controller_with_run):
+    controller = controller_with_run
+    out = _with_output(controller)
+    controller._handle(ChatEvent("live_agents", {"main": None, "subs": [{"seq": 9, "description": "early"}]}))
+    assert out.calls == []  # no task is open yet
+    _task_started(controller)
+    subs = {"main": None, "subs": [
+        {"seq": 1, "description": "find where the theme is applied"},
+        {"seq": 2, "description": "check existing settings tests"}]}
+    controller._handle(ChatEvent("live_agents", subs))
+    controller._handle(ChatEvent("live_agents", subs))
+    controller._handle(ChatEvent("activity", {"records": [
+        {**_end(5, "implementer", "grep theme", sub_id=1), "task": "Task 1", "ok": False}]}))
+    assert [c for c in out.calls if c[0] == "sub_agent"] == [
+        ("sub_agent", "Task 1", 1, "find where the theme is applied"),
+        ("sub_agent", "Task 1", 2, "check existing settings tests")]
+    assert [c[0] for c in out.calls if c[0] != "sub_agent"] == ["task_started"]
+    assert controller.console.export_text() == ""
+
+
+def test_untasked_items_still_print_with_a_task_output(controller_with_run):
+    controller = controller_with_run
+    out = _with_output(controller)
+    controller._handle(ChatEvent("milestone", {"kind": "rule_saved", "line": "Saved a rule", "seq": 2}))
+    controller._handle(ChatEvent("activity", {"records": [
+        {**_end(3, "engine", "pytest -q"), "task": None}]}))
+    assert out.calls == []
+    text = controller.console.export_text()
+    assert "Saved a rule" in text and "pytest -q" in text
+
+
+def test_the_open_task_clears_on_its_done_and_with_the_feed(controller_with_run):
+    controller = controller_with_run
+    out = _with_output(controller)
+    _task_events(controller)
+    controller._handle(ChatEvent("live_agents", {"main": None, "subs": [{"seq": 1, "description": "late"}]}))
+    assert not any(c[0] == "sub_agent" for c in out.calls)
+    _task_started(controller, "Task 2", "Next")
+    controller._forget_run()
+    controller._handle(ChatEvent("live_agents", {"main": None, "subs": [{"seq": 1, "description": "late"}]}))
+    assert not any(c[0] == "sub_agent" for c in out.calls)
+
+
 def _green_with_tests(turn: Turn):
     fire_tool(turn, "run_shell", {"command": "pytest -q"}, "exit_code: 0\n7 passed")
     return write_green(turn)
