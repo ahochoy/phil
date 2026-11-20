@@ -37,6 +37,7 @@ def test_constants():
 
 def test_bare_and_tilde_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # what expanduser reads on Windows
     bare = _png(tmp_path, "a.png")
     _png(tmp_path, "b.JPG")
     found = find_images(f"one {bare} two ~/b.JPG three")
