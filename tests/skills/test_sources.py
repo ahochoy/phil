@@ -4,7 +4,15 @@ from pathlib import Path
 import pytest
 
 from phil.config import PhilConfig, SkillsConfig
-from phil.skills.sources import approved_sources, repo_approved, repo_source, set_repo_approved, user_sources
+from phil.skills.discover import discover
+from phil.skills.sources import (
+    approved_sources,
+    repo_approved,
+    repo_digest,
+    repo_source,
+    set_repo_approved,
+    user_sources,
+)
 from phil.store.paths import ProjectPaths
 
 
@@ -52,26 +60,81 @@ def test_user_sources_are_only_those_that_exist_in_order(home):
     assert [source.key for source in user_sources()] == ["agents", "cursor"]
 
 
+def write_skill(root: Path, folder: str, name: str, description: str = "Does a thing") -> None:
+    (root / folder).mkdir(parents=True)
+    (root / folder / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {description}\n---\nSteps.\n", encoding="utf-8")
+
+
 def test_repo_skills_need_repo_approval(home, tmp_path):
     repo = tmp_path / "repo"
-    (repo / ".agents" / "skills").mkdir(parents=True)
+    write_skill(repo / ".agents" / "skills", "r", "r")
     (repo / ".claude" / "skills").mkdir(parents=True)
     (home / ".agents" / "skills").mkdir(parents=True)
     paths = ProjectPaths(slug="p", home=tmp_path / "phil_home")
     cfg = config("agents")
 
-    assert not repo_approved(paths)
+    assert not repo_approved(paths, repo)
     assert [s.key for s in approved_sources(cfg, repo, paths)] == ["agents"]
+
+    set_repo_approved(paths, True, repo_digest(repo))
+
+    assert repo_approved(paths, repo)
+    sources = approved_sources(cfg, repo, paths)
+    assert [s.key for s in sources] == ["agents", "repo"]
+    assert sources[1].dirs == (repo / ".agents" / "skills", repo / ".claude" / "skills")
+
+    set_repo_approved(paths, False)
+    assert not repo_approved(paths, repo)
+
+
+def test_approval_without_a_digest_does_not_hold(tmp_path):
+    repo = tmp_path / "repo"
+    write_skill(repo / ".agents" / "skills", "r", "r")
+    paths = ProjectPaths(slug="p", home=tmp_path / "phil_home")
 
     set_repo_approved(paths, True)
 
-    assert repo_approved(paths)
-    sources = approved_sources(cfg, repo, paths)
-    assert [s.key for s in sources] == ["repo", "agents"]
-    assert sources[0].dirs == (repo / ".agents" / "skills", repo / ".claude" / "skills")
+    assert not repo_approved(paths, repo)
 
-    set_repo_approved(paths, False)
-    assert not repo_approved(paths)
+
+def test_repo_approval_holds_when_nothing_changed(tmp_path):
+    repo = tmp_path / "repo"
+    write_skill(repo / ".agents" / "skills", "r", "r")
+    paths = ProjectPaths(slug="p", home=tmp_path / "phil_home")
+
+    set_repo_approved(paths, True, repo_digest(repo))
+
+    assert repo_approved(paths, repo)
+    assert repo_digest(repo) == repo_digest(repo)
+
+
+def test_repo_approval_is_void_after_a_skill_changes(tmp_path):
+    repo = tmp_path / "repo"
+    write_skill(repo / ".agents" / "skills", "r", "r")
+    paths = ProjectPaths(slug="p", home=tmp_path / "phil_home")
+    set_repo_approved(paths, True, repo_digest(repo))
+
+    (repo / ".agents" / "skills" / "r" / "SKILL.md").write_text(
+        "---\nname: r\ndescription: Now different\n---\nSteps.\n", encoding="utf-8"
+    )
+    assert not repo_approved(paths, repo)
+
+    set_repo_approved(paths, True, repo_digest(repo))
+    write_skill(repo / ".agents" / "skills", "new", "new")
+    assert not repo_approved(paths, repo)
+
+
+def test_a_repo_skill_cannot_replace_a_user_skill(home, tmp_path):
+    repo = tmp_path / "repo"
+    write_skill(repo / ".agents" / "skills", "x", "x", description="From the repo")
+    write_skill(home / ".agents" / "skills", "x", "x", description="From the user")
+    paths = ProjectPaths(slug="p", home=tmp_path / "phil_home")
+    set_repo_approved(paths, True, repo_digest(repo))
+
+    catalog = discover(approved_sources(config("agents"), repo, paths))
+
+    assert [(s.name, s.source, s.description) for s in catalog.skills] == [("x", "agents", "From the user")]
+    assert [(s.name, s.source) for s in catalog.hidden] == [("x", "repo")]
 
 
 def test_repo_source_is_none_without_skill_folders(tmp_path):

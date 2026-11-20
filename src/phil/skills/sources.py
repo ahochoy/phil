@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import tomllib
@@ -86,27 +87,56 @@ def _read_approval(paths: ProjectPaths) -> tomlkit.TOMLDocument:
         return tomlkit.document()
 
 
-def repo_approved(paths: ProjectPaths) -> bool:
-    return _read_approval(paths).get("approved") is True
+def repo_digest(repo_root: Path) -> str:
+    """A digest of the repo's skills: the sha256 of their sorted (SKILL.md path from the repo root, content hash) pairs."""
+    from phil.skills.discover import discover  # discover imports Source from here
+
+    source = repo_source(repo_root)
+    root = repo_root.resolve()
+    pairs: list[tuple[str, str]] = []
+    if source is not None:
+        for skill in discover([source]).skills:
+            skill_file = skill.path / "SKILL.md"
+            try:
+                relative = skill_file.relative_to(root).as_posix()
+            except ValueError:  # a link out of the repo: use where it really is
+                relative = skill_file.as_posix()
+            pairs.append((relative, skill.content_hash))
+    digest = hashlib.sha256()
+    for relative, content_hash in sorted(pairs):
+        digest.update(f"{relative}\0{content_hash}\n".encode())
+    return digest.hexdigest()
 
 
-def set_repo_approved(paths: ProjectPaths, approved: bool) -> None:
+def repo_approved(paths: ProjectPaths, repo_root: Path) -> bool:
+    """True when the repo's skills are approved and are still the ones that were approved."""
+    document = _read_approval(paths)
+    stored = document.get("digest")
+    return document.get("approved") is True and isinstance(stored, str) and stored == repo_digest(repo_root)
+
+
+def set_repo_approved(paths: ProjectPaths, approved: bool, digest: str | None = None) -> None:
     document = _read_approval(paths)
     document["approved"] = approved
+    if approved and digest is not None:
+        document["digest"] = digest
+    elif "digest" in document:
+        del document["digest"]
     _write_atomically(paths.skills_approval_path, tomlkit.dumps(document))
 
 
 def approved_sources(config: PhilConfig, repo_root: Path | None, paths: ProjectPaths | None) -> list[Source]:
-    """The repo's skills first (when the user approved them), then each approved user source."""
+    """Each approved user source first, then the repo's skills (when approved and unchanged), so a repo
+    cannot replace a skill the user installed."""
     sources: list[Source] = []
-    if repo_root is not None and paths is not None and repo_approved(paths):
-        repo = repo_source(repo_root)
-        if repo is not None:
-            sources.append(repo)
     approved = {Path(entry).expanduser() if "/" in entry or "~" in entry else entry for entry in config.skills.folders}
     for key, folder in USER_SOURCES:
         wanted = key in approved or (folder is not None and Path(folder).expanduser() in approved)
         if not wanted:
             continue
         sources.extend(source for source in user_sources() if source.key == key)
+    if repo_root is not None and paths is not None and repo_approved(paths, repo_root):
+        repo = repo_source(repo_root)
+        if repo is not None:
+            sources.append(repo)
     return sources

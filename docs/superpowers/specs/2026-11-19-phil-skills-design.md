@@ -75,7 +75,7 @@ Symlinks: `~/.claude/skills` entries are often symlinks into `~/.agents/skills`.
   folders = ["~/.agents/skills", "~/.claude/skills", "claude-plugins"]
   ```
   `claude-plugins` names the plugin source in §4.1, which is not a single folder.
-- **Repo folders** are approved per repo, in that project's store (next to its policy), because a cloned repo is untrusted. Until approved, Phil mentions once per repo that the repo ships skills and how to turn them on.
+- **Repo folders** are approved per repo, in that project's store (next to its policy), because a cloned repo is untrusted. The approval records a digest of the repo's skills (their relative paths and content hashes), the same way the repo's shell settings are trusted. If the skills change, for example after a pull, the approval no longer holds and the repo's skills are off until the user approves again. Until approved, Phil mentions once per repo, and again after a change, that the repo ships skills and how to turn them on.
 - **Setup** gets a skills step after the vision step: it lists each source found with its skill count and asks which to approve (none preselected). `phil setup` can be re-run to change it.
 - **Overrides** live in the same `[skills]` table:
   ```toml
@@ -111,7 +111,7 @@ A skill labelled with no stage (for example a blog or social-media skill) is off
 
 ### 4.5 Duplicates
 
-Skills are one entry when they share a resolved path or a content hash. Two different skills with the same `name`: the first in the source order of §4.1 wins (repo sources first, then user sources in table order); `/skills` lists the one hidden.
+Skills are one entry when they share a resolved path or a content hash. Two different skills with the same `name`: the first in the source order of §4.1 wins (user sources in table order, then repo sources), so a repo can never replace a skill the user installed; `/skills` lists the one hidden.
 
 ### 4.6 What an agent receives
 
