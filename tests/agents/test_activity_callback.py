@@ -12,6 +12,12 @@ def test_summaries_per_tool():
     assert summarize_call("mystery", None) == "mystery"
 
 
+def test_load_skill_activity_line():
+    assert summarize_call("load_skill", {"name": "x"}) == "skill x"
+    assert summarize_call("load_skill", {"name": "x", "file": "ref/a.md"}) == "skill x/ref/a.md"
+    assert summarize_call("load_skill", {"name": "x", "file": None}) == "skill x"
+
+
 def test_shell_result_takes_the_exit_code_and_last_line():
     output = "exit_code: 1\nfull log: /x/log\n..F\n1 failed, 7 passed in 0.31s\n"
     result, ok, detail = summarize_result("run_shell", {"command": "pytest -q"}, output)
