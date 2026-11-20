@@ -36,6 +36,7 @@ DEFAULT_TIERS: dict[str, str] = {
 CHAT_ROLES = ("orchestrator", "architect", "critic")
 # Roles the run graph calls; `phil run` checks these have models before starting.
 RUN_ROLES = ("implementer", "tester", "reviewer")
+STAGES: tuple[str, ...] = ("planning", "design", "implementing", "testing", "reviewing")
 DEFAULT_BUDGETS = {"architect": 24_000, "tester": 48_000, "reviewer": 48_000, "designer": 24_000}
 
 
@@ -203,6 +204,23 @@ class RoutingConfig(_Section):
         return self.detail_threshold
 
 
+class SkillsConfig(_Section):
+    """`[skills]`: set in the global ~/.phil/config.toml only, never by a repo or `--set`."""
+
+    folders: list[str] = []
+    off: list[str] = []
+    stages: dict[str, list[str]] = {}
+
+    @field_validator("stages")
+    @classmethod
+    def _validate_stages(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+        for skill, stages in value.items():
+            unknown = [stage for stage in stages if stage not in STAGES]
+            if unknown:
+                raise ValueError(f"{skill}: unknown stage(s) {unknown}. Valid stages: {list(STAGES)}")
+        return value
+
+
 class PhilConfig(_Section):
     # No default model: each role's model is chosen explicitly in phil.toml, or through a tier.
     models: dict[str, str] = {}
@@ -216,12 +234,19 @@ class PhilConfig(_Section):
     git: GitConfig = GitConfig()
     providers: dict[str, ProviderConfig] = {}
     routing: RoutingConfig = RoutingConfig()
+    skills: SkillsConfig = SkillsConfig()
     # Dotted leaf path -> the layer that set it: "default", the global file's path, "phil.toml" or "--set".
     _sources: dict[str, str] = PrivateAttr(default_factory=dict)
+    # True when the repo's phil.toml had a [skills] table, which is ignored.
+    _repo_skills_ignored: bool = PrivateAttr(default=False)
 
     @property
     def sources(self) -> dict[str, str]:
         return self._sources
+
+    @property
+    def repo_skills_ignored(self) -> bool:
+        return self._repo_skills_ignored
 
     @field_validator("models")
     @classmethod
@@ -484,9 +509,14 @@ def load_config(repo_root: Path, *, overrides: Sequence[str] = (), include_repo:
     if global_path.is_file():
         _merge(merged, _read_layer(global_path, str(global_path)), str(global_path), sources)
     repo_path = repo_root / "phil.toml"
+    repo_skills_ignored = False
     if include_repo and repo_path.is_file():
-        _merge(merged, _read_layer(repo_path, REPO_SOURCE), REPO_SOURCE, sources)
+        repo_layer = _read_layer(repo_path, REPO_SOURCE)
+        repo_skills_ignored = repo_layer.pop("skills", None) is not None
+        _merge(merged, repo_layer, REPO_SOURCE, sources)
     for path, value in parsed_overrides:
+        if path[0] == "skills":
+            continue  # skills are set in the global file only
         layer: object = value
         for part in reversed(path):
             layer = {part: layer}
@@ -498,6 +528,7 @@ def load_config(repo_root: Path, *, overrides: Sequence[str] = (), include_repo:
         loc = ".".join(str(part) for part in error["loc"])
         raise ConfigError(f"Invalid {_source_of(error['loc'], sources)}: {loc}: {error['msg']}") from exc
     config._sources = sources
+    config._repo_skills_ignored = repo_skills_ignored
     return config
 
 

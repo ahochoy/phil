@@ -828,7 +828,15 @@ def config_command(
             state = "exists" if file.is_file() else "missing"
             console.print(f"{label}: {escape(str(file))} ({state})", soft_wrap=True, highlight=False)
         return
-    typer.echo(effective_toml(_load_config(info.root, ctx.obj.get("overrides", []))), nl=False)
+    config = _load_config(info.root, ctx.obj.get("overrides", []))
+    if config.repo_skills_ignored:
+        console.print(
+            "phil.toml has a [skills] table; skills are set in ~/.phil/config.toml only, so it is ignored.",
+            soft_wrap=True,
+            highlight=False,
+            markup=False,
+        )
+    typer.echo(effective_toml(config), nl=False)
 
 
 @models_app.command("check")
