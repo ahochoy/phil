@@ -96,6 +96,18 @@ def test_tool_agent_list_is_the_whole_context_without_a_repo_context(config, con
     assert factory.contexts == [f"## Skills\n\n{TRUST_SENTENCE}\n\n- subtract-layout: Lay out subtract pages"]
 
 
+def test_without_skills_nothing_from_skills_is_imported(config, conn, tmp_path, monkeypatch):
+    import sys
+
+    from phil.agents.invoke import _with_skills
+
+    for module in ("phil.skills.runtime", "phil.skills.select", "phil.skills.tool"):
+        monkeypatch.setitem(sys.modules, module, None)  # importing it now raises ImportError
+    spec, packet = get_spec("answer"), answer_packet()
+    ctx = ctx_for(config, conn, tmp_path, RecordingFactory([]))
+    assert _with_skills(spec, packet, ctx) == (spec, packet, None)
+
+
 def test_no_skills_no_change(config, conn, tmp_path):
     today = ask(config, conn, tmp_path, repo_context="CTX")
     design_only = make_skill(tmp_path, "subtract-layout", "Lay out subtract pages")

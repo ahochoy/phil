@@ -60,7 +60,6 @@ def test_config_warns_about_repo_skills(git_repo, monkeypatch):
     (git_repo / "phil.toml").write_text('[skills]\nfolders = ["repo-skills"]\n')
     result = runner.invoke(cli.app, ["--repo", str(git_repo), "config"])
     assert result.exit_code == 0, result.output
-    assert (
-        "phil.toml has a [skills] table; skills are set in ~/.phil/config.toml only, so it is ignored."
-        in result.output
-    )
+    warning = "phil.toml has a [skills] table; skills are set in ~/.phil/config.toml only, so it is ignored."
+    assert warning in result.stderr
+    assert warning not in result.stdout  # stdout stays valid TOML

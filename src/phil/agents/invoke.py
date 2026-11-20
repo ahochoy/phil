@@ -387,12 +387,14 @@ def _with_skills(
     tool agent gets the list in its context and the tool; a lean agent gets up to two skills' text in
     its packet. The query is the goal, task or message in the packet's input (`skill_query`).
     Skills are optional: a failure here is logged and the agent runs without them."""
+    runtime = ctx.skills
+    if runtime is None:
+        return spec, packet, None
     from phil.skills.runtime import MIN_CAP_FOR_SKILLS
     from phil.skills.select import AGENT_STAGES, offered, query_words, skill_query, skills_section, to_inline
     from phil.skills.tool import make_load_skill_tool
 
-    runtime = ctx.skills
-    if runtime is None or spec.name not in AGENT_STAGES:
+    if spec.name not in AGENT_STAGES:
         return spec, packet, None
     try:
         query = query_words(skill_query(packet))
