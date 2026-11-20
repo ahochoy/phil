@@ -43,7 +43,7 @@ Screen {
 }
 #conversation {
     height: 1fr;
-    padding: 0 1;
+    padding: 0 1 1 1;
 }
 #new {
     height: 1;
@@ -304,6 +304,11 @@ class PhilApp(App, inherit_bindings=False):
         once closed. Safe from any thread: it returns the width the app's thread last noted."""
         with self._lock:
             return self._pane_width if self._phase == "running" else None
+
+    def action_open_link(self, url: str) -> None:
+        """A click on a printed link (`phil.ui.links`): only web links open."""
+        if url.startswith(("https://", "http://")):
+            self.open_url(url)
 
     def action_scroll_conversation(self, how: str) -> None:
         conversation = self.query_one(Conversation)
