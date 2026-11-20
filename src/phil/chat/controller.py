@@ -212,7 +212,7 @@ PROMPTS = {
 }
 SKILLS_CHANGE_HINT = "Change these with phil skills."
 REPO_SKILLS_MENTION = "This repo ships its own skills; Phil won't use them until you run phil skills repo on."
-MEMORY_TRY ="Try /memory, /memory edit, /memory suggestions, /memory apply or /memory dismiss."
+MEMORY_TRY = "Try /memory, /memory edit, /memory suggestions, /memory apply or /memory dismiss."
 LEFT_AGENTS_MD = "Left AGENTS.md as it is."
 PR_ANYWAY_PROMPT = "Open a PR anyway? [y / n] › "  # confirm_pr, for a run finished with blocking issues
 QUICK_FALLBACK = "Couldn't plan this as a quick change; planning it fully."

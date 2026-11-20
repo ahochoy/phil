@@ -851,6 +851,9 @@ Agents see only the skills that fit their part of the work. The stages are `plan
 | reviewer | reviewing, implementing |
 | answers to questions | implementing, reviewing |
 
+An agent capped below 5 model calls gets no skills at all. Today that is only the architect
+when it revises a plan.
+
 Phil labels each skill with its stages, once, with the low model, from its name and description
 only. It labels new or changed skills at the end of setup and, in the background, when a chat
 starts. The labels are kept in `~/.phil/skills.json`. A skill with no label yet isn't offered
@@ -894,7 +897,7 @@ has them, Phil mentions it once. Run `phil skills repo on` to approve them. The 
 to the content of the repo's skills: Phil records a digest of every file in them, so if a skill
 changes (after a `git pull`, or because an agent edited it), the approval no longer holds, the
 repo's skills are off, and Phil mentions it again. Run `phil skills repo on` again to approve
-the new version. A repo whose skill folders hold more than 2,000 files or 50 MB can't be
+the new version. A repo whose skill folders hold more than 2,000 files and folders, or 50 MB, can't be
 approved. The approval is kept in `~/.phil/projects/<repo>/skills.toml`, never in the repo.
 
 ### What agents get, and the limits
@@ -902,8 +905,9 @@ approved. The approval is kept in `~/.phil/projects/<repo>/skills.toml`, never i
 - An agent with tools sees a short list of the skills for its stages (name and description, at
   most 30; if more fit, the 30 that best match the goal). It can load a skill's `SKILL.md`, or
   a text file inside that skill's folder, with `load_skill`. It can load at most 3 times a run,
-  and a file of more than 64 KB is cut. A load that would take an agent's last model call is
-  never offered, so a skill can't stop an agent from answering.
+  and a file of more than 64 KB is cut. On an agent's last allowed model call, Phil removes
+  all its tools, `load_skill` included, so loading a skill can never stop an agent from
+  answering.
 - An agent without tools (intake, critic, reviewer) gets the text of up to 2 skills that match
   the goal, each cut at 4,000 tokens, added to the end of what it reads.
 - The feed shows `Using skill <name> (<agent>)` when an agent loads or is given a skill.
