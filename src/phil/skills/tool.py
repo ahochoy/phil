@@ -135,6 +135,8 @@ def make_load_skill_tool(
             if still_approved is not None and not still_approved(skill):
                 raise SkillReadError(SKILL_CHANGED)
             text = read_skill_file(skill, file)
+            if still_approved is not None and not still_approved(skill):  # changed while it was read
+                raise SkillReadError(SKILL_CHANGED)
         except SkillReadError as refusal:
             logger.info("load_skill refused %s/%s: %s", name, file, refusal)
             return f"Can't read {file if file is not None else 'SKILL.md'} from {name}: {refusal}."

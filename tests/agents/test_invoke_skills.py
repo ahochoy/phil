@@ -200,6 +200,17 @@ def test_a_repo_skill_edited_mid_run_is_not_inlined(conn, tmp_path):
     assert "## Skills" not in criticise(conn, tmp_path, loaded)
 
 
+def test_a_change_during_the_read_is_discarded(conn, tmp_path):
+    helper = make_skill(tmp_path, "subtract-helper", "Add subtract functions", "Check both signs.")
+    skills = runtime((helper, ["reviewing"]))
+    answers = iter([True, False])  # approved before the read, not after it
+    skills.still_approved = lambda _: next(answers)  # type: ignore[method-assign]
+    notices: list[str] = []
+    content = criticise(conn, tmp_path, skills, notice=notices.append)
+    assert "Check both signs." not in content and "## Skills" not in content
+    assert notices == []
+
+
 def test_a_changed_skill_md_is_not_inlined(conn, tmp_path):
     helper = make_skill(tmp_path, "subtract-helper", "Add subtract functions", "Check both signs.")
     (helper.path / "SKILL.md").write_text("---\nname: subtract-helper\ndescription: x\n---\nEdited.\n")

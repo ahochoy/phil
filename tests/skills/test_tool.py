@@ -54,6 +54,17 @@ def test_hashing_a_large_skill_md_reads_in_bounded_chunks(tmp_path, monkeypatch)
     assert max(sizes) <= MAX_FILE_BYTES + 1
 
 
+def test_a_change_during_the_read_is_discarded(tmp_path):
+    skill = make_skill(tmp_path)
+    answers = iter([True, False, True, True, True, True, True, True])  # approved before the read, not after
+    tool = make_load_skill_tool([skill], role="coder", notice=None, still_approved=lambda _: next(answers))
+    result = tool("demo")
+    assert result == f"Can't read SKILL.md from demo: {SKILL_CHANGED}."
+    assert "Do the steps." not in result
+    for _ in range(MAX_LOADS):  # the discarded read did not count
+        assert "Do the steps." in tool("demo")
+
+
 def test_a_refused_approval_reads_nothing_and_does_not_count(tmp_path):
     skill = make_skill(tmp_path)
     approved = [False]

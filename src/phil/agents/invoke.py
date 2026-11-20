@@ -438,6 +438,8 @@ def _inline_skills(spec: AgentSpec, packet: Packet, ctx: AgentContext, chosen: l
             if ctx.skills is not None and not ctx.skills.still_approved(skill):
                 raise SkillReadError(SKILL_CHANGED)
             text = read_skill_file(skill)
+            if ctx.skills is not None and not ctx.skills.still_approved(skill):  # changed while it was read
+                raise SkillReadError(SKILL_CHANGED)
         except SkillReadError as refusal:
             logger.info("skills: not inlining %s for %s: %s", skill.name, spec.name, refusal)
             continue
