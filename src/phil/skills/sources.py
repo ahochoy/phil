@@ -15,15 +15,17 @@ from phil.store.paths import ProjectPaths
 
 logger = logging.getLogger(__name__)
 
-# (key, folder under the home directory). "claude-plugins" has no fixed folder: see _plugin_dirs.
-USER_SOURCES: tuple[tuple[str, str | None], ...] = (
-    ("agents", "~/.agents/skills"),
-    ("claude", "~/.claude/skills"),
-    ("claude-plugins", None),
-    ("codex", "~/.codex/skills"),
-    ("cursor", "~/.cursor/skills"),
-    ("gemini", "~/.gemini/skills"),
+# (key, label shown in setup, folder under the home directory). "claude-plugins" has no fixed folder:
+# see _plugin_dirs.
+USER_SOURCES: tuple[tuple[str, str, str | None], ...] = (
+    ("agents", "Shared skills (npx skills)", "~/.agents/skills"),
+    ("claude", "Claude Code", "~/.claude/skills"),
+    ("claude-plugins", "Claude Code plugins", None),
+    ("codex", "Codex", "~/.codex/skills"),
+    ("cursor", "Cursor", "~/.cursor/skills"),
+    ("gemini", "Gemini", "~/.gemini/skills"),
 )
+USER_FOLDERS: dict[str, str | None] = {key: folder for key, _, folder in USER_SOURCES}
 REPO_KEY = "repo"
 REPO_DIRS = (".agents/skills", ".claude/skills")
 _PLUGIN_LIST = "~/.claude/plugins/installed_plugins.json"
@@ -59,14 +61,12 @@ def _plugin_dirs() -> tuple[Path, ...]:
 def user_sources() -> list[Source]:
     """The user-level skill sources that exist on this machine, in USER_SOURCES order."""
     sources: list[Source] = []
-    for key, folder in USER_SOURCES:
+    for key, label, folder in USER_SOURCES:
         if folder is None:
             dirs = _plugin_dirs()
-            label = "Claude plugins"
         else:
             path = Path(folder).expanduser()
             dirs = (path,) if path.is_dir() else ()
-            label = folder
         if dirs:
             sources.append(Source(key=key, label=label, dirs=dirs))
     return sources
@@ -243,7 +243,7 @@ def approved_sources(config: PhilConfig, repo_root: Path | None, paths: ProjectP
     cannot replace a skill the user installed."""
     sources: list[Source] = []
     approved = {Path(entry).expanduser() if "/" in entry or "~" in entry else entry for entry in config.skills.folders}
-    for key, folder in USER_SOURCES:
+    for key, _, folder in USER_SOURCES:
         wanted = key in approved or (folder is not None and Path(folder).expanduser() in approved)
         if not wanted:
             continue

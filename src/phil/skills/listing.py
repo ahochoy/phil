@@ -9,7 +9,7 @@ from phil.permissions.listing import shown_path
 from phil.skills.discover import discover
 from phil.skills.labels import stages_for
 from phil.skills.runtime import SkillRuntime
-from phil.skills.sources import approved_sources, repo_source
+from phil.skills.sources import USER_FOLDERS, approved_sources, repo_source
 from phil.store.paths import ProjectPaths
 from phil.text import printable
 
@@ -53,7 +53,8 @@ def approved_repo_lines(config: PhilConfig, repo_root: Path) -> list[str]:
 
 
 def _source_labels(config: PhilConfig, repo_is_approved: bool) -> list[str]:
-    labels = [source.label for source in approved_sources(config, None, None)]
+    # The folder where there is one (plugins have many): this line names folders, not agents.
+    labels = [USER_FOLDERS.get(source.key) or source.label for source in approved_sources(config, None, None)]
     if repo_is_approved:
         labels.append(REPO_LABEL)
     return labels

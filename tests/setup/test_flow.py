@@ -1025,8 +1025,8 @@ def test_skills_step_lists_sources_with_counts(tmp_path, home, memory_keyring):
     wrote, io, _ = skills_setup("", tmp_path)
     assert wrote is True
     assert SKILLS_INTRO in io.lines
-    assert "  1. ~/.agents/skills (~/.agents/skills): 2 skills" in io.lines
-    assert "  2. ~/.claude/skills (~/.claude/skills): 1 skill" in io.lines
+    assert "  1. Shared skills (npx skills) (~/.agents/skills): 2 skills" in io.lines
+    assert "  2. Claude Code (~/.claude/skills): 1 skill" in io.lines
     assert ("ask", SKILLS_PROMPT) in io.prompts
     assert written(tmp_path).skills.folders == []  # Enter with no current value: nothing written
     assert "folders" not in global_config_path().read_text()
@@ -1041,7 +1041,7 @@ def test_skills_step_shows_the_plugins_folder(tmp_path, home, memory_keyring):
         json.dumps({"version": 2, "plugins": {"p@m": [{"scope": "user", "installPath": str(install)}]}})
     )
     _, io, _ = skills_setup("", tmp_path)
-    assert "  1. Claude plugins (~/.claude/plugins): 1 skill" in io.lines
+    assert "  1. Claude Code plugins (~/.claude/plugins): 1 skill" in io.lines
 
 
 def test_skills_step_writes_chosen_folders(tmp_path, home, memory_keyring):

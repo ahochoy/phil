@@ -217,6 +217,15 @@ def test_a_symlinked_repo_skills_folder_never_approves(tmp_path):
     assert not repo_approved(paths, repo)
 
 
+def test_user_sources_have_friendly_labels(home):
+    for folder in (".agents", ".claude", ".codex", ".cursor", ".gemini"):
+        (home / folder / "skills").mkdir(parents=True)
+
+    assert [source.label for source in user_sources()] == [
+        "Shared skills (npx skills)", "Claude Code", "Codex", "Cursor", "Gemini",
+    ]
+
+
 def test_repo_source_is_none_without_skill_folders(tmp_path):
     assert repo_source(tmp_path) is None
 

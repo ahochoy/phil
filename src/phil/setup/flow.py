@@ -25,7 +25,7 @@ from phil.setup.guard import KEY_WARNING, looks_like_key
 from phil.setup.io import SetupCancelled, SetupIO
 from phil.setup.suggestions import SUGGESTIONS
 from phil.skills.discover import discover
-from phil.skills.sources import USER_SOURCES, Source, user_sources
+from phil.skills.sources import USER_FOLDERS, Source, user_sources
 from phil.setup.write import write_global_config
 
 logger = logging.getLogger(__name__)
@@ -601,7 +601,7 @@ def _skills_step(io: SetupIO, config: PhilConfig, target: Path) -> list[str] | N
     current = list(config.skills.folders) if config.sources.get("skills.folders") == str(target) else []
     # The sources the current entries name, by key or by folder (the way `approved_sources` reads them).
     approved = {Path(entry).expanduser() if "/" in entry or "~" in entry else entry for entry in current}
-    folders = dict(USER_SOURCES)
+    folders = USER_FOLDERS
     current_keys = [
         source.key
         for source in sources
