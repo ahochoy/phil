@@ -25,7 +25,7 @@ from phil.setup.guard import KEY_WARNING, looks_like_key
 from phil.setup.io import SetupCancelled, SetupIO
 from phil.setup.suggestions import SUGGESTIONS
 from phil.skills.discover import discover
-from phil.skills.sources import USER_FOLDERS, Source, user_sources
+from phil.skills.sources import USER_FOLDERS, Source, tilde_path, user_sources
 from phil.setup.write import write_global_config
 
 logger = logging.getLogger(__name__)
@@ -574,15 +574,8 @@ def _vision_step(io: SetupIO, config: PhilConfig, target: Path, provider: _Provi
     return {VISION_KEY: answer if answer.startswith(prefix) else prefix + answer}
 
 
-def _tilde(path: Path) -> str:
-    try:
-        return "~/" + path.relative_to(Path.home()).as_posix()
-    except ValueError:
-        return str(path)
-
-
 def _source_line(number: int, source: Source) -> str:
-    where = "~/.claude/plugins" if source.key == "claude-plugins" else _tilde(source.dirs[0])
+    where = "~/.claude/plugins" if source.key == "claude-plugins" else tilde_path(source.dirs[0])
     count = len(discover([source]).skills)
     return f"  {number}. {source.label} ({where}): {count} {'skill' if count == 1 else 'skills'}"
 

@@ -83,6 +83,17 @@ def test_loads_skill_md(tmp_path):
     assert "Do the steps." in tool("demo")
 
 
+def test_windows_line_endings_are_read_as_newlines(tmp_path):
+    directory = tmp_path / "demo"
+    directory.mkdir()
+    (directory / "SKILL.md").write_bytes(b"---\r\nname: demo\r\ndescription: d\r\n---\r\nStep one.\r\nStep two.\r\n")
+    (directory / "ref.md").write_bytes(b"line one\r\nline two\rold mac\n")
+    digest = hashlib.sha256((directory / "SKILL.md").read_bytes()).hexdigest()
+    skill = Skill("demo", "d", directory.resolve(), "agents", digest)
+    assert read_skill_file(skill) == "---\nname: demo\ndescription: d\n---\nStep one.\nStep two.\n"
+    assert read_skill_file(skill, "ref.md") == "line one\nline two\nold mac\n"
+
+
 def test_loads_a_reference_file(tmp_path):
     skill = make_skill(tmp_path)
     (skill.path / "ref").mkdir()

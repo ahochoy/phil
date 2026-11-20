@@ -12,9 +12,19 @@ from phil.skills.sources import (
     repo_digest,
     repo_source,
     set_repo_approved,
+    tilde_path,
     user_sources,
 )
 from phil.store.paths import ProjectPaths
+
+
+def test_tilde_path_writes_a_home_folder_with_forward_slashes_on_every_os():
+    from pathlib import PureWindowsPath
+
+    home = PureWindowsPath(r"C:\Users\me")
+    assert tilde_path(PureWindowsPath(r"C:\Users\me\.agents\skills"), home=home) == "~/.agents/skills"
+    assert tilde_path(PureWindowsPath(r"D:\skills"), home=home) == r"D:\skills"
+    assert tilde_path(Path("/opt/skills"), home=Path("/Users/me")) == "/opt/skills"
 
 
 @pytest.fixture

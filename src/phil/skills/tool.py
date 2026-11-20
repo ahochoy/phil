@@ -82,14 +82,20 @@ def read_skill_file(skill: Skill, file: str | None = None) -> str:
         os.close(fd)
     if len(data) <= MAX_FILE_BYTES:
         try:
-            return data.decode("utf-8")
+            return _newlines(data.decode("utf-8"))
         except UnicodeDecodeError:
             raise SkillReadError(_NOT_TEXT) from None
     remaining = info.st_size - MAX_FILE_BYTES
     data = data[:MAX_FILE_BYTES]
     if not _only_tail_is_cut(data):
         raise SkillReadError(_NOT_TEXT)
-    return data.decode("utf-8", errors="ignore") + f"\n[truncated: {max(1, -(-remaining // 1024))} KB more]"
+    return _newlines(data.decode("utf-8", errors="ignore")) + f"\n[truncated: {max(1, -(-remaining // 1024))} KB more]"
+
+
+def _newlines(text: str) -> str:
+    """`text` with Windows (`\\r\\n`) and old Mac (`\\r`) line endings as `\\n`, so a skill written on
+    Windows reads the same in a prompt. The hash check runs on the bytes before this."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _matches(fd: int, head: bytes, content_hash: str) -> bool:

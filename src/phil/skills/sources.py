@@ -5,7 +5,7 @@ import os
 import stat
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import tomlkit
 
@@ -70,6 +70,15 @@ def user_sources() -> list[Source]:
         if dirs:
             sources.append(Source(key=key, label=label, dirs=dirs))
     return sources
+
+
+def tilde_path(path: PurePath, home: PurePath | None = None) -> str:
+    """`path` as setup and `/permissions` show a skill folder: under the home folder, `~/` and forward
+    slashes on every OS (the way the folders are written in config and the docs); otherwise as is."""
+    try:
+        return "~/" + path.relative_to(Path.home() if home is None else home).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def is_link(path: Path) -> bool:

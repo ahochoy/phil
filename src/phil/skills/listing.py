@@ -5,11 +5,10 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from phil.config import PhilConfig
-from phil.permissions.listing import shown_path
 from phil.skills.discover import discover
 from phil.skills.labels import stages_for
 from phil.skills.runtime import SkillRuntime
-from phil.skills.sources import USER_FOLDERS, approved_sources, repo_source
+from phil.skills.sources import USER_FOLDERS, approved_sources, repo_source, tilde_path
 from phil.store.paths import ProjectPaths
 from phil.text import printable
 
@@ -100,7 +99,7 @@ def skill_folder_lines(config: PhilConfig, repo_root: Path | None, paths: Projec
     """`phil permissions`' section of the folders agents can read skills from: one line per approved
     folder. Empty when none is approved."""
     folders = [
-        shown_path(directory) for source in approved_sources(config, repo_root, paths) for directory in source.dirs
+        tilde_path(directory) for source in approved_sources(config, repo_root, paths) for directory in source.dirs
     ]
     if not folders:
         return []

@@ -179,8 +179,9 @@ def repo_with_links(tmp_path: Path) -> tuple[Path, Path]:
         (skills / "absolute").symlink_to(tmp_path / "outside" / "away", target_is_directory=True)
     except OSError:
         pytest.skip("symlinks can't be created here")
-    (skills / "escapes").symlink_to("../../../outside/away", target_is_directory=True)
-    (skills / "stays").symlink_to("../../docs/inside", target_is_directory=True)
+    # Path() gives the OS's separators: Windows can't follow a relative link written with `/`.
+    (skills / "escapes").symlink_to(Path("../../../outside/away"), target_is_directory=True)
+    (skills / "stays").symlink_to(Path("../../docs/inside"), target_is_directory=True)
     return repo, skills
 
 
