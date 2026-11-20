@@ -35,6 +35,22 @@ def test_the_designer_reads_the_tree_and_returns_approaches(tmp_path):
     assert "Add a CTA section to the home page" in packet and "Tracked files:" in packet
 
 
+def test_the_designer_sees_the_images(tmp_path):
+    seen: list[Turn] = []
+
+    def design(turn: Turn) -> Approaches:
+        seen.append(turn)
+        return APPROACHES
+
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    config = PhilConfig(models={"low": "openrouter:l", "high": "openrouter:h"})
+    ctx = ctx_for(tmp_path, config, ScriptedAgentFactory({"design": [design]}))
+    propose_approaches(ctx, GOAL, tree=tmp_path, overview="", images=[image])
+    content = seen[0].payload["messages"][0]["content"]
+    assert isinstance(content, list) and [part["type"] for part in content] == ["text", "text", "image"]
+
+
 def test_the_design_spec_is_light_read_only_and_capped():
     spec = get_spec("design")
     assert (spec.role, spec.harness, spec.read_only_shell, spec.writes_files) == ("designer", "light", True, False)

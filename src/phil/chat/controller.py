@@ -20,10 +20,12 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from phil.agents.failures import Failure, classify_failure, internal_failure
+from phil.agents.failures import VISION_ACTION, Failure, classify_failure, internal_failure
 from phil.agents.invoke import AgentContext, price_book_for
+from phil.agents.providers import provider_for_model
 from phil.agents.unpriced import PLANNING_ROLES, planning_notice, unpriced_models
 from phil.chat.answer import ask_answer
+from phil.chat.attachments import Attached, attach, chip, find_images, starts_with_image
 from phil.chat.approval import (
     effective_setup_cmd,
     effective_test_cmd,
@@ -226,6 +228,15 @@ TRANSCRIPT_STAGES = {
 }
 GOAL_JOB_STAGES = ("routing", "intake", "planning", "answering", "designing")
 RUN_STAGES = ("running", "paused", "hint")  # the chat's run is in progress
+# Images pasted into a typed message (spec 2026-11-19 images): the stages where a message starts a
+# new goal (a goal job's stage: its replacement), and every stage where it is goal input and attaches.
+NEW_GOAL_STAGES = ("idle", "confirm_fix", *GOAL_JOB_STAGES)
+ATTACH_STAGES = (*NEW_GOAL_STAGES, *CONVERSATION_STAGES, "questions", "choose_approach", "edit")
+# Where a /ask, /quick or /full message starts a goal (or replaces the one in flight).
+FORCED_GOAL_STAGES = ("idle", "confirm_fix", "conversation", "confirm_pr", *GOAL_JOB_STAGES)
+IMAGES_DIR = "images"  # the goal's attached images, copied into the chat's folder
+# The roles whose models get the goal's pictures: the early warning checks each of them.
+VISION_ROLES = ("orchestrator", "answerer", "designer", "architect", "critic", "implementer")
 RUN_EVENTS = (
     "run_progress", "run_paused", "run_resumed", "run_done", "worker_lost", "watch_error", "budget_warning",
     "budget_raised", "test_cmd_changed", "notice", "activity", "milestone", "live_step", "live_agents",
@@ -274,6 +285,15 @@ class TrustAsk:
     digest: str
     then: str  # "approval" | "quick"
     goal: Goal | None = None
+
+
+@dataclass(frozen=True)
+class Incoming:
+    """The images one message attached (the copies), and whether the goal's early warning that a
+    model can't read them has been shown."""
+
+    images: tuple[Path, ...] = ()
+    warned: bool = False
 
 
 class TaskOutput(Protocol):
@@ -464,6 +484,11 @@ class ChatController:
         # or a pause's resume being sent (a retry's, past its hint prompt).
         self._settled: Text | None = None
         self._trust: TrustAsk | None = None  # the repo's phil.toml settings the trust_repo stage asks about
+        # The goal's attached images (copies in the chat's folder), from its first message on; they
+        # go to intake, the designer, the architect and the critic. Saved, so a reopened chat keeps them.
+        self._attachments: list[Path] = []
+        self._vision_warned = False  # the goal's "can't read images" warning has been shown
+        self._replacement_images: Incoming | None = None  # a replacement goal's images (confirm_replace)
 
     # --- events and jobs -------------------------------------------------------------------------
 
@@ -492,12 +517,15 @@ class ChatController:
         generation = self._generation if generation is None else generation
         provider = self._provider(JOB_ROLES.get(kind))
 
+        def notice(line: str) -> None:  # an agent's one-line notice (`↪ image: …`), printed by the main loop
+            self.post(ChatEvent("agent_notice", {"line": line}, generation))
+
         def work() -> None:
             try:
                 conn = None
                 try:
                     conn = connect(self._db_path)
-                    event = ChatEvent(kind, fn(replace(self.ctx, conn=conn)), generation)
+                    event = ChatEvent(kind, fn(replace(self.ctx, conn=conn, notice=notice)), generation)
                 except Exception as exc:
                     data = {
                         **(failed_data or {}), "job": kind, "error": f"{type(exc).__name__}: {exc}",
@@ -633,6 +661,8 @@ class ChatController:
 
     def _handle(self, event: ChatEvent) -> None:
         if event.generation not in (-1, self._generation):
+            if event.kind == "agent_notice":
+                return  # a cancelled job's notice: its result, still to come, ends the cancelling
             self.state.set_cancelling(False)
             return
         if event.kind in RUN_EVENTS and self._run_id is None:
@@ -791,6 +821,8 @@ class ChatController:
                     "user_replies": self._user_replies,
                     "intake_mode": self._intake_mode,
                     "must_decide": self._turn_must_decide,
+                    "attachments": [str(path) for path in self._attachments],
+                    "vision_warned": self._vision_warned,
                     # Agent-call numbers name the chat's artifacts; a reopened chat continues from them.
                     "counters": {
                         "intake": self._intake_calls,
@@ -879,7 +911,7 @@ class ChatController:
                         self._settled = settled
                     else:
                         self.console.print(settled)
-                if raw is None or not self._input(raw):
+                if raw is None or not self._input(raw, menu=decision is not None):
                     self._closing()
                     return
                 if self._switch_to is not None:
@@ -913,22 +945,36 @@ class ChatController:
             return
         self._set_refs([Ref(label="error", path=str(path))])
 
-    def _input(self, raw: str) -> bool:
-        """Record the raw input with its stage, then route it. Returns False to end the chat."""
+    def _input(self, raw: str, *, menu: bool = False) -> bool:
+        """Record the input with its stage, then route it. Returns False to end the chat.
+
+        A typed message that is goal input (not a command, not a menu's answer: `menu`) attaches
+        the images pasted in it first: what is recorded and routed has a chip for each one."""
         text = raw.strip()
         forced, rest = parse_override(text)
         if forced is not None:
             self._forced_input(raw, forced, rest)
             return True
-        if text.startswith("/"):
+        if text.startswith("/") and not starts_with_image(text):
             self.session.user(raw, stage="command")
             return self._command(text)
         stage = self.stage
         if not text and stage in ("idle", "running", "paused", *GOAL_JOB_STAGES, *CONVERSATION_STAGES):
             return True
-        self.session.user(raw, stage=TRANSCRIPT_STAGES.get(stage, stage))
+        attached = self._attach(raw) if not menu and stage in ATTACH_STAGES else None
+        if attached is not None:
+            raw = attached.text
+            text = raw.strip()
+        self.session.user(
+            raw, stage=TRANSCRIPT_STAGES.get(stage, stage), attachments=attached.images if attached else ()
+        )
+        new_goal = stage in NEW_GOAL_STAGES
+        incoming = self._announce(attached, warned=False if new_goal else self._vision_warned)
+        if not new_goal:
+            self._attachments.extend(incoming.images)
+            self._vision_warned = incoming.warned
         if stage == "idle":
-            self._begin_goal(text)
+            self._begin_goal(text, incoming=incoming)
         elif stage == "conversation":
             self._conversation_input(text)
         elif stage == "conversing" and text.lower() == PLAN_NOW:
@@ -939,6 +985,7 @@ class ChatController:
         elif stage in GOAL_JOB_STAGES:
             self._replacement, self._replacement_forced = text, None
             self._replacement_skip = False
+            self._replacement_images = incoming
             self._parent_stage = stage
             self._set_stage("confirm_replace")
         elif stage == "questions":
@@ -958,7 +1005,7 @@ class ChatController:
         elif stage == "confirm_pr":
             self._confirm_pr(text)
         elif stage == "confirm_fix":
-            self._confirm_fix(text)
+            self._confirm_fix(text, incoming)
         elif stage == "confirm_agents_md":
             self._confirm_agents_md(text)
         elif stage == "paused":
@@ -971,6 +1018,68 @@ class ChatController:
                 "Use /btw to ask about it, or start another goal in a new window."
             )
         return True
+
+    # --- attached images (spec 2026-11-19 images) ---------------------------------------------------
+
+    def _attach(self, raw: str) -> Attached | None:
+        """`raw` with its pasted images copied into the chat's folder and swapped for chips; None
+        when it names no image. Copies are numbered across the chat, so no goal's copy is replaced."""
+        if not find_images(raw):
+            return None
+        attached = attach(raw, self.session.dir / IMAGES_DIR, first_number=self._next_image_number())
+        return attached if attached.images or attached.skipped else None
+
+    def _next_image_number(self) -> int:
+        """One past the highest `<n>-` among the chat's copied images (1 when there are none)."""
+        try:
+            names = [path.name for path in (self.session.dir / IMAGES_DIR).iterdir()]
+        except OSError:
+            names = []
+        numbers = [int(head) for head, sep, _ in (name.partition("-") for name in names) if sep and head.isdigit()]
+        return max(numbers, default=0) + 1
+
+    def _announce(self, attached: Attached | None, *, warned: bool) -> Incoming:
+        """The notices under the user's line: inline, the chips attached (the frame's echo already
+        shows them); each skipped image's reason; and, once per goal (`warned`: already shown), the
+        refusal a model that gets the pictures would give."""
+        if attached is None:
+            return Incoming(warned=warned)
+        with self.console.continued():
+            if attached.images and self.io.task_output is None:
+                chips = ", ".join(chip(n, _attached_name(path)) for n, path in enumerate(attached.images, 1))
+                self.console.print(Text(f"attached {chips}", style="phil.muted"))
+            for reason in attached.skipped:
+                self.console.print(Text(reason, style="phil.warn"))
+            if attached.images and not warned:
+                line = self._vision_warning()
+                if line is not None:
+                    self.console.print(Text(line, style="phil.warn"))
+                    warned = True
+        return Incoming(attached.images, warned)
+
+    def _vision_warning(self) -> str | None:
+        """`<model> can't read images.` and its action, for the first model of `VISION_ROLES`
+        known not to read images, when no vision model is set; else None. Never raises."""
+        try:
+            if self.config.vision_model():
+                return None
+            from phil.agents.vision import sees_images  # lazy: it imports langchain
+
+            book = price_book_for(self.ctx)
+            for role in VISION_ROLES:
+                try:
+                    model = self.config.model_for(role)
+                    provider = provider_for_model(self.config, model, self.config.model_owner(role))
+                except Exception:
+                    continue  # no model (a legacy designer uses the architect's) or an unknown provider
+                if sees_images(model, provider, book) is False:
+                    return f"{printable(model)} can't read images. {VISION_ACTION}"
+        except Exception:
+            logger.warning("couldn't check which models read images", exc_info=True)
+        return None
+
+    def _on_agent_notice(self, data: dict) -> None:
+        self.console.print(Text(one_line(str(data.get("line", ""))), style="phil.muted"))
 
     def _command(self, text: str) -> bool:
         command = text.split()[0]
@@ -1042,6 +1151,7 @@ class ChatController:
             self._set_stage("approval")
         elif self.stage == "confirm_replace":
             self._replacement, self._replacement_forced, self._replacement_skip = "", None, False
+            self._replacement_images = None
             self.console.print("[phil.muted]Keeping the current goal.[/]")
             self._set_stage(self._parent_stage)
         elif self.stage in ("paused", "hint"):
@@ -1069,27 +1179,36 @@ class ChatController:
         self._trust = None
         self._turns, self._choices, self._user_replies, self._held_input = [], [], 0, []
         self._typing_choice_other, self._turn_must_decide, self._go_pending = False, False, False
+        self._attachments, self._vision_warned = [], False
 
     def _forced_input(self, raw: str, forced: str, rest: str) -> None:
-        """A message prefixed with /ask, /quick, /full or /full!: a goal whose depth skips the router."""
+        """A message prefixed with /ask, /quick, /full or /full!: a goal whose depth skips the router.
+        Where it starts (or replaces) a goal, it attaches its pasted images as a typed goal does."""
         if not rest:
             self.session.user(raw, stage="command")
             self.console.print(OVERRIDE_USAGE)
             return
-        self.session.user(raw, stage="goal")
-        skip = skips_design(raw)
         stage = self.stage
+        attached = self._attach(raw) if stage in FORCED_GOAL_STAGES else None
+        if attached is not None:
+            raw = attached.text
+            chipped, chipped_rest = parse_override(raw.strip())
+            forced, rest = (chipped, chipped_rest) if chipped is not None else (forced, rest)  # chips keep the prefix
+        self.session.user(raw, stage="goal", attachments=attached.images if attached else ())
+        incoming = self._announce(attached, warned=False)
+        skip = skips_design(raw)
         if stage in ("idle", "confirm_fix", "conversation"):
             self._fix_offer = None
-            self._begin_goal(rest, forced=forced, skip_design=skip)
+            self._begin_goal(rest, forced=forced, skip_design=skip, incoming=incoming)
         elif stage in GOAL_JOB_STAGES:
             self._replacement, self._replacement_forced = rest, forced
             self._replacement_skip = skip
+            self._replacement_images = incoming
             self._parent_stage = stage
             self._set_stage("confirm_replace")
         elif stage == "confirm_pr":
             self._decline_pr()
-            self._begin_goal(rest, forced=forced, skip_design=skip)
+            self._begin_goal(rest, forced=forced, skip_design=skip, incoming=incoming)
         elif stage in RUN_STAGES:
             self.console.print(
                 f"This chat is following run [phil.id]{escape(self._label(self._run_id))}[/]. "
@@ -1099,10 +1218,16 @@ class ChatController:
             self.console.print("Finish the current goal first, or press Ctrl-C to cancel it.")
 
     def _begin_goal(
-        self, text: str, forced: str | None = None, source: str = "forced", skip_design: bool = False
+        self,
+        text: str,
+        forced: str | None = None,
+        source: str = "forced",
+        skip_design: bool = False,
+        incoming: Incoming | None = None,
     ) -> None:
         """Start a goal: routed, or at the `forced` depth (`source` says who forced it: the user's
-        prefix, "forced", or an accepted fix offer, "fix_offer")."""
+        prefix, "forced", or an accepted fix offer, "fix_offer"). `incoming` is the images its
+        message attached: the goal starts with those, and none from the goal before."""
         if self._run_id is not None:
             # A new goal replaces a failed or stopped run the chat was offering to /resume.
             record = get_run(self.conn, self._run_id)
@@ -1115,6 +1240,8 @@ class ChatController:
             self._forget_run()
         self._next_generation()
         self._reset_goal()
+        if incoming is not None:
+            self._attachments, self._vision_warned = list(incoming.images), incoming.warned
         self._intake_mode = self.config.chat.intake
         self._failed_goal = None  # a goal that starts replaces the one an error stopped
         self._skip_design = skip_design
@@ -1202,6 +1329,7 @@ class ChatController:
         context = "\n".join(self._prior_turns[-CONTEXT_TURNS:])
         root, overview = self.info.root, self.overview
         tree = self.session.dir / "tree" / f"answer{call}"
+        images = list(self._attachments)
 
         def fn(ctx: AgentContext) -> dict:
             # The answerer reads a working-tree snapshot, never the live root: uncommitted edits are
@@ -1209,7 +1337,9 @@ class ChatController:
             # chat's end removes all of tree/ in any case.
             try:
                 snapshot = export_worktree(root, tree)
-                answer = ask_answer(ctx, question, root=snapshot, overview=overview, context=context, call=call)
+                answer = ask_answer(
+                    ctx, question, root=snapshot, overview=overview, context=context, call=call, images=images
+                )
             finally:
                 shutil.rmtree(tree, ignore_errors=True)
             return {"answer": answer, "question": question}
@@ -1239,7 +1369,7 @@ class ChatController:
         self._reset_goal()
         self._set_stage("idle")
 
-    def _confirm_fix(self, text: str) -> None:
+    def _confirm_fix(self, text: str, incoming: Incoming | None = None) -> None:
         offer, self._fix_offer = self._fix_offer, None
         choice = text.lower()
         if choice in ("", "y", "yes", "full") and offer is not None:
@@ -1249,7 +1379,7 @@ class ChatController:
         elif choice in ("", "y", "yes", "full", "n", "no"):
             self._set_stage("idle")
         else:
-            self._begin_goal(text)  # another message is a new goal
+            self._begin_goal(text, incoming=incoming)  # another message is a new goal
 
     def _intake_job(
         self, message: str, previous: Goal | None = None, answers: list[str] | None = None, check_prices: bool = False
@@ -1259,13 +1389,14 @@ class ChatController:
         self._step("intake", generation)
         route_depth = self._route.depth if self._route else None
         detected = detect_test_cmd(self.info.root)  # reads only file names (and package.json's scripts)
+        images = list(self._attachments)
 
         def fn(ctx: AgentContext) -> dict:
             if check_prices:
                 self._note_unpriced(ctx)
             goal = intake(
                 ctx, message, overview=self.overview, previous=previous, answers=answers or [], call=call,
-                route_depth=route_depth, detected_test_cmd=detected,
+                route_depth=route_depth, detected_test_cmd=detected, images=images,
             )
             return {"goal": goal}
 
@@ -1356,13 +1487,14 @@ class ChatController:
         self._design_calls += 1
         call, generation, overview = self._design_calls, self._generation, self.overview
         conversation = list(self._turns) or None
+        images = list(self._attachments)
 
         def fn(ctx: AgentContext) -> dict:
             self._step("snapshot", generation)
             tree = self._snapshot(generation)
             self._step("designing", generation)
             approaches = propose_approaches(
-                ctx, goal, tree=tree, overview=overview, call=call, conversation=conversation
+                ctx, goal, tree=tree, overview=overview, call=call, conversation=conversation, images=images
             )
             return {"approaches": approaches}
 
@@ -1527,6 +1659,7 @@ class ChatController:
         route_depth = route.depth if route else None
         route_class = route.judgement.task_class if route and route.judgement else None
         detected = detect_test_cmd(self.info.root)  # reads only file names (and package.json's scripts)
+        images = list(self._attachments)  # all of the goal's so far: the earlier turns are text only
 
         def fn(ctx: AgentContext) -> dict:
             if check_prices:
@@ -1536,7 +1669,7 @@ class ChatController:
             self._step("conversing", generation)
             turn = converse(
                 ctx, turns, tree=tree, overview=overview, route_depth=route_depth, route_class=route_class,
-                detected_test_cmd=detected, must_decide=must_decide, call=call,
+                detected_test_cmd=detected, must_decide=must_decide, call=call, images=images,
             )
             return {"turn": turn, "must_decide": must_decide}
 
@@ -1614,7 +1747,18 @@ class ChatController:
 
     def _on_turn_failed(self, data: dict) -> None:
         self._turn_must_decide = False
-        self._failed(data["error"], data.get("failure"))
+        failure = data.get("failure")
+        self._failed(data["error"], failure)
+        if isinstance(failure, dict) and failure.get("action") == VISION_ACTION:
+            # The classic intake would send the same image to the same blind model: say how to go on.
+            self._held_input, self._go_pending = [], False
+            self._safe_note("image_refused", reason=data["error"])
+            self.console.print(
+                "[phil.muted]Set the vision model in phil.toml or ~/.phil/config.toml, then reopen this chat "
+                f"with `phil --resume {escape(self.session.id)}` to go on with the image.[/]"
+            )
+            self._set_stage("conversation")
+            return
         self._conversation_fallback(data["error"])
 
     def _conversation_fallback(self, reason: str) -> None:
@@ -1665,6 +1809,7 @@ class ChatController:
         generation = self._generation
         approach, note = self._approach, self._approach_note
         conversation = list(self._turns) or None
+        images = list(self._attachments)
         budget = self._budget_check()
 
         def fn(ctx: AgentContext) -> dict:
@@ -1674,7 +1819,7 @@ class ChatController:
             try:
                 draft = self.planner.draft(
                     goal, tree, on_step=on_step, ctx=ctx, prior_attempt=prior_attempt, approach=approach,
-                    approach_note=note, over_budget=budget(ctx.conn), conversation=conversation,
+                    approach_note=note, over_budget=budget(ctx.conn), conversation=conversation, images=images,
                 )
             except PlanningBudgetExceeded:
                 return {"over_budget": True}
@@ -1770,12 +1915,14 @@ class ChatController:
     def _confirm_replace(self, text: str) -> None:
         if text.lower() in ("y", "yes"):
             self._begin_goal(
-                self._replacement, forced=self._replacement_forced, skip_design=self._replacement_skip
+                self._replacement, forced=self._replacement_forced, skip_design=self._replacement_skip,
+                incoming=self._replacement_images or Incoming(),
             )
         else:
             self.console.print("[phil.muted]Keeping the current goal.[/]")
             self._set_stage(self._parent_stage)
         self._replacement, self._replacement_forced, self._replacement_skip = "", None, False
+        self._replacement_images = None
 
     # --- trusting the repo's phil.toml ------------------------------------------------------------
 
@@ -1950,6 +2097,7 @@ class ChatController:
         goal, draft, prior_attempt = self._goal, self._draft, self._prior_attempt
         approach, note = self._approach, self._approach_note
         conversation = list(self._turns) or None
+        images = list(self._attachments)  # the feedback's own images included
         self.console.print("[phil.muted]Revising…[/]")
         self._revising = True
         self._set_stage("planning")
@@ -1963,7 +2111,7 @@ class ChatController:
                 revised = self.planner.revise(
                     goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation), ctx=ctx,
                     prior_attempt=prior_attempt, approach=approach, approach_note=note, over_budget=budget(ctx.conn),
-                    conversation=conversation,
+                    conversation=conversation, images=images,
                 )
             except PlanningBudgetExceeded:
                 return {"over_budget": True}
@@ -1988,7 +2136,7 @@ class ChatController:
             base_sha = self._explicit_base_sha or resolve_repo(self.info.root).head_sha
             record = prepare_run(
                 self.info, plan, base_sha, chat_id=self.session.id, overrides=(*self._config_overrides, pin),
-                depth=depth, goal=self._goal,
+                depth=depth, goal=self._goal, images=self._attachments,  # read here, before any reset
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -3158,6 +3306,8 @@ class ChatController:
             return
         self._goal, self._draft = goal, draft
         self._approach, self._approach_note = approach, approach_note
+        self._attachments = _saved_images(saved.get("attachments"), self.session.dir / IMAGES_DIR)
+        self._vision_warned = saved.get("vision_warned") is True
         self._goal_mark = last_telemetry_id(self.conn)  # a reopened goal's budget starts afresh
         self._goal_text = goal.objective if goal else ""
         self._run_id, self._base_sha = run_id, base_sha
@@ -3246,6 +3396,19 @@ def _internal_failure(error: str) -> Failure:
     the error's exception type ("RuntimeError: boom" → RuntimeError)."""
     name = error.split(":", 1)[0].strip()
     return internal_failure(name if " " not in name else "")
+
+
+def _attached_name(copy: Path) -> str:
+    """The pasted file's name, from its copy's `<n>-<name>`."""
+    return copy.name.partition("-")[2] or copy.name
+
+
+def _saved_images(value: object, folder: Path) -> list[Path]:
+    """The saved `attachments`: path strings of copies in the chat's `folder`. Anything else (a
+    hand-edited path elsewhere on disk, a non-string) is dropped: only the chat's copies are sent."""
+    if not isinstance(value, list):
+        return []
+    return [Path(item) for item in value if isinstance(item, str) and Path(item).parent == folder]
 
 
 def _count(value: object) -> int | None:

@@ -307,3 +307,57 @@ def test_find_with_no_ids_never_loads_the_list(tmp_path):
         raise AssertionError("fetched")
 
     assert book(tmp_path, fetch=boom).find([]) is None
+
+
+def modalities_list():
+    return {
+        "data": [
+            {"id": "a/seer", "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+             "architecture": {"input_modalities": ["text", "image"]}},
+            {"id": "a/blind", "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+             "architecture": {"input_modalities": ["text"]}},
+            # Unpriced (a router's "-1"), yet its modalities are still known.
+            {"id": "a/router", "pricing": {"prompt": "-1", "completion": "-1"},
+             "architecture": {"input_modalities": ["text", "image"]}},
+            {"id": "a/no-architecture", "pricing": {"prompt": "0.000001", "completion": "0.000002"}},
+            {"id": "a/odd", "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+             "architecture": {"input_modalities": "image"}},
+            {"id": "a/odd-arch", "pricing": {"prompt": "0.000001", "completion": "0.000002"}, "architecture": 3},
+        ]
+    }
+
+
+def test_modalities_parsed_for_unpriced_entries_too(tmp_path):
+    b = book(tmp_path, fetch=modalities_list)
+    assert b.modalities(["a/seer"]) == frozenset({"text", "image"})
+    assert b.modalities(["a/blind"]) == frozenset({"text"})
+    assert b.price("openrouter:a/router") is None
+    assert b.modalities(["a/router"]) == frozenset({"text", "image"})
+    assert b.modalities(["nope/x", "a/blind"]) == frozenset({"text"})  # the first id found wins
+    assert b.modalities(["nope/x"]) is None
+    assert b.modalities([]) is None
+
+
+def test_missing_or_malformed_modalities_are_unknown(tmp_path):
+    b = book(tmp_path, fetch=modalities_list)
+    assert b.modalities(["a/no-architecture"]) is None
+    assert b.modalities(["a/odd"]) is None
+    assert b.modalities(["a/odd-arch"]) is None
+
+
+def test_modalities_come_from_a_cache_written_before_them(tmp_path):
+    book(tmp_path).price("openrouter:openai/gpt-6-sol")  # the fixture list has no architecture; cached as is
+
+    def boom():
+        raise AssertionError("fetched")
+
+    b = book(tmp_path, fetch=boom, now=1_000_000.0 + 60)
+    assert b.modalities(["openai/gpt-6-sol"]) is None
+    assert b.price("openrouter:openai/gpt-6-sol") is not None
+
+
+def test_modalities_are_none_when_the_list_is_unavailable(tmp_path):
+    def down():
+        raise OSError("offline")
+
+    assert book(tmp_path, fetch=down).modalities(["a/seer"]) is None

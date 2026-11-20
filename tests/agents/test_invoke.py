@@ -11,7 +11,7 @@ from phil.agents.invoke import AgentContext, ContractViolation, invoke_agent
 from phil.agents.pricing import PriceBook
 from phil.agents.registry import get_spec
 from phil.config import PhilConfig, ShellConfig
-from phil.contracts import ImplementInput, PlanCritique, Task, TaskResult
+from phil.contracts import CriticInput, Goal, ImplementInput, Plan, PlanCritique, Task, TaskResult
 from phil.packets import build_packet
 from tests.helpers import TEST_MODEL, TEST_MODELS
 from tests.agents.conftest import critique, self_check
@@ -84,7 +84,7 @@ class ProseAgent:
     def __init__(self, *answers) -> None:
         self.answers = list(answers)
 
-    def __call__(self, spec, model, workdir, tools, *, timeout_s=180, provider=None):
+    def __call__(self, spec, model, workdir, tools, *, timeout_s=180, provider=None, **_):
         return self
 
     def invoke(self, payload, config=None):
@@ -131,6 +131,23 @@ def test_second_attempt_saves_the_retry_payload(config, conn, artifacts, critic_
     retry = json.loads((artifacts.run_dir / "packets" / "critic-run-2.retry.json").read_text())
     assert len(retry["messages"]) == 2
     assert "verdict" in retry["messages"][1]["content"]
+
+
+def test_the_retry_payload_names_images_instead_of_holding_their_base64(config, conn, artifacts, critic_packet, tmp_path):
+    import base64
+
+    picture = tmp_path / "1-after.png"
+    data = b"\x89PNG\r\n\x1a\n" + b"\x07" * 64
+    picture.write_bytes(data)
+    packet = build_packet("critic", CriticInput.model_validate_json(critic_packet.contract_json), budget_tokens=4000,
+                          images=[picture])
+    factory = FakeAgentFactory([{"verdict": "maybe"}, critique()])
+    invoke_agent(get_spec("critic"), packet, context(config, conn, artifacts, factory), node="critic")
+    saved = (artifacts.run_dir / "packets" / "critic-run-2.retry.json").read_text()
+    assert base64.b64encode(data).decode() not in saved and '"base64"' not in saved
+    assert str(picture) in saved
+    sent = factory.agent.calls[1]["messages"][0]["content"]
+    assert any(part.get("base64") == base64.b64encode(data).decode() for part in sent)  # what's sent is unchanged
 
 
 def test_structured_output_parse_error_is_treated_as_invalid_and_retried(config, conn, artifacts, critic_packet):
@@ -203,7 +220,7 @@ def test_shell_log_prefix_matches_artifact_base_name(conn, artifacts, tmp_path):
     config = PhilConfig(shell=shell_config, models=TEST_MODELS)
     captured: dict = {}
 
-    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None):
+    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None, **_):
         captured["tools"] = tools
         return FakeAgent([TaskResult(phase="red", summary="s", files_changed=[], tests_added=[], self_check=self_check())])
 
@@ -221,7 +238,7 @@ def test_shell_log_prefix_matches_artifact_base_name(conn, artifacts, tmp_path):
 def _implementer_shell(ctx_values: dict, conn, artifacts, tmp_path) -> object:
     captured: dict = {}
 
-    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None):
+    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None, **_):
         captured["tools"] = tools
         return FakeAgent([TaskResult(phase="red", summary="s", files_changed=[], tests_added=[], self_check=self_check())])
 
@@ -385,7 +402,7 @@ class CallbackAgent:
 
 
 def accounting_context(config, conn, artifacts, agent, **overrides):
-    return context(config, conn, artifacts, lambda spec, model, workdir, tools, *, timeout_s=180, provider=None: agent, **overrides)
+    return context(config, conn, artifacts, lambda spec, model, workdir, tools, *, timeout_s=180, provider=None, **_: agent, **overrides)
 
 
 def calls_rows(conn):
@@ -617,7 +634,7 @@ def test_invoke_passes_the_resolved_provider_to_the_factory(conn, artifacts, cri
     )
     seen = {}
 
-    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None):
+    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None, **_):
         seen.update(model=model, provider=provider)
         return FakeAgent([critique()])
 
@@ -687,3 +704,187 @@ def test_a_failing_call_is_tagged_with_its_provider(config, conn, critic_packet,
     with pytest.raises(Exception) as excinfo:
         invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
     assert getattr(excinfo.value, PROVIDER_ATTR).name == config.model_for("critic").partition(":")[0]
+
+
+def test_invoke_agent_sends_image_parts(config, conn, artifacts, tmp_path):
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(b"\x89PNG-bytes")
+    task = Task(id="CALC-001", description="Add subtract", acceptance_criteria=["subtract(3, 1) == 2"])
+    contract = CriticInput(goal=Goal(objective="Add subtract"), plan=Plan(keyword="CALC", description="x", tasks=[task]))
+    packet = build_packet("critic", contract, budget_tokens=4000, images=[shot])
+    factory = FakeAgentFactory([{"verdict": "maybe"}, critique()])
+    invoke_agent(get_spec("critic"), packet, context(config, conn, artifacts, factory), node="critic")
+    [message] = factory.agent.calls[0]["messages"]
+    assert message["content"][0] == {"type": "text", "text": packet.render()}
+    assert message["content"][1] == {"type": "text", "text": "Image: shot.png"}
+    assert message["content"][2]["type"] == "image"
+    assert message["content"][2]["mime_type"] == "image/png"
+    assert len(factory.agent.calls[1]["messages"]) == 2  # the retry still follows the picture message
+    saved = json.loads((artifacts.run_dir / "packets" / "critic-run-1.json").read_text())
+    assert saved["images"] == [str(shot)]
+
+
+# --- Task 5: a call carrying an image reaches a model that can see -------------------------------
+
+VISION_MODEL = "openrouter:openai/gpt-6-sol"
+
+
+def _image_packet(tmp_path):
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(b"\x89PNG-bytes")
+    task = Task(id="CALC-001", description="Add subtract", acceptance_criteria=["subtract(3, 1) == 2"])
+    contract = CriticInput(goal=Goal(objective="Add subtract"), plan=Plan(keyword="CALC", description="x", tasks=[task]))
+    return build_packet("critic", contract, budget_tokens=4000, images=[shot])
+
+
+def _capturing_factory(seen):
+    def factory(spec, model, workdir, tools, *, timeout_s=180, provider=None, **kwargs):
+        seen.update(kwargs)
+        return FakeAgent([critique()])
+
+    return factory
+
+
+def test_invoke_builds_the_vision_model_and_hands_it_to_the_factory(conn, artifacts, critic_packet, tmp_path, monkeypatch):
+    from phil.agents.providers import BUILTIN_PROVIDERS
+
+    built = []
+    vision_chat = object()
+
+    def fake_chat_model(model, timeout_s, provider=None, used_by=()):
+        built.append((model, timeout_s, provider, used_by))
+        return vision_chat
+
+    monkeypatch.setattr("phil.agents.factory.chat_model", fake_chat_model)
+    config = PhilConfig(models=TEST_MODELS | {"critic": "ollama:qwen3:32b", "vision": VISION_MODEL})
+    seen, notices = {}, []
+    ctx = context(config, conn, artifacts, _capturing_factory(seen), notice=notices.append,
+                  prices=no_fetch_price_book(tmp_path))
+    invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+    assert built == []  # not built up front: only a call that needs it builds it
+    name, build = seen["vision"]
+    assert name == VISION_MODEL
+    assert build() is vision_chat
+    assert built == [(VISION_MODEL, config.run.model_timeout_s, BUILTIN_PROVIDERS["openrouter"], ("vision",))]
+    assert seen["notice"] == notices.append
+    assert callable(seen["sees"])  # asked only when a call carries an image: the book wasn't consulted
+
+
+def _unbuildable(model, timeout_s, provider=None, used_by=()):
+    from phil.config import ConfigError
+
+    if model == VISION_MODEL:
+        raise ConfigError("openrouter needs OPENROUTER_API_KEY (used by vision).")
+    raise AssertionError(f"unexpected build of {model}")
+
+
+def test_a_vision_model_without_its_key_leaves_text_only_runs_alone(conn, artifacts, critic_packet, tmp_path, monkeypatch):
+    # Through the real lean harness: the agent's own model answers, the vision model is never built.
+    from langchain_core.messages import AIMessage
+
+    from phil.agents.factory import build_agent
+    from tests.agents.test_model_retry import ScriptedChatModel, usage
+
+    answer = usage(AIMessage(content="", tool_calls=[{"name": "PlanCritique", "args": critique().model_dump(), "id": "c1"}]))
+    own = ScriptedChatModel(script=[answer])
+    monkeypatch.setattr("phil.agents.factory.chat_model",
+                        lambda name, timeout_s, **kw: own if name == "ollama:qwen3:32b" else _unbuildable(name, timeout_s, **kw))
+    config = PhilConfig(models=TEST_MODELS | {"critic": "ollama:qwen3:32b", "vision": VISION_MODEL})
+    ctx = context(config, conn, artifacts, build_agent, prices=no_fetch_price_book(tmp_path))
+    assert invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic") == critique()
+
+
+def test_an_image_run_on_a_blind_model_names_the_missing_vision_key(conn, artifacts, tmp_path, monkeypatch):
+    from phil.agents.factory import build_agent
+    from phil.agents.failures import classify_failure
+    from phil.config import ConfigError
+    from tests.agents.test_model_retry import ScriptedChatModel
+
+    listing = {"data": [{"id": "inclusionai/ling-3.0-flash", "pricing": {"prompt": "0", "completion": "0"},
+                         "architecture": {"input_modalities": ["text"]}}]}
+    book = PriceBook(tmp_path / "m.json", fetch=lambda: listing, clock=lambda: 1_000_000.0)
+    own = ScriptedChatModel(script=[])
+    blind = "openrouter:inclusionai/ling-3.0-flash"
+    monkeypatch.setattr("phil.agents.factory.chat_model",
+                        lambda name, timeout_s, **kw: own if name == blind else _unbuildable(name, timeout_s, **kw))
+    config = PhilConfig(models=TEST_MODELS | {"critic": blind, "vision": VISION_MODEL})
+    ctx = context(config, conn, artifacts, build_agent, prices=book)
+    with pytest.raises(ConfigError) as caught:
+        invoke_agent(get_spec("critic"), _image_packet(tmp_path), ctx, node="critic")
+    assert own.received == []
+    failure = classify_failure(caught.value)
+    assert (failure.category, failure.headline) == ("config", "openrouter needs OPENROUTER_API_KEY (used by vision).")
+
+
+def test_no_vision_model_is_built_when_unset_or_the_agents_own(conn, artifacts, critic_packet, tmp_path, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("no vision model should be built")
+
+    monkeypatch.setattr("phil.agents.factory.chat_model", forbidden)
+    for models in ({"critic": VISION_MODEL}, {"critic": VISION_MODEL, "vision": VISION_MODEL}):
+        seen = {}
+        config = PhilConfig(models=TEST_MODELS | models)
+        ctx = context(config, conn, artifacts, _capturing_factory(seen), prices=no_fetch_price_book(tmp_path))
+        invoke_agent(get_spec("critic"), critic_packet, ctx, node="critic")
+        assert seen["vision"] is None and seen["notice"] is None
+
+
+def test_the_factory_is_told_whether_the_model_sees(conn, artifacts, critic_packet, tmp_path):
+    listing = {"data": [{"id": "a/text", "pricing": {"prompt": "0", "completion": "0"},
+                         "architecture": {"input_modalities": ["text"]}}]}
+    book = PriceBook(tmp_path / "m.json", fetch=lambda: listing, clock=lambda: 1_000_000.0)
+    seen = {}
+    config = PhilConfig(models=TEST_MODELS | {"critic": "openrouter:a/text"})
+    invoke_agent(get_spec("critic"), critic_packet, context(config, conn, artifacts, _capturing_factory(seen), prices=book),
+                 node="critic")
+    assert seen["sees"]() is False
+
+
+def test_vision_calls_priced_at_vision_rates(conn, artifacts, tmp_path, monkeypatch):
+    # End to end through the real lean harness: the agent's own (local) model refuses the picture,
+    # the call is retried once on the vision model, and that call is priced at the vision model's
+    # rates and recorded under its name, not as a free local call.
+    from langchain_core.messages import AIMessage
+
+    from phil.agents.factory import build_agent
+    from tests.agents.test_model_retry import ScriptedChatModel, usage
+
+    class NotFound(Exception):
+        status_code = 404
+
+    own = ScriptedChatModel(script=[NotFound("No endpoints found that support image input")])
+    answer = usage(AIMessage(content="", tool_calls=[{"name": "PlanCritique", "args": critique().model_dump(), "id": "c1"}]))
+    vision = ScriptedChatModel(script=[answer])
+    monkeypatch.setattr("phil.agents.factory.chat_model", lambda name, timeout_s, **_: vision if name == VISION_MODEL else own)
+    config = PhilConfig(models=TEST_MODELS | {"critic": "ollama:qwen3:32b", "vision": VISION_MODEL})
+    notices = []
+    ctx = context(config, conn, artifacts, build_agent, notice=notices.append, prices=price_book(tmp_path))
+    result = invoke_agent(get_spec("critic"), _image_packet(tmp_path), ctx, node="critic")
+    assert result == critique()
+    assert (len(own.received), len(vision.received)) == (1, 1)  # refused once, never retried as transient
+    assert notices == ["↪ image: critic runs on openrouter:openai/gpt-6-sol"]
+    [call] = calls_rows(conn)
+    assert (call["model"], call["cost_source"]) == (VISION_MODEL, "estimated")
+    assert call["cost_usd"] == pytest.approx(10 * 0.000002 + 2 * 0.00001)
+    [row] = telemetry(conn)
+    assert row["model"] == "ollama:qwen3:32b"  # the agent's run, under its own configured model
+
+
+def test_a_blind_model_with_no_vision_model_is_refused(conn, artifacts, tmp_path, monkeypatch):
+    from phil.agents.failures import classify_failure
+    from phil.agents.vision import ImageRefusal
+    from tests.agents.test_model_retry import ScriptedChatModel, real_factory
+
+    listing = {"data": [{"id": "inclusionai/ling-3.0-flash", "pricing": {"prompt": "0", "completion": "0"},
+                         "architecture": {"input_modalities": ["text"]}}]}
+    book = PriceBook(tmp_path / "m.json", fetch=lambda: listing, clock=lambda: 1_000_000.0)
+    own = ScriptedChatModel(script=[])
+    config = PhilConfig(models=TEST_MODELS | {"critic": "openrouter:inclusionai/ling-3.0-flash"})
+    ctx = context(config, conn, artifacts, real_factory(own, monkeypatch), prices=book)
+    with pytest.raises(ImageRefusal) as caught:
+        invoke_agent(get_spec("critic"), _image_packet(tmp_path), ctx, node="critic")
+    assert own.received == []  # never sent
+    failure = classify_failure(caught.value)
+    assert (failure.headline, failure.retries) == ("openrouter:inclusionai/ling-3.0-flash can't read images.",
+                                                   "Phil won't retry this.")
+    assert [row["outcome"] for row in telemetry(conn)] == ["error"]

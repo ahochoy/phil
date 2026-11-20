@@ -349,3 +349,16 @@ def test_openrouter_decisions_is_allowed_only_as_the_classifier():
     assert PhilConfig(models={"classifier": "openrouter_decisions:typesafe/jev-1.13"}).is_systemone("classifier")
     with pytest.raises(ValueError):
         PhilConfig(models={"low": "openrouter_decisions:typesafe/jev-1.13"})
+
+
+def test_openrouter_turns_a_packet_image_part_into_an_image_url():
+    """Packets send images as LangChain data blocks in the user message; pin that ChatOpenRouter
+    converts them to OpenRouter's image_url form."""
+    from langchain_core.messages import HumanMessage
+
+    model = build_chat_model(BUILTIN_PROVIDERS["openrouter"], "anthropic/claude-sonnet-5-5", 180, environ=FAKE_ENVIRON)
+    content = [{"type": "text", "text": "see"}, {"type": "image", "base64": JPEG, "mime_type": "image/png"}]
+    dicts, _ = model._create_message_dicts([HumanMessage(content=content)], None)
+    text_part, image_part = dicts[-1]["content"]
+    assert text_part == {"type": "text", "text": "see"}
+    assert image_part == {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{JPEG}"}}

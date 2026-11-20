@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -35,6 +36,20 @@ def test_prepare_run_records_the_chat(calc_repo):
     info = resolve_repo(calc_repo)
     record = prepare_run(info, calc_plan(), info.head_sha, chat_id="c-20260928-120000")
     assert record.chat_id == "c-20260928-120000"
+
+
+def test_prepare_run_writes_attachments(calc_repo, tmp_path):
+    info = resolve_repo(calc_repo)
+    image = tmp_path / "shot.png"
+    record = prepare_run(info, calc_plan(), info.head_sha, images=[image])
+    written = json.loads((ProjectPaths(info.slug).run_dir(record.run_id) / "attachments.json").read_text())
+    assert written == {"images": [str(image)]}
+
+
+def test_prepare_run_without_images_writes_no_attachments(calc_repo):
+    info = resolve_repo(calc_repo)
+    record = prepare_run(info, calc_plan(), info.head_sha)
+    assert not (ProjectPaths(info.slug).run_dir(record.run_id) / "attachments.json").exists()
 
 
 def test_prepare_run_records_the_checked_out_branch(calc_repo):

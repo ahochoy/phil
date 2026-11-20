@@ -15,7 +15,7 @@ OK = ModelCheck(ok=True, echo=CHECK_WORD)
 
 
 class TextOnlyFactory:
-    def __call__(self, spec, model, workdir, tools, *, timeout_s=180, provider=None):
+    def __call__(self, spec, model, workdir, tools, *, timeout_s=180, provider=None, **_):
         return self
 
     def invoke(self, payload, config=None):

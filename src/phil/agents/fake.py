@@ -56,6 +56,7 @@ class FakeAgentFactory:
         *,
         timeout_s: int = 180,
         provider: ProviderSpec | None = None,  # ignored: scripted agents call no model
+        **_: object,  # vision, sees, notice: ignored likewise
     ) -> FakeAgent:
         self.built.append((spec.name, model))
         self.tools_seen.append([tool.__name__ for tool in tools])
@@ -128,5 +129,6 @@ class ScriptedAgentFactory:
         *,
         timeout_s: int = 180,
         provider: ProviderSpec | None = None,  # ignored: scripted agents call no model
+        **_: object,  # vision, sees, notice: ignored likewise
     ) -> _ScriptedAgent:
         return _ScriptedAgent(self, spec.name, workdir, {tool.__name__: tool for tool in tools})

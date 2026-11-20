@@ -13,6 +13,8 @@ ROLES = (
     "memory",
 )
 TIERS = ("high", "low", "classifier")
+# The optional `[models]` key for a model that can read images; neither a role nor a tier.
+VISION_KEY = "vision"
 # Tier each role resolves through when it has no model of its own (and [tiers] doesn't remap it).
 DEFAULT_TIERS: dict[str, str] = {
     "architect": "high",
@@ -224,12 +226,18 @@ class PhilConfig(_Section):
     @field_validator("models")
     @classmethod
     def _validate_model_roles(cls, value: dict[str, str]) -> dict[str, str]:
-        unknown = sorted(set(value) - set(ROLES) - set(TIERS))
+        unknown = sorted(set(value) - set(ROLES) - set(TIERS) - {VISION_KEY})
         if unknown:
             raise ValueError(
-                f"Unknown key(s) in [models]: {unknown}. Valid roles: {list(ROLES)}, valid tiers: {list(TIERS)}"
+                f"Unknown key(s) in [models]: {unknown}. Valid roles: {list(ROLES)}, valid tiers: {list(TIERS)}, "
+                f"and {VISION_KEY!r} (a model that can read images)"
             )
         return value
+
+    def vision_model(self) -> str | None:
+        """The optional `[models] vision` model, which a call carrying an image runs on when its own
+        model can't read images. Not a role or a tier: no agent runs on it by default."""
+        return self.models.get(VISION_KEY)
 
     @field_validator("tiers")
     @classmethod

@@ -198,3 +198,44 @@ def test_the_architect_sees_the_conversation(chat_ctx, tmp_path):
     turns = [ConverseTurn(speaker="user", text="use argparse please")]
     Planner(chat_ctx(factory), "calc.py").draft(goal(), tmp_path, conversation=turns)
     assert "use argparse please" in str(factory.calls[0][1])
+
+
+def _image(tmp_path):
+    path = tmp_path / "shot.png"
+    path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    return path
+
+
+def _image_parts(payload) -> list[dict]:
+    content = payload["messages"][0]["content"]
+    return [part for part in content if part.get("type") == "image"] if isinstance(content, list) else []
+
+
+def test_the_architect_and_critic_see_the_images_in_a_draft_and_a_revision(chat_ctx, tmp_path):
+    factory = ScriptedAgentFactory(
+        {"architect": [plan(), plan()], "critic": [critique(), critique()]}
+    )
+    planner = Planner(chat_ctx(factory), "overview")
+    image = _image(tmp_path)
+    draft = planner.draft(goal(), tmp_path, images=[image])
+    planner.revise(goal(), draft, "smaller", tmp_path, images=[image])
+    assert [role for role, _ in factory.calls] == ["architect", "critic", "architect", "critic"]
+    assert all(len(_image_parts(payload)) == 1 for _, payload in factory.calls)
+
+
+def test_intake_and_converse_send_the_images(chat_ctx, tmp_path):
+    from phil.chat.planning import converse
+    from phil.contracts import IntakeTurn
+
+    factory = ScriptedAgentFactory({"intake": [goal()], "converse": [IntakeTurn(reply="Which?", ready=False)]})
+    ctx = chat_ctx(factory)
+    image = _image(tmp_path)
+    intake(ctx, "fix this", overview="", images=[image])
+    converse(ctx, [ConverseTurn(speaker="user", text="fix this")], tree=tmp_path, overview="", images=[image])
+    assert [len(_image_parts(payload)) for _, payload in factory.calls] == [1, 1]
+
+
+def test_without_images_the_packet_is_text(chat_ctx, tmp_path):
+    factory = ScriptedAgentFactory({"architect": [plan()], "critic": [critique()]})
+    Planner(chat_ctx(factory), "overview").draft(goal(), tmp_path)
+    assert all(isinstance(payload["messages"][0]["content"], str) for _, payload in factory.calls)

@@ -10,6 +10,16 @@ if TYPE_CHECKING:
 CATEGORIES = ("auth", "quota", "busy", "server", "network", "refused", "output", "config", "internal")
 PROVIDER_ATTR = "phil_provider"  # the ProviderSpec invoke_agent tags a failed call's exception with
 _BAD_KEY_PHRASES = ("api_key_invalid", "api key not valid")
+# A provider's words for refusing a call because of its image (matched lower-cased, by
+# phil.agents.vision.is_image_refusal; spec 2026-11-19 images, "The safety net").
+IMAGE_REFUSAL_PHRASES = (
+    "support image input",
+    "does not support image",
+    "image input is not supported",
+    "vision is not supported",
+    "multimodal",
+)
+VISION_ACTION = 'Set a vision model: [models] vision = "provider:model"'
 
 # langchain_core's provider-neutral model-error names (langchain_core.exceptions), matched by
 # name along the exception's MRO rather than imported, the same way retry.py matches them. Used
@@ -149,6 +159,9 @@ def _classify(
     from phil.agents.retry import is_transient, local_server_down, looks_like_quota, provider_detail
     from phil.config import ConfigError
 
+    # phil.agents.vision.ImageRefusal, matched by name: importing it loads langchain.
+    if "ImageRefusal" in _mro_names(exc) and isinstance(getattr(exc, "model", None), str):
+        return Failure("refused", f"{exc.model} can't read images.", "Phil won't retry this.", VISION_ACTION)  # type: ignore[attr-defined]
     if isinstance(exc, ContractViolation):
         return Failure("output", f"The {exc.agent} didn't return a usable answer.", "Phil already retried.",
                        f"Try again, or use a stronger model for {exc.agent}.")

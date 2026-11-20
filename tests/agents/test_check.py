@@ -16,7 +16,7 @@ class TextOnlyFactory:
         self.text = text
         self.calls = 0
 
-    def __call__(self, spec, model, workdir, tools, *, timeout_s=180, provider=None):
+    def __call__(self, spec, model, workdir, tools, *, timeout_s=180, provider=None, **_):
         return self
 
     def invoke(self, payload, config=None):
@@ -80,6 +80,25 @@ def test_role_keys_that_override_their_tier_are_checked_too(tmp_path):
         ("role:critic", "ollama:judge"),
     ]
     assert factory.remaining() == {"model_check": 0}
+
+
+def test_models_check_includes_vision_when_set(tmp_path):
+    config = PhilConfig(models={"high": "ollama:big", "low": "ollama:small", "vision": "ollama:eyes"})
+    assert check_targets(config)[-1] == ("ollama:eyes", ["vision"])
+    factory = ScriptedAgentFactory({"model_check": [OK, OK, OK]})
+    results = check_models(config, factory=factory, repo_root=tmp_path)
+    assert [(r.label, r.model, r.ok) for r in results][-1] == ("vision", "ollama:eyes", True)
+    assert factory.remaining() == {"model_check": 0}
+
+
+def test_models_check_skips_vision_when_unset(tmp_path):
+    config = PhilConfig(models={"high": "ollama:big", "low": "ollama:small"})
+    assert all("vision" not in labels for _, labels in check_targets(config))
+
+
+def test_a_vision_model_shared_with_a_tier_is_checked_once(tmp_path):
+    config = PhilConfig(models={"high": "ollama:big", "low": "ollama:small", "vision": "ollama:big"})
+    assert check_targets(config) == [("ollama:big", ["high", "vision"]), ("ollama:small", ["low"])]
 
 
 def test_no_models_gives_no_results(tmp_path):

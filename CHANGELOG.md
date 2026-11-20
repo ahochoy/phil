@@ -31,3 +31,13 @@ The first public release, published to PyPI as `phil-agent`.
   being cut off, picked answers and answers to Phil's clarifying questions kept as
   `? question  answer`, and a burst that edited files
   shows each file's changed lines (`+`/`−`, up to 8 lines and 3 files, `/more #n` for the rest).
+- Images: drag an image (up to 5 MB, 5 per message) onto the chat input and the intake
+  conversation, answerer, designer, architect, critic and implementer see it (the tester and
+  reviewer are told its path). An optional
+  `[models] vision` model, offered by `phil setup` and checked by `phil models check`, reads
+  images when an agent's own model can't.
+
+### Fixed
+
+- A model's malformed tool-call arguments are repaired before Phil resends the history, so
+  provider errors like `function.arguments must be valid JSON` no longer stop a run.

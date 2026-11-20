@@ -52,6 +52,7 @@ def intake(
     call: int = 1,
     route_depth: Literal["answer", "quick", "full"] | None = None,
     detected_test_cmd: str | None = None,
+    images: Sequence[Path] = (),
 ) -> Goal:
     contract = IntakeInput(
         message=message,
@@ -61,7 +62,7 @@ def intake(
         route_depth=route_depth,
         detected_test_cmd=detected_test_cmd,
     )
-    packet = build_packet("orchestrator", contract, budget_tokens=_budget(ctx, "orchestrator"))
+    packet = build_packet("orchestrator", contract, budget_tokens=_budget(ctx, "orchestrator"), images=images)
     return invoke_agent(get_spec("intake"), packet, ctx, node="intake", call=call)
 
 
@@ -76,9 +77,11 @@ def converse(
     detected_test_cmd: str | None = None,
     must_decide: bool = False,
     call: int = 1,
+    images: Sequence[Path] = (),
 ) -> IntakeTurn:
     """One turn of the intake conversation (spec 2026-11-10 §4.2): the converse agent reads `tree`,
-    the base commit's snapshot (as the architect does), read-only."""
+    the base commit's snapshot (as the architect does), read-only. `images` are all of the goal's
+    attachments so far: the earlier turns travel as text only."""
     contract = ConverseInput(
         turns=list(turns),
         route_depth=route_depth,
@@ -87,7 +90,7 @@ def converse(
         detected_test_cmd=detected_test_cmd,
         must_decide=must_decide,
     )
-    packet = build_packet("orchestrator", contract, budget_tokens=_budget(ctx, "orchestrator"))
+    packet = build_packet("orchestrator", contract, budget_tokens=_budget(ctx, "orchestrator"), images=images)
     out = invoke_agent(get_spec("converse"), packet, replace(ctx, workdir=tree), node="converse", call=call)
     assert isinstance(out, IntakeTurn)
     return out
@@ -162,6 +165,7 @@ class Planner:
         approach: Approach | None = None,
         approach_note: str = "",
         conversation: Sequence[ConverseTurn] | None = None,
+        images: Sequence[Path] = (),
     ) -> Plan:
         contract = ArchitectInput(
             goal=goal,
@@ -174,14 +178,18 @@ class Planner:
             approach_note=approach_note,
             conversation=list(conversation) if conversation else None,
         )
-        packet = build_packet("architect", contract, budget_tokens=_budget(ctx, "architect"))
+        packet = build_packet("architect", contract, budget_tokens=_budget(ctx, "architect"), images=images)
         spec = get_spec("architect")
         if previous is not None:  # a revision: the previous plan already reflects the repo
             spec = replace(spec, max_model_calls=ARCHITECT_REVISE_MAX_MODEL_CALLS)
         return invoke_agent(spec, packet, replace(ctx, workdir=tree), node="architect", call=call)
 
-    def _critic(self, ctx: AgentContext, goal: Goal, plan: Plan, call: int) -> PlanCritique:
-        packet = build_packet("critic", CriticInput(goal=goal, plan=plan), budget_tokens=_budget(ctx, "critic"))
+    def _critic(
+        self, ctx: AgentContext, goal: Goal, plan: Plan, call: int, images: Sequence[Path] = ()
+    ) -> PlanCritique:
+        packet = build_packet(
+            "critic", CriticInput(goal=goal, plan=plan), budget_tokens=_budget(ctx, "critic"), images=images
+        )
         return invoke_agent(get_spec("critic"), packet, ctx, node="critic", call=call)
 
     def _cycle(
@@ -197,9 +205,11 @@ class Planner:
         approach_note: str = "",
         over_budget: Callable[[], bool] | None = None,
         conversation: Sequence[ConverseTurn] | None = None,
+        images: Sequence[Path] = (),
     ) -> PlanDraft:
         """`over_budget` is checked before each architect call: before the first it stops planning
-        (PlanningBudgetExceeded); before a revision it keeps the plan so far (budget_stopped)."""
+        (PlanningBudgetExceeded); before a revision it keeps the plan so far (budget_stopped).
+        `images`, the goal's attachments, go to the architect and the critic as pictures."""
         ctx = self.ctx if ctx is None else ctx
         if over_budget is not None and over_budget():
             raise PlanningBudgetExceeded()
@@ -207,11 +217,11 @@ class Planner:
             on_step("architect")
         call = self._next_call()
         plan = self._architect(
-            ctx, goal, previous, critique, tree, call, prior_attempt, approach, approach_note, conversation
+            ctx, goal, previous, critique, tree, call, prior_attempt, approach, approach_note, conversation, images
         )
         if on_step:
             on_step("critic")
-        review = self._critic(ctx, goal, plan, call)
+        review = self._critic(ctx, goal, plan, call, images)
         for _ in range(MAX_CRITIC_REVISIONS):
             if review.verdict != "revise":
                 break
@@ -221,11 +231,11 @@ class Planner:
                 on_step("revise")
             call = self._next_call()
             plan = self._architect(
-                ctx, goal, plan, review, tree, call, prior_attempt, approach, approach_note, conversation
+                ctx, goal, plan, review, tree, call, prior_attempt, approach, approach_note, conversation, images
             )
             if on_step:
                 on_step("critic")
-            review = self._critic(ctx, goal, plan, call)
+            review = self._critic(ctx, goal, plan, call, images)
         return PlanDraft(_with_notes(plan, review), review, self._next_version())
 
     def draft(
@@ -240,10 +250,12 @@ class Planner:
         approach_note: str = "",
         over_budget: Callable[[], bool] | None = None,
         conversation: Sequence[ConverseTurn] | None = None,
+        images: Sequence[Path] = (),
     ) -> PlanDraft:
         """`ctx` overrides the planner's context for this cycle (a chat job passes one with its own connection)."""
         return self._cycle(
-            goal, None, None, tree, on_step, ctx, prior_attempt, approach, approach_note, over_budget, conversation
+            goal, None, None, tree, on_step, ctx, prior_attempt, approach, approach_note, over_budget, conversation,
+            images,
         )
 
     def revise(
@@ -260,6 +272,7 @@ class Planner:
         approach_note: str = "",
         over_budget: Callable[[], bool] | None = None,
         conversation: Sequence[ConverseTurn] | None = None,
+        images: Sequence[Path] = (),
     ) -> PlanDraft:
         request = PlanCritique(
             verdict="revise",
@@ -269,5 +282,5 @@ class Planner:
         )
         return self._cycle(
             goal, draft.plan, request, tree, on_step, ctx, prior_attempt, approach, approach_note, over_budget,
-            conversation,
+            conversation, images,
         )

@@ -16,6 +16,13 @@ class ModelCall:
     reported_cost: float | None
     cache_read_tokens: int = 0  # of input_tokens, how many were read from the provider's prompt cache
     cache_write_tokens: int = 0  # of input_tokens, how many were written to it
+    # Set for a call another model than the agent's served (the `vision` model): `model` is then
+    # its configured `provider:model` and this the provider's name, so it's priced at its own rates.
+    provider: str | None = None
+
+
+# phil.agents.vision.SERVED_BY_KEY (not imported: that module loads langchain's agent stack).
+_SERVED_BY_KEY = "phil_served_by"
 
 
 def _cache_tokens(message: object) -> tuple[int, int]:
@@ -97,8 +104,21 @@ class UsageCollector(BaseCallbackHandler):
         self.tool_calls: dict[str, int] = {}
         self.tool_paths: dict[str, list[str]] = tool_paths if tool_paths is not None else {}
         self._ignore_tools = set(ignore_tools)
+        self._served_by: dict[object, str] = {}  # run id → the model a tagged chat model call ran on
+
+    def on_chat_model_start(self, serialized, messages, *, run_id, metadata=None, **kwargs) -> None:
+        served_by = (metadata or {}).get(_SERVED_BY_KEY)
+        if isinstance(served_by, str):
+            with self._lock:
+                self._served_by[run_id] = served_by
+
+    def on_llm_error(self, error, *, run_id, **kwargs) -> None:
+        with self._lock:
+            self._served_by.pop(run_id, None)
 
     def on_llm_end(self, response: LLMResult, *, run_id, parent_run_id=None, **kwargs) -> None:
+        with self._lock:
+            served_by = self._served_by.pop(run_id, None)
         llm_output = response.llm_output or {}
         # The response-level aggregate, for generations whose message carries no usage. It is
         # for the whole response, so it is applied to one generation only (n > 1 would
@@ -117,7 +137,7 @@ class UsageCollector(BaseCallbackHandler):
                     usage, token_usage_fallback = token_usage_fallback or (0, 0), None
                 response_metadata = getattr(message, "response_metadata", None) or {}
                 cost = response_metadata.get("cost")
-                model = _model_name(response_metadata) or fallback_model
+                model = served_by or _model_name(response_metadata) or fallback_model
                 cache_read, cache_write = _cache_tokens(message)
                 new_calls.append(
                     ModelCall(
@@ -127,6 +147,7 @@ class UsageCollector(BaseCallbackHandler):
                         reported_cost=float(cost) if cost is not None else None,
                         cache_read_tokens=cache_read,
                         cache_write_tokens=cache_write,
+                        provider=served_by.partition(":")[0] if served_by else None,
                     )
                 )
         if new_calls:

@@ -1,6 +1,7 @@
 """The full-screen frame's widgets (the tree is in `app.py`'s `PhilApp.compose`)."""
 
 import logging
+import re
 import time
 from collections.abc import Callable
 
@@ -14,6 +15,7 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Static, TextArea
 
+from phil.chat.attachments import chip, find_images
 from phil.chat.controller import TYPE
 from phil.chat.decision import Decision
 from phil.chat.state import ToolbarView
@@ -371,7 +373,9 @@ class DecisionMenu(Widget, can_focus=True):
 class PromptBox(TextArea):
     """The input box, always live. Enter sends its text (`Submitted`) and clears it; Alt+Enter,
     Shift+Enter and Ctrl+Enter insert a newline; Ctrl+D in an empty box is `EndOfInput`; a paste
-    inserts as text. Any key typed here returns the conversation to the bottom."""
+    inserts as text, except that each image path in it (a dropped file) shows as its chip,
+    `[image N: name]`, and is sent as the path again. Any key typed here returns the conversation
+    to the bottom."""
 
     NEWLINE_KEYS = frozenset({"alt+enter", "shift+enter", "ctrl+enter"})
 
@@ -383,6 +387,10 @@ class PromptBox(TextArea):
     class EndOfInput(Message):
         pass
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._chips: dict[str, str] = {}  # chip -> the pasted path it stands for, until the text is sent
+
     # A public `on_key`, not an `_on_key` override calling super: Textual dispatches each class's
     # handler along the MRO, so this runs first and TextArea's `_on_key` runs once after it (not at
     # all for a key handled here, which prevents the default).
@@ -390,7 +398,7 @@ class PromptBox(TextArea):
         self.screen.query_one(Conversation).to_bottom()
         if event.key == "enter":
             self._handled(event)
-            text = self.text
+            text = self._expanded(self.text)
             self.clear()
             self.post_message(self.Submitted(text))
         elif event.key in self.NEWLINE_KEYS:
@@ -406,8 +414,61 @@ class PromptBox(TextArea):
             event.stop()
             event.prevent_default()
 
+    # Public, like `on_key`: it runs before TextArea's `_on_paste`, which it skips for a paste it inserts.
+    def on_paste(self, event: events.Paste) -> None:
+        """A paste naming image files goes in with each path as its chip, numbered after the box's
+        earlier chips (the same file keeps its chip); any other paste is TextArea's."""
+        found = find_images(event.text)
+        if not found or self.read_only:
+            return
+        event.stop()
+        event.prevent_default()
+        self._chips = self._present_chips()  # a chip the user deleted is neither counted nor reused
+        labels: dict[str, str] = {}  # pasted path -> its chip, numbered in the paste's order
+        for item in found:
+            label = next((label for label, raw in self._chips.items() if raw == item.raw), None)
+            if label is None:
+                label = chip(self._next_chip_number(), item.path.name)
+                self._chips[label] = item.raw
+            labels[item.raw] = label
+        text = event.text
+        for raw in sorted(labels, key=len, reverse=True):  # a longer path first: no path is part of another's chip
+            text = text.replace(raw, labels[raw])
+        start, end = self.selection
+        result = self.replace(text, start, end, maintain_selection_offset=False)
+        self.move_cursor(result.end_location)
+        self.focus()
+
+    def _present_chips(self) -> dict[str, str]:
+        """The remembered chips still in the box's text."""
+        text = self.text
+        return {label: raw for label, raw in self._chips.items() if label in text}
+
+    def _next_chip_number(self) -> int:
+        """One past the highest chip number in `_chips` (`[image N: …]`), so no two chips share one."""
+        numbers = [int(label[len("[image "):label.index(":")]) for label in self._chips]
+        return max(numbers, default=0) + 1
+
+    def _expanded(self, text: str) -> str:
+        """`text` with each chip still in it back as the path it stands for (the chat attaches from
+        the paths). A path that would touch the text beside it gets a space, so it is still found."""
+        chips, self._chips = self._chips, {}
+        chips = {label: raw for label, raw in chips.items() if label in text}
+        if not chips:
+            return text
+        pattern = re.compile("|".join(re.escape(label) for label in sorted(chips, key=len, reverse=True)))
+
+        def path_for(match: re.Match[str]) -> str:
+            start, end = match.span()
+            before = " " if start > 0 and not text[start - 1].isspace() else ""
+            after = " " if end < len(text) and not text[end].isspace() else ""
+            return f"{before}{chips[match.group(0)]}{after}"
+
+        return pattern.sub(path_for, text)
+
     def set_text(self, text: str) -> None:
-        """Replace the box's text, the cursor at its end."""
+        """Replace the box's text, the cursor at its end. The old text's chips are forgotten."""
+        self._chips = {}
         self.text = text
         self.move_cursor(self.document.end)
 
