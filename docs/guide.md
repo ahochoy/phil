@@ -280,8 +280,9 @@ can ask to see them drawn. Phil never draws unless you ask. At the approach prom
   with your note. `show` followed by other words, like `show prices in red`, is your own approach,
   not a request. In the full-screen chat the menu has **Show as mockups** when the approaches
   differ in look, and Phil adds `Say "show" to see these as mockups.`
-- With a browser, the first mockup in a chat opens in a tab. Later ones rewrite the same page and
-  print `Mockup updated: reload the tab`; a link to the file prints every time. With no browser
+- With a browser, a mockup opens in a tab: the first in a chat, the first after you reopen the
+  chat or start a new goal, and the next one after a tab failed to open. Other mockups rewrite the
+  same page and print `Mockup updated: reload the tab`; a link to the file prints every time. With no browser
   (an SSH session, or Linux with no display) Phil prints a terminal sketch instead.
 - Pages are kept in the project's folder, `~/.phil/projects/<project>/mockups/<chat id>.html`, with
   `-v<n>` copies of earlier versions. A page runs no script and loads nothing from the network.
