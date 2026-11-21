@@ -12,8 +12,24 @@ FACTS = BannerFacts(
 )
 
 
-def box_lines(lines):
-    return [line.plain for line in lines if line.plain[:1] in "╭│╰"]
+PHI = (" ▄█▀ █▀▀█▄", "██   █   ██", "██   █   ██", " ▀█▄ █ ▄█▀", "   ▀▀█▀▀", "     █")
+
+
+def _is_rule(plain: str) -> bool:
+    return bool(plain) and set(plain) == {"─"}
+
+
+def card_lines(lines):
+    """The card's plain lines, up to and including the line under it ([] when there is no card)."""
+    plains = [line.plain for line in lines]
+    for i, plain in enumerate(plains):
+        if _is_rule(plain):
+            return plains[: i + 1]
+    return []
+
+
+def rule(lines):
+    return next((line for line in lines if _is_rule(line.plain)), None)
 
 
 @pytest.mark.parametrize("width", [60, 80, 120])
@@ -22,31 +38,47 @@ def box_lines(lines):
     BannerFacts(**{**FACTS.__dict__, "repo": "計算器プロジェクト", "branch": "feat/🚀-launch"}),
     BannerFacts(**{**FACTS.__dict__, "models": (("high", "an-extremely-long-model-name-" * 4),)}),
 ])
-def test_every_box_line_has_the_same_width(width, facts):
-    lines = box_lines(render_banner(facts, width))
+def test_every_card_line_has_the_same_width(width, facts):
+    lines = card_lines(render_banner(facts, width))
     assert lines and len({cell_len(line) for line in lines}) == 1
     assert all(cell_len(line) <= width - 1 for line in lines)
+    assert not any("╭" in line or "╰" in line or line.startswith("│") for line in lines)
+
+
+def test_mascot_is_the_phi():
+    assert tuple("".join(text for _, text in row) for row in MASCOT) == PHI
+    assert all(style == "phil.brand" for row in MASCOT for style, _ in row)
+
+
+def test_card_has_only_a_bottom_line():
+    lines = render_banner(FACTS, 120)
+    assert lines[0].plain.startswith(PHI[0]) and "Phil v0.9.0" in lines[0].plain
+    line = rule(lines)
+    assert line is not None and line.style == "phil.muted"
+    assert cell_len(line.plain) == max(cell_len(row) for row in card_lines(lines)[:-1])
 
 
 def test_uneven_and_wider_mascots_still_line_up():
     mascot = ((("", "  ^^  "),), (("", "(o_o)  wide one"),), (("", "/"),))
-    lines = box_lines(render_banner(FACTS, 100, mascot=mascot))
+    lines = card_lines(render_banner(FACTS, 100, mascot=mascot))
     assert len({cell_len(line) for line in lines}) == 1
+    rows = lines[:-1]
     starts = {}
     for marker in ("Phil v", "calc @", "high ", "budget "):
-        [line] = [line for line in lines if marker in line]
+        [line] = [line for line in rows if marker in line]
         starts[marker] = line.index(marker)
     art_w = len("(o_o)  wide one")
     assert starts["Phil v"] == starts["calc @"]
-    assert set(starts.values()) == {2 + art_w + GAP}  # every non-empty fact starts after the art and the gap
+    assert set(starts.values()) == {art_w + GAP}  # every non-empty fact starts after the art and the gap
 
 
 def test_tier_edges():
-    assert any("◠" in t.plain or "╭─────╮" in t.plain for t in render_banner(FACTS, NARROW_MASCOT))
-    assert not any("◠" in t.plain for t in render_banner(FACTS, NARROW_MASCOT - 1))
-    assert box_lines(render_banner(FACTS, NARROW_BOX))
+    assert any("█" in t.plain for t in render_banner(FACTS, NARROW_MASCOT))
+    no_mascot = render_banner(FACTS, NARROW_MASCOT - 1)
+    assert not any("█" in t.plain for t in no_mascot) and rule(no_mascot) is not None
+    assert rule(render_banner(FACTS, NARROW_BOX)) is not None
     plain = render_banner(FACTS, NARROW_BOX - 1)
-    assert not box_lines(plain) and all(cell_len(t.plain) <= NARROW_BOX - 2 for t in plain)
+    assert rule(plain) is None and all(cell_len(t.plain) <= NARROW_BOX - 2 for t in plain)
 
 
 def test_facts_content():
@@ -132,7 +164,7 @@ def test_the_run_line_uses_the_label_and_keeps_the_id_in_the_hint():
 
 
 def test_the_models_row_drops_whole_segments_at_80_columns():
-    box = "\n".join(box_lines(render_banner(FACTS, 80)))
+    box = "\n".join(card_lines(render_banner(FACTS, 80)))
     assert "…" not in box
     assert "high claude-sonnet-5" in box
 

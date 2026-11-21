@@ -17,6 +17,11 @@ from tests.cli.test_chat_command import _FakeTerminal, _plain, inline_screen  # 
 runner = CliRunner()
 
 
+def _is_rule(line: str) -> bool:
+    """The line under the welcome card: only `─`."""
+    return bool(line.strip()) and set(line.strip()) == {"─"}
+
+
 def _add_run(repo: Path, run_id: str, *states: str) -> ProjectPaths:
     """A run for `repo`, walked through `states` (from pending)."""
     paths = ProjectPaths(resolve_repo(repo).slug)
@@ -38,9 +43,11 @@ def test_chat_opens_with_the_card_and_no_help_paragraph(calc_repo, monkeypatch):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)], input="", env={"COLUMNS": "120"})
     assert result.exit_code == 0, result.output
     output = _plain(result.output)
-    box = [line for line in output.splitlines() if line.startswith("│")]
-    assert any("Phil v" in line for line in box)
-    assert any("calc" in line for line in box)
+    lines = output.splitlines()
+    rule = next(i for i, line in enumerate(lines) if _is_rule(line))
+    card = lines[:rule]
+    assert any("Phil v" in line for line in card)
+    assert any("calc" in line for line in card)
     assert "Type a goal to start" not in output
     assert "Commands: /runs" not in output
 
@@ -52,6 +59,7 @@ def test_piped_start_prints_plain_facts(calc_repo):
     assert "calc @ main" in result.output
     assert "Type a goal to start" not in result.output
     assert not any(ch in result.output for ch in ("╭", "│", "\x1b"))
+    assert not any(_is_rule(line) for line in result.output.splitlines())
 
 
 def test_a_paused_run_shows_in_pick_up(calc_repo):
@@ -92,7 +100,7 @@ def test_a_failing_render_falls_back_to_plain_lines(calc_repo, monkeypatch):
     assert result.exit_code == 0, result.output
     output = _plain(result.output)
     assert "calc @ main" in output and "Type a goal to start" not in output
-    assert not any(line.startswith("│") for line in output.splitlines())
+    assert not any(_is_rule(line) for line in output.splitlines())
     assert "you › " in output
 
 

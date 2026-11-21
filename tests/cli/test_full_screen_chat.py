@@ -12,6 +12,7 @@ from phil.store.db import connect
 from phil.store.paths import ProjectPaths
 from phil.store.runs import list_runs
 from phil.ui.screen.io import ScreenIO
+from phil.ui.mascot import MASCOT
 from phil.ui.screen.widgets import Conversation, DecisionMenu
 from tests.helpers import classic_repo
 from tests.ui.screen.pilot import render, until
@@ -100,12 +101,24 @@ def full_screen(calc_repo, monkeypatch, phil_home):
     return play
 
 
+MASCOT_TOP = "".join(text for _, text in MASCOT[0]).strip()
+FACT_ROWS = 5  # the card's facts: identity, a blank, the repo, the models, the budget
+
+
 def _card(conversation: str) -> list[str]:
-    """The banner card's rows: from its top border to its bottom one."""
-    lines = conversation.splitlines()
-    top = next(i for i, line in enumerate(lines) if line.startswith("╭"))
-    bottom = next(i for i, line in enumerate(lines) if line.startswith("╰"))
+    """The banner card's rows, right-trimmed: from the card's first line (it is the first item) to
+    the line under it."""
+    lines = [line.rstrip() for line in conversation.splitlines()]
+    top = next(i for i, line in enumerate(lines) if line)
+    bottom = next(i for i, line in enumerate(lines) if line and set(line) == {"─"})
     return lines[top:bottom + 1]
+
+
+def _unwrapped_rows(card: list[str]) -> int:
+    """How many rows the card has when no row wrapped: the taller of the mascot (when shown) and the
+    facts, plus the line under it."""
+    shown = any(MASCOT_TOP in line for line in card)
+    return max(len(MASCOT) if shown else 0, FACT_ROWS) + 1
 
 
 @pytest.mark.parametrize("columns", [60, 72])
@@ -115,8 +128,8 @@ def test_the_banner_card_fits_a_narrow_pane(calc_repo, full_screen, columns):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)])
     assert result.exit_code == 0, f"{result.output}\n{result.exception}"
     card = _card(seen[0])
-    assert len(card) > 2 and all(line.rstrip()[-1] in "╮│╯" for line in card), "\n".join(card)
-    assert all(line[0] in "╭│╰" for line in card)  # no row wrapped onto the next line
+    assert len(card) == _unwrapped_rows(card), "\n".join(card)  # no row wrapped onto the next line
+    assert all(len(line) < columns for line in card)
     assert "Phil v" in seen[0]
 
 
@@ -131,7 +144,7 @@ def test_the_banner_card_reflows_when_the_pane_resizes(calc_repo, full_screen):
     result = runner.invoke(cli.app, ["--repo", str(calc_repo)])
     assert result.exit_code == 0, f"{result.output}\n{result.exception}"
     wide, narrowed = (_card(conversation) for conversation in seen)
-    assert all(line.rstrip()[-1] in "╮│╯" for line in narrowed), "\n".join(narrowed)
+    assert len(narrowed) == _unwrapped_rows(narrowed), "\n".join(narrowed)
     assert max(map(len, narrowed)) < 62 < max(map(len, wide))
 
 
