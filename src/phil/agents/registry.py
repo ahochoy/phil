@@ -1,4 +1,4 @@
-from phil.agents.spec import ANSWER_NOW, FINISH_NOW, PLAN_NOW, PROPOSE_NOW, REPLY_NOW, AgentSpec
+from phil.agents.spec import ANSWER_NOW, DRAW_NOW, FINISH_NOW, PLAN_NOW, PROPOSE_NOW, REPLY_NOW, AgentSpec
 from phil.contracts import (
     Approaches,
     ArchitectInput,
@@ -11,6 +11,8 @@ from phil.contracts import (
     ImplementInput,
     IntakeInput,
     IntakeTurn,
+    Mockup,
+    MockupInput,
     Plan,
     PlanCritique,
     Review,
@@ -29,6 +31,8 @@ ANSWER_MAX_MODEL_CALLS = 12
 QUICK_IMPLEMENTER_MAX_MODEL_CALLS = 15
 # The designer's model-call budget, enforced like the answerer's.
 DESIGN_MAX_MODEL_CALLS = 8
+# The mockup agent's model-call budget, enforced the same way.
+MOCKUP_MAX_MODEL_CALLS = 8
 # The intake conversation's model-call budget per turn: a turn reads a few files at most.
 CONVERSE_MAX_MODEL_CALLS = 6
 # The architect's, likewise: every call resends the history so far, so an uncapped exploration
@@ -87,6 +91,11 @@ SPECS: dict[str, AgentSpec] = {
     "design": AgentSpec(
         "design", "designer", DesignInput, Approaches, tools=("shell",), harness="light", shared_prompt=False,
         read_only_shell=True, max_model_calls=DESIGN_MAX_MODEL_CALLS, cap_message=PROPOSE_NOW,
+        repo_context=True,
+    ),
+    "mockup": AgentSpec(
+        "mockup", "designer", MockupInput, Mockup, tools=("shell",), harness="light", shared_prompt=False,
+        read_only_shell=True, max_model_calls=MOCKUP_MAX_MODEL_CALLS, cap_message=DRAW_NOW,
         repo_context=True,
     ),
     "memory": AgentSpec(

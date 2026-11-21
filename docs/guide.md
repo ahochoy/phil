@@ -273,6 +273,22 @@ knows. A message you type while Phil is thinking is held and goes with its next 
 fails, or Phil can't decide when it must, the chat says so and continues with the classic intake
 on what was said. A reopened chat resumes its conversation.
 
+**Seeing the approaches as mockups.** When Phil offers design approaches for something visual, you
+can ask to see them drawn. Phil never draws unless you ask. At the approach prompt:
+
+- `show` draws every approach, `show 2` draws one, and `show 2 make the header sticky` redraws it
+  with your note. `show` followed by other words, like `show prices in red`, is your own approach,
+  not a request. In the full-screen chat the menu has **Show as mockups** when the approaches
+  differ in look, and Phil adds `Say "show" to see these as mockups.`
+- With a browser, the first mockup in a chat opens in a tab. Later ones rewrite the same page and
+  print `Mockup updated: reload the tab`; a link to the file prints every time. With no browser
+  (an SSH session, or Linux with no display) Phil prints a terminal sketch instead.
+- Pages are kept in the project's folder, `~/.phil/projects/<project>/mockups/<chat id>.html`, with
+  `-v<n>` copies of earlier versions. A page runs no script and loads nothing from the network.
+- The approach you pick carries its mockup into planning: the architect and the coding agents get
+  it as a reference (clipped at 10,000 characters), and it survives reopening the chat.
+- Each `show` is one short agent run on the designer's model (the architect's, if no designer model is set).
+
 **The full-screen chat.** `phil` opens the chat full screen: a header, the conversation in its own
 scrolling pane, a live line above the input, and the boxed input at the bottom. Scroll the
 conversation with the wheel, PgUp/PgDn or Shift+↑/↓; while you are scrolled up, a `↓ new` marker

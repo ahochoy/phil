@@ -214,9 +214,12 @@ def conversation_decision(choices: list[str]) -> Decision:
     return Decision("question", "Pick one, or type your answer", (), tuple(opts), asked="Your answer")
 
 
-def approach_decision(approaches: list[tuple[str, str]]) -> Decision:
+def approach_decision(approaches: list[tuple[str, str]], visual: bool = False) -> Decision:
+    """The approach menu; `visual` approaches also offer "Show as mockups" (answered as `show`)."""
     opts = [Option(f"{name} (recommended)" if n == 1 else name, str(n), detail=summary)
             for n, (name, summary) in enumerate(approaches, 1)]
+    if visual:
+        opts.append(Option("Show as mockups", "show"))
     opts.append(Option("Describe your own", str(len(approaches) + 1), typed=True))
     return Decision("question", "Pick an approach", (), tuple(opts), asked="Which approach?")
 

@@ -15,6 +15,7 @@ AGENT_STAGES: dict[str, tuple[str, ...]] = {
     "architect": ("planning", "design"),
     "critic": ("planning", "reviewing"),
     "design": ("design",),
+    "mockup": ("design",),
     "implementer": ("implementing", "design"),
     "quick_implementer": ("implementing", "design"),
     "tester": ("testing",),

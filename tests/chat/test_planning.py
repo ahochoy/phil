@@ -235,6 +235,53 @@ def test_intake_and_converse_send_the_images(chat_ctx, tmp_path):
     assert [len(_image_parts(payload)) for _, payload in factory.calls] == [1, 1]
 
 
+def test_planner_stamps_the_mockup_over_the_architects_value(chat_ctx, tmp_path):
+    junk = plan().model_copy(update={"mockup": "junk"})
+    factory = ScriptedAgentFactory({
+        "architect": [junk, junk, junk], "critic": [critique(), critique(), critique()],
+    })
+    planner = Planner(chat_ctx(factory), "overview")
+    drawn = planner.draft(goal(), tmp_path, mockup="M")
+    assert drawn.plan.mockup == "M"
+    assert '"mockup": "M"' in str(factory.calls[0][1])  # the architect is shown it too
+    assert planner.draft(goal(), tmp_path, mockup="").plan.mockup == ""
+    assert planner.revise(goal(), drawn, "smaller", tmp_path, mockup="M").plan.mockup == "M"
+
+
+def test_the_critic_is_not_sent_the_mockup(chat_ctx, tmp_path, monkeypatch):
+    from phil.chat import planning
+
+    seen = []
+    real = planning.build_packet
+
+    def spy(role, contract, **kw):
+        seen.append((role, contract))
+        return real(role, contract, **kw)
+
+    monkeypatch.setattr(planning, "build_packet", spy)
+    factory = ScriptedAgentFactory({"architect": [plan()], "critic": [critique()]})
+    drawn = Planner(chat_ctx(factory), "overview").draft(goal(), tmp_path, mockup="M")
+    [critic] = [contract for role, contract in seen if role == "critic"]
+    assert critic.plan.mockup == "" and drawn.plan.mockup == "M"
+
+
+def test_btw_is_not_sent_the_mockup(chat_ctx, monkeypatch):
+    from phil.chat import btw
+    from phil.contracts import Brief
+
+    seen = []
+    real = btw.build_packet
+
+    def spy(role, contract, **kw):
+        seen.append(contract)
+        return real(role, contract, **kw)
+
+    monkeypatch.setattr(btw, "build_packet", spy)
+    factory = ScriptedAgentFactory({"btw": [Brief(headline="hi")]})
+    btw.ask_btw(chat_ctx(factory), "what's up?", plan=plan().model_copy(update={"mockup": "M"}))
+    assert seen[0].plan.mockup == ""
+
+
 def test_without_images_the_packet_is_text(chat_ctx, tmp_path):
     factory = ScriptedAgentFactory({"architect": [plan()], "critic": [critique()]})
     Planner(chat_ctx(factory), "overview").draft(goal(), tmp_path)

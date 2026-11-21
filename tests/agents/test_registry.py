@@ -1,7 +1,7 @@
 import pytest
 
-from phil.agents.registry import SPECS, get_spec
-from phil.agents.spec import load_prompt
+from phil.agents.registry import MOCKUP_MAX_MODEL_CALLS, SPECS, get_spec
+from phil.agents.spec import DRAW_NOW, load_prompt
 from phil.config import CHAT_ROLES, RUN_ROLES
 from phil.contracts import Plan, PlanCritique, Review, TaskResult, TesterReport
 
@@ -10,7 +10,7 @@ def test_registry_covers_chat_and_run_roles():
     # Check registered agent names
     assert set(SPECS) == {
         "intake", "architect", "critic", "implementer", "tester", "reviewer", "btw", "route", "answer",
-        "quick_implementer", "design", "memory", "converse",
+        "quick_implementer", "design", "mockup", "memory", "converse",
         "skill_labels",
     }
     # Check that agents reference the correct roles. "classifier", "answerer", "designer" and "memory"
@@ -39,13 +39,13 @@ def test_only_implementers_and_tester_write_and_run_commands():
     assert writers == {"implementer", "tester", "quick_implementer"}
     # The answerer, designer and converse agent have a shell too, but a read-only one: no project
     # allowlist or approvals.
-    assert shell_users == writers | {"answer", "design", "converse"}
-    assert {name for name, spec in SPECS.items() if spec.read_only_shell} == {"answer", "design", "converse"}
+    assert shell_users == writers | {"answer", "design", "mockup", "converse"}
+    assert {name for name, spec in SPECS.items() if spec.read_only_shell} == {"answer", "design", "mockup", "converse"}
 
 
 def test_the_capped_read_and_plan_agents_use_the_light_harness():
     light = {name for name, spec in SPECS.items() if spec.harness == "light"}
-    assert light == {"answer", "quick_implementer", "design", "architect", "converse"}
+    assert light == {"answer", "quick_implementer", "design", "mockup", "architect", "converse"}
     assert all(spec.max_model_calls is None for spec in SPECS.values() if spec.harness != "light")
 
 
@@ -110,3 +110,12 @@ def test_implementer_prompt_leaves_files_read_to_phil():
 def test_architect_prompt_warns_about_check_cmd_build_output():
     prompt = load_prompt(get_spec("architect"))
     assert "A `check_cmd` that writes build output relies on that output being gitignored" in prompt
+
+
+def test_mockup_spec_is_read_only_designer():
+    spec = get_spec("mockup")
+    assert (spec.role, spec.harness, spec.read_only_shell, spec.writes_files) == ("designer", "light", True, False)
+    assert spec.max_model_calls == MOCKUP_MAX_MODEL_CALLS == 8
+    assert spec.tools == ("shell",) and spec.shared_prompt is False and spec.repo_context is True
+    assert spec.cap_message == DRAW_NOW and "draw" in DRAW_NOW.lower()
+    assert load_prompt(spec).startswith("# Role: Mockup")

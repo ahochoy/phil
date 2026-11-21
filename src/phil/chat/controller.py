@@ -1,18 +1,21 @@
 import json
 import logging
+import os
 import queue
 import shutil
 import sqlite3
+import sys
 import threading
 import time
+import webbrowser
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import ValidationError
-from rich.cells import cell_len
+from rich.cells import cell_len, set_cell_size
 from rich.console import Console, Group
 from rich.markup import escape
 from rich.padding import Padding
@@ -61,8 +64,10 @@ from phil.chat.decision import (
     repo_shell_title,
     settled_line,
 )
+from phil.chat import mockup_page
 from phil.chat.design import propose_approaches
 from phil.chat.events import ChatEvent
+from phil.chat.mockup import ShowRequest, draw_mockup, parse_show
 from phil.chat.overview import repo_overview
 from phil.chat.planning import Planner, PlanDraft, PlanningBudgetExceeded, converse, intake, quick_plan
 from phil.chat.session import ChatSession, ChatSummary, list_open_chats
@@ -77,6 +82,7 @@ from phil.contracts import (
     ConverseTurn,
     Goal,
     IntakeTurn,
+    Mockup,
     Plan,
     PlanCritique,
     Question,
@@ -137,7 +143,7 @@ from phil.ui.chats_view import open_chat_line
 from phil.ui.callout import failure_lines, overflows, to_rich
 from phil.ui.bursts import INDENT, FeedItem, one_line
 from phil.ui.feed_view import FeedRenderer
-from phil.ui.links import opened_pr_line
+from phil.ui.links import link, opened_pr_line
 from phil.ui.plan_view import _clip, render_goal, render_plan, render_steps
 from phil.ui.runs import label_for
 from phil.ui.runs_view import render_runs
@@ -205,7 +211,7 @@ PROMPTS = {
     "hint": "Hint for the retry (optional) › ",
     "confirm_pr": "Open a PR? [y / n] › ",
     "confirm_fix": "Fix it? [Enter = quick fix / full = plan it / n] › ",
-    "choose_approach": "Pick an approach [Enter = 1 / number / describe your own] › ",
+    "choose_approach": "Pick an approach [Enter = 1 / number / show / describe your own] › ",
     "trust_repo": "Trust phil.toml's settings? [trust / ignore] › ",
     "confirm_agents_md": "[y / n] › ",
     "pick_chat": "Reopen which chat? [number / Enter to stay] › ",
@@ -220,6 +226,12 @@ MOVING_TO_FULL = "Moving this to a full plan, with what the quick attempt learne
 DESCRIBE_OWN = "Describe your own"
 DESCRIBE_PROMPT = "Describe your approach › "
 DESIGN_FALLBACK = "Couldn't propose designs; planning directly."
+MOCKUP_HINT = 'Say "show" to see these as mockups.'
+DRAWING_MOCKUP = "Drawing the mockup…"
+MOCKUP_UPDATED = "Mockup updated: reload the tab"
+BROWSER_DIDNT_OPEN = "Couldn't open the browser; open the mockup here:"
+MOCKUP_FAILED = "Couldn't draw the mockup: {error}"
+MOCKUPS_DIR = "mockups"  # the chats' mockup pages, in the project's folder
 MAX_CONVERSATION_TURNS = 4  # user replies before the next turn must decide (spec 2026-11-10 §4.6)
 CONVERSATION_STAGES = ("conversation", "conversing")  # waiting for the user; a turn in flight
 STARTING_QUICK = "Starting (quick)…"
@@ -268,6 +280,7 @@ JOB_ROLES = {
 # the orchestrator's). Steps not listed show no model.
 STEP_ROLES = {
     "intake": None, "architect": "architect", "revise": "architect", "critic": "critic", "designing": "architect",
+    "drawing": "architect",
     "routing": JOB_ROLES["route_ready"], "answering": JOB_ROLES["answer_ready"], "conversing": "orchestrator",
 }
 # The role at work in a followed run's node. Nodes not listed keep the last role seen for the run.
@@ -301,6 +314,16 @@ class Incoming:
 
     images: tuple[Path, ...] = ()
     warned: bool = False
+
+
+@dataclass(frozen=True)
+class Drawn:
+    """An approach's latest mockup: the cleaned HTML fragment or the sketch, and the file it is
+    kept in next to the page (None until it is written there)."""
+
+    kind: Literal["html", "sketch"]
+    text: str
+    path: Path | None = None
 
 
 class TaskOutput(Protocol):
@@ -479,6 +502,22 @@ class ChatController:
         self._approach: Approach | None = None  # the user's pick, planned by the architect
         self._approach_note = ""  # or their own description
         self._describing = False  # "Describe your own" was picked: the next input is the description
+        self._approaches_visual = False  # the approaches differ in how something looks: offer mockups
+        self._mockups: dict[str, Drawn] = {}  # approach name -> its latest mockup
+        # The picked approach's mockup, sent to the architect and stamped on the plan ("" for none),
+        # and the file it was read from (saved, so a reopened chat's revisions carry it too).
+        self._chosen_mockup = ""
+        self._chosen_mockup_path: Path | None = None
+        # Each mockup job takes the next seq; a result whose seq is no longer current is dropped. A pick
+        # doesn't start a new goal generation, so this, not the generation, drops a late drawing.
+        self._mockup_seq = 0
+        self._mockup_calls = 0
+        self._drawing = False  # a mockup job with the current seq is in flight
+        # A browser tab showing the page was opened for this goal in this session (not saved: a
+        # reopened chat opens it again). Until then each page opens the browser, not "reload the tab".
+        self._page_opened = False
+        # Serialises snapshot exports: the mockup and planning jobs can export the same tree at once.
+        self._snapshot_lock = threading.Lock()
         # The goal's planning budget (chat.max_cost_usd) counts the chat's agent calls after this
         # telemetry row: the newest one when the goal began (or the chat was reopened).
         self._goal_mark = 0
@@ -549,6 +588,7 @@ class ChatController:
         failed: str = "job_failed",
         failed_data: dict | None = None,
         after: Callable[[], None] | None = None,
+        clear_step: Callable[[], None] | None = None,
     ) -> None:
         """Run `fn` through io.submit; it reports only by posting `kind` (or `failed`) events.
 
@@ -556,6 +596,7 @@ class ChatController:
         one on its thread (agent telemetry and parking write through it) and closes it when done.
         Goal jobs carry the current goal generation; side jobs (/btw) pass -1 so they're never stale.
         `failed_data` is added to a failure event; `after` runs on the job's thread once it has posted.
+        `clear_step`, if given, replaces clearing the generation's step when the job ends.
         """
         generation = self._generation if generation is None else generation
         provider = self._provider(JOB_ROLES.get(kind))
@@ -582,7 +623,10 @@ class ChatController:
                         except Exception:
                             pass
                 # Clear the step before posting: once posted, the main loop may start the next job and its step.
-                self._step(None, generation)
+                if clear_step is not None:
+                    clear_step()
+                else:
+                    self._step(None, generation)
                 self.post(event)
             finally:
                 if after is not None:
@@ -758,8 +802,11 @@ class ChatController:
             if decision is None:  # a free-text question: typed at the prompt, no callout (R20)
                 return None
             return self._with_details(decision, [question.why])
-        if stage == "choose_approach" and not self._describing and self._approach_order:
-            return approach_decision([(a.name, a.summary) for a in self._approach_order])
+        if stage == "choose_approach" and not self._describing and self._approach_order and not self._drawing:
+            # While a mockup draws, the prompt takes typed text; the menu comes back with the drawing.
+            return approach_decision(
+                [(a.name, a.summary) for a in self._approach_order], visual=bool(self._approaches_visual)
+            )
         if stage == "approval":
             return approval_decision()
         if stage == "pick_chat" and self._picker_chats:
@@ -851,6 +898,12 @@ class ChatController:
                     "goal": self._goal.model_dump(mode="json") if self._goal else None,
                     "approach": self._approach.model_dump(mode="json") if self._approach else None,
                     "approach_note": self._approach_note,
+                    # The approaches on offer (recommended first), so a chat reopened at the approach
+                    # stage asks again; their drawings are kept as files, and only the paths saved.
+                    "approaches": [a.model_dump(mode="json") for a in self._approach_order],
+                    "approaches_visual": self._approaches_visual,
+                    "mockups": {name: str(d.path) for name, d in self._mockups.items() if d.path is not None},
+                    "chosen_mockup_path": str(self._chosen_mockup_path) if self._chosen_mockup_path else None,
                     "plan": draft.plan.model_dump(mode="json") if draft else None,
                     "critique": draft.critique.model_dump(mode="json") if draft else None,
                     "version": draft.version if draft else None,
@@ -876,6 +929,7 @@ class ChatController:
                         "answer": self._answer_calls,
                         "design": self._design_calls,
                         "converse": self._converse_calls,
+                        "mockup": self._mockup_calls,
                     },
                 }
             )
@@ -1222,6 +1276,10 @@ class ChatController:
         self._pending, self._replies, self._typing_other = [], [], False
         self._skip_design, self._approach_order, self._approach, self._approach_note = False, [], None, ""
         self._describing, self._budget_warned = False, False
+        self._approaches_visual, self._mockups = False, {}
+        self._chosen_mockup, self._chosen_mockup_path = "", None
+        self._page_opened = False
+        self._drop_mockup()
         self._trust = None
         self._turns, self._choices, self._user_replies, self._held_input = [], [], 0, []
         self._typing_choice_other, self._turn_must_decide, self._go_pending = False, False, False
@@ -1551,6 +1609,11 @@ class ChatController:
         self.session.contract("approaches", approaches)
         rec = approaches.recommended
         self._approach_order = [approaches.options[rec], *(a for i, a in enumerate(approaches.options) if i != rec)]
+        self._approaches_visual = approaches.visual
+        self._present_approaches(approaches.reason)
+
+    def _present_approaches(self, reason: str = "") -> None:
+        """List `_approach_order` (the recommended one first), the hint when they're visual, and ask."""
         self.console.print("[phil.brand]Approaches:[/]")
         menu = self.io.choose is not None  # the callout numbers them and offers "Describe your own"
         for n, approach in enumerate(self._approach_order, 1):
@@ -1564,12 +1627,14 @@ class ChatController:
                 for tradeoff in approach.tradeoffs:
                     for line in hanging(tradeoff, width, indent=INDENT, lead="– ", style="phil.muted"):
                         self.console.print(line)
-        if approaches.reason:
+        if reason:
             with self.console.group():
-                for line in hanging(approaches.reason, self.console.width, indent="", style="phil.muted"):
+                for line in hanging(reason, self.console.width, indent="", style="phil.muted"):
                     self.console.print(line)
         if not menu:
             self.console.print(f"{len(self._approach_order) + 1}. {DESCRIBE_OWN}")
+        if self._approaches_visual:
+            self.console.print(f"[phil.muted]{escape(MOCKUP_HINT)}[/]")
         self._set_stage("choose_approach")
 
     def _on_design_failed(self, data: dict) -> None:
@@ -1577,9 +1642,182 @@ class ChatController:
         self.console.print(f"[phil.muted]{DESIGN_FALLBACK}[/]")
         self._plan(self._goal, show_goal=False)
 
+    # --- mockups at the approach stage (spec 2026-11-20 mockups) ---------------------------------
+
+    def _mockup_job(self, request: ShowRequest) -> None:
+        """Draw the approaches `request` asks for in the background; the stage stays choose_approach.
+        The format is settled before the call: HTML for a browser, else a terminal sketch."""
+        goal, order = self._goal, self._approach_order
+        if goal is None:
+            return
+        numbers = [request.number] if request.number is not None else list(range(1, len(order) + 1))
+        wanted = [order[n - 1] for n in numbers]
+        fmt: Literal["html", "sketch"] = "html" if mockup_page.browser_available(os.environ, sys.platform) else "sketch"
+        self.console.print(f"[phil.muted]{DRAWING_MOCKUP}[/]")
+        with self._step_lock:
+            self._mockup_seq += 1
+            seq = self._mockup_seq
+        self._drawing = True
+        self._mockup_calls += 1
+        call, generation, overview, note = self._mockup_calls, self._generation, self.overview, request.note
+        conversation = list(self._turns) or None
+        images = list(self._attachments)
+        # `show N <note>` redraws that approach's drawing, so the model starts from it.
+        earlier = self._mockups.get(wanted[0].name) if note and request.number is not None else None
+        previous = mockup_page.clip_mockup(earlier.text) if earlier is not None and earlier.kind == fmt else ""
+
+        def fn(ctx: AgentContext) -> dict:
+            self._mockup_step("snapshot", generation, seq)
+            tree = self._snapshot(generation)
+            self._mockup_step("drawing", generation, seq)
+            mockup = draw_mockup(
+                ctx, goal, wanted, tree=tree, overview=overview, note=note, fmt=fmt, call=call,
+                conversation=conversation, images=images, previous=previous,
+            )
+            return {"mockup": mockup, "fmt": fmt, "seq": seq}
+
+        self._job(
+            "mockup_ready", fn, failed="mockup_failed", failed_data={"seq": seq},
+            clear_step=lambda: self._mockup_step(None, generation, seq),
+        )
+
+    def _mockup_step(self, step: str | None, generation: int, seq: int) -> None:
+        """A mockup job's toolbar step; once the job is dropped (a pick, a new goal) it can't set it."""
+        with self._step_lock:
+            if generation == self._generation and seq == self._mockup_seq:
+                self._set_step(step)
+
+    def _drop_mockup(self) -> None:
+        """Drop the mockup job in flight, if any: its result is ignored when it lands."""
+        with self._step_lock:
+            self._mockup_seq += 1
+            if self._drawing:
+                self._set_step(None)
+        self._drawing = False
+
+    def _mockup_current(self, data: dict) -> bool:
+        """Whether a mockup result is still wanted: the same job, at the approach stage, not describing."""
+        if data.get("seq") != self._mockup_seq:
+            return False
+        self._drawing = False
+        return self.stage == "choose_approach" and not self._describing
+
+    def _on_mockup_ready(self, data: dict) -> None:
+        if not self._mockup_current(data):
+            return
+        try:
+            self._show_mockup(data)
+        except Exception as exc:  # a mockup that can't be shown leaves the approach stage as it is
+            logger.warning("couldn't show the mockup", exc_info=True)
+            self._mockup_failed_line(f"{type(exc).__name__}: {exc}")
+
+    def _show_mockup(self, data: dict) -> None:
+        mockup: Mockup = data["mockup"]
+        fmt: Literal["html", "sketch"] = data["fmt"]
+        self.session.contract("mockup", mockup)
+        numbers = {approach.name: n for n, approach in enumerate(self._approach_order, 1)}
+        drawn: dict[str, tuple[int, str, str]] = {}  # name -> (number, fragment or sketch, note)
+        empty = False  # a drawing for an approach came back with nothing in the requested field
+        for drawing in mockup.drawings:
+            if drawing.name in numbers and drawing.name not in drawn:  # an unknown name is ignored
+                text = mockup_page.clean_fragment(drawing.html) if fmt == "html" else drawing.sketch
+                if not text.strip():  # not drawn: neither shown nor kept
+                    empty = True
+                    continue
+                drawn[drawing.name] = (numbers[drawing.name], text, drawing.note)
+        if not drawn:
+            self._mockup_failed_line(
+                "the model returned no drawing" if empty else "the drawings didn't match the approaches"
+            )
+            return
+        ordered = sorted(drawn.items(), key=lambda item: item[1][0])
+        if fmt == "html":
+            if not self._show_page([(n, name, text) for name, (n, text, _) in ordered]):
+                return
+        else:
+            self._show_sketches([(n, name, text) for name, (n, text, _) in ordered])
+        for name, (n, _, note) in ordered:
+            if note:
+                self.console.print(f"[phil.muted]{n}. {escape(one_line(name))}: {escape(one_line(note))}[/]")
+        slugs = self._drawing_slugs()
+        for name, (_, text, _) in ordered:
+            self._mockups[name] = Drawn(fmt, text, self._keep_drawing(slugs[name], fmt, text))
+        self._safe_note("mockup_shown", format=fmt, names=[name for name, _ in ordered])
+        self._save()  # the stage stays choose_approach: save the drawings' paths now
+
+    def _mockups_dir(self) -> Path:
+        return ProjectPaths(self.info.slug).project_dir / MOCKUPS_DIR
+
+    def _drawing_slugs(self) -> dict[str, str]:
+        """Each approach's file slug, unique in the chat: a slug an earlier approach already has
+        gains `-2`, `-3`, … until it is unused."""
+        slugs: dict[str, str] = {}
+        for n, approach in enumerate(self._approach_order, 1):
+            base = slug = mockup_page.approach_slug(approach.name, n)
+            k = 2
+            while slug in slugs.values():
+                slug, k = f"{base}-{k}", k + 1
+            slugs[approach.name] = slug
+        return slugs
+
+    def _keep_drawing(self, slug: str, fmt: Literal["html", "sketch"], text: str) -> Path | None:
+        """Write a drawing next to the page so a reopened chat still has it; None when it can't be
+        written (the drawing still counts for this session)."""
+        try:
+            return mockup_page.write_drawing(self._mockups_dir(), self.session.id, slug, fmt, text)
+        except (OSError, ValueError):  # ValueError: text UTF-8 can't encode (a lone surrogate)
+            logger.warning("couldn't keep the mockup's drawing", exc_info=True)
+            return None
+
+    def _show_page(self, drawings: list[tuple[int, str, str]]) -> bool:
+        """Write the chat's mockup page and open it, or ask for a reload once a tab was opened this
+        session for this goal; the page's link prints every time. False when the page couldn't be
+        written."""
+        objective = self._goal.objective if self._goal is not None else ""
+        page = mockup_page.build_page(objective, mockup_page.comparing_line(len(drawings), objective), drawings)
+        try:
+            path = mockup_page.write_page(self._mockups_dir(), self.session.id, page)
+        except OSError as exc:
+            self._mockup_failed_line(f"couldn't write the page ({exc})")
+            return False
+        if self._page_opened:
+            self.console.print(f"[phil.muted]{MOCKUP_UPDATED}[/]")
+        else:
+            try:
+                opened = webbrowser.open(path.as_uri(), new=2)  # a new tab, where the browser can
+            except Exception:
+                opened = False
+            self._page_opened = opened is True
+            if not self._page_opened:
+                self.console.print(f"[phil.muted]{BROWSER_DIDNT_OPEN}[/]")
+        self.console.print(link(path.as_uri()))
+        return True
+
+    def _show_sketches(self, drawings: list[tuple[int, str, str]]) -> None:
+        """Each sketch under its number and name, its lines clipped (not wrapped) to the console."""
+        width = max(self.console.width - 1, 1)
+        for n, name, sketch in drawings:
+            with self.console.group():
+                self.console.print(f"[phil.agent]{n}. {escape(_clip(name))}[/]")
+                for line in sketch.splitlines():
+                    shown = printable(line)
+                    if cell_len(shown) > width:
+                        shown = set_cell_size(shown, width)
+                    self.console.print(Text(shown), no_wrap=True, overflow="crop")
+
+    def _on_mockup_failed(self, data: dict) -> None:
+        if not self._mockup_current(data):
+            return
+        self._safe_note("mockup_failed", error=data.get("error", ""))
+        self._mockup_failed_line(data.get("error", ""))
+
+    def _mockup_failed_line(self, error: str) -> None:
+        self.console.print(Text(one_line(MOCKUP_FAILED.format(error=error)), style="phil.muted"))
+
     def _choose_approach(self, text: str) -> None:
         """Enter, y/yes/ok/go, or a number picks a proposed approach; the last number asks for a
-        description; any other text is the user's own approach. Then the architect plans it."""
+        description; `show`, `show N` or `show N <note>` draws mockups; any other text is the user's
+        own approach. Then the architect plans it."""
         order = self._approach_order
         if self._describing:
             if text:
@@ -1594,14 +1832,28 @@ class ChatController:
             if 1 <= choice <= len(order):
                 self._chose(order[choice - 1], "")
             elif choice == len(order) + 1:
+                self._drop_mockup()  # describing one: a drawing still in flight is dropped
                 self._describing = True
             else:
-                self.console.print(f"Pick 1–{len(order) + 1}, or describe your own approach.")
+                self._pick_again()
+        elif (request := parse_show(text)) is not None:
+            if request.number is not None and not 1 <= request.number <= len(order):
+                self._pick_again()
+            else:
+                self._mockup_job(request)
         else:
             self._chose(None, text)
 
+    def _pick_again(self) -> None:
+        self.console.print(f"Pick 1–{len(self._approach_order) + 1}, or describe your own approach, or show N.")
+
     def _chose(self, approach: Approach | None, note: str) -> None:
+        self._drop_mockup()  # a drawing still in flight is dropped: planning goes ahead without it
         self._approach, self._approach_note = approach, note
+        # Picking an approach accepts its latest mockup; a described approach carries none.
+        drawn = self._mockups.get(approach.name) if approach is not None else None
+        self._chosen_mockup = mockup_page.clip_mockup(drawn.text) if drawn is not None else ""
+        self._chosen_mockup_path = drawn.path if drawn is not None else None
         self._safe_note("approach_chosen", name=approach.name if approach else None, note=note)
         self._recent.append(f"you: {(approach.name if approach else note)[:TURN_CHARS]}")
         self._plan(self._goal, show_goal=False)
@@ -1853,7 +2105,7 @@ class ChatController:
         self._revising = False
         self._set_stage("planning")
         generation = self._generation
-        approach, note = self._approach, self._approach_note
+        approach, note, mockup = self._approach, self._approach_note, self._chosen_mockup
         conversation = list(self._turns) or None
         images = list(self._attachments)
         budget = self._budget_check()
@@ -1866,6 +2118,7 @@ class ChatController:
                 draft = self.planner.draft(
                     goal, tree, on_step=on_step, ctx=ctx, prior_attempt=prior_attempt, approach=approach,
                     approach_note=note, over_budget=budget(ctx.conn), conversation=conversation, images=images,
+                    mockup=mockup,
                 )
             except PlanningBudgetExceeded:
                 return {"over_budget": True}
@@ -2141,7 +2394,7 @@ class ChatController:
             self._set_stage("approval")
             return
         goal, draft, prior_attempt = self._goal, self._draft, self._prior_attempt
-        approach, note = self._approach, self._approach_note
+        approach, note, mockup = self._approach, self._approach_note, self._chosen_mockup
         conversation = list(self._turns) or None
         images = list(self._attachments)  # the feedback's own images included
         self.console.print("[phil.muted]Revising…[/]")
@@ -2157,7 +2410,7 @@ class ChatController:
                 revised = self.planner.revise(
                     goal, draft, feedback, tree, on_step=lambda step: self._step(step, generation), ctx=ctx,
                     prior_attempt=prior_attempt, approach=approach, approach_note=note, over_budget=budget(ctx.conn),
-                    conversation=conversation, images=images,
+                    conversation=conversation, images=images, mockup=mockup,
                 )
             except PlanningBudgetExceeded:
                 return {"over_budget": True}
@@ -2223,10 +2476,12 @@ class ChatController:
         """Export the base commit's tracked files for the architect (never the live working tree).
 
         Each goal generation gets its own directory, so a stale job re-exporting can't remove a tree
-        another job is reading. All of `tree/` is removed when the chat ends.
+        another job is reading. All of `tree/` is removed when the chat ends. One export runs at a
+        time: a second caller for the same tree waits, then reuses the finished export (its marker).
         """
         sha = self._explicit_base_sha or resolve_repo(self.info.root).head_sha
-        return export_tree(self.info.root, sha, self.session.dir / "tree" / f"{sha[:12]}-g{generation}")
+        with self._snapshot_lock:
+            return export_tree(self.info.root, sha, self.session.dir / "tree" / f"{sha[:12]}-g{generation}")
 
     def _remove_snapshots(self) -> None:
         try:
@@ -3346,6 +3601,12 @@ class ChatController:
         approach_note = saved.get("approach_note")
         approach_note = approach_note if isinstance(approach_note, str) else ""
         try:
+            offered = [Approach.model_validate(a) for a in saved.get("approaches") or []]
+        except Exception:
+            offered = []  # bad approaches fall back alone: the chat can't ask again, so it starts idle
+        mockups = self._saved_mockups(saved.get("mockups"))
+        chosen = self._saved_drawing(saved.get("chosen_mockup_path"))
+        try:
             if saved.get("plan") and saved.get("critique"):
                 draft = PlanDraft(
                     plan=Plan.model_validate(saved["plan"]),
@@ -3362,7 +3623,9 @@ class ChatController:
             bad, counters = True, {}
         values = {
             key: _count(counters.get(key, 0))
-            for key in ("intake", "btw", "route", "answer", "design", "converse", "planner_calls", "planner_version")
+            for key in (
+                "intake", "btw", "route", "answer", "design", "converse", "mockup", "planner_calls", "planner_version"
+            )
         }
         bad = bad or None in values.values()
         values = {key: value or 0 for key, value in values.items()}
@@ -3373,6 +3636,7 @@ class ChatController:
         self._answer_calls = max(self._answer_calls, values["answer"])
         self._design_calls = max(self._design_calls, values["design"])
         self._converse_calls = max(self._converse_calls, values["converse"])
+        self._mockup_calls = max(self._mockup_calls, values["mockup"])
         version = max(values["planner_version"], draft.version if draft and not bad else 0)
         self.planner.restore(values["planner_calls"], version)
         self._safe_note("reopened")
@@ -3387,6 +3651,10 @@ class ChatController:
             return
         self._goal, self._draft = goal, draft
         self._approach, self._approach_note = approach, approach_note
+        self._approach_order, self._approaches_visual = offered, saved.get("approaches_visual") is True
+        self._mockups, self._page_opened = mockups, False  # a reopened chat opens its page again
+        self._chosen_mockup = mockup_page.clip_mockup(chosen.text) if chosen is not None else ""
+        self._chosen_mockup_path = chosen.path if chosen is not None else None
         self._attachments = _saved_images(saved.get("attachments"), self.session.dir / IMAGES_DIR)
         self._vision_warned = saved.get("vision_warned") is True
         self._goal_mark = last_telemetry_id(self.conn)  # a reopened goal's budget starts afresh
@@ -3416,7 +3684,12 @@ class ChatController:
                 self._set_stage("conversation")
         elif stage in ("approval", "planning", "edit") and self._draft is not None:
             self._turns = turns  # an `edit` revises with the conversation, like the first plan
+            if chosen is None:  # the mockup's file is gone: the plan still carries it, for an `edit`
+                self._chosen_mockup = self._draft.plan.mockup
             self._to_approval()
+        elif stage == "choose_approach" and goal is not None and len(offered) >= 2:
+            self._turns = turns  # the pick is planned with the conversation, like a fresh one
+            self._present_approaches()
         else:
             self._reset_goal()
             self._set_stage("idle")
@@ -3433,6 +3706,40 @@ class ChatController:
                 self.console.print(
                     "The chat was closed before a plan was ready; send the goal again or type a new one."
                 )
+
+    def _saved_mockups(self, value: object) -> dict[str, Drawn]:
+        """The saved `mockups` (approach name -> drawing path), each re-read; a bad entry drops alone."""
+        if not isinstance(value, dict):
+            return {}
+        mockups: dict[str, Drawn] = {}
+        for name, raw in value.items():
+            kept = self._saved_drawing(raw) if isinstance(name, str) else None
+            if kept is not None:
+                mockups[name] = kept
+        return mockups
+
+    def _saved_drawing(self, value: object) -> Drawn | None:
+        """A saved drawing path re-read, or None: not a string, not this chat's drawing in the mockups
+        folder (a hand-edited path elsewhere on disk), missing or unreadable. Never raises."""
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            path = Path(value)
+            folder = self._mockups_dir().resolve()
+            if path.resolve().parent != folder or not path.name.startswith(f"{self.session.id}-"):
+                return None
+            kind: Literal["html", "sketch"]
+            if path.suffix in (".frag", ".html"):  # .html: kept before fragments were .frag
+                kind = "html"
+            elif path.suffix == ".txt":
+                kind = "sketch"
+            else:
+                return None
+            with path.open(encoding="utf-8", newline="") as file:  # newline="": the text exactly as kept
+                text = file.read()
+        except (OSError, ValueError, RuntimeError):  # ValueError: not UTF-8, or a NUL in the path
+            return None
+        return Drawn(kind, text, path)
 
     def _restore_base(self, saved: dict) -> None:
         """The chat keeps the base it was opened with; a different --base on reopen is ignored."""

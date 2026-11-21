@@ -109,6 +109,7 @@ Each item is its own design: file explorer and diff views, diagrams (ASCII and M
   - The user confirms or redirects at that point.
   - This isn't a full design agent. It's a way to say "this is what we're thinking".
   - Prompted by a live run that added a CTA section with no shared picture of placement, content or visuals.
+  - **Built (2026-11-20)** as mockups at the approach stage: `show` draws the approaches in the browser or as a terminal sketch. Spec: `specs/2026-11-20-phil-mockups-design.md`; plan: `plans/2026-11-20-phil-mockups.md`. The browser design flow below remains for after launch.
 
 Core capabilities, built-in optional modules, plugins, UI extensions, and skills are kept distinct. Configuration, permissions, and learned memory stay separate on disk.
 

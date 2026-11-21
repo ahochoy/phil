@@ -24,7 +24,7 @@ def test_an_open_approach_proposes_designs_and_the_pick_reaches_the_architect(ca
     )
     assert "1. Inline card (recommended)" in text and "2. Footer band" in text
     assert "Visible on every page" in text and "3. Describe your own" in text
-    assert "Pick an approach [Enter = 1 / number / describe your own] › " in prompts
+    assert "Pick an approach [Enter = 1 / number / show / describe your own] › " in prompts
     [architect] = payloads(factory, "architect")
     assert "A full-width band above the footer." in architect and "A card after the hero." not in architect
     [chosen] = notes(calc_repo, "approach_chosen")
@@ -62,7 +62,7 @@ def test_an_out_of_range_number_asks_again(calc_repo):
     text, *_ = run_chat(
         calc_repo, ["add a CTA section", "7", "1", "n"], {"intake": [OPEN], "design": [APPROACHES], **PLANNING}
     )
-    assert "Pick 1–3, or describe your own approach." in text
+    assert "Pick 1–3, or describe your own approach, or show N." in text
 
 
 def test_y_ok_and_go_pick_the_recommended_approach(calc_repo):
@@ -77,7 +77,7 @@ def test_a_negative_number_asks_again_rather_than_becoming_a_note(calc_repo):
     text, *_ = run_chat(
         calc_repo, ["add a CTA section", "-1", "1", "n"], {"intake": [OPEN], "design": [APPROACHES], **PLANNING}
     )
-    assert "Pick 1–3, or describe your own approach." in text
+    assert "Pick 1–3, or describe your own approach, or show N." in text
 
 
 def test_an_edit_keeps_the_chosen_approach(calc_repo):
