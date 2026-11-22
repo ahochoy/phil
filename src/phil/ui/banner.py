@@ -1,5 +1,6 @@
-"""The chat's welcome banner (spec 2026-10-08): a boxed card — mascot left, facts right — with
-"pick up where you left off" below, and a welcome sentence on a first start. Every box line has the same display width."""
+"""The chat's welcome banner (spec 2026-10-08, 2026-11-20): a card — mascot left, facts right, a
+line underneath — with "pick up where you left off" below, and a welcome sentence on a first start.
+Every card line has the same display width."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -152,12 +153,11 @@ def render_banner(facts: BannerFacts, width: int, mascot=MASCOT) -> list[Text]:
         return [t.fit(width - 1) for t in [*facts_rows, *below] if t.text.plain]
     art, art_w = _mascot_rows(mascot) if width >= NARROW_MASCOT else ([], 0)
     lead = art_w + GAP if art else 0
-    inner_cap = width - 1 - 4
+    inner_cap = width - 1
     inner = min(max([lead + t.text.cell_len for t in facts_rows] + [art_w]), inner_cap)
     height = max(len(art), len(facts_rows))
     art_top, fact_top = (height - len(art)) // 2, (height - len(facts_rows)) // 2
-    border = "─" * (inner + 2)
-    out = [Text(f"╭{border}╮", MUTED)]
+    out: list[Text] = []
     for i in range(height):
         row = Text()
         if art:
@@ -167,11 +167,8 @@ def render_banner(facts: BannerFacts, width: int, mascot=MASCOT) -> list[Text]:
         f = i - fact_top
         fact = facts_rows[f] if 0 <= f < len(facts_rows) else _one(Text())
         row.append_text(fact.fit(inner - lead))
-        line = Text("│ ", MUTED)
-        line.append_text(_pad(row, inner))
-        line.append(" │", MUTED)
-        out.append(line)
-    out.append(Text(f"╰{border}╯", MUTED))
+        out.append(_pad(row, inner))
+    out.append(Text("─" * inner, MUTED))
     return out + [t.fit(width - 1) for t in below]
 
 
