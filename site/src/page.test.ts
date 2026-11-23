@@ -43,6 +43,14 @@ describe("the page", () => {
     expect(page).not.toContain("data-tab=");
   });
 
+  it("shows the three paths and what it's built with", () => {
+    expect(page).toContain('id="how-it-works"');
+    expect(count("data-path")).toBe(3);
+    for (const p of ['data-path="answer"', 'data-path="quick"', 'data-path="full"']) expect(page).toContain(p);
+    for (const t of ["Python", "LangGraph", "LangChain", "DeepAgents", "Textual", "Rich", "Typer", "SQLite"])
+      expect(page).toContain(t);
+  });
+
   it("describes itself as an experiment", () => {
     expect(page).toMatch(/<meta name="description" content="[^"]*experiment[^"]*"/);
   });
