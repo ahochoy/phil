@@ -8,7 +8,7 @@ interface Props {
 }
 
 const {
-  title = `${SITE_CONFIG.title} | ${SITE_CONFIG.tagline}`,
+  title = `${SITE_CONFIG.title}, ${SITE_CONFIG.subtitle}`,
   description = SITE_CONFIG.description,
 } = Astro.props;
 ---
@@ -68,31 +68,20 @@ const {
               Phil
             </span>
             <span class="text-[11px] tracking-wider uppercase text-[#B8ADA0] font-mono mt-0.5">
-              φιλία · dev agent
+              {SITE_CONFIG.subtitle}
             </span>
           </div>
         </a>
 
         <!-- Desktop Navigation -->
         <nav class="hidden md:flex items-center gap-7 text-[13px] font-medium tracking-wide text-[#D5CCC0]">
-          <a href="#origin" class="hover:text-[#FAF8F5] transition-colors">Origin</a>
-          <a href="#architecture" class="hover:text-[#FAF8F5] transition-colors">Architecture</a>
-          <a href="#design" class="hover:text-[#FAF8F5] transition-colors">Design</a>
-          <a href="#devlog" class="hover:text-[#FAF8F5] transition-colors">Devlog</a>
+          <a href="#how-it-works" class="hover:text-[#FAF8F5] transition-colors">How it works</a>
+          <a href="#decisions" class="hover:text-[#FAF8F5] transition-colors">Decisions</a>
           <a href="#install" class="hover:text-[#FAF8F5] transition-colors">Install</a>
         </nav>
 
         <!-- Action Buttons -->
         <div class="flex items-center gap-3">
-          <a
-            href={SITE_CONFIG.links.personalSite}
-            target="_blank"
-            rel="noopener noreferrer"
-            class="hidden sm:inline-flex items-center gap-1.5 text-[12px] font-mono font-medium px-3 py-1.5 rounded-full border border-[#554C43] bg-[#433B34] text-[#D5CCC0] hover:text-[#FAF8F5] hover:border-[#6B6055] transition-all"
-          >
-            <span>by Andrew HoChoy</span>
-            <span class="text-[#A3998C]">↗</span>
-          </a>
           <a
             href={SITE_CONFIG.links.github}
             target="_blank"
@@ -120,13 +109,20 @@ const {
             φ
           </div>
           <p class="text-sm text-[#7A7268]">
-            Phil is an open-source coding agent built by <a href={SITE_CONFIG.links.personalSite} class="text-[#26221E] font-medium underline underline-offset-3 hover:text-[#C26910]">Andrew HoChoy</a>.
+            Phil is {SITE_CONFIG.subtitle}. It's open source.
           </p>
         </div>
-        <div class="flex items-center gap-6 text-xs font-mono text-[#7A7268]">
-          <a href={SITE_CONFIG.links.devlogPart1} target="_blank" class="hover:text-[#26221E] transition-colors">Devlog, Part 1 ↗</a>
-          <a href={SITE_CONFIG.links.github} target="_blank" class="hover:text-[#26221E] transition-colors">GitHub ↗</a>
-          <a href={SITE_CONFIG.links.cal} target="_blank" class="hover:text-[#26221E] transition-colors">Schedule a chat ↗</a>
+        <div class="flex flex-col items-center md:items-end gap-3 text-xs font-mono text-[#7A7268]">
+          <div class="flex items-center gap-6">
+            <a href={SITE_CONFIG.links.github} target="_blank" rel="noopener noreferrer" class="hover:text-[#26221E] transition-colors">GitHub ↗</a>
+            <a href={SITE_CONFIG.links.guide} target="_blank" rel="noopener noreferrer" class="hover:text-[#26221E] transition-colors">Guide ↗</a>
+          </div>
+          <div class="flex flex-wrap justify-center items-center gap-x-4 gap-y-2">
+            <span class="text-[#26221E]">About the dev:</span>
+            <a href={SITE_CONFIG.author.url} target="_blank" rel="noopener noreferrer" class="hover:text-[#26221E] transition-colors">andrewhochoy.com ↗</a>
+            <a href={SITE_CONFIG.author.linkedin} target="_blank" rel="noopener noreferrer" class="hover:text-[#26221E] transition-colors">LinkedIn ↗</a>
+            <a href={SITE_CONFIG.author.github} target="_blank" rel="noopener noreferrer" class="hover:text-[#26221E] transition-colors">GitHub (@ahochoy) ↗</a>
+          </div>
         </div>
       </div>
     </footer>

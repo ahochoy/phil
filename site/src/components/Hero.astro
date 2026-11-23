@@ -1,7 +1,7 @@
 ---
 import { SITE_CONFIG } from "../config";
 
-const installCommand = "uv tool install --editable git+https://github.com/ahochoy/phil.git";
+const installCommand = "uv tool install phil-agent";
 ---
 
 <section class="hero-scroll text-[#FAF8F5]">
@@ -13,16 +13,13 @@ const installCommand = "uv tool install --editable git+https://github.com/ahocho
 
     <div class="hero-copy-wrap">
       <div class="hero-copy">
-        <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-[#554C43] bg-[#433B34] text-[12px] font-mono font-medium text-[#D5CCC0] mb-7 shadow-xs">
-          <span class="w-2 h-2 rounded-full bg-[#F59E0B] animate-pulse"></span>
-          <span class="text-[#FAF8F5] font-serif italic text-sm">philia (φιλία)</span>
-          <span class="text-[#8C8074]">·</span>
-          <span class="tracking-wide uppercase text-[11px] text-[#D5CCC0]">a coding agent experiment</span>
-        </div>
-
-        <h1 class="font-serif text-4xl sm:text-5xl lg:text-[52px] font-normal tracking-tight text-[#FAF8F5] leading-[1.12] mb-7">
-          I built a coding agent to find out where the <span class="italic font-serif text-[#F59E0B]">tokens go</span>.
+        <h1 class="font-serif text-5xl sm:text-6xl lg:text-[72px] font-normal tracking-tight text-[#FAF8F5] leading-[1.05] mb-3">
+          Phil
         </h1>
+
+        <p class="font-mono tracking-wide uppercase text-[12px] text-[#D5CCC0] mb-7">
+          {SITE_CONFIG.subtitle}
+        </p>
 
         <div class="flex flex-col sm:flex-row gap-3 mb-7">
           <a
@@ -38,16 +35,16 @@ const installCommand = "uv tool install --editable git+https://github.com/ahocho
           </a>
 
           <a
-            href="#origin"
+            href="#run"
             class="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-full border border-[#554C43] bg-[#433B34] text-[#FAF8F5] text-sm font-medium hover:bg-[#4E443C] transition-all"
           >
-            <span>How it started</span>
+            <span>See a run</span>
             <span class="text-[#B8ADA0]">↓</span>
           </a>
         </div>
 
         <p class="text-base md:text-lg text-[#D5CCC0] font-normal leading-relaxed mb-7">
-          Phil is a terminal coding agent built on <span class="text-[#FAF8F5] font-medium">LangGraph</span> and <span class="text-[#FAF8F5] font-medium">DeepAgents</span>. It plans with you, works in its own git worktree, and stops at a budget you set. Every change I make to it runs against a live benchmark, and I write up what I learn.
+          Phil is a terminal coding agent built on <span class="text-[#FAF8F5] font-medium">LangGraph</span>. It sends each request down the fixed workflow that fits it, and uses the cheaper model wherever that's enough. It's open source.
         </p>
 
         <div class="flex items-center gap-3 pl-4 pr-1.5 py-1.5 rounded-full border border-[#4D453E] bg-[#2A2521] font-mono text-xs text-[#FAF8F5] shadow-inner">
