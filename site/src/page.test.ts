@@ -33,6 +33,16 @@ describe("the page", () => {
       expect(page).toContain(url);
   });
 
+  it("plays one full-path run, visible without JavaScript", () => {
+    expect(page).toContain('id="run"');
+    expect(count("data-run-line")).toBeGreaterThanOrEqual(10);
+    const lineTags = page.match(/<[a-z]+\s[^>]*\bdata-run-line\b[^>]*>/g) ?? [];
+    expect(lineTags.length).toBe(count("data-run-line"));
+    for (const tag of lineTags) expect(tag).not.toMatch(/\bhidden\b|is-pending/);
+    expect(page).toMatch(/illustrative/i);
+    expect(page).not.toContain("data-tab=");
+  });
+
   it("describes itself as an experiment", () => {
     expect(page).toMatch(/<meta name="description" content="[^"]*experiment[^"]*"/);
   });
