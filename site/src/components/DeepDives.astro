@@ -39,7 +39,7 @@ const DECISIONS: Decision[] = [
     label: "Context",
     title: "Context kept small",
     chose:
-      "Sub-agents return short answers instead of their whole search. Repeated history is prompt-cached. Skills load only for the stages they help.",
+      "Sub-agents return short answers instead of their whole search. Repeated history is prompt-cached on Anthropic models; other vendors cache on their own. Skills load only for the stages they help.",
     why: "Most tokens in a long run are the same context sent again. Sending less, and paying less for what repeats, is where the savings are.",
     saw: "With prompt caching on, 68% of the architect's input came from the cache, and its cost on the same goal fell from $0.38 to $0.21.",
     dot: "bg-[#B45309]",
@@ -48,8 +48,8 @@ const DECISIONS: Decision[] = [
     label: "Security",
     title: "Agent shells never see your keys",
     chose:
-      "API keys and tokens are removed from every command an agent runs, those commands can't read the OS key store, and commands with shell operators are rejected.",
-    why: "An agent that can run shell commands is one prompt injection away from reading your keys. Phil assumes that will happen.",
+      "Key and token variables are removed from every command an agent runs, code those commands run can't read a stored key through keyring, and commands with shell operators are rejected.",
+    why: "An agent that can run shell commands is one prompt injection away from reading your keys. This doesn't stop a malicious test from reaching the OS keychain directly, so review what agents add.",
     dot: "bg-[#1E40AF]",
   },
 ];

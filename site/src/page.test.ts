@@ -57,6 +57,14 @@ describe("the page", () => {
     expect(page).not.toContain("04 · PROCESS");
   });
 
+  it("claims no more about keys and caching than the guide does", () => {
+    expect(page).not.toMatch(/can(?:'|&#39;|’)t read the OS key store/);
+    expect(page).toContain("through keyring");
+    expect(page).toMatch(/OS keychain directly/);
+    expect(page).not.toContain("Repeated history is prompt-cached.");
+    expect(page).toContain("on Anthropic models");
+  });
+
   it("describes itself as an experiment", () => {
     expect(page).toMatch(/<meta name="description" content="[^"]*experiment[^"]*"/);
   });
