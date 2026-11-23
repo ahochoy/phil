@@ -39,10 +39,10 @@ const flows: Flow[] = [
     stroke: "var(--color-phi-yellow)",
     heading: "A small, well-specified change.",
     steps: ["intake", "implement", "review"],
-    loops: [{ from: 2, to: 1, label: "one fix" }],
+    loops: [{ from: 2, to: 1, label: "fix, up to 3" }],
     out: "branch",
-    caption: "One task, one review, at most one fix. If it still fails, Phil offers the full path.",
-    title: "Quick path: intake, implement, review; review can send one fix back to implement; ends in a branch.",
+    caption: "Up to three reviews, each followed by a fix. If a fix fails its tests, Phil offers the full path.",
+    title: "Quick path: intake, implement, review; review can send a fix back to implement, up to three times; ends in a branch.",
   },
   {
     path: "full",

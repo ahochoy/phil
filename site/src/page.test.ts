@@ -71,7 +71,8 @@ describe("the page", () => {
       expect(html).toMatch(/<title[^>]*>[^<]+<\/title>/);
       expect(html.match(/\sdata-node(?=[\s=>])/g)?.length ?? 0).toBe(n);
     }
-    expect(column("quick")).toContain("one fix");
+    expect(column("quick")).toContain("fix, up to 3");
+    expect(column("quick")).toContain("Up to three reviews");
     for (const loop of ["revise", "fix tasks"]) expect(column("full")).toContain(loop);
     expect(page).toContain("data-fork");
   });
