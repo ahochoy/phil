@@ -91,7 +91,7 @@ describe("the page", () => {
   it("leaves no trace of the cream palette, and colours each path", () => {
     for (const old of ["#FAF8F5", "#F4EFEA", "#E5DDD3", "#26221E", "#352f2a"])
       expect(page.toLowerCase()).not.toContain(old.toLowerCase());
-    expect(page).toMatch(/data-path="answer"[^>]*>[\s\S]{0,400}?text-phi-blue/);
+    expect(page).toMatch(/data-path="answer"[^>]*>[\s\S]{0,400}?(text-phi-sky|bg-phi-blue)/);
     expect(page).toMatch(/data-path="quick"[^>]*>[\s\S]{0,400}?text-phi-yellow/);
     expect(page).toMatch(/data-path="full"[^>]*>[\s\S]{0,400}?text-phi-red/);
   });
@@ -105,6 +105,16 @@ describe("the page", () => {
     expect(page).toContain('<meta property="og:image" content="/social.png"');
     const png = readFileSync(fileURLToPath(new URL("../public/social.png", import.meta.url)));
     expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1200, 630]);
+  });
+
+  it("keeps blue text readable, a dark favicon, and arrows that follow the stack", () => {
+    // #2F5BD3 is 3.3:1 on the page; blue text uses the lighter shade (AA).
+    expect(css.toLowerCase()).toContain("#6f93f0");
+    expect(page).toMatch(/data-path="answer"[^>]*>[\s\S]{0,300}?text-phi-sky/);
+    const favicon = readFileSync(fileURLToPath(new URL("../public/favicon.svg", import.meta.url)), "utf-8");
+    expect(favicon.toUpperCase()).not.toMatch(/#FAF8F5|#C26910/);
+    expect(favicon.toUpperCase()).toContain("#0C0C0B");
+    expect(count("data-arrow-down")).toBe(2);
   });
 
   it("describes itself as an experiment", () => {

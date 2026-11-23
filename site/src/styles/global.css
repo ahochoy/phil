@@ -18,6 +18,8 @@
   --color-phi-red: #E2402F;
   --color-phi-yellow: #F4C430;
   --color-phi-blue: #2F5BD3;
+  /* Blue as text: #2F5BD3 is only 3.3:1 on the page, so blue words use this lighter shade (AA). */
+  --color-phi-sky: #6F93F0;
 }
 
 @layer base {
