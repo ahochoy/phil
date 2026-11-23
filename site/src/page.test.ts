@@ -58,6 +58,13 @@ describe("the page", () => {
       expect(page).toContain(t);
   });
 
+  it("gives each decision a line figure, hidden from screen readers", () => {
+    const figures = page.match(/<svg[^>]*\sdata-figure[^>]*>/g) ?? [];
+    expect(figures.length).toBe(5);
+    for (const tag of figures) expect(tag).toContain('aria-hidden="true"');
+    for (const n of [1, 2, 3, 4, 5]) expect(page).toContain(`FIG 0.${n}`);
+  });
+
   it("draws each path as boxes and arrows, loops labelled", () => {
     const column = (path: string) => {
       const start = page.indexOf(`data-path="${path}"`);

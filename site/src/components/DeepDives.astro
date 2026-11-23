@@ -1,5 +1,13 @@
 ---
 // Five design decisions. A figure appears only where docs/guide.md or docs/journey/ measured it.
+// Each card opens with a line figure (src/figures.ts) of its main point; the text says it all, so
+// the figures are hidden from screen readers.
+import { FIGURES, pointsAttr, viewBox } from "../figures";
+
+const STROKE = "#6a665f";
+const FAINT = "#3d3b38";
+const ACCENT = { blue: "var(--color-phi-sky)", yellow: "var(--color-phi-yellow)", red: "var(--color-phi-red)" };
+
 interface Decision {
   label: string;
   title: string;
@@ -64,21 +72,60 @@ const DECISIONS: Decision[] = [
       </p>
     </div>
 
-    <!-- Cells divided by hairlines; the odd fifth card spans both columns. -->
+    <!-- Cells divided by hairlines; the odd fifth card spans both columns, figure beside the text. -->
     <div class="grid grid-cols-1 md:grid-cols-2 border-t border-l border-phi-rule">
-      {DECISIONS.map((d, i) => (
-        <div data-decision class="p-7 md:p-8 border-r border-b border-phi-rule md:last:col-span-2">
-          <p class="label text-phi-muted">{String(i + 1).padStart(2, "0")} · {d.label}</p>
-          <h3 class="font-serif font-light text-[26px] leading-tight text-phi-head mt-3 mb-3">{d.title}</h3>
-          <p class="text-sm leading-relaxed text-phi-text mb-3">{d.chose}</p>
-          <p class="text-sm leading-relaxed text-phi-muted">{d.why}</p>
-          {d.saw && (
-            <p class="mt-5 pt-4 border-t border-dashed border-phi-rule text-[13px] leading-relaxed text-phi-muted">
-              <span class="text-phi-text font-normal">What we saw:</span> {d.saw}
-            </p>
-          )}
-        </div>
-      ))}
+      {DECISIONS.map((d, i) => {
+        const shapes = FIGURES[i];
+        const last = i === DECISIONS.length - 1;
+        return (
+          <div
+            data-decision
+            class:list={[
+              "p-7 md:p-8 border-r border-b border-phi-rule",
+              last && "md:col-span-2 md:grid md:grid-cols-2 md:gap-10 md:items-center",
+            ]}
+          >
+            <figure class="mb-7 md:mb-8" class:list={[last && "md:mb-0"]}>
+              <p class="label text-[#5a5650]">FIG 0.{i + 1}</p>
+              <div class="h-44 flex items-center justify-center mt-3">
+                <svg data-figure viewBox={viewBox(shapes)} class="h-full max-w-full" aria-hidden="true" fill="none" stroke-width="0.055" stroke-linejoin="round" stroke-linecap="round">
+                  {shapes.map((s) => {
+                    const stroke = s.faint ? FAINT : STROKE;
+                    const dash = s.dotted ? "0.06 0.16" : undefined;
+                    if (s.kind === "circle")
+                      return s.accent ? (
+                        <circle cx={s.points[0][0]} cy={s.points[0][1]} r={s.r} fill={ACCENT[s.accent]} stroke="none" />
+                      ) : (
+                        <circle cx={s.points[0][0]} cy={s.points[0][1]} r={s.r} stroke={stroke} stroke-dasharray={dash} />
+                      );
+                    if (s.kind === "line")
+                      return <polyline points={pointsAttr(s.points)} stroke={stroke} stroke-dasharray={dash} />;
+                    return (
+                      <polygon
+                        points={pointsAttr(s.points)}
+                        stroke={stroke}
+                        stroke-dasharray={dash}
+                        fill={s.fill ? "var(--color-phi-ink)" : "none"}
+                      />
+                    );
+                  })}
+                </svg>
+              </div>
+            </figure>
+            <div>
+              <p class="label text-phi-muted">{String(i + 1).padStart(2, "0")} · {d.label}</p>
+              <h3 class="font-serif font-light text-[26px] leading-tight text-phi-head mt-3 mb-3">{d.title}</h3>
+              <p class="text-sm leading-relaxed text-phi-text mb-3">{d.chose}</p>
+              <p class="text-sm leading-relaxed text-phi-muted">{d.why}</p>
+              {d.saw && (
+                <p class="mt-5 pt-4 border-t border-dashed border-phi-rule text-[13px] leading-relaxed text-phi-muted">
+                  <span class="text-phi-text font-normal">What we saw:</span> {d.saw}
+                </p>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   </div>
 </section>
