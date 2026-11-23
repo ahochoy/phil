@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -6,6 +7,12 @@ import { describe, expect, it } from "vitest";
 const built = fileURLToPath(new URL("../dist/client/index.html", import.meta.url));
 if (!existsSync(built)) throw new Error("dist/client/index.html is missing: run npm run build first");
 const page = readFileSync(built, "utf-8");
+// Every built stylesheet, joined.
+const cssDir = fileURLToPath(new URL("../dist/client/_astro/", import.meta.url));
+const css = readdirSync(cssDir)
+  .filter((name) => name.endsWith(".css"))
+  .map((name) => readFileSync(join(cssDir, name), "utf-8"))
+  .join("\n");
 
 /** How many elements carry the `[data-…]` attribute `name`. */
 function count(name: string): number {
@@ -63,6 +70,13 @@ describe("the page", () => {
     expect(page).toMatch(/OS keychain directly/);
     expect(page).not.toContain("Repeated history is prompt-cached.");
     expect(page).toContain("on Anthropic models");
+  });
+
+  it("is dark, in the new type", () => {
+    expect(css.toLowerCase()).toContain("#0c0c0b");
+    expect(page).toMatch(/fonts\.googleapis\.com[^"]*Inter/);
+    expect(page).not.toContain("Plus+Jakarta");
+    expect(page).toMatch(/<body[^>]*class="[^"]*bg-phi-ink/);
   });
 
   it("describes itself as an experiment", () => {

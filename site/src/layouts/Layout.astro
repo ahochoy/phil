@@ -11,6 +11,9 @@ const {
   title = `${SITE_CONFIG.title}, ${SITE_CONFIG.subtitle}`,
   description = SITE_CONFIG.description,
 } = Astro.props;
+
+const GITHUB_PATH =
+  "M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z";
 ---
 
 <!doctype html>
@@ -18,15 +21,6 @@ const {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <script is:inline>
-      // Only scripted pages with motion allowed, on a connection the frames suit, get the tall,
-      // pinned hero (see Hero.astro). The player removes the class again if it gives up.
-      var connection = navigator.connection;
-      var slow = !!connection && (connection.saveData === true || /^(slow-2g|2g|3g)$/.test(connection.effectiveType || ""));
-      if (!slow && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
-        document.documentElement.classList.add("js-scrub");
-      }
-    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="generator" content={Astro.generator} />
 
@@ -41,59 +35,39 @@ const {
     <meta property="og:url" content="https://github.com/ahochoy/phil" />
     <meta name="twitter:card" content="summary_large_image" />
 
-    <!-- Google Fonts: Newsreader (editorial serif), Plus Jakarta Sans (geometric sans), JetBrains Mono (monospaced) -->
+    <!-- Google Fonts: Newsreader (light serif headings), Inter (body), JetBrains Mono (labels, code) -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=JetBrains+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,300;6..72,400&display=swap"
       rel="stylesheet"
     />
   </head>
-  <body class="bg-[#FAF8F5] text-[#4A443D] selection:bg-[#E2D9CC] selection:text-[#26221E] antialiased">
-    <div
-      class="fixed inset-0 pointer-events-none opacity-[0.03] z-[-1]"
-      style="background-image: radial-gradient(#26221E 1px, transparent 1px); background-size: 32px 32px;"
-    >
-    </div>
-
-    <header class="sticky top-0 z-50 backdrop-blur-md bg-[#352F2A]/90 border-b border-[#4D453E] transition-all">
-      <div class="max-w-6xl mx-auto px-6 h-18 flex items-center justify-between">
-        <!-- Brand -->
-        <a href="#" class="flex items-center gap-3 group">
-          <div class="w-8 h-8 rounded-full border border-[#554C43] bg-[#433B34] flex items-center justify-center font-serif text-[#FAF8F5] text-lg font-medium shadow-xs group-hover:border-[#F59E0B] transition-colors">
-            φ
-          </div>
-          <div class="flex flex-col">
-            <span class="font-serif text-xl tracking-tight font-medium text-[#FAF8F5] leading-none group-hover:text-[#F59E0B] transition-colors">
-              Phil
-            </span>
-            <span class="text-[11px] tracking-wider uppercase text-[#B8ADA0] font-mono mt-0.5">
-              {SITE_CONFIG.subtitle}
-            </span>
-          </div>
+  <body class="bg-phi-ink text-phi-text font-sans font-light antialiased">
+    <header class="sticky top-0 z-50 backdrop-blur-md bg-phi-ink/85 border-b border-phi-rule">
+      <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+        <a href="#" class="flex items-center gap-2.5 text-phi-head">
+          <span class="w-[26px] h-[26px] rounded-full border border-phi-text flex items-center justify-center font-serif text-[15px] leading-none" aria-hidden="true">φ</span>
+          <span class="text-lg font-normal">Phil</span>
         </a>
 
-        <!-- Desktop Navigation -->
-        <nav class="hidden md:flex items-center gap-7 text-[13px] font-medium tracking-wide text-[#D5CCC0]">
-          <a href="#how-it-works" class="hover:text-[#FAF8F5] transition-colors">How it works</a>
-          <a href="#decisions" class="hover:text-[#FAF8F5] transition-colors">Decisions</a>
-          <a href="#install" class="hover:text-[#FAF8F5] transition-colors">Install</a>
+        <nav class="hidden md:flex items-center gap-7 label text-phi-text">
+          <a href="#how-it-works" class="hover:text-phi-head transition-colors">How it works</a>
+          <a href="#decisions" class="hover:text-phi-head transition-colors">Decisions</a>
+          <a href="#install" class="hover:text-phi-head transition-colors">Install</a>
         </nav>
 
-        <!-- Action Buttons -->
-        <div class="flex items-center gap-3">
-          <a
-            href={SITE_CONFIG.links.github}
-            target="_blank"
-            rel="noopener noreferrer"
-            class="inline-flex items-center gap-2 text-[13px] font-medium px-4 py-2 rounded-full bg-[#FAF8F5] text-[#26221E] hover:bg-[#EFE9E2] shadow-sm transition-all"
-          >
-            <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
-              <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
-            </svg>
-            <span>GitHub</span>
-          </a>
-        </div>
+        <a
+          href={SITE_CONFIG.links.github}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="label inline-flex items-center gap-2 h-9 px-4 rounded-full bg-phi-pill text-phi-ink hover:bg-phi-head transition-colors"
+        >
+          <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill-rule="evenodd" clip-rule="evenodd" d={GITHUB_PATH} />
+          </svg>
+          <span>GitHub</span>
+        </a>
       </div>
     </header>
 
@@ -101,27 +75,19 @@ const {
       <slot />
     </main>
 
-    <!-- Footer -->
-    <footer class="border-t border-[#E5DDD3] bg-[#F4EFEA] py-14 mt-24">
-      <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
-        <div class="flex items-center gap-3">
-          <div class="w-7 h-7 rounded-full border border-[#D5CCC0] bg-[#FAF8F5] flex items-center justify-center font-serif text-[#26221E] text-sm">
-            φ
-          </div>
-          <p class="text-sm text-[#7A7268]">
-            Phil is {SITE_CONFIG.subtitle}. It's open source.
-          </p>
-        </div>
-        <div class="flex flex-col items-center md:items-end gap-3 text-xs font-mono text-[#7A7268]">
+    <footer class="border-t border-phi-rule py-10">
+      <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6 label text-phi-muted">
+        <p>Phil is {SITE_CONFIG.subtitle}. It's open source.</p>
+        <div class="flex flex-col items-center md:items-end gap-3">
           <div class="flex items-center gap-6">
-            <a href={SITE_CONFIG.links.github} target="_blank" rel="noopener noreferrer" class="hover:text-[#26221E] transition-colors">GitHub ↗</a>
-            <a href={SITE_CONFIG.links.guide} target="_blank" rel="noopener noreferrer" class="hover:text-[#26221E] transition-colors">Guide ↗</a>
+            <a href={SITE_CONFIG.links.github} target="_blank" rel="noopener noreferrer" class="text-phi-text hover:text-phi-head transition-colors">GitHub ↗</a>
+            <a href={SITE_CONFIG.links.guide} target="_blank" rel="noopener noreferrer" class="text-phi-text hover:text-phi-head transition-colors">Guide ↗</a>
           </div>
           <div class="flex flex-wrap justify-center items-center gap-x-4 gap-y-2">
-            <span class="text-[#26221E]">About the dev:</span>
-            <a href={SITE_CONFIG.author.url} target="_blank" rel="noopener noreferrer" class="hover:text-[#26221E] transition-colors">andrewhochoy.com ↗</a>
-            <a href={SITE_CONFIG.author.linkedin} target="_blank" rel="noopener noreferrer" class="hover:text-[#26221E] transition-colors">LinkedIn ↗</a>
-            <a href={SITE_CONFIG.author.github} target="_blank" rel="noopener noreferrer" class="hover:text-[#26221E] transition-colors">GitHub (@ahochoy) ↗</a>
+            <span>About the dev:</span>
+            <a href={SITE_CONFIG.author.url} target="_blank" rel="noopener noreferrer" class="text-phi-text hover:text-phi-head transition-colors">andrewhochoy.com ↗</a>
+            <a href={SITE_CONFIG.author.linkedin} target="_blank" rel="noopener noreferrer" class="text-phi-text hover:text-phi-head transition-colors">LinkedIn ↗</a>
+            <a href={SITE_CONFIG.author.github} target="_blank" rel="noopener noreferrer" class="text-phi-text hover:text-phi-head transition-colors">GitHub (@ahochoy) ↗</a>
           </div>
         </div>
       </div>
