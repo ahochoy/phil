@@ -1,15 +1,85 @@
 ---
-// The three paths a request can take (docs/guide.md, "Routing"), and what Phil is built with.
+// The three paths a request can take (docs/guide.md, "Routing"), drawn in LangGraph's visual
+// language: dashed boxes for the steps, arrows between them, labelled arrows for the loops.
 // Each path keeps one colour across the site: answer blue, quick yellow, full red.
-const fullSteps = [
-  "intake conversation",
-  "design options (mockups on request)",
-  "architect's spec and plan",
-  "critic",
-  "tasks in a worktree",
-  "reviewer",
-  "branch ready for a PR",
+type Loop = { from: number; to: number; label: string }; // from a lower box back up to the one above
+type Flow = {
+  path: "answer" | "quick" | "full";
+  name: string;
+  dot: string;
+  text: string;
+  stroke: string;
+  heading: string;
+  steps: string[];
+  loops: Loop[];
+  out: string;
+  caption: string;
+  title: string;
+};
+
+const flows: Flow[] = [
+  {
+    path: "answer",
+    name: "Answer",
+    dot: "bg-phi-blue",
+    text: "text-phi-sky",
+    stroke: "var(--color-phi-sky)",
+    heading: "A question or a diagnosis.",
+    steps: ["read-only agent"],
+    loops: [],
+    out: "reply",
+    caption: "It reads a snapshot of your working tree. No branch, no commits.",
+    title: "Answer path: a read-only agent replies.",
+  },
+  {
+    path: "quick",
+    name: "Quick",
+    dot: "bg-phi-yellow",
+    text: "text-phi-yellow",
+    stroke: "var(--color-phi-yellow)",
+    heading: "A small, well-specified change.",
+    steps: ["intake", "implement", "review"],
+    loops: [{ from: 2, to: 1, label: "one fix" }],
+    out: "branch",
+    caption: "One task, one review, at most one fix. If it still fails, Phil offers the full path.",
+    title: "Quick path: intake, implement, review; review can send one fix back to implement; ends in a branch.",
+  },
+  {
+    path: "full",
+    name: "Full",
+    dot: "bg-phi-red",
+    text: "text-phi-red",
+    stroke: "var(--color-phi-red)",
+    heading: "A feature, a refactor, design work or a broad project.",
+    steps: ["intake", "architect", "critic", "you approve", "tasks in a worktree", "reviewer"],
+    loops: [
+      { from: 2, to: 1, label: "revise" },
+      { from: 5, to: 4, label: "fix tasks" },
+    ],
+    out: "branch ready for a PR",
+    caption: "Planned, critiqued and approved before any code is written. Design options on request.",
+    title:
+      "Full path: intake, architect, critic (which can send the plan back to the architect to revise), your approval, tasks in a worktree, reviewer (which can send fix tasks back); ends in a branch ready for a PR.",
+  },
 ];
+
+// Geometry of one column, in SVG units.
+const W = 300;
+const BOX_W = 200;
+const BOX_H = 40;
+const GAP = 36; // the arrow between two boxes
+const LEAD = 30; // the arrow into the first box, and out of the last
+const X = (W - BOX_W) / 2;
+const CX = W / 2;
+const top = (i: number) => LEAD + i * (BOX_H + GAP);
+const height = (n: number) => top(n - 1) + BOX_H + LEAD + 22;
+// A loop leaves the right edge of the lower box and curves back into the right edge of the box above.
+const loopPath = (l: Loop) => {
+  const y1 = top(l.from) + BOX_H / 2;
+  const y2 = top(l.to) + BOX_H / 2;
+  const x = X + BOX_W;
+  return `M ${x} ${y1} C ${x + 44} ${y1}, ${x + 44} ${y2}, ${x + 6} ${y2}`;
+};
 
 const stack = [
   "Python 3.14",
@@ -39,41 +109,92 @@ const stack = [
       </p>
     </div>
 
-    <!-- Diagram: request → classifier → three paths -->
-    <div class="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4 mb-6 label">
-      <span class="px-4 py-2.5 rounded-md border border-[#4a4844] text-phi-text">Your request</span>
-      <span class="text-phi-muted hidden sm:inline" aria-hidden="true">→</span>
-      <span data-arrow-down class="text-phi-muted sm:hidden" aria-hidden="true">↓</span>
+    <!-- Shared start: request, then classifier -->
+    <div class="flex flex-col items-center gap-3 label">
+      <span class="px-4 py-2.5 rounded-md border border-dashed border-[#4a4844] text-phi-text">Your request</span>
+      <span data-arrow-down class="text-phi-muted" aria-hidden="true">↓</span>
       <span class="px-4 py-2.5 rounded-md bg-phi-head text-phi-ink text-center">
         Classifier
         <span class="block normal-case tracking-normal text-[11px] text-[#5a5650] mt-0.5">Jev, or your low model if Jev is unavailable</span>
       </span>
-      <span class="text-phi-muted hidden sm:inline" aria-hidden="true">→</span>
-      <span data-arrow-down class="text-phi-muted sm:hidden" aria-hidden="true">↓</span>
+      <span data-arrow-down class="text-phi-muted md:hidden" aria-hidden="true">↓</span>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-3 border border-phi-rule rounded-xl overflow-hidden mb-8">
-      <div data-path="answer" class="p-7 border-b md:border-b-0 md:border-r border-phi-rule">
-        <p class="label text-phi-sky flex items-center gap-2"><span class="w-[7px] h-[7px] rounded-full bg-phi-blue"></span>Answer</p>
-        <h3 class="font-serif font-normal text-[22px] leading-snug text-phi-head mt-3 mb-2">A question or a diagnosis.</h3>
-        <p class="text-sm leading-relaxed text-phi-muted">A read-only agent answers from a snapshot of your working tree. No branch, no commits.</p>
-      </div>
+    <!-- The fork into three columns (wide screens; the columns stack on phones) -->
+    <svg data-fork class="hidden md:block w-full h-12 text-phi-muted" viewBox="0 0 600 48" preserveAspectRatio="none" aria-hidden="true">
+      <g fill="none" stroke="currentColor" stroke-width="1.25" vector-effect="non-scaling-stroke">
+        <path d="M 300 0 L 300 12 M 100 12 L 500 12 M 100 12 L 100 48 M 300 12 L 300 48 M 500 12 L 500 48" vector-effect="non-scaling-stroke" />
+      </g>
+    </svg>
 
-      <div data-path="quick" class="p-7 border-b md:border-b-0 md:border-r border-phi-rule">
-        <p class="label text-phi-yellow flex items-center gap-2"><span class="w-[7px] h-[7px] rounded-full bg-phi-yellow"></span>Quick</p>
-        <h3 class="font-serif font-normal text-[22px] leading-snug text-phi-head mt-3 mb-2">A small, well-specified change.</h3>
-        <p class="text-sm leading-relaxed text-phi-muted">Intake writes the one task. One implementer does it in a worktree, and one review follows.</p>
-      </div>
-
-      <div data-path="full" class="p-7">
-        <p class="label text-phi-red flex items-center gap-2"><span class="w-[7px] h-[7px] rounded-full bg-phi-red"></span>Full</p>
-        <h3 class="font-serif font-normal text-[22px] leading-snug text-phi-head mt-3 mb-2">A feature, a refactor, design work or a broad project.</h3>
-        <ol class="text-sm leading-relaxed text-phi-muted space-y-1">
-          {fullSteps.map((step, i) => (
-            <li class="flex gap-2"><span class="font-mono text-xs text-phi-muted pt-0.5">{i + 1}</span><span>{step}</span></li>
-          ))}
-        </ol>
-      </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 mb-10">
+      {flows.map((f, col) => (
+        <div
+          data-path={f.path}
+          class:list={[
+            "px-4 py-8 md:py-2 flex flex-col items-center text-center",
+            col > 0 && "border-t md:border-t-0 md:border-l border-dashed border-phi-rule",
+          ]}
+        >
+          <p class={`label ${f.text} flex items-center gap-2`}><span class={`w-[7px] h-[7px] rounded-full ${f.dot}`}></span>{f.name}</p>
+          <h3 class="font-serif font-normal text-[20px] leading-snug text-phi-head mt-3 mb-1 max-w-[18rem] md:min-h-[3.5rem]">{f.heading}</h3>
+          <svg
+            class="w-full max-w-[300px] h-auto"
+            viewBox={`0 0 ${W} ${height(f.steps.length)}`}
+            role="img"
+            aria-labelledby={`flow-${f.path}-title`}
+          >
+            <title id={`flow-${f.path}-title`}>{f.title}</title>
+            <defs>
+              <marker id={`arrow-${f.path}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-phi-muted)" />
+              </marker>
+            </defs>
+            <g fill="none" stroke="var(--color-phi-muted)" stroke-width="1.25">
+              <line x1={CX} y1="0" x2={CX} y2={LEAD - 2} marker-end={`url(#arrow-${f.path})`} />
+              {f.steps.slice(1).map((_, i) => (
+                <line x1={CX} y1={top(i) + BOX_H} x2={CX} y2={top(i + 1) - 2} marker-end={`url(#arrow-${f.path})`} />
+              ))}
+              <line
+                x1={CX}
+                y1={top(f.steps.length - 1) + BOX_H}
+                x2={CX}
+                y2={top(f.steps.length - 1) + BOX_H + LEAD - 2}
+                marker-end={`url(#arrow-${f.path})`}
+              />
+              {f.loops.map((l) => (
+                <path d={loopPath(l)} marker-end={`url(#arrow-${f.path})`} />
+              ))}
+            </g>
+            {f.steps.map((step, i) => (
+              <g data-node>
+                <rect x={X} y={top(i)} width={BOX_W} height={BOX_H} rx="10" fill="var(--color-phi-panel)" stroke={f.stroke} stroke-width="1.25" stroke-dasharray="4 4" />
+                <text x={CX} y={top(i) + BOX_H / 2} dy="0.35em" text-anchor="middle" fill="var(--color-phi-text)" font-family="var(--font-mono, ui-monospace, monospace)" font-size="13">{step}</text>
+              </g>
+            ))}
+            {f.loops.map((l) => (
+              <text
+                x={X + BOX_W + 22}
+                y={(top(l.to) + BOX_H + top(l.from)) / 2}
+                dy="0.35em"
+                text-anchor="end"
+                fill="var(--color-phi-muted)"
+                font-family="var(--font-mono, ui-monospace, monospace)"
+                font-size="11"
+              >{l.label}</text>
+            ))}
+            <text
+              x={CX}
+              y={top(f.steps.length - 1) + BOX_H + LEAD + 14}
+              text-anchor="middle"
+              fill="var(--color-phi-head)"
+              font-family="var(--font-mono, ui-monospace, monospace)"
+              font-size="12"
+            >{f.out}</text>
+          </svg>
+          <p class="text-sm leading-relaxed text-phi-muted mt-4 max-w-[18rem]">{f.caption}</p>
+        </div>
+      ))}
     </div>
 
     <!-- Built with -->
