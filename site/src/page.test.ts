@@ -51,6 +51,12 @@ describe("the page", () => {
       expect(page).toContain(t);
   });
 
+  it("has five decisions and no budget card", () => {
+    expect(page).toContain('id="decisions"');
+    expect(count("data-decision")).toBe(5);
+    expect(page).not.toContain("04 · PROCESS");
+  });
+
   it("describes itself as an experiment", () => {
     expect(page).toMatch(/<meta name="description" content="[^"]*experiment[^"]*"/);
   });
