@@ -29,7 +29,8 @@ def test_missing_file_gives_defaults(tmp_path):
     # generous; cost stays the primary guard
     assert config.run.max_tokens == 1_500_000
     assert config.run.max_cost_usd == 2.0
-    assert config.run.quick_max_attempts == 2
+    assert config.run.quick_max_attempts == 3
+    assert config.run.quick_max_review_rounds == 3
     assert config.models == {}
 
 
@@ -57,6 +58,11 @@ def test_warn_at_outside_open_unit_interval_is_rejected(tmp_path, value):
 def test_quick_max_attempts_below_one_is_rejected():
     with pytest.raises(ValidationError):
         PhilConfig.model_validate({"run": {"quick_max_attempts": 0}})
+
+
+def test_quick_max_review_rounds_below_one_is_rejected():
+    with pytest.raises(ValidationError):
+        PhilConfig.model_validate({"run": {"quick_max_review_rounds": 0}})
 
 
 def test_models_must_be_set_per_role(tmp_path):
