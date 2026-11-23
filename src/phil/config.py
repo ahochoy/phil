@@ -60,13 +60,14 @@ class RunConfig(_Section):
     max_cost_usd: float = 2.0
     model_timeout_s: int = 180
     warn_at: float = 0.8
-    quick_max_attempts: int = 2
+    quick_max_attempts: int = 3
+    quick_max_review_rounds: int = 3  # reviews of a quick run; a fix follows each, the last one unreviewed
 
-    @field_validator("quick_max_attempts")
+    @field_validator("quick_max_attempts", "quick_max_review_rounds")
     @classmethod
-    def _validate_quick_max_attempts(cls, value: int) -> int:
+    def _validate_quick_limits(cls, value: int, info) -> int:
         if value < 1:
-            raise ValueError("run.quick_max_attempts must be >= 1")
+            raise ValueError(f"run.{info.field_name} must be >= 1")
         return value
 
     @field_validator("model_timeout_s")
