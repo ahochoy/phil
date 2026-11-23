@@ -96,6 +96,11 @@ describe("the page", () => {
     expect(page).toMatch(/data-path="full"[^>]*>[\s\S]{0,400}?text-phi-red/);
   });
 
+  it("ends on a token field, hidden from screen readers", () => {
+    expect(page).toMatch(/<div[^>]*data-token-field[^>]*aria-hidden="true"/);
+    expect(page.indexOf("data-token-field")).toBeLessThan(page.indexOf("<footer"));
+  });
+
   it("describes itself as an experiment", () => {
     expect(page).toMatch(/<meta name="description" content="[^"]*experiment[^"]*"/);
   });

@@ -1,0 +1,24 @@
+---
+// A band of token glyphs above the footer, built once at build time (no JavaScript).
+// Decorative, so hidden from screen readers.
+import { tokenField } from "../scripts/token-field";
+
+const TONE = { "": "", w: "text-phi-text", r: "text-phi-red", y: "text-phi-yellow", b: "text-phi-blue" } as const;
+const rows = tokenField(10, 190, 1618);
+---
+
+<div data-token-field aria-hidden="true" class="token-field border-t border-phi-rule py-4 overflow-hidden select-none">
+  {rows.map((row) => (
+    <div class="whitespace-pre">
+      {row.map((cell) => (cell.tone ? <span class={TONE[cell.tone]}>{cell.ch}</span> : cell.ch))}
+    </div>
+  ))}
+</div>
+
+<style>
+  .token-field {
+    height: 212px;
+    color: #2f2e2b;
+    font: 400 13px/18px var(--font-mono);
+  }
+</style>

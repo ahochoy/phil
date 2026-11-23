@@ -1,6 +1,7 @@
 ---
 import "../styles/global.css";
 import { SITE_CONFIG } from "../config";
+import TokenField from "../components/TokenField.astro";
 
 interface Props {
   title?: string;
@@ -74,6 +75,8 @@ const GITHUB_PATH =
     <main>
       <slot />
     </main>
+
+    <TokenField />
 
     <footer class="border-t border-phi-rule py-10">
       <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6 label text-phi-muted">
