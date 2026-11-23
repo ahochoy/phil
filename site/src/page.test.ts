@@ -101,6 +101,12 @@ describe("the page", () => {
     expect(page.indexOf("data-token-field")).toBeLessThan(page.indexOf("<footer"));
   });
 
+  it("shares a card of the new hero", () => {
+    expect(page).toContain('<meta property="og:image" content="/social.png"');
+    const png = readFileSync(fileURLToPath(new URL("../public/social.png", import.meta.url)));
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1200, 630]);
+  });
+
   it("describes itself as an experiment", () => {
     expect(page).toMatch(/<meta name="description" content="[^"]*experiment[^"]*"/);
   });

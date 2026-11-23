@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ahochoy/phil/main/assets/banner.jpg" alt="Phil, a coding agent experiment" width="100%" />
+  <img src="https://raw.githubusercontent.com/ahochoy/phil/main/assets/banner.png" alt="Phil, a coding agent experiment" width="100%" />
 </p>
 
 # Phil
