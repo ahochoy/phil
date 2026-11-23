@@ -1,65 +1,34 @@
 ---
+const steps = [
+  { label: "01 · Install", note: "From PyPI, with uv (or pipx install phil-agent):", command: "uv tool install phil-agent" },
+  { label: "02 · Set up", note: "Pick a provider and a model for each tier. Your key goes in the OS key store.", command: "phil setup" },
+  { label: "03 · Run", note: "Start a chat in any git repo:", command: "phil" },
+];
 ---
 
-<section id="install" class="py-20 md:py-28 max-w-5xl mx-auto px-6">
-  <!-- Section Tag -->
-  <div class="flex items-center gap-2 mb-4 font-mono text-xs uppercase tracking-wider text-[#7A7268]">
-    <span class="w-2 h-2 rounded-full bg-[#C26910]"></span>
-    <span>Install</span>
-    <span class="text-[#D5CCC0]">·</span>
-    <span>Three commands</span>
-  </div>
+<section id="install" class="border-t border-phi-rule py-20 md:py-24">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="max-w-2xl mb-12">
+      <p class="label text-phi-muted flex items-center gap-2.5 mb-5">
+        <span class="w-[7px] h-[7px] rounded-full bg-phi-red"></span>
+        <span>Install · Three commands</span>
+      </p>
+      <h2 class="font-serif font-light text-4xl sm:text-5xl lg:text-[52px] leading-[1.05] tracking-[-0.025em] text-phi-head mb-4">
+        Install it and point it at a repo.
+      </h2>
+      <p class="text-lg leading-relaxed text-phi-text">
+        Phil needs Python 3.14, which <code class="font-mono text-[15px] text-phi-head">uv</code> installs for you if it's missing. Run <code class="font-mono text-[15px] text-phi-head">phil setup</code> once to pick a provider and models, then run <code class="font-mono text-[15px] text-phi-head">phil</code> in any git repo.
+      </p>
+    </div>
 
-  <div class="max-w-2xl mb-12">
-    <h2 class="font-serif text-3xl sm:text-4xl lg:text-[44px] font-normal text-[#26221E] leading-[1.2] mb-4">
-      Install it and point it at a repo.
-    </h2>
-    <p class="text-base sm:text-lg text-[#6B635B] leading-relaxed">
-      Phil needs Python 3.14, which <code class="font-mono text-sm bg-[#EFE9E2] px-1.5 py-0.5 rounded text-[#26221E]">uv</code> installs for you if it's missing. Run <code class="font-mono text-sm bg-[#EFE9E2] px-1.5 py-0.5 rounded text-[#26221E]">phil setup</code> once to pick a provider and models, then run <code class="font-mono text-sm bg-[#EFE9E2] px-1.5 py-0.5 rounded text-[#26221E]">phil</code> in any git repo.
-    </p>
-  </div>
-
-  <!-- 3-Step Setup Card -->
-  <div class="rounded-3xl bg-[#1C1917] border border-[#332E2A] p-8 text-[#EFEBE6] font-mono shadow-xl">
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
-      <!-- Step 1 -->
-      <div class="space-y-3">
-        <div class="flex items-center gap-2 text-[#C26910] text-xs font-bold uppercase tracking-wider">
-          <span>01 · INSTALL</span>
+    <div class="grid grid-cols-1 md:grid-cols-3 border border-phi-rule rounded-xl overflow-hidden">
+      {steps.map((step, i) => (
+        <div class={`p-7 border-phi-rule ${i < steps.length - 1 ? "border-b md:border-b-0 md:border-r" : ""}`}>
+          <p class="label text-phi-yellow">{step.label}</p>
+          <p class="text-sm leading-relaxed text-phi-muted mt-3 mb-4">{step.note}</p>
+          <code class="block p-3 rounded-lg bg-phi-panel border border-phi-rule font-mono text-[13px] text-phi-head select-all">{step.command}</code>
         </div>
-        <p class="text-xs text-[#A3998C] font-sans">
-          From PyPI, with <code class="text-[#FAF8F5] font-mono">uv</code> (or <code class="text-[#FAF8F5] font-mono">pipx install phil-agent</code>):
-        </p>
-        <div class="p-3 rounded-xl bg-[#26221E] border border-[#3D3732] text-xs text-[#98C379] select-all">
-          uv tool install phil-agent
-        </div>
-      </div>
-
-      <!-- Step 2 -->
-      <div class="space-y-3">
-        <div class="flex items-center gap-2 text-[#C26910] text-xs font-bold uppercase tracking-wider">
-          <span>02 · SET UP</span>
-        </div>
-        <p class="text-xs text-[#A3998C] font-sans">
-          Pick a provider and a model for each tier. Your key goes in the OS key store.
-        </p>
-        <div class="p-3 rounded-xl bg-[#26221E] border border-[#3D3732] text-xs text-[#98C379] select-all">
-          phil setup
-        </div>
-      </div>
-
-      <!-- Step 3 -->
-      <div class="space-y-3">
-        <div class="flex items-center gap-2 text-[#C26910] text-xs font-bold uppercase tracking-wider">
-          <span>03 · RUN</span>
-        </div>
-        <p class="text-xs text-[#A3998C] font-sans">
-          Start a chat in any git repo:
-        </p>
-        <div class="p-3 rounded-xl bg-[#26221E] border border-[#3D3732] text-xs text-[#98C379] select-all">
-          phil
-        </div>
-      </div>
+      ))}
     </div>
   </div>
 </section>

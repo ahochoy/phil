@@ -88,6 +88,14 @@ describe("the page", () => {
     expect(css).toMatch(/prefers-reduced-motion:\s*reduce/);
   });
 
+  it("leaves no trace of the cream palette, and colours each path", () => {
+    for (const old of ["#FAF8F5", "#F4EFEA", "#E5DDD3", "#26221E", "#352f2a"])
+      expect(page.toLowerCase()).not.toContain(old.toLowerCase());
+    expect(page).toMatch(/data-path="answer"[^>]*>[\s\S]{0,400}?text-phi-blue/);
+    expect(page).toMatch(/data-path="quick"[^>]*>[\s\S]{0,400}?text-phi-yellow/);
+    expect(page).toMatch(/data-path="full"[^>]*>[\s\S]{0,400}?text-phi-red/);
+  });
+
   it("describes itself as an experiment", () => {
     expect(page).toMatch(/<meta name="description" content="[^"]*experiment[^"]*"/);
   });
