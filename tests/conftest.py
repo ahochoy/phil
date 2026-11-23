@@ -1,4 +1,7 @@
+import contextlib
 import os
+import sqlite3
+import threading
 from pathlib import Path
 
 import keyring
@@ -63,6 +66,43 @@ def no_price_fetch(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPat
         yield  # live tests may fetch the real OpenRouter price list
         return
     yield from guard_against_price_fetches(monkeypatch)
+
+
+def close_leftover_connections(monkeypatch: pytest.MonkeyPatch):
+    """Generator body for the `no_leftover_connections` fixture below, a plain function so
+    tests/test_connection_guard.py can drive it directly.
+
+    Many tests open a connection and never close it, and most of those sit in reference cycles,
+    so each keeps its database, -wal and -shm files open until the garbage collector runs. One
+    pytest worker gathered more than 1024 open descriptors that way on CI. The terminal tests'
+    pipes then got numbers above 1024, which prompt_toolkit's select() can't wait on, and the
+    prompt hung. This closes what a test left open as soon as it ends.
+
+    A connection whose thread is still running is left alone: that thread may still be using it.
+    """
+    opened: list[tuple[sqlite3.Connection, threading.Thread]] = []
+    connect = sqlite3.connect  # whatever is installed now (tests/support/locktrace.py wraps it on CI)
+
+    def tracked(*args, **kwargs) -> sqlite3.Connection:
+        conn = connect(*args, **kwargs)
+        opened.append((conn, threading.current_thread()))
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", tracked)
+    yield
+    here = threading.current_thread()
+    for conn, thread in opened:
+        if thread is here or not thread.is_alive():
+            # Opened on a thread that has since ended, with the default same-thread check: only
+            # that thread could close it, so it waits for the collector as before.
+            with contextlib.suppress(sqlite3.ProgrammingError):
+                conn.close()
+    opened.clear()
+
+
+@pytest.fixture(autouse=True)
+def no_leftover_connections(monkeypatch: pytest.MonkeyPatch):
+    yield from close_leftover_connections(monkeypatch)
 
 
 @pytest.fixture(autouse=True)
