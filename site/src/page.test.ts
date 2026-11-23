@@ -58,6 +58,13 @@ describe("the page", () => {
       expect(page).toContain(t);
   });
 
+  it("gives each decision a line figure, hidden from screen readers", () => {
+    const figures = page.match(/<svg[^>]*\sdata-figure[^>]*>/g) ?? [];
+    expect(figures.length).toBe(5);
+    for (const tag of figures) expect(tag).toContain('aria-hidden="true"');
+    for (const n of [1, 2, 3, 4, 5]) expect(page).toContain(`FIG 0.${n}`);
+  });
+
   it("has five decisions and no budget card", () => {
     expect(page).toContain('id="decisions"');
     expect(count("data-decision")).toBe(5);
