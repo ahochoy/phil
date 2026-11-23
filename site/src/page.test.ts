@@ -79,6 +79,15 @@ describe("the page", () => {
     expect(page).toMatch(/<body[^>]*class="[^"]*bg-phi-ink/);
   });
 
+  it("draws the golden spiral, not the busts", () => {
+    expect(page).toMatch(/<svg[^>]*data-spiral[^>]*aria-hidden="true"/);
+    expect(count("data-square")).toBe(3);
+    expect(page).toContain("data-spiral-path");
+    expect(page).toContain("φ = 1.618");
+    for (const gone of ["hero-canvas", "/hero/", "poster.webp", "js-scrub"]) expect(page).not.toContain(gone);
+    expect(css).toMatch(/prefers-reduced-motion:\s*reduce/);
+  });
+
   it("describes itself as an experiment", () => {
     expect(page).toMatch(/<meta name="description" content="[^"]*experiment[^"]*"/);
   });

@@ -1,0 +1,58 @@
+---
+// The golden spiral: a 377×233 golden rectangle split into Fibonacci squares (233, 144, 89, 55,
+// 34, 21), with a quarter-circle arc through each. It draws itself once on load; with reduced
+// motion it simply shows. Decorative, so hidden from screen readers.
+const SPIRAL =
+  "M0,233 A233,233 0 0 1 233,0 A144,144 0 0 1 377,144 A89,89 0 0 1 288,233 A55,55 0 0 1 233,178 A34,34 0 0 1 267,144 A21,21 0 0 1 288,165";
+---
+
+<svg data-spiral aria-hidden="true" viewBox="-10 -10 397 253" class="spiral w-full h-auto">
+  <g fill="none" stroke="#33322f" stroke-width="0.8">
+    <rect x="0" y="0" width="377" height="233" />
+    <line x1="233" y1="0" x2="233" y2="233" />
+    <line x1="233" y1="144" x2="377" y2="144" />
+    <line x1="288" y1="144" x2="288" y2="233" />
+    <line x1="233" y1="178" x2="288" y2="178" />
+    <line x1="267" y1="144" x2="267" y2="178" />
+    <line x1="267" y1="165" x2="288" y2="165" />
+  </g>
+  <rect data-square x="288.5" y="144.5" width="88" height="88" fill="#F4C430" />
+  <rect data-square x="233.5" y="178.5" width="54" height="54" fill="#2F5BD3" />
+  <rect data-square x="267.5" y="144.5" width="20" height="20" fill="#E2402F" />
+  <path data-spiral-path d={SPIRAL} pathLength="1" fill="none" stroke="#FFFFFF" stroke-width="1.4" />
+  <text x="20" y="40" fill="#8C877F" font-family="JetBrains Mono, monospace" font-size="9" letter-spacing="1">φ = 1.618…</text>
+</svg>
+
+<style>
+  [data-spiral-path] {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    animation: draw 1.6s ease-out 0.2s forwards;
+  }
+
+  [data-square] {
+    opacity: 0;
+    animation: appear 0.5s ease-out forwards;
+  }
+
+  [data-square]:nth-of-type(1) { animation-delay: 1.5s; }
+  [data-square]:nth-of-type(2) { animation-delay: 1.75s; }
+  [data-square]:nth-of-type(3) { animation-delay: 2s; }
+
+  @keyframes draw {
+    to { stroke-dashoffset: 0; }
+  }
+
+  @keyframes appear {
+    to { opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-spiral-path],
+    [data-square] {
+      animation: none;
+      stroke-dashoffset: 0;
+      opacity: 1;
+    }
+  }
+</style>
