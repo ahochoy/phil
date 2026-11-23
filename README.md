@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ahochoy/phil/main/assets/banner.jpg" alt="Phil — The Friendly, Token-Efficient Development Agent" width="100%" />
+  <img src="https://raw.githubusercontent.com/ahochoy/phil/main/assets/banner.jpg" alt="Phil, a coding agent experiment" width="100%" />
 </p>
 
 # Phil
 
-Named after *philia* (ancient Greek for friendship and mutual goodwill), Phil is a friendly
-terminal coding agent built to be a token-efficient teammate. Run it inside a git repository:
+Phil is a coding agent experiment for the terminal, built to spend fewer tokens. Run it inside a
+git repository:
 it plans a goal with you, implements it in its own git worktree, and leaves a tested, reviewed
 branch. It stops before it spends more than the budget you set.
 
