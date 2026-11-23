@@ -499,7 +499,7 @@ class RunEngine:
         self, state: RunState, plan: Plan, blocking: list[Issue], minor: list[Issue]
     ) -> dict | None:
         """Reopen a quick run's reviewed task as a check task carrying the review's findings, so
-        one fix attempt happens within the task. None when there's no task to reopen or no command
+        one fix attempt per review happens within the task. None when there's no task to reopen or no command
         to check it with; the review then finishes as usual."""
         # A quick plan has exactly one task (spec §4.1), so the task under review is the whole change.
         # With more than one, a fix in one task can't answer a review of them all: leave the findings open.
@@ -534,7 +534,7 @@ class RunEngine:
         }
 
     def _patched_as_open(self, state: RunState) -> list[dict]:
-        """The findings a quick run fixed after review, which no second review checked. The fix
+        """The findings a quick run fixed after its last review, which no later review checked. The fix
         passed its gate, so it changed something (a fix that changes nothing fails the gate)."""
         return [
             {**issue, "severity": "minor", "note": f"fixed after review (unverified): {issue['note']}"}
@@ -1275,8 +1275,8 @@ class RunEngine:
         return self._rebased(state, self._review)
 
     def _review(self, state: RunState) -> dict:
-        if self._is_quick(state) and state.get("review_rounds", 0) >= 1:
-            # A quick run reviews once: the fix after review finishes without a second review.
+        if self._is_quick(state) and state.get("review_rounds", 0) >= self.deps.config.run.quick_max_review_rounds:
+            # Out of review rounds: the fix after the last review finishes without another review.
             return {"open_issues": [*state.get("open_issues", []), *self._patched_as_open(state)], "next": "finish"}
         budget_warn, escalation = self._budget_check(state, "review")
         if escalation is not None:

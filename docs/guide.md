@@ -432,11 +432,13 @@ sets one of three paths:
 - **quick** — a small, well-specified change: intake writes the one task itself (no architect,
   no critic), and the one-task plan is shown as a single line with the run starting straight
   away — no approval prompt. The run uses a light implementer (writes allowed, no sub-agent,
-  no summarization, capped at 15 model calls per attempt) and skips the tester, at up to 2
-  attempts. One lean review follows; blocker and major findings reopen the task as a check task
-  for a single fix attempt, committed as `<id>: fix after review`, then the run ends either way
-  (minor findings, and any left unfixed, stay listed as open issues in the summary). If the gate
-  still fails after 2 attempts, or the fix attempt doesn't clear it, you're offered `full` (plan
+  no summarization, capped at 15 model calls per attempt) and skips the tester, at up to 3
+  attempts (`[run] quick_max_attempts`). A lean review follows; blocker and major findings reopen
+  the task as a check task for a fix attempt, committed as `<id>: fix after review`, and the fix
+  is reviewed again, up to 3 reviews (`[run] quick_max_review_rounds`). The fix after the last
+  review isn't reviewed again: its findings stay listed as "fixed after review (unverified)", and
+  minor findings stay listed as open issues in the summary. If the gate still fails after 3
+  attempts, or a fix attempt doesn't clear it, you're offered `full` (plan
   the same goal properly, from the base branch, with the quick attempt's worklogs carried over),
   `retry` or `abort` — a quick run with no chat offers only `retry`/`abort`.
 - **full** — a feature, refactor, design question or broad project: the normal plan, run,

@@ -65,6 +65,25 @@ describe("the page", () => {
     for (const n of [1, 2, 3, 4, 5]) expect(page).toContain(`FIG 0.${n}`);
   });
 
+  it("draws each path as boxes and arrows, loops labelled", () => {
+    const column = (path: string) => {
+      const start = page.indexOf(`data-path="${path}"`);
+      const next = page.slice(start + 1).search(/data-path="|<\/section>/);
+      return page.slice(start, start + 1 + next);
+    };
+    const nodes = { answer: 1, quick: 3, full: 6 };
+    for (const [path, n] of Object.entries(nodes)) {
+      const html = column(path);
+      expect(html).toMatch(/<svg[^>]*role="img"/);
+      expect(html).toMatch(/<title[^>]*>[^<]+<\/title>/);
+      expect(html.match(/\sdata-node(?=[\s=>])/g)?.length ?? 0).toBe(n);
+    }
+    expect(column("quick")).toContain("fix, up to 3");
+    expect(column("quick")).toContain("Up to three reviews");
+    for (const loop of ["revise", "fix tasks"]) expect(column("full")).toContain(loop);
+    expect(page).toContain("data-fork");
+  });
+
   it("has five decisions and no budget card", () => {
     expect(page).toContain('id="decisions"');
     expect(count("data-decision")).toBe(5);

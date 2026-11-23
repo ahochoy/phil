@@ -75,17 +75,17 @@ def test_quick_run_uses_the_quick_implementer(quick_harness):
     assert "implementer" not in roles(harness)
 
 
-def test_quick_attempts_cap_at_two_and_offer_full_in_a_chat_run(quick_harness):
-    harness = quick_harness({"quick_implementer": [no_red, no_red]}, chat_id=CHAT_ID)
+def test_quick_attempts_cap_at_three_and_offer_full_in_a_chat_run(quick_harness):
+    harness = quick_harness({"quick_implementer": [no_red, no_red, no_red]}, chat_id=CHAT_ID)
     escalation = harness.start()["__interrupt__"][0].value
     assert escalation["reason"] == "attempts"
     assert escalation["options"] == ["full", "retry", "abort"]
-    assert escalation["summary"] == "CALC-001 failed 2 attempts in the red phase"
+    assert escalation["summary"] == "CALC-001 failed 3 attempts in the red phase"
     assert harness.factory.remaining() == {"quick_implementer": 0}
 
 
 def test_quick_run_without_a_chat_offers_retry_and_abort(quick_harness):
-    harness = quick_harness({"quick_implementer": [no_red, no_red]})
+    harness = quick_harness({"quick_implementer": [no_red, no_red, no_red]})
     escalation = harness.start()["__interrupt__"][0].value
     assert escalation["options"] == ["retry", "abort"]
 
@@ -93,7 +93,10 @@ def test_quick_run_without_a_chat_offers_retry_and_abort(quick_harness):
 def test_review_findings_are_patched_in_the_same_task(quick_harness):
     harness = quick_harness({
         "quick_implementer": [write_red, write_green, add_docstring],
-        "reviewer": [review("changes", [Issue(severity="major", note=FINDING), Issue(severity="minor", note="nit")])],
+        "reviewer": [
+            review("changes", [Issue(severity="major", note=FINDING), Issue(severity="minor", note="nit")]),
+            review(),
+        ],
     })
     final = harness.start()
     plan = load_plan(final)
@@ -103,13 +106,46 @@ def test_review_findings_are_patched_in_the_same_task(quick_harness):
     assert f"Review: {FINDING}" in task.acceptance_criteria
     fix_packet = packets(harness, "quick_implementer")[2]
     assert f"Review: {FINDING}" in fix_packet and '"verify": "check"' in fix_packet
-    assert roles(harness).count("reviewer") == 1
     assert final["status"] == "completed"
     notes = [issue["note"] for issue in final["open_issues"]]
-    assert f"fixed after review (unverified): {FINDING}" in notes
     assert "nit" in notes
-    patched = next(i for i in final["open_issues"] if i["note"].startswith("fixed after review"))
-    assert patched["severity"] == "minor"
+
+
+def test_a_fix_after_review_is_reviewed_again(quick_harness):
+    # The second review approved the fix: the finding is resolved, not left open as unverified.
+    harness = quick_harness({
+        "quick_implementer": [write_red, write_green, add_docstring],
+        "reviewer": [review("changes", [Issue(severity="major", note=FINDING)]), review()],
+    })
+    final = harness.start()
+    assert roles(harness).count("reviewer") == 2
+    assert final["status"] == "completed"
+    assert final["review_rounds"] == 2
+    assert not any(FINDING in issue["note"] for issue in final["open_issues"])
+
+
+def append_line(text: str):
+    def fix(turn: Turn) -> TaskResult:
+        calc = turn.workdir / "calc.py"
+        calc.write_text(calc.read_text() + f"\n# {text}\n")
+        return task_result("green", ["calc.py"])
+
+    return fix
+
+
+def test_quick_review_rounds_cap_at_three(quick_harness):
+    # Three reviews, a fix after each; the fix after the third is not reviewed again.
+    changes = review("changes", [Issue(severity="major", note=FINDING)])
+    harness = quick_harness({
+        "quick_implementer": [write_red, write_green, append_line("one"), append_line("two"), append_line("three")],
+        "reviewer": [changes, changes, changes],
+    })
+    final = harness.start()
+    assert harness.factory.remaining() == {"quick_implementer": 0, "reviewer": 0}
+    assert final["review_rounds"] == 3
+    assert final["status"] == "completed"
+    patched = [i for i in final["open_issues"] if i["note"] == f"fixed after review (unverified): {FINDING}"]
+    assert len(patched) == 1 and patched[0]["severity"] == "minor"
 
 
 def change_nothing(turn: Turn) -> TaskResult:
@@ -206,7 +242,7 @@ def test_abort_while_patching_keeps_the_findings_and_the_task_done(quick_harness
 def test_the_fix_commits_on_top_of_the_task(quick_harness, calc_repo):
     harness = quick_harness({
         "quick_implementer": [write_red, write_green, add_docstring],
-        "reviewer": [review("changes", [Issue(severity="major", note=FINDING)])],
+        "reviewer": [review("changes", [Issue(severity="major", note=FINDING)]), review()],
     })
     final = harness.start()
     assert final["patching"] is False
@@ -218,7 +254,7 @@ def test_retry_while_patching_keeps_the_limit_at_one(quick_harness):
     harness = quick_harness(
         {
             "quick_implementer": [write_red, write_green, bad_green, bad_green, add_docstring],
-            "reviewer": [review("changes", [Issue(severity="major", note=FINDING)])],
+            "reviewer": [review("changes", [Issue(severity="major", note=FINDING)]), review()],
         },
         chat_id=CHAT_ID,
     )
@@ -245,7 +281,7 @@ def edit_other_test(turn: Turn) -> TaskResult:
 def test_the_fix_may_edit_the_tasks_own_tests(quick_harness):
     harness = quick_harness({
         "quick_implementer": [write_red, write_green, edit_own_test],
-        "reviewer": [review("changes", [Issue(severity="major", note="test a negative result")])],
+        "reviewer": [review("changes", [Issue(severity="major", note="test a negative result")]), review()],
     })
     final = harness.start()
     assert final["status"] == "completed"
