@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -6,6 +7,12 @@ import { describe, expect, it } from "vitest";
 const built = fileURLToPath(new URL("../dist/client/index.html", import.meta.url));
 if (!existsSync(built)) throw new Error("dist/client/index.html is missing: run npm run build first");
 const page = readFileSync(built, "utf-8");
+// Every built stylesheet, joined.
+const cssDir = fileURLToPath(new URL("../dist/client/_astro/", import.meta.url));
+const css = readdirSync(cssDir)
+  .filter((name) => name.endsWith(".css"))
+  .map((name) => readFileSync(join(cssDir, name), "utf-8"))
+  .join("\n");
 
 /** How many elements carry the `[data-…]` attribute `name`. */
 function count(name: string): number {
@@ -63,6 +70,51 @@ describe("the page", () => {
     expect(page).toMatch(/OS keychain directly/);
     expect(page).not.toContain("Repeated history is prompt-cached.");
     expect(page).toContain("on Anthropic models");
+  });
+
+  it("is dark, in the new type", () => {
+    expect(css.toLowerCase()).toContain("#0c0c0b");
+    expect(page).toMatch(/fonts\.googleapis\.com[^"]*Inter/);
+    expect(page).not.toContain("Plus+Jakarta");
+    expect(page).toMatch(/<body[^>]*class="[^"]*bg-phi-ink/);
+  });
+
+  it("draws the golden spiral, not the busts", () => {
+    expect(page).toMatch(/<svg[^>]*data-spiral[^>]*aria-hidden="true"/);
+    expect(count("data-square")).toBe(3);
+    expect(page).toContain("data-spiral-path");
+    expect(page).toContain("φ = 1.618");
+    for (const gone of ["hero-canvas", "/hero/", "poster.webp", "js-scrub"]) expect(page).not.toContain(gone);
+    expect(css).toMatch(/prefers-reduced-motion:\s*reduce/);
+  });
+
+  it("leaves no trace of the cream palette, and colours each path", () => {
+    for (const old of ["#FAF8F5", "#F4EFEA", "#E5DDD3", "#26221E", "#352f2a"])
+      expect(page.toLowerCase()).not.toContain(old.toLowerCase());
+    expect(page).toMatch(/data-path="answer"[^>]*>[\s\S]{0,400}?(text-phi-sky|bg-phi-blue)/);
+    expect(page).toMatch(/data-path="quick"[^>]*>[\s\S]{0,400}?text-phi-yellow/);
+    expect(page).toMatch(/data-path="full"[^>]*>[\s\S]{0,400}?text-phi-red/);
+  });
+
+  it("ends on a token field, hidden from screen readers", () => {
+    expect(page).toMatch(/<div[^>]*data-token-field[^>]*aria-hidden="true"/);
+    expect(page.indexOf("data-token-field")).toBeLessThan(page.indexOf("<footer"));
+  });
+
+  it("shares a card of the new hero", () => {
+    expect(page).toContain('<meta property="og:image" content="/social.png"');
+    const png = readFileSync(fileURLToPath(new URL("../public/social.png", import.meta.url)));
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1200, 630]);
+  });
+
+  it("keeps blue text readable, a dark favicon, and arrows that follow the stack", () => {
+    // #2F5BD3 is 3.3:1 on the page; blue text uses the lighter shade (AA).
+    expect(css.toLowerCase()).toContain("#6f93f0");
+    expect(page).toMatch(/data-path="answer"[^>]*>[\s\S]{0,300}?text-phi-sky/);
+    const favicon = readFileSync(fileURLToPath(new URL("../public/favicon.svg", import.meta.url)), "utf-8");
+    expect(favicon.toUpperCase()).not.toMatch(/#FAF8F5|#C26910/);
+    expect(favicon.toUpperCase()).toContain("#0C0C0B");
+    expect(count("data-arrow-down")).toBe(2);
   });
 
   it("describes itself as an experiment", () => {

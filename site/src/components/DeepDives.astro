@@ -6,7 +6,6 @@ interface Decision {
   chose: string;
   why: string;
   saw?: string;
-  dot: string;
 }
 
 const DECISIONS: Decision[] = [
@@ -17,7 +16,6 @@ const DECISIONS: Decision[] = [
       "A small decision model, TypeSafe Jev, sorts each request into a path. If Jev is unavailable, your low model does it.",
     why: "Deciding whether you asked a question or want a refactor is a classification problem. It doesn't need a large chat model.",
     saw: "In the 2026-10-06 benchmark, Jev routed 50 cases with no wrong-path or unsafe routes, about 12× faster than the low model at p95 and about 4× cheaper.",
-    dot: "bg-[#C26910]",
   },
   {
     label: "Models",
@@ -25,7 +23,6 @@ const DECISIONS: Decision[] = [
     chose:
       "A high tier for judgement (architect, critic, reviewer) and a low tier for doing the work (implementer, tester). An optional vision model reads images only when an agent's own model can't. Each tier can come from OpenRouter, OpenAI, Anthropic, Google, Ollama, or an OpenAI-compatible endpoint.",
     why: "Most of a run is routine work. Paying for the most capable model on every step spends the most where it helps the least.",
-    dot: "bg-[#0B7A5A]",
   },
   {
     label: "Structure",
@@ -33,7 +30,6 @@ const DECISIONS: Decision[] = [
     chose:
       "Each workflow is a LangGraph graph. Its steps hand the next one a contract it can check, and state is checkpointed in SQLite.",
     why: "A run that always takes the same steps is easier to predict, to measure and to debug, and a stopped run resumes where it left off.",
-    dot: "bg-[#6D28D9]",
   },
   {
     label: "Context",
@@ -42,7 +38,6 @@ const DECISIONS: Decision[] = [
       "Sub-agents return short answers instead of their whole search. Repeated history is prompt-cached on Anthropic models; other vendors cache on their own. Skills load only for the stages they help.",
     why: "Most tokens in a long run are the same context sent again. Sending less, and paying less for what repeats, is where the savings are.",
     saw: "With prompt caching on, 68% of the architect's input came from the cache, and its cost on the same goal fell from $0.38 to $0.21.",
-    dot: "bg-[#B45309]",
   },
   {
     label: "Security",
@@ -50,41 +45,37 @@ const DECISIONS: Decision[] = [
     chose:
       "Key and token variables are removed from every command an agent runs, code those commands run can't read a stored key through keyring, and commands with shell operators are rejected.",
     why: "An agent that can run shell commands is one prompt injection away from reading your keys. This doesn't stop a malicious test from reaching the OS keychain directly, so review what agents add.",
-    dot: "bg-[#1E40AF]",
   },
 ];
 ---
 
-<section id="decisions" class="py-20 md:py-28 border-t border-[#E5DDD3] bg-[#FAF8F5]">
-  <div class="max-w-5xl mx-auto px-6">
-    <div class="flex items-center gap-2 mb-4 font-mono text-xs uppercase tracking-wider text-[#7A7268]">
-      <span class="w-2 h-2 rounded-full bg-[#6D28D9]"></span>
-      <span>Decisions</span>
-    </div>
-
-    <div class="max-w-2xl mb-14">
-      <h2 class="font-serif text-3xl sm:text-4xl lg:text-[44px] font-normal text-[#26221E] leading-[1.2] mb-4">
+<section id="decisions" class="border-t border-phi-rule py-20 md:py-24">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="max-w-2xl mb-12">
+      <p class="label text-phi-muted flex items-center gap-2.5 mb-5">
+        <span class="w-[7px] h-[7px] rounded-full bg-phi-yellow"></span>
+        <span>Decisions</span>
+      </p>
+      <h2 class="font-serif font-light text-4xl sm:text-5xl lg:text-[52px] leading-[1.05] tracking-[-0.025em] text-phi-head mb-4">
         Five decisions.
       </h2>
-      <p class="text-base sm:text-lg text-[#6B635B] leading-relaxed">
+      <p class="text-lg leading-relaxed text-phi-text">
         The choices that shape the experiment, and what we saw.
       </p>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <!-- Cells divided by hairlines; the odd fifth card spans both columns. -->
+    <div class="grid grid-cols-1 md:grid-cols-2 border-t border-l border-phi-rule">
       {DECISIONS.map((d, i) => (
-        <div data-decision class="p-7 rounded-3xl bg-[#F4EFEA] border border-[#E5DDD3]">
-          <div class="flex items-center gap-2 mb-4 font-mono text-xs uppercase text-[#7A7268]">
-            <span class={`w-2 h-2 rounded-full ${d.dot}`}></span>
-            <span>{String(i + 1).padStart(2, "0")} · {d.label}</span>
-          </div>
-          <h3 class="font-serif text-2xl font-medium text-[#26221E] mb-3">{d.title}</h3>
-          <p class="text-sm text-[#4A443D] leading-relaxed mb-3">{d.chose}</p>
-          <p class="text-sm text-[#6B635B] leading-relaxed mb-5">{d.why}</p>
+        <div data-decision class="p-7 md:p-8 border-r border-b border-phi-rule md:last:col-span-2">
+          <p class="label text-phi-muted">{String(i + 1).padStart(2, "0")} · {d.label}</p>
+          <h3 class="font-serif font-light text-[26px] leading-tight text-phi-head mt-3 mb-3">{d.title}</h3>
+          <p class="text-sm leading-relaxed text-phi-text mb-3">{d.chose}</p>
+          <p class="text-sm leading-relaxed text-phi-muted">{d.why}</p>
           {d.saw && (
-            <div class="p-3 rounded-xl bg-[#FAF8F5] border border-[#E5DDD3] text-[11px] font-mono text-[#7A7268] leading-relaxed">
-              <span class="text-[#26221E]">What we saw:</span> {d.saw}
-            </div>
+            <p class="mt-5 pt-4 border-t border-dashed border-phi-rule text-[13px] leading-relaxed text-phi-muted">
+              <span class="text-phi-text font-normal">What we saw:</span> {d.saw}
+            </p>
           )}
         </div>
       ))}

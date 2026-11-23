@@ -1,5 +1,6 @@
 ---
 // The three paths a request can take (docs/guide.md, "Routing"), and what Phil is built with.
+// Each path keeps one colour across the site: answer blue, quick yellow, full red.
 const fullSteps = [
   "intake conversation",
   "design options (mockups on request)",
@@ -23,62 +24,63 @@ const stack = [
 ];
 ---
 
-<section id="how-it-works" class="py-20 md:py-28 border-t border-[#E5DDD3] bg-[#F4EFEA]/60">
-  <div class="max-w-5xl mx-auto px-6">
-    <div class="flex items-center gap-2 mb-4 font-mono text-xs uppercase tracking-wider text-[#7A7268]">
-      <span class="w-2 h-2 rounded-full bg-[#0B7A5A]"></span>
-      <span>How it works</span>
-    </div>
-
+<section id="how-it-works" class="border-t border-phi-rule py-20 md:py-24">
+  <div class="max-w-6xl mx-auto px-6">
     <div class="max-w-2xl mb-12">
-      <h2 class="font-serif text-3xl sm:text-4xl lg:text-[44px] font-normal text-[#26221E] leading-[1.2] mb-4">
+      <p class="label text-phi-muted flex items-center gap-2.5 mb-5">
+        <span class="w-[7px] h-[7px] rounded-full bg-phi-blue"></span>
+        <span>How it works</span>
+      </p>
+      <h2 class="font-serif font-light text-4xl sm:text-5xl lg:text-[52px] leading-[1.05] tracking-[-0.025em] text-phi-head mb-4">
         A request, a classifier, three paths.
       </h2>
-      <p class="text-base sm:text-lg text-[#6B635B] leading-relaxed">
+      <p class="text-lg leading-relaxed text-phi-text">
         A classifier reads each request and picks one of three fixed workflows. Each workflow is a LangGraph graph, so a run always takes the same steps for the same kind of request, and a small change never pays for a big one's process.
       </p>
     </div>
 
     <!-- Diagram: request → classifier → three paths -->
-    <div class="flex flex-col items-center gap-3 mb-6 font-mono text-xs">
-      <div class="px-4 py-2 rounded-full bg-[#FAF8F5] border border-[#D5CCC0] text-[#26221E]">your request</div>
-      <div class="text-[#B8ADA0]" aria-hidden="true">↓</div>
-      <div class="px-4 py-2.5 rounded-xl bg-[#26221E] text-[#FAF8F5] text-center">
-        classifier
-        <div class="text-[11px] text-[#B8ADA0] mt-0.5">Jev, or your low model if Jev is unavailable</div>
-      </div>
-      <div class="text-[#B8ADA0]" aria-hidden="true">↓</div>
+    <div class="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4 mb-6 label">
+      <span class="px-4 py-2.5 rounded-md border border-[#4a4844] text-phi-text">Your request</span>
+      <span class="text-phi-muted hidden sm:inline" aria-hidden="true">→</span>
+      <span data-arrow-down class="text-phi-muted sm:hidden" aria-hidden="true">↓</span>
+      <span class="px-4 py-2.5 rounded-md bg-phi-head text-phi-ink text-center">
+        Classifier
+        <span class="block normal-case tracking-normal text-[11px] text-[#5a5650] mt-0.5">Jev, or your low model if Jev is unavailable</span>
+      </span>
+      <span class="text-phi-muted hidden sm:inline" aria-hidden="true">→</span>
+      <span data-arrow-down class="text-phi-muted sm:hidden" aria-hidden="true">↓</span>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-5 mb-12">
-      <div data-path="answer" class="p-6 rounded-2xl bg-[#FAF8F5] border border-[#E5DDD3]">
-        <div class="font-mono text-xs uppercase tracking-wider text-[#1E40AF] mb-2">answer</div>
-        <p class="text-sm text-[#26221E] mb-3">A question or a diagnosis.</p>
-        <p class="text-xs text-[#6B635B] leading-relaxed">A read-only agent answers from a snapshot of your working tree. No branch, no commits.</p>
+    <div class="grid grid-cols-1 md:grid-cols-3 border border-phi-rule rounded-xl overflow-hidden mb-8">
+      <div data-path="answer" class="p-7 border-b md:border-b-0 md:border-r border-phi-rule">
+        <p class="label text-phi-sky flex items-center gap-2"><span class="w-[7px] h-[7px] rounded-full bg-phi-blue"></span>Answer</p>
+        <h3 class="font-serif font-normal text-[22px] leading-snug text-phi-head mt-3 mb-2">A question or a diagnosis.</h3>
+        <p class="text-sm leading-relaxed text-phi-muted">A read-only agent answers from a snapshot of your working tree. No branch, no commits.</p>
       </div>
 
-      <div data-path="quick" class="p-6 rounded-2xl bg-[#FAF8F5] border border-[#E5DDD3]">
-        <div class="font-mono text-xs uppercase tracking-wider text-[#0B7A5A] mb-2">quick</div>
-        <p class="text-sm text-[#26221E] mb-3">A small, well-specified change.</p>
-        <p class="text-xs text-[#6B635B] leading-relaxed">Intake writes the one task. One implementer does it in a worktree, and one review follows.</p>
+      <div data-path="quick" class="p-7 border-b md:border-b-0 md:border-r border-phi-rule">
+        <p class="label text-phi-yellow flex items-center gap-2"><span class="w-[7px] h-[7px] rounded-full bg-phi-yellow"></span>Quick</p>
+        <h3 class="font-serif font-normal text-[22px] leading-snug text-phi-head mt-3 mb-2">A small, well-specified change.</h3>
+        <p class="text-sm leading-relaxed text-phi-muted">Intake writes the one task. One implementer does it in a worktree, and one review follows.</p>
       </div>
 
-      <div data-path="full" class="p-6 rounded-2xl bg-[#FAF8F5] border border-[#E5DDD3]">
-        <div class="font-mono text-xs uppercase tracking-wider text-[#6D28D9] mb-2">full</div>
-        <p class="text-sm text-[#26221E] mb-3">A feature, a refactor, design work or a broad project.</p>
-        <ol class="text-xs text-[#6B635B] leading-relaxed space-y-1">
+      <div data-path="full" class="p-7">
+        <p class="label text-phi-red flex items-center gap-2"><span class="w-[7px] h-[7px] rounded-full bg-phi-red"></span>Full</p>
+        <h3 class="font-serif font-normal text-[22px] leading-snug text-phi-head mt-3 mb-2">A feature, a refactor, design work or a broad project.</h3>
+        <ol class="text-sm leading-relaxed text-phi-muted space-y-1">
           {fullSteps.map((step, i) => (
-            <li class="flex gap-2"><span class="font-mono text-[#B8ADA0]">{i + 1}</span><span>{step}</span></li>
+            <li class="flex gap-2"><span class="font-mono text-xs text-phi-muted pt-0.5">{i + 1}</span><span>{step}</span></li>
           ))}
         </ol>
       </div>
     </div>
 
     <!-- Built with -->
-    <div class="p-6 rounded-2xl bg-[#FAF8F5] border border-[#E5DDD3] flex flex-wrap items-center gap-x-6 gap-y-3 text-xs font-mono text-[#6B635B]">
-      <div class="text-[#26221E] font-medium font-sans text-sm">Built with</div>
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="label text-phi-muted mr-2">Built with</span>
       {stack.map((item) => (
-        <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#B8ADA0]"></span>{item}</span>
+        <span class="label px-3 py-1.5 rounded-full border border-phi-rule text-phi-muted">{item}</span>
       ))}
     </div>
   </div>
