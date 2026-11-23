@@ -12,7 +12,7 @@ The first public release, published to PyPI as `phil-agent`.
 
 - `phil`, a chat in the terminal that plans a goal with you, then runs it in its own git worktree
   and leaves a tested, reviewed branch.
-- A welcome card with Phil's φ mascot (for *philia*), with a line under it instead of a box.
+- A welcome card with Phil's φ mascot, with a line under it instead of a box.
 - Two model tiers, `high` and `low`. Providers: OpenRouter, OpenAI, Anthropic, Google, Ollama and
   any OpenAI-compatible endpoint.
 - `phil setup` for choosing a provider, storing its key in the OS key store and checking each model.
